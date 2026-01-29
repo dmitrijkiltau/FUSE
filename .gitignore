@@ -1,4 +1,13 @@
-/target/
-/node_modules/
-/.venv/
+target/
+node_modules/
+.venv/
 __pycache__/
+.cargo/
+.cargo-*/
+tmp/
+logs/
+*.log
+*.tmp
+.DS_Store
+.idea/
+.vscode/
