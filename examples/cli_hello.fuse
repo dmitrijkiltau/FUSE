@@ -1,0 +1,12 @@
+# CLI hello + config example
+
+config App:
+  greeting: String = env("GREETING") ?? "Hello"
+  defaultName: String = env("NAME") ?? "world"
+
+fn main(name: String = App.defaultName):
+  let msg = App.greeting + ", " + name + "!"
+  print(msg)
+
+app "hello":
+  main(App.defaultName)

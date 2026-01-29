@@ -1,0 +1,38 @@
+# Types + patterns example
+
+enum Color:
+  Red
+  Rgb(Int, Int, Int)
+
+type User:
+  name: String
+  age: Int
+
+type NotFound:
+  message: String
+
+fn describe(color: Color) -> String:
+  match color:
+    case Red:
+      return "red"
+    case Rgb(r, g, b):
+      return "rgb"
+
+fn describe_user(user: User) -> String:
+  match user:
+    case User(name=n):
+      return n
+
+fn maybe_name(user: User?) -> String:
+  match user:
+    case Some(u):
+      return u.name
+    case None:
+      return "unknown"
+
+fn handle(result: User!NotFound) -> String:
+  match result:
+    case Ok(u):
+      return u.name
+    case Err(e):
+      return e.message
