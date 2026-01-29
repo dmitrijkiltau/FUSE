@@ -469,7 +469,19 @@ impl<'a> Parser<'a> {
                 }
             }
         };
-        self.expect_newline();
+        let needs_newline = match &kind {
+            StmtKind::If { .. }
+            | StmtKind::Match { .. }
+            | StmtKind::For { .. }
+            | StmtKind::While { .. } => false,
+            StmtKind::Expr(expr) => !matches!(expr.kind, ExprKind::Spawn { .. }),
+            _ => true,
+        };
+        if needs_newline {
+            self.expect_newline();
+        } else {
+            self.consume_newlines();
+        }
         let end = self.prev_span();
         Stmt {
             kind,
@@ -555,9 +567,50 @@ impl<'a> Parser<'a> {
                 self.bump();
                 PatternKind::Wildcard
             }
-            TokenKind::Ident(_) => {
-                let ident = self.expect_ident();
-                PatternKind::Ident(ident)
+            TokenKind::Ident(_) | TokenKind::Keyword(Keyword::Body) => {
+                let ident = self.expect_ident_or_body();
+                if self.eat_punct(Punct::LParen).is_some() {
+                    let mut args = Vec::new();
+                    let mut fields = Vec::new();
+                    let mut has_named = false;
+                    let mut has_positional = false;
+                    if !self.at_punct(Punct::RParen) {
+                        loop {
+                            if self.is_named_pattern() {
+                                has_named = true;
+                                let field_name = self.expect_ident();
+                                self.expect_punct(Punct::Assign);
+                                let pat = self.parse_pattern();
+                                let span = field_name.span.merge(pat.span);
+                                fields.push(PatternField {
+                                    name: field_name,
+                                    pat: Box::new(pat),
+                                    span,
+                                });
+                            } else {
+                                has_positional = true;
+                                args.push(self.parse_pattern());
+                            }
+                            if self.eat_punct(Punct::Comma).is_none() {
+                                break;
+                            }
+                        }
+                    }
+                    let end = self.expect_punct(Punct::RParen);
+                    if has_named && has_positional {
+                        self.diags.error(
+                            start.merge(end),
+                            "cannot mix positional and named patterns",
+                        );
+                    }
+                    if has_named {
+                        PatternKind::Struct { name: ident, fields }
+                    } else {
+                        PatternKind::EnumVariant { name: ident, args }
+                    }
+                } else {
+                    PatternKind::Ident(ident)
+                }
             }
             TokenKind::Int(_)
             | TokenKind::Float(_)
@@ -862,7 +915,7 @@ impl<'a> Parser<'a> {
                 continue;
             }
             if self.eat_punct(Punct::Dot).is_some() {
-                let name = self.expect_ident();
+                let name = self.expect_ident_or_body();
                 let span = expr.span.merge(name.span);
                 expr = Expr {
                     kind: ExprKind::Member {
@@ -875,7 +928,7 @@ impl<'a> Parser<'a> {
             }
             if self.eat_punct(Punct::Question).is_some() {
                 self.expect_punct(Punct::Dot);
-                let name = self.expect_ident();
+                let name = self.expect_ident_or_body();
                 let span = expr.span.merge(name.span);
                 expr = Expr {
                     kind: ExprKind::OptionalMember {
@@ -887,10 +940,17 @@ impl<'a> Parser<'a> {
                 continue;
             }
             if self.eat_punct(Punct::QuestionBang).is_some() {
-                let span = expr.span;
+                let mut error = None;
+                let mut span = expr.span;
+                if self.starts_expr() {
+                    let err_expr = self.parse_expr();
+                    span = span.merge(err_expr.span);
+                    error = Some(Box::new(err_expr));
+                }
                 expr = Expr {
                     kind: ExprKind::BangChain {
                         expr: Box::new(expr),
+                        error,
                     },
                     span,
                 };
@@ -916,8 +976,8 @@ impl<'a> Parser<'a> {
                     span,
                 }
             }
-            TokenKind::Ident(_) => {
-                let ident = self.expect_ident();
+            TokenKind::Ident(_) | TokenKind::Keyword(Keyword::Body) => {
+                let ident = self.expect_ident_or_body();
                 let span = ident.span;
                 Expr {
                     kind: ExprKind::Ident(ident),
@@ -1115,6 +1175,28 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn is_named_pattern(&self) -> bool {
+        self.is_named_arg()
+    }
+
+    fn starts_expr(&self) -> bool {
+        match self.peek_kind() {
+            TokenKind::Ident(_)
+            | TokenKind::Int(_)
+            | TokenKind::Float(_)
+            | TokenKind::String(_)
+            | TokenKind::Bool(_)
+            | TokenKind::Null
+            | TokenKind::Keyword(Keyword::Spawn)
+            | TokenKind::Keyword(Keyword::Await)
+            | TokenKind::Keyword(Keyword::Box)
+            | TokenKind::Punct(Punct::LParen)
+            | TokenKind::Punct(Punct::LBracket)
+            | TokenKind::Punct(Punct::LBrace) => true,
+            _ => false,
+        }
+    }
+
     fn starts_type_ref(&self) -> bool {
         matches!(self.peek_kind(), TokenKind::Ident(_))
     }
@@ -1163,6 +1245,26 @@ impl<'a> Parser<'a> {
         match self.bump().kind {
             TokenKind::Ident(name) => Ident {
                 name,
+                span: self.prev_span(),
+            },
+            _ => {
+                self.error_here("expected identifier");
+                Ident {
+                    name: "_".to_string(),
+                    span: self.prev_span(),
+                }
+            }
+        }
+    }
+
+    fn expect_ident_or_body(&mut self) -> Ident {
+        match self.bump().kind {
+            TokenKind::Ident(name) => Ident {
+                name,
+                span: self.prev_span(),
+            },
+            TokenKind::Keyword(Keyword::Body) => Ident {
+                name: "body".to_string(),
                 span: self.prev_span(),
             },
             _ => {

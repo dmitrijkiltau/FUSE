@@ -93,6 +93,9 @@ impl<'a> Checker<'a> {
     fn check_service_decl(&mut self, decl: &crate::ast::ServiceDecl) {
         for route in &decl.routes {
             self.env.push();
+            let prev_return = self.current_return.clone();
+            let route_ret = self.resolve_type_ref(&route.ret_type);
+            self.current_return = Some(route_ret);
             for (name, ty) in self.extract_route_params(route) {
                 self.insert_var(&name, ty, false, route.span);
             }
@@ -101,6 +104,7 @@ impl<'a> Checker<'a> {
                 self.insert_var("body", ty, false, route.span);
             }
             let _ = self.check_block(&route.body);
+            self.current_return = prev_return;
             self.env.pop();
         }
     }
@@ -389,14 +393,29 @@ impl<'a> Checker<'a> {
                     _ => self.unify_types(expr.span, left_ty, right_ty),
                 }
             }
-            ExprKind::BangChain { expr: inner } => {
+            ExprKind::BangChain { expr: inner, error } => {
                 let inner_ty = self.check_expr(inner);
+                let err_ty = error.as_ref().map(|expr| self.check_expr(expr));
                 match inner_ty {
-                    Ty::Option(inner) => *inner,
-                    Ty::Result(ok, _) => *ok,
+                    Ty::Option(inner) => {
+                        let err_ty = err_ty.unwrap_or(Ty::Error);
+                        self.check_bang_error(expr.span, &err_ty);
+                        *inner
+                    }
+                    Ty::Result(ok, err) => {
+                        if let Some(err_ty) = err_ty {
+                            self.check_bang_error(expr.span, &err_ty);
+                        } else {
+                            self.check_bang_error(expr.span, &err);
+                        }
+                        *ok
+                    }
                     Ty::Unknown => Ty::Unknown,
                     other => {
-                        self.diags.error(expr.span, format!("?! expects Option or Result, got {}", other));
+                        self.diags.error(
+                            expr.span,
+                            format!("?! expects Option or Result, got {}", other),
+                        );
                         Ty::Unknown
                     }
                 }
@@ -706,13 +725,23 @@ impl<'a> Checker<'a> {
         match &pat.kind {
             PatternKind::Wildcard => {}
             PatternKind::Ident(ident) => {
-                self.insert_var(&ident.name, ty.clone(), false, ident.span);
+                if self.is_enum_variant_name(ty, &ident.name) {
+                    self.check_enum_variant_pattern(ty, &ident.name, &[], pat.span);
+                } else {
+                    self.insert_var(&ident.name, ty.clone(), false, ident.span);
+                }
             }
             PatternKind::Literal(lit) => {
                 let lit_ty = self.ty_from_literal(lit);
                 if !self.is_assignable(&lit_ty, ty) {
                     self.type_mismatch(pat.span, ty, &lit_ty);
                 }
+            }
+            PatternKind::EnumVariant { name, args } => {
+                self.check_enum_variant_pattern(ty, &name.name, args, pat.span);
+            }
+            PatternKind::Struct { name, fields } => {
+                self.check_struct_pattern(ty, name, fields, pat.span);
             }
         }
     }
@@ -819,6 +848,11 @@ impl<'a> Checker<'a> {
         }
         match (value, target) {
             (Ty::Refined { base, .. }, _) => self.is_assignable(base, target),
+            (Ty::Result(value_ok, value_err), Ty::Result(target_ok, target_err)) => {
+                self.is_assignable(value_ok, target_ok) && self.is_assignable(value_err, target_err)
+            }
+            (_, Ty::Result(target_ok, _)) => self.is_assignable(value, target_ok),
+            (Ty::Result(_, _), _) => false,
             (Ty::Option(value_inner), Ty::Option(target_inner)) => {
                 self.is_assignable(value_inner, target_inner)
             }
@@ -834,6 +868,193 @@ impl<'a> Checker<'a> {
             span,
             format!("type mismatch: expected {}, found {}", expected, found),
         );
+    }
+
+    fn check_bang_error(&mut self, span: Span, err_ty: &Ty) {
+        let expected_err = match &self.current_return {
+            Some(Ty::Result(_, err)) => Some(*err.clone()),
+            Some(Ty::Unknown) => None,
+            Some(other) => {
+                self.diags.error(
+                    span,
+                    format!("?! used in non-fallible function returning {}", other),
+                );
+                return;
+            }
+            None => {
+                self.diags.error(span, "?! used outside of a function");
+                return;
+            }
+        };
+        if let Some(expected_err) = expected_err {
+            if !self.is_assignable(err_ty, &expected_err) {
+                self.type_mismatch(span, &expected_err, err_ty);
+            }
+        }
+    }
+
+    fn is_enum_variant_name(&self, ty: &Ty, name: &str) -> bool {
+        match ty {
+            Ty::Enum(enum_name) => self
+                .symbols
+                .enums
+                .get(enum_name)
+                .map(|info| info.variants.iter().any(|v| v.name == name))
+                .unwrap_or(false),
+            Ty::Option(_) => matches!(name, "Some" | "None"),
+            Ty::Result(_, _) => matches!(name, "Ok" | "Err"),
+            _ => false,
+        }
+    }
+
+    fn check_enum_variant_pattern(
+        &mut self,
+        ty: &Ty,
+        name: &str,
+        args: &[Pattern],
+        span: Span,
+    ) {
+        match ty {
+            Ty::Enum(enum_name) => {
+                let info = match self.symbols.enums.get(enum_name) {
+                    Some(info) => info,
+                    None => {
+                        self.diags
+                            .error(span, format!("unknown enum {}", enum_name));
+                        return;
+                    }
+                };
+                let variant = match info.variants.iter().find(|v| v.name == name) {
+                    Some(variant) => variant,
+                    None => {
+                        self.diags.error(
+                            span,
+                            format!("unknown variant {} for {}", name, enum_name),
+                        );
+                        return;
+                    }
+                };
+                if variant.payload.len() != args.len() {
+                    self.diags.error(
+                        span,
+                        format!(
+                            "expected {} pattern args for {}, got {}",
+                            variant.payload.len(),
+                            name,
+                            args.len()
+                        ),
+                    );
+                }
+                for (pat, ty_ref) in args.iter().zip(variant.payload.iter()) {
+                    let payload_ty = self.resolve_type_ref(ty_ref);
+                    self.bind_pattern(pat, &payload_ty);
+                }
+            }
+            Ty::Option(inner) => match name {
+                "Some" => {
+                    if args.len() != 1 {
+                        self.diags.error(span, "Some expects 1 pattern");
+                        return;
+                    }
+                    let inner = *inner.clone();
+                    self.bind_pattern(&args[0], &inner);
+                }
+                "None" => {
+                    if !args.is_empty() {
+                        self.diags.error(span, "None expects no patterns");
+                    }
+                }
+                _ => {
+                    self.diags.error(span, format!("unknown variant {}", name));
+                }
+            },
+            Ty::Result(ok, err) => match name {
+                "Ok" => {
+                    if args.len() != 1 {
+                        self.diags.error(span, "Ok expects 1 pattern");
+                        return;
+                    }
+                    let ok = *ok.clone();
+                    self.bind_pattern(&args[0], &ok);
+                }
+                "Err" => {
+                    if args.len() != 1 {
+                        self.diags.error(span, "Err expects 1 pattern");
+                        return;
+                    }
+                    let err = *err.clone();
+                    self.bind_pattern(&args[0], &err);
+                }
+                _ => {
+                    self.diags.error(span, format!("unknown variant {}", name));
+                }
+            },
+            Ty::Unknown => {
+                for pat in args {
+                    self.bind_pattern(pat, &Ty::Unknown);
+                }
+            }
+            other => {
+                self.diags.error(
+                    span,
+                    format!("{} is not matchable as enum variant {}", other, name),
+                );
+            }
+        }
+    }
+
+    fn check_struct_pattern(
+        &mut self,
+        ty: &Ty,
+        name: &crate::ast::Ident,
+        fields: &[crate::ast::PatternField],
+        span: Span,
+    ) {
+        let target = match ty {
+            Ty::Struct(target) | Ty::Config(target) => {
+                if target != &name.name {
+                    self.diags.error(
+                        span,
+                        format!("pattern {} does not match {}", name.name, target),
+                    );
+                }
+                target.clone()
+            }
+            Ty::Unknown => name.name.clone(),
+            other => {
+                self.diags.error(
+                    span,
+                    format!("{} is not matchable as struct {}", other, name.name),
+                );
+                name.name.clone()
+            }
+        };
+        let field_defs = if let Some(info) = self.symbols.types.get(&target) {
+            &info.fields
+        } else if let Some(info) = self.symbols.configs.get(&target) {
+            &info.fields
+        } else {
+            self.diags
+                .error(span, format!("unknown struct {}", name.name));
+            return;
+        };
+        let mut seen = HashSet::new();
+        for field in fields {
+            if !seen.insert(field.name.name.clone()) {
+                self.diags.error(field.span, "duplicate pattern field");
+                continue;
+            }
+            let field_info = field_defs.iter().find(|f| f.name == field.name.name);
+            if let Some(field_info) = field_info {
+                let field_ty = self.resolve_type_ref(&field_info.ty);
+                self.bind_pattern(&field.pat, &field_ty);
+            } else {
+                self.diags.error(
+                    field.span,
+                    format!("unknown field {} on {}", field.name.name, name.name),
+                );
+            }
+        }
     }
 
     fn expect_bool(&mut self, span: Span, ty: &Ty) {

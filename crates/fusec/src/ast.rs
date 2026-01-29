@@ -262,6 +262,7 @@ pub enum ExprKind {
     },
     BangChain {
         expr: Box<Expr>,
+        error: Option<Box<Expr>>,
     },
     Spawn {
         block: Block,
@@ -362,6 +363,21 @@ pub enum PatternKind {
     Wildcard,
     Literal(Literal),
     Ident(Ident),
+    EnumVariant {
+        name: Ident,
+        args: Vec<Pattern>,
+    },
+    Struct {
+        name: Ident,
+        fields: Vec<PatternField>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct PatternField {
+    pub name: Ident,
+    pub pat: Box<Pattern>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
