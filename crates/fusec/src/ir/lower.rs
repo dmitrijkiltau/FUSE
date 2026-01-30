@@ -621,13 +621,27 @@ impl FuncBuilder {
                             argc: 0,
                         });
                     } else {
-                        self.errors
-                            .push("member access not supported in VM yet".to_string());
+                        self.lower_expr(base);
+                        self.emit(Instr::GetField {
+                            field: name.name.clone(),
+                        });
                     }
                 } else {
-                    self.errors
-                        .push("member access not supported in VM yet".to_string());
+                    self.lower_expr(base);
+                    self.emit(Instr::GetField {
+                        field: name.name.clone(),
+                    });
                 }
+            }
+            ExprKind::OptionalMember { base, name } => {
+                self.lower_expr(base);
+                self.emit(Instr::Dup);
+                let jump_idx = self.emit_placeholder();
+                self.emit(Instr::JumpIfNull(0));
+                self.emit(Instr::GetField {
+                    field: name.name.clone(),
+                });
+                self.patch_jump(jump_idx, self.code.len());
             }
             ExprKind::StructLit { name, fields } => {
                 let mut field_names = Vec::new();
@@ -639,6 +653,32 @@ impl FuncBuilder {
                     name: name.name.clone(),
                     fields: field_names,
                 });
+            }
+            ExprKind::ListLit(items) => {
+                for item in items {
+                    self.lower_expr(item);
+                }
+                self.emit(Instr::MakeList { len: items.len() });
+            }
+            ExprKind::MapLit(pairs) => {
+                for (key, value) in pairs {
+                    self.lower_expr(key);
+                    self.lower_expr(value);
+                }
+                self.emit(Instr::MakeMap { len: pairs.len() });
+            }
+            ExprKind::InterpString(parts) => {
+                for part in parts {
+                    match part {
+                        crate::ast::InterpPart::Text(text) => {
+                            self.emit(Instr::Push(Const::String(text.clone())));
+                        }
+                        crate::ast::InterpPart::Expr(expr) => {
+                            self.lower_expr(expr);
+                        }
+                    }
+                }
+                self.emit(Instr::InterpString { parts: parts.len() });
             }
             ExprKind::Coalesce { left, right } => {
                 self.lower_expr(left);
@@ -661,11 +701,7 @@ impl FuncBuilder {
                     self.emit(Instr::Bang { has_error: false });
                 }
             }
-            ExprKind::OptionalMember { .. }
-            | ExprKind::ListLit(_)
-            | ExprKind::MapLit(_)
-            | ExprKind::InterpString(_)
-            | ExprKind::Spawn { .. }
+            ExprKind::Spawn { .. }
             | ExprKind::Await { .. }
             | ExprKind::Box { .. } => {
                 self.errors

@@ -75,7 +75,7 @@ fn strip_comment(line: &str) -> String {
             escape = false;
             continue;
         }
-        if ch == '\\\\' && in_string {
+        if ch == '\\' && in_string {
             escape = true;
             out.push(ch);
             continue;
@@ -105,16 +105,16 @@ fn unescape_string(value: &str) -> String {
     let mut out = String::new();
     let mut chars = value.chars();
     while let Some(ch) = chars.next() {
-        if ch != '\\\\' {
+        if ch != '\\' {
             out.push(ch);
             continue;
         }
         match chars.next() {
-            Some('n') => out.push('\\n'),
-            Some('r') => out.push('\\r'),
-            Some('t') => out.push('\\t'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
             Some('\"') => out.push('\"'),
-            Some('\\\\') => out.push('\\\\'),
+            Some('\\') => out.push('\\'),
             Some(other) => out.push(other),
             None => break,
         }

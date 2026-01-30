@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate as rt_validate};
 
 use crate::ast::{
-    AppDecl, BinaryOp, Block, ConfigDecl, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item, Literal,
-    Pattern, PatternField, PatternKind, Program, Stmt, StmtKind, StructField, TypeDecl, TypeRef,
-    TypeRefKind, UnaryOp,
+    AppDecl, BinaryOp, Block, ConfigDecl, EnumDecl, Expr, ExprKind, FnDecl, Ident, InterpPart,
+    Item, Literal, Pattern, PatternField, PatternKind, Program, Stmt, StmtKind, StructField,
+    TypeDecl, TypeRef, TypeRefKind, UnaryOp,
 };
 
 #[derive(Clone, Debug)]
@@ -511,15 +511,44 @@ impl<'a> Interpreter<'a> {
                 }
             }
             ExprKind::StructLit { name, fields } => self.eval_struct_lit(name, fields),
-            ExprKind::ListLit(_) => Err(ExecError::Runtime(
-                "list literals not supported in interpreter yet".to_string(),
-            )),
-            ExprKind::MapLit(_) => Err(ExecError::Runtime(
-                "map literals not supported in interpreter yet".to_string(),
-            )),
-            ExprKind::InterpString(_) => Err(ExecError::Runtime(
-                "interp strings not supported in interpreter yet".to_string(),
-            )),
+            ExprKind::ListLit(items) => {
+                let mut values = Vec::with_capacity(items.len());
+                for item in items {
+                    values.push(self.eval_expr(item)?);
+                }
+                Ok(Value::List(values))
+            }
+            ExprKind::MapLit(pairs) => {
+                let mut values = HashMap::new();
+                for (key_expr, value_expr) in pairs {
+                    let key_val = self.eval_expr(key_expr)?;
+                    let key = match &key_val {
+                        Value::String(text) => text.clone(),
+                        _ => {
+                            return Err(ExecError::Runtime(format!(
+                                "map keys must be strings, got {}",
+                                self.value_type_name(&key_val)
+                            )))
+                        }
+                    };
+                    let value = self.eval_expr(value_expr)?;
+                    values.insert(key, value);
+                }
+                Ok(Value::Map(values))
+            }
+            ExprKind::InterpString(parts) => {
+                let mut out = String::new();
+                for part in parts {
+                    match part {
+                        InterpPart::Text(text) => out.push_str(text),
+                        InterpPart::Expr(expr) => {
+                            let value = self.eval_expr(expr)?;
+                            out.push_str(&value.to_string_value());
+                        }
+                    }
+                }
+                Ok(Value::String(out))
+            }
             ExprKind::Coalesce { left, right } => {
                 let left_val = self.eval_expr(left)?;
                 if matches!(left_val, Value::Null) {
@@ -1183,6 +1212,46 @@ impl<'a> Interpreter<'a> {
                         Value::ResultErr(inner) => self.validate_value(inner, &args[1], path),
                         _ => Err(ExecError::Runtime(format!(
                             "type mismatch at {path}: expected Result"
+                        ))),
+                    }
+                }
+                "List" => {
+                    if args.len() != 1 {
+                        return Err(ExecError::Runtime(
+                            "List expects 1 type argument".to_string(),
+                        ));
+                    }
+                    match value {
+                        Value::List(items) => {
+                            for (idx, item) in items.iter().enumerate() {
+                                let item_path = format!("{path}[{idx}]");
+                                self.validate_value(item, &args[0], &item_path)?;
+                            }
+                            Ok(())
+                        }
+                        _ => Err(ExecError::Runtime(format!(
+                            "type mismatch at {path}: expected List"
+                        ))),
+                    }
+                }
+                "Map" => {
+                    if args.len() != 2 {
+                        return Err(ExecError::Runtime(
+                            "Map expects 2 type arguments".to_string(),
+                        ));
+                    }
+                    match value {
+                        Value::Map(items) => {
+                            for (key, val) in items.iter() {
+                                let key_value = Value::String(key.clone());
+                                let key_path = format!("{path}.{key}");
+                                self.validate_value(&key_value, &args[0], &key_path)?;
+                                self.validate_value(val, &args[1], &key_path)?;
+                            }
+                            Ok(())
+                        }
+                        _ => Err(ExecError::Runtime(format!(
+                            "type mismatch at {path}: expected Map"
                         ))),
                     }
                 }

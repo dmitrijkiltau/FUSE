@@ -46,8 +46,12 @@ pub enum Instr {
     Call { name: String, argc: usize, kind: CallKind },
     Return,
     Bang { has_error: bool },
+    MakeList { len: usize },
+    MakeMap { len: usize },
     MakeStruct { name: String, fields: Vec<String> },
     MakeEnum { name: String, variant: String, argc: usize },
+    GetField { field: String },
+    InterpString { parts: usize },
     MatchLocal {
         slot: usize,
         pat: Pattern,

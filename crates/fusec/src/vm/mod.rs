@@ -57,8 +57,13 @@ impl<'a> Vm<'a> {
     }
 
     fn eval_configs(&mut self) -> VmResult<()> {
+        let config_path =
+            std::env::var("FUSE_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
+        let file_values =
+            rt_config::load_config_file(&config_path).map_err(VmError::Runtime)?;
         for config in self.program.configs.values() {
             let mut map = HashMap::new();
+            let section = file_values.get(&config.name);
             for field in &config.fields {
                 let key = rt_config::env_key(&config.name, &field.name);
                 let path = format!("{}.{}", config.name, field.name);
@@ -69,18 +74,39 @@ impl<'a> Vm<'a> {
                         value
                     }
                     Err(_) => {
-                        if let Some(fn_name) = &field.default_fn {
+                        let value = if let Some(section) = section {
+                            if let Some(raw) = section.get(&field.name) {
+                                self.parse_env_value(&field.ty, raw)?
+                            } else if let Some(fn_name) = &field.default_fn {
+                                let func = self
+                                    .program
+                                    .functions
+                                    .get(fn_name)
+                                    .ok_or_else(|| {
+                                        VmError::Runtime(format!(
+                                            "unknown config default {fn_name}"
+                                        ))
+                                    })?;
+                                self.exec_function(func, Vec::new())?
+                            } else {
+                                Value::Null
+                            }
+                        } else if let Some(fn_name) = &field.default_fn {
                             let func = self
                                 .program
                                 .functions
                                 .get(fn_name)
-                                .ok_or_else(|| VmError::Runtime(format!("unknown config default {fn_name}")))?;
-                            let value = self.exec_function(func, Vec::new())?;
-                            self.validate_value(&value, &field.ty, &path)?;
-                            value
+                                .ok_or_else(|| {
+                                    VmError::Runtime(format!(
+                                        "unknown config default {fn_name}"
+                                    ))
+                                })?;
+                            self.exec_function(func, Vec::new())?
                         } else {
                             Value::Null
-                        }
+                        };
+                        self.validate_value(&value, &field.ty, &path)?;
+                        value
                     }
                 };
                 map.insert(field.name.clone(), value);
@@ -245,6 +271,37 @@ impl<'a> Vm<'a> {
                         }
                     }
                 }
+                Instr::MakeList { len } => {
+                    let mut items = Vec::with_capacity(len);
+                    for _ in 0..len {
+                        items.push(frame.pop()?);
+                    }
+                    items.reverse();
+                    frame.stack.push(Value::List(items));
+                }
+                Instr::MakeMap { len } => {
+                    let mut pairs = Vec::with_capacity(len);
+                    for _ in 0..len {
+                        let value = frame.pop()?;
+                        let key = frame.pop()?;
+                        pairs.push((key, value));
+                    }
+                    pairs.reverse();
+                    let mut map = HashMap::new();
+                    for (key_val, value) in pairs {
+                        let key = match &key_val {
+                            Value::String(text) => text.clone(),
+                            _ => {
+                                return Err(VmError::Runtime(format!(
+                                    "map keys must be strings, got {}",
+                                    self.value_type_name(&key_val)
+                                )))
+                            }
+                        };
+                        map.insert(key, value);
+                    }
+                    frame.stack.push(Value::Map(map));
+                }
                 Instr::MakeStruct { name, fields } => {
                     let mut values = HashMap::new();
                     for field in fields.into_iter().rev() {
@@ -262,6 +319,40 @@ impl<'a> Vm<'a> {
                     payload.reverse();
                     let value = self.make_enum(&name, &variant, payload)?;
                     frame.stack.push(value);
+                }
+                Instr::GetField { field } => {
+                    let base = frame.pop()?;
+                    let value = match base {
+                        Value::Struct { fields, .. } => fields.get(&field).cloned().ok_or_else(|| {
+                            VmError::Runtime(format!("unknown field {field}"))
+                        })?,
+                        Value::Config(name) => {
+                            let map = self.configs.get(&name).ok_or_else(|| {
+                                VmError::Runtime(format!("unknown config {name}"))
+                            })?;
+                            map.get(&field).cloned().ok_or_else(|| {
+                                VmError::Runtime(format!("unknown config field {name}.{field}"))
+                            })?
+                        }
+                        _ => {
+                            return Err(VmError::Runtime(
+                                "member access not supported on this value".to_string(),
+                            ))
+                        }
+                    };
+                    frame.stack.push(value);
+                }
+                Instr::InterpString { parts } => {
+                    let mut items = Vec::with_capacity(parts);
+                    for _ in 0..parts {
+                        items.push(frame.pop()?);
+                    }
+                    items.reverse();
+                    let mut out = String::new();
+                    for part in items {
+                        out.push_str(&part.to_string_value());
+                    }
+                    frame.stack.push(Value::String(out));
                 }
                 Instr::MatchLocal {
                     slot,
@@ -449,6 +540,46 @@ impl<'a> Vm<'a> {
                         ))),
                     }
                 }
+                "List" => {
+                    if args.len() != 1 {
+                        return Err(VmError::Runtime(
+                            "List expects 1 type argument".to_string(),
+                        ));
+                    }
+                    match value {
+                        Value::List(items) => {
+                            for (idx, item) in items.iter().enumerate() {
+                                let item_path = format!("{path}[{idx}]");
+                                self.validate_value(item, &args[0], &item_path)?;
+                            }
+                            Ok(())
+                        }
+                        _ => Err(VmError::Runtime(format!(
+                            "type mismatch at {path}: expected List"
+                        ))),
+                    }
+                }
+                "Map" => {
+                    if args.len() != 2 {
+                        return Err(VmError::Runtime(
+                            "Map expects 2 type arguments".to_string(),
+                        ));
+                    }
+                    match value {
+                        Value::Map(items) => {
+                            for (key, val) in items.iter() {
+                                let key_value = Value::String(key.clone());
+                                let key_path = format!("{path}.{key}");
+                                self.validate_value(&key_value, &args[0], &key_path)?;
+                                self.validate_value(val, &args[1], &key_path)?;
+                            }
+                            Ok(())
+                        }
+                        _ => Err(VmError::Runtime(format!(
+                            "type mismatch at {path}: expected Map"
+                        ))),
+                    }
+                }
                 _ => Err(VmError::Runtime(format!(
                     "validation not supported for {}",
                     base.name
@@ -535,6 +666,8 @@ impl<'a> Vm<'a> {
             Value::Bool(_) => "Bool".to_string(),
             Value::String(_) => "String".to_string(),
             Value::Null => "Null".to_string(),
+            Value::List(_) => "List".to_string(),
+            Value::Map(_) => "Map".to_string(),
             Value::Struct { name, .. } => name.clone(),
             Value::Enum { name, .. } => name.clone(),
             Value::EnumCtor { name, .. } => name.clone(),
