@@ -227,6 +227,55 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    pub fn parse_cli_value(&self, ty: &TypeRef, raw: &str) -> Result<Value, String> {
+        match self.parse_env_value(ty, raw) {
+            Ok(value) => Ok(value),
+            Err(err) => Err(self.render_exec_error(err)),
+        }
+    }
+
+    pub fn call_function_with_named_args(
+        &mut self,
+        name: &str,
+        args: &HashMap<String, Value>,
+    ) -> Result<Value, String> {
+        let decl = match self.functions.get(name) {
+            Some(decl) => *decl,
+            None => return Err(format!("unknown function {name}")),
+        };
+        self.env.push();
+        for param in &decl.params {
+            let value = if let Some(value) = args.get(&param.name.name) {
+                value.clone()
+            } else if let Some(default) = &param.default {
+                match self.eval_expr(default) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        self.env.pop();
+                        return Err(self.render_exec_error(err));
+                    }
+                }
+            } else if self.is_optional_type(&param.ty) {
+                Value::Null
+            } else {
+                self.env.pop();
+                return Err(format!("missing argument {}", param.name.name));
+            };
+            if let Err(err) = self.validate_value(&value, &param.ty, &param.name.name) {
+                self.env.pop();
+                return Err(self.render_exec_error(err));
+            }
+            self.env.insert(&param.name.name, value);
+        }
+        let result = self.eval_block(&decl.body);
+        self.env.pop();
+        match result {
+            Ok(value) => Ok(value),
+            Err(ExecError::Return(value)) => Ok(value),
+            Err(err) => Err(self.render_exec_error(err)),
+        }
+    }
+
     fn render_exec_error(&self, err: ExecError) -> String {
         match err {
             ExecError::Runtime(msg) => msg,
