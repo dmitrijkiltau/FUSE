@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate as rt_validate};
 
 use crate::ast::{
-    AppDecl, BinaryOp, Block, ConfigDecl, Expr, ExprKind, FnDecl, Ident, Item, Literal, Program,
-    Stmt, StmtKind, StructField, TypeDecl, TypeRef, TypeRefKind, UnaryOp,
+    AppDecl, BinaryOp, Block, ConfigDecl, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item, Literal,
+    Pattern, PatternField, PatternKind, Program, Stmt, StmtKind, StructField, TypeDecl, TypeRef,
+    TypeRefKind, UnaryOp,
 };
 
 #[derive(Clone, Debug)]
@@ -23,6 +24,10 @@ pub enum Value {
         name: String,
         variant: String,
         payload: Vec<Value>,
+    },
+    EnumCtor {
+        name: String,
+        variant: String,
     },
     ResultOk(Box<Value>),
     ResultErr(Box<Value>),
@@ -60,6 +65,7 @@ impl Value {
                     format!("{name}.{variant}({args})")
                 }
             }
+            Value::EnumCtor { name, variant } => format!("<enum {name}.{variant}>"),
             Value::ResultOk(val) => format!("Ok({})", val.to_string_value()),
             Value::ResultErr(val) => format!("Err({})", val.to_string_value()),
             Value::Config(name) => format!("<config {name}>"),
@@ -156,6 +162,7 @@ pub struct Interpreter<'a> {
     apps: Vec<&'a AppDecl>,
     types: HashMap<String, &'a TypeDecl>,
     config_decls: HashMap<String, &'a ConfigDecl>,
+    enums: HashMap<String, &'a EnumDecl>,
 }
 
 impl<'a> Interpreter<'a> {
@@ -164,6 +171,7 @@ impl<'a> Interpreter<'a> {
         let mut apps = Vec::new();
         let mut types = HashMap::new();
         let mut config_decls = HashMap::new();
+        let mut enums = HashMap::new();
         for item in &program.items {
             match item {
                 Item::Fn(decl) => {
@@ -178,6 +186,9 @@ impl<'a> Interpreter<'a> {
                 Item::Config(decl) => {
                     config_decls.insert(decl.name.name.clone(), decl);
                 }
+                Item::Enum(decl) => {
+                    enums.insert(decl.name.name.clone(), decl);
+                }
                 _ => {}
             }
         }
@@ -189,6 +200,7 @@ impl<'a> Interpreter<'a> {
             apps,
             types,
             config_decls,
+            enums,
         }
     }
 
@@ -333,7 +345,22 @@ impl<'a> Interpreter<'a> {
                 let value = self.eval_expr(expr)?;
                 Ok(value)
             }
-            StmtKind::Match { .. }
+            StmtKind::Match { expr, cases } => {
+                let value = self.eval_expr(expr)?;
+                for (pat, block) in cases {
+                    let mut bindings = HashMap::new();
+                    if self.match_pattern(&value, pat, &mut bindings)? {
+                        self.env.push();
+                        for (name, value) in bindings {
+                            self.env.insert(&name, value);
+                        }
+                        let result = self.eval_block(block);
+                        self.env.pop();
+                        return result;
+                    }
+                }
+                Ok(Value::Unit)
+            }
             | StmtKind::For { .. }
             | StmtKind::While { .. }
             | StmtKind::Break
@@ -387,6 +414,11 @@ impl<'a> Interpreter<'a> {
                 self.eval_call(callee_val, arg_vals)
             }
             ExprKind::Member { base, name } => {
+                if let ExprKind::Ident(ident) = &base.kind {
+                    if self.enums.contains_key(&ident.name) {
+                        return self.eval_enum_member(&ident.name, &name.name);
+                    }
+                }
                 let base_val = self.eval_expr(base)?;
                 self.eval_member(base_val, &name.name)
             }
@@ -449,6 +481,25 @@ impl<'a> Interpreter<'a> {
         match callee {
             Value::Builtin(name) => self.eval_builtin(&name, args),
             Value::Function(name) => self.eval_function(&name, args),
+            Value::EnumCtor { name, variant } => {
+                let arity = self
+                    .enum_variant_arity(&name, &variant)
+                    .ok_or_else(|| {
+                        ExecError::Runtime(format!("unknown variant {name}.{variant}"))
+                    })?;
+                if arity != args.len() {
+                    return Err(ExecError::Runtime(format!(
+                        "variant {name}.{variant} expects {} value(s), got {}",
+                        arity,
+                        args.len()
+                    )));
+                }
+                Ok(Value::Enum {
+                    name,
+                    variant,
+                    payload: args,
+                })
+            }
             _ => Err(ExecError::Runtime("call target is not callable".to_string())),
         }
     }
@@ -555,6 +606,33 @@ impl<'a> Interpreter<'a> {
                 "member access not supported on this value".to_string(),
             )),
         }
+    }
+
+    fn eval_enum_member(&self, enum_name: &str, variant: &str) -> ExecResult<Value> {
+        let arity = self
+            .enum_variant_arity(enum_name, variant)
+            .ok_or_else(|| ExecError::Runtime(format!("unknown variant {enum_name}.{variant}")))?;
+        if arity == 0 {
+            Ok(Value::Enum {
+                name: enum_name.to_string(),
+                variant: variant.to_string(),
+                payload: Vec::new(),
+            })
+        } else {
+            Ok(Value::EnumCtor {
+                name: enum_name.to_string(),
+                variant: variant.to_string(),
+            })
+        }
+    }
+
+    fn enum_variant_arity(&self, enum_name: &str, variant: &str) -> Option<usize> {
+        self.enums.get(enum_name).and_then(|decl| {
+            decl.variants
+                .iter()
+                .find(|v| v.name.name == variant)
+                .map(|v| v.payload.len())
+        })
     }
 
     fn eval_struct_lit(&mut self, name: &Ident, fields: &[StructField]) -> ExecResult<Value> {
@@ -746,6 +824,151 @@ impl<'a> Interpreter<'a> {
             _ => return Err(ExecError::Runtime("unsupported boolean op".to_string())),
         };
         Ok(Value::Bool(result))
+    }
+
+    fn match_pattern(
+        &self,
+        value: &Value,
+        pat: &Pattern,
+        bindings: &mut HashMap<String, Value>,
+    ) -> ExecResult<bool> {
+        match &pat.kind {
+            PatternKind::Wildcard => Ok(true),
+            PatternKind::Literal(lit) => Ok(self.literal_matches(value, lit)),
+            PatternKind::Ident(ident) => self.match_ident_pattern(value, ident, bindings),
+            PatternKind::EnumVariant { name, args } => {
+                self.match_enum_variant_pattern(value, &name.name, args, bindings)
+            }
+            PatternKind::Struct { name, fields } => {
+                self.match_struct_pattern(value, &name.name, fields, bindings)
+            }
+        }
+    }
+
+    fn match_ident_pattern(
+        &self,
+        value: &Value,
+        ident: &Ident,
+        bindings: &mut HashMap<String, Value>,
+    ) -> ExecResult<bool> {
+        if let Some(is_match) = self.match_builtin_variant(value, &ident.name)? {
+            return Ok(is_match);
+        }
+        if let Value::Enum { variant, payload, .. } = value {
+            if variant == &ident.name {
+                return Ok(payload.is_empty());
+            }
+        }
+        bindings.insert(ident.name.clone(), value.clone());
+        Ok(true)
+    }
+
+    fn match_builtin_variant(&self, value: &Value, name: &str) -> ExecResult<Option<bool>> {
+        match name {
+            "None" => Ok(Some(matches!(value, Value::Null))),
+            "Some" | "Ok" | "Err" => Ok(Some(false)),
+            _ => Ok(None),
+        }
+    }
+
+    fn match_enum_variant_pattern(
+        &self,
+        value: &Value,
+        name: &str,
+        args: &[Pattern],
+        bindings: &mut HashMap<String, Value>,
+    ) -> ExecResult<bool> {
+        match name {
+            "Some" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime("Some expects 1 pattern".to_string()));
+                }
+                if matches!(value, Value::Null) {
+                    return Ok(false);
+                }
+                self.match_pattern(value, &args[0], bindings)
+            }
+            "None" => {
+                if !args.is_empty() {
+                    return Err(ExecError::Runtime("None expects no patterns".to_string()));
+                }
+                Ok(matches!(value, Value::Null))
+            }
+            "Ok" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime("Ok expects 1 pattern".to_string()));
+                }
+                match value {
+                    Value::ResultOk(inner) => self.match_pattern(inner, &args[0], bindings),
+                    _ => Ok(false),
+                }
+            }
+            "Err" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime("Err expects 1 pattern".to_string()));
+                }
+                match value {
+                    Value::ResultErr(inner) => self.match_pattern(inner, &args[0], bindings),
+                    _ => Ok(false),
+                }
+            }
+            _ => match value {
+                Value::Enum {
+                    variant, payload, ..
+                } => {
+                    if variant != name {
+                        return Ok(false);
+                    }
+                    if payload.len() != args.len() {
+                        return Ok(false);
+                    }
+                    for (arg, val) in args.iter().zip(payload.iter()) {
+                        if !self.match_pattern(val, arg, bindings)? {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                }
+                _ => Ok(false),
+            },
+        }
+    }
+
+    fn match_struct_pattern(
+        &self,
+        value: &Value,
+        name: &str,
+        fields: &[PatternField],
+        bindings: &mut HashMap<String, Value>,
+    ) -> ExecResult<bool> {
+        let (struct_name, struct_fields) = match value {
+            Value::Struct { name, fields } => (name, fields),
+            _ => return Ok(false),
+        };
+        if struct_name != name {
+            return Ok(false);
+        }
+        for field in fields {
+            let value = match struct_fields.get(&field.name.name) {
+                Some(value) => value,
+                None => return Ok(false),
+            };
+            if !self.match_pattern(value, &field.pat, bindings)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn literal_matches(&self, value: &Value, lit: &Literal) -> bool {
+        match (value, lit) {
+            (Value::Int(a), Literal::Int(b)) => a == b,
+            (Value::Float(a), Literal::Float(b)) => a == b,
+            (Value::Bool(a), Literal::Bool(b)) => a == b,
+            (Value::String(a), Literal::String(b)) => a == b,
+            (Value::Null, Literal::Null) => true,
+            _ => false,
+        }
     }
 
     fn config_env_key(&self, config: &str, field: &str) -> String {
@@ -962,6 +1185,7 @@ impl<'a> Interpreter<'a> {
             Value::Null => "Null".to_string(),
             Value::Struct { name, .. } => name.clone(),
             Value::Enum { name, .. } => name.clone(),
+            Value::EnumCtor { name, .. } => name.clone(),
             Value::ResultOk(_) | Value::ResultErr(_) => "Result".to_string(),
             Value::Config(_) => "Config".to_string(),
             Value::Function(_) => "Function".to_string(),

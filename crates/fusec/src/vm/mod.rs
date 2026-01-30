@@ -537,6 +537,7 @@ impl<'a> Vm<'a> {
             Value::Null => "Null".to_string(),
             Value::Struct { name, .. } => name.clone(),
             Value::Enum { name, .. } => name.clone(),
+            Value::EnumCtor { name, .. } => name.clone(),
             Value::ResultOk(_) | Value::ResultErr(_) => "Result".to_string(),
             Value::Config(_) => "Config".to_string(),
             Value::Function(_) => "Function".to_string(),
