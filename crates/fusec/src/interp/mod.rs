@@ -635,6 +635,10 @@ impl<'a> Interpreter<'a> {
         })
     }
 
+    fn enum_variant_exists(&self, enum_name: &str, variant: &str) -> bool {
+        self.enum_variant_arity(enum_name, variant).is_some()
+    }
+
     fn eval_struct_lit(&mut self, name: &Ident, fields: &[StructField]) -> ExecResult<Value> {
         let decl = match self.types.get(&name.name) {
             Some(decl) => *decl,
@@ -857,6 +861,11 @@ impl<'a> Interpreter<'a> {
         if let Value::Enum { variant, payload, .. } = value {
             if variant == &ident.name {
                 return Ok(payload.is_empty());
+            }
+            if let Value::Enum { name, .. } = value {
+                if self.enum_variant_exists(name, &ident.name) {
+                    return Ok(false);
+                }
             }
         }
         bindings.insert(ident.name.clone(), value.clone());

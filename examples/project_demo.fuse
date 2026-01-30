@@ -1,0 +1,32 @@
+# Project demo (CLI-only, AST backend)
+
+config App:
+  greeting: String = env("APP_GREETING") ?? "Hello"
+  who: String = env("APP_WHO") ?? "world"
+
+enum Color:
+  Red
+  Rgb(Int, Int, Int)
+
+type User:
+  name: String(1..80)
+  age: Int(0..130)
+
+fn describe(color: Color) -> String:
+  match color:
+    case Red:
+      return "red"
+    case Rgb(r, g, b):
+      return "rgb " + r + "," + g + "," + b
+
+fn greet(name: String) -> String:
+  return App.greeting + ", " + name + "!"
+
+app "demo":
+  let user = User(name=App.who, age=42)
+  print(greet(user.name))
+  print(describe(Color.Rgb(1, 2, 3)))
+  let fail = env("DEMO_FAIL") ?? ""
+  if fail == "1":
+    let bad = User(name="", age=999)
+    print(bad.name)
