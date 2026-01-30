@@ -2,9 +2,12 @@ pub mod ast;
 pub mod diag;
 pub mod lexer;
 pub mod parser;
+pub mod interp;
+pub mod ir;
 pub mod sema;
 pub mod span;
 pub mod token;
+pub mod vm;
 
 use crate::diag::Diagnostics;
 

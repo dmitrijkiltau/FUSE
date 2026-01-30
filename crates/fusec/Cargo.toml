@@ -9,3 +9,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "fusec"
 path = "src/main.rs"
+
+[dependencies]
+fuse-rt = { path = "../fuse-rt" }

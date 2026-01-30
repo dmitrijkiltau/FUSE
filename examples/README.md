@@ -8,6 +8,12 @@ Check an example:
 scripts/cargo_env.sh cargo run -p fusec -- --check examples/cli_hello.fuse
 ```
 
+Run the CLI example (interpreter MVP):
+
+```
+scripts/cargo_env.sh cargo run -p fusec -- --run examples/cli_hello.fuse
+```
+
 Check all examples:
 
 ```

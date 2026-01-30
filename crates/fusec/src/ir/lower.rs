@@ -1,0 +1,608 @@
+use std::collections::{HashMap, HashSet};
+
+use crate::ast::{
+    AppDecl, BinaryOp, Block, Expr, ExprKind, FnDecl, Ident, Item, Literal, Pattern, PatternKind,
+    Program, Stmt, StmtKind, TypeDecl, UnaryOp,
+};
+
+use super::{
+    CallKind, Config, ConfigField, Const, Function, Instr, Program as IrProgram, TypeField,
+    TypeInfo,
+};
+
+pub fn lower_program(program: &Program) -> Result<IrProgram, Vec<String>> {
+    let mut lowerer = Lowerer::new(program);
+    lowerer.lower();
+    if lowerer.errors.is_empty() {
+        Ok(IrProgram {
+            functions: lowerer.functions,
+            apps: lowerer.apps,
+            configs: lowerer.configs,
+            types: lowerer.types,
+        })
+    } else {
+        Err(lowerer.errors)
+    }
+}
+
+struct Lowerer<'a> {
+    program: &'a Program,
+    functions: HashMap<String, Function>,
+    apps: HashMap<String, Function>,
+    configs: HashMap<String, Config>,
+    types: HashMap<String, TypeInfo>,
+    errors: Vec<String>,
+    config_names: HashSet<String>,
+    builtin_names: HashSet<String>,
+}
+
+impl<'a> Lowerer<'a> {
+    fn new(program: &'a Program) -> Self {
+        let mut config_names = HashSet::new();
+        for item in &program.items {
+            if let Item::Config(cfg) = item {
+                config_names.insert(cfg.name.name.clone());
+            }
+        }
+        let builtin_names = ["print", "env", "serve"]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect();
+        Self {
+            program,
+            functions: HashMap::new(),
+            apps: HashMap::new(),
+            configs: HashMap::new(),
+            types: HashMap::new(),
+            errors: Vec::new(),
+            config_names,
+            builtin_names,
+        }
+    }
+
+    fn lower(&mut self) {
+        for item in &self.program.items {
+            match item {
+                Item::Fn(decl) => self.lower_fn(decl),
+                Item::App(app) => self.lower_app(app),
+                Item::Config(cfg) => self.lower_config(cfg),
+                Item::Type(ty) => self.lower_type(ty),
+                _ => {}
+            }
+        }
+    }
+
+    fn lower_fn(&mut self, decl: &FnDecl) {
+        let mut builder = FuncBuilder::new(
+            decl.name.name.clone(),
+            decl.ret.clone(),
+            &self.config_names,
+            &self.builtin_names,
+        );
+        for param in &decl.params {
+            builder.declare_param(&param.name);
+        }
+        builder.lower_block(&decl.body);
+        builder.ensure_return();
+        let (func, errors) = builder.finish();
+        if let Some(func) = func {
+            self.functions.insert(decl.name.name.clone(), func);
+        }
+        self.errors.extend(errors);
+    }
+
+    fn lower_app(&mut self, app: &AppDecl) {
+        let mut builder = FuncBuilder::new(
+            format!("app:{}", app.name.value),
+            None,
+            &self.config_names,
+            &self.builtin_names,
+        );
+        builder.lower_block(&app.body);
+        builder.ensure_return();
+        let (func, errors) = builder.finish();
+        if let Some(func) = func {
+            self.apps.insert(app.name.value.clone(), func);
+        }
+        self.errors.extend(errors);
+    }
+
+    fn lower_config(&mut self, cfg: &crate::ast::ConfigDecl) {
+        let mut fields = Vec::new();
+        for field in &cfg.fields {
+            let fn_name = format!("__config::{}::{}", cfg.name.name, field.name.name);
+            let mut builder = FuncBuilder::new(
+                fn_name.clone(),
+                None,
+                &self.config_names,
+                &self.builtin_names,
+            );
+            builder.lower_expr(&field.value);
+            builder.emit(Instr::Return);
+            let (func, errors) = builder.finish();
+            if let Some(func) = func {
+                self.functions.insert(fn_name.clone(), func);
+            }
+            self.errors.extend(errors);
+            fields.push(ConfigField {
+                name: field.name.name.clone(),
+                ty: field.ty.clone(),
+                default_fn: Some(fn_name),
+            });
+        }
+        self.configs.insert(
+            cfg.name.name.clone(),
+            Config {
+                name: cfg.name.name.clone(),
+                fields,
+            },
+        );
+    }
+
+    fn lower_type(&mut self, decl: &TypeDecl) {
+        let mut fields = Vec::new();
+        for field in &decl.fields {
+            let default_fn = if let Some(expr) = &field.default {
+                let fn_name = format!("__type::{}::{}", decl.name.name, field.name.name);
+                let mut builder = FuncBuilder::new(
+                    fn_name.clone(),
+                    None,
+                    &self.config_names,
+                    &self.builtin_names,
+                );
+                builder.lower_expr(expr);
+                builder.emit(Instr::Return);
+                let (func, errors) = builder.finish();
+                if let Some(func) = func {
+                    self.functions.insert(fn_name.clone(), func);
+                }
+                self.errors.extend(errors);
+                Some(fn_name)
+            } else {
+                None
+            };
+            fields.push(TypeField {
+                name: field.name.name.clone(),
+                ty: field.ty.clone(),
+                default_fn,
+            });
+        }
+        self.types.insert(
+            decl.name.name.clone(),
+            TypeInfo {
+                name: decl.name.name.clone(),
+                fields,
+            },
+        );
+    }
+}
+
+struct FuncBuilder {
+    name: String,
+    params: Vec<String>,
+    ret: Option<crate::ast::TypeRef>,
+    code: Vec<Instr>,
+    locals: usize,
+    scopes: Vec<HashMap<String, usize>>,
+    errors: Vec<String>,
+    config_names: HashSet<String>,
+    builtin_names: HashSet<String>,
+}
+
+impl FuncBuilder {
+    fn new(
+        name: String,
+        ret: Option<crate::ast::TypeRef>,
+        config_names: &HashSet<String>,
+        builtin_names: &HashSet<String>,
+    ) -> Self {
+        Self {
+            name,
+            params: Vec::new(),
+            ret,
+            code: Vec::new(),
+            locals: 0,
+            scopes: vec![HashMap::new()],
+            errors: Vec::new(),
+            config_names: config_names.clone(),
+            builtin_names: builtin_names.clone(),
+        }
+    }
+
+    fn finish(self) -> (Option<Function>, Vec<String>) {
+        let func = if self.errors.is_empty() {
+            Some(Function {
+                name: self.name,
+                params: self.params,
+                ret: self.ret,
+                locals: self.locals,
+                code: self.code,
+            })
+        } else {
+            None
+        };
+        (func, self.errors)
+    }
+
+    fn emit(&mut self, instr: Instr) {
+        self.code.push(instr);
+    }
+
+    fn enter_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn exit_scope(&mut self) {
+        self.scopes.pop();
+        if self.scopes.is_empty() {
+            self.scopes.push(HashMap::new());
+        }
+    }
+
+    fn declare(&mut self, ident: &Ident) -> usize {
+        let slot = self.locals;
+        self.locals += 1;
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(ident.name.clone(), slot);
+        }
+        slot
+    }
+
+    fn declare_param(&mut self, ident: &Ident) -> usize {
+        let slot = self.declare(ident);
+        self.params.push(ident.name.clone());
+        slot
+    }
+
+    fn declare_temp(&mut self) -> usize {
+        let slot = self.locals;
+        self.locals += 1;
+        slot
+    }
+
+    fn collect_bindings(&self, pat: &Pattern, out: &mut Vec<Ident>) {
+        match &pat.kind {
+            PatternKind::Ident(ident) => {
+                if !matches!(ident.name.as_str(), "Some" | "None" | "Ok" | "Err") {
+                    out.push(ident.clone());
+                }
+            }
+            PatternKind::EnumVariant { args, .. } => {
+                for arg in args {
+                    self.collect_bindings(arg, out);
+                }
+            }
+            PatternKind::Struct { fields, .. } => {
+                for field in fields {
+                    self.collect_bindings(&field.pat, out);
+                }
+            }
+            PatternKind::Wildcard | PatternKind::Literal(_) => {}
+        }
+    }
+
+    fn resolve(&self, name: &str) -> Option<usize> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(slot) = scope.get(name) {
+                return Some(*slot);
+            }
+        }
+        None
+    }
+
+    fn ensure_return(&mut self) {
+        if !matches!(self.code.last(), Some(Instr::Return)) {
+            self.emit(Instr::Push(Const::Unit));
+            self.emit(Instr::Return);
+        }
+    }
+
+    fn lower_block(&mut self, block: &Block) {
+        self.enter_scope();
+        if block.stmts.is_empty() {
+            self.emit(Instr::Push(Const::Unit));
+            self.exit_scope();
+            return;
+        }
+        for (idx, stmt) in block.stmts.iter().enumerate() {
+            let is_last = idx + 1 == block.stmts.len();
+            self.lower_stmt(stmt);
+            if !is_last {
+                self.emit(Instr::Pop);
+            }
+        }
+        self.exit_scope();
+    }
+
+    fn lower_stmt(&mut self, stmt: &Stmt) {
+        match &stmt.kind {
+            StmtKind::Let { name, expr, .. } | StmtKind::Var { name, expr, .. } => {
+                let slot = self.declare(name);
+                self.lower_expr(expr);
+                self.emit(Instr::StoreLocal(slot));
+                self.emit(Instr::Push(Const::Unit));
+            }
+            StmtKind::Assign { target, expr } => match &target.kind {
+                ExprKind::Ident(ident) => match self.resolve(&ident.name) {
+                    Some(slot) => {
+                        self.lower_expr(expr);
+                        self.emit(Instr::StoreLocal(slot));
+                        self.emit(Instr::Push(Const::Unit));
+                    }
+                    None => self.errors.push(format!("unknown variable {}", ident.name)),
+                },
+                _ => self.errors.push("unsupported assignment target".to_string()),
+            },
+            StmtKind::Return { expr } => {
+                if let Some(expr) = expr {
+                    self.lower_expr(expr);
+                } else {
+                    self.emit(Instr::Push(Const::Unit));
+                }
+                self.emit(Instr::Return);
+            }
+            StmtKind::If {
+                cond,
+                then_block,
+                else_if,
+                else_block,
+            } => {
+                self.lower_if(cond, then_block, else_if, else_block.as_ref());
+            }
+            StmtKind::Expr(expr) => {
+                self.lower_expr(expr);
+            }
+            StmtKind::Match { expr, cases } => {
+                self.lower_match(expr, cases);
+            }
+            StmtKind::For { .. }
+            | StmtKind::While { .. }
+            | StmtKind::Break
+            | StmtKind::Continue => {
+                self.errors
+                    .push("statement not supported in VM yet".to_string());
+            }
+        }
+    }
+
+    fn lower_match(&mut self, expr: &Expr, cases: &[(Pattern, Block)]) {
+        let temp = self.declare_temp();
+        self.lower_expr(expr);
+        self.emit(Instr::StoreLocal(temp));
+
+        let mut end_jumps = Vec::new();
+        for (pat, block) in cases {
+            self.enter_scope();
+            let mut bindings = Vec::new();
+            self.collect_bindings(pat, &mut bindings);
+            let mut binding_slots = Vec::new();
+            let mut seen = HashSet::new();
+            for ident in bindings {
+                if seen.insert(ident.name.clone()) {
+                    let slot = self.declare(&ident);
+                    binding_slots.push((ident.name.clone(), slot));
+                }
+            }
+            let match_idx = self.emit_match(temp, pat.clone(), binding_slots);
+            self.lower_block(block);
+            self.exit_scope();
+            end_jumps.push(self.emit_placeholder());
+            self.emit(Instr::Jump(0));
+            let next_case = self.code.len();
+            self.patch_match_jump(match_idx, next_case);
+        }
+
+        self.emit(Instr::Push(Const::Unit));
+        let end = self.code.len();
+        for jump in end_jumps {
+            self.patch_jump(jump, end);
+        }
+    }
+
+    fn lower_if(
+        &mut self,
+        cond: &Expr,
+        then_block: &Block,
+        else_if: &[(Expr, Block)],
+        else_block: Option<&Block>,
+    ) {
+        let mut end_jumps = Vec::new();
+
+        self.lower_expr(cond);
+        let jump_to_else = self.emit_placeholder();
+        self.emit(Instr::JumpIfFalse(0));
+        self.lower_block(then_block);
+        end_jumps.push(self.emit_placeholder());
+        self.emit(Instr::Jump(0));
+        self.patch_jump(jump_to_else, self.code.len());
+
+        let pending_else = else_block;
+        for (cond, block) in else_if {
+            self.lower_expr(cond);
+            let jump_next = self.emit_placeholder();
+            self.emit(Instr::JumpIfFalse(0));
+            self.lower_block(block);
+            end_jumps.push(self.emit_placeholder());
+            self.emit(Instr::Jump(0));
+            self.patch_jump(jump_next, self.code.len());
+        }
+
+        if let Some(block) = pending_else {
+            self.lower_block(block);
+        } else {
+            self.emit(Instr::Push(Const::Unit));
+        }
+
+        let end = self.code.len();
+        for jump in end_jumps {
+            self.patch_jump(jump, end);
+        }
+    }
+
+    fn emit_placeholder(&mut self) -> usize {
+        self.code.len()
+    }
+
+    fn patch_jump(&mut self, at: usize, target: usize) {
+        match self.code.get_mut(at) {
+            Some(Instr::Jump(slot)) => *slot = target,
+            Some(Instr::JumpIfFalse(slot)) => *slot = target,
+            Some(Instr::JumpIfNull(slot)) => *slot = target,
+            _ => {
+                self.errors.push("invalid jump patch".to_string());
+            }
+        }
+    }
+
+    fn emit_match(&mut self, slot: usize, pat: Pattern, bindings: Vec<(String, usize)>) -> usize {
+        let idx = self.code.len();
+        self.code.push(Instr::MatchLocal {
+            slot,
+            pat,
+            bindings,
+            jump: 0,
+        });
+        idx
+    }
+
+    fn patch_match_jump(&mut self, at: usize, target: usize) {
+        match self.code.get_mut(at) {
+            Some(Instr::MatchLocal { jump, .. }) => *jump = target,
+            _ => {
+                self.errors.push("invalid match patch".to_string());
+            }
+        }
+    }
+
+    fn lower_expr(&mut self, expr: &Expr) {
+        match &expr.kind {
+            ExprKind::Literal(lit) => self.emit(Instr::Push(self.const_from_lit(lit))),
+            ExprKind::Ident(ident) => {
+                if let Some(slot) = self.resolve(&ident.name) {
+                    self.emit(Instr::LoadLocal(slot));
+                } else {
+                    self.errors
+                        .push(format!("unknown identifier {}", ident.name));
+                }
+            }
+            ExprKind::Binary { op, left, right } => {
+                self.lower_expr(left);
+                self.lower_expr(right);
+                match op {
+                    BinaryOp::Add => self.emit(Instr::Add),
+                    BinaryOp::Sub => self.emit(Instr::Sub),
+                    BinaryOp::Mul => self.emit(Instr::Mul),
+                    BinaryOp::Div => self.emit(Instr::Div),
+                    BinaryOp::Mod => self.emit(Instr::Mod),
+                    BinaryOp::Eq => self.emit(Instr::Eq),
+                    BinaryOp::NotEq => self.emit(Instr::NotEq),
+                    BinaryOp::Lt => self.emit(Instr::Lt),
+                    BinaryOp::LtEq => self.emit(Instr::LtEq),
+                    BinaryOp::Gt => self.emit(Instr::Gt),
+                    BinaryOp::GtEq => self.emit(Instr::GtEq),
+                    BinaryOp::And => self.emit(Instr::And),
+                    BinaryOp::Or => self.emit(Instr::Or),
+                    BinaryOp::Range => {
+                        self.errors
+                            .push("range not supported in VM yet".to_string());
+                    }
+                }
+            }
+            ExprKind::Unary { op, expr } => {
+                self.lower_expr(expr);
+                match op {
+                    UnaryOp::Neg => self.emit(Instr::Neg),
+                    UnaryOp::Not => self.emit(Instr::Not),
+                }
+            }
+            ExprKind::Call { callee, args } => {
+                if let ExprKind::Ident(ident) = &callee.kind {
+                    for arg in args {
+                        self.lower_expr(&arg.value);
+                    }
+                    let kind = if self.builtin_names.contains(&ident.name) {
+                        CallKind::Builtin
+                    } else {
+                        CallKind::Function
+                    };
+                    self.emit(Instr::Call {
+                        name: ident.name.clone(),
+                        argc: args.len(),
+                        kind,
+                    });
+                } else {
+                    self.errors
+                        .push("call target not supported in VM yet".to_string());
+                }
+            }
+            ExprKind::Member { base, name } => {
+                if let ExprKind::Ident(ident) = &base.kind {
+                    if self.config_names.contains(&ident.name) {
+                        self.emit(Instr::LoadConfigField {
+                            config: ident.name.clone(),
+                            field: name.name.clone(),
+                        });
+                    } else {
+                        self.errors
+                            .push("member access not supported in VM yet".to_string());
+                    }
+                } else {
+                    self.errors
+                        .push("member access not supported in VM yet".to_string());
+                }
+            }
+            ExprKind::StructLit { name, fields } => {
+                let mut field_names = Vec::new();
+                for field in fields {
+                    self.lower_expr(&field.value);
+                    field_names.push(field.name.name.clone());
+                }
+                self.emit(Instr::MakeStruct {
+                    name: name.name.clone(),
+                    fields: field_names,
+                });
+            }
+            ExprKind::Coalesce { left, right } => {
+                self.lower_expr(left);
+                self.emit(Instr::Dup);
+                let jump_else = self.emit_placeholder();
+                self.emit(Instr::JumpIfNull(0));
+                let jump_end = self.emit_placeholder();
+                self.emit(Instr::Jump(0));
+                self.patch_jump(jump_else, self.code.len());
+                self.emit(Instr::Pop);
+                self.lower_expr(right);
+                self.patch_jump(jump_end, self.code.len());
+            }
+            ExprKind::BangChain { expr, error } => {
+                self.lower_expr(expr);
+                if let Some(error) = error {
+                    self.lower_expr(error);
+                    self.emit(Instr::Bang { has_error: true });
+                } else {
+                    self.emit(Instr::Bang { has_error: false });
+                }
+            }
+            ExprKind::OptionalMember { .. }
+            | ExprKind::ListLit(_)
+            | ExprKind::MapLit(_)
+            | ExprKind::InterpString(_)
+            | ExprKind::Spawn { .. }
+            | ExprKind::Await { .. }
+            | ExprKind::Box { .. } => {
+                self.errors
+                    .push("expression not supported in VM yet".to_string());
+            }
+        }
+    }
+
+    fn const_from_lit(&self, lit: &Literal) -> Const {
+        match lit {
+            Literal::Int(v) => Const::Int(*v),
+            Literal::Float(v) => Const::Float(*v),
+            Literal::Bool(v) => Const::Bool(*v),
+            Literal::String(v) => Const::String(v.clone()),
+            Literal::Null => Const::Null,
+        }
+    }
+}
