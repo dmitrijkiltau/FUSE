@@ -1,13 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    AppDecl, BinaryOp, Block, Expr, ExprKind, FnDecl, Ident, Item, Literal, Pattern, PatternKind,
-    Program, Stmt, StmtKind, TypeDecl, UnaryOp,
+    AppDecl, BinaryOp, Block, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item, Literal, Pattern,
+    PatternKind, Program, Stmt, StmtKind, TypeDecl, UnaryOp,
 };
 
 use super::{
-    CallKind, Config, ConfigField, Const, Function, Instr, Program as IrProgram, TypeField,
-    TypeInfo,
+    CallKind, Config, ConfigField, Const, EnumInfo, EnumVariantInfo, Function, Instr,
+    Program as IrProgram, TypeField, TypeInfo,
 };
 
 pub fn lower_program(program: &Program) -> Result<IrProgram, Vec<String>> {
@@ -19,6 +19,7 @@ pub fn lower_program(program: &Program) -> Result<IrProgram, Vec<String>> {
             apps: lowerer.apps,
             configs: lowerer.configs,
             types: lowerer.types,
+            enums: lowerer.enums,
         })
     } else {
         Err(lowerer.errors)
@@ -31,17 +32,27 @@ struct Lowerer<'a> {
     apps: HashMap<String, Function>,
     configs: HashMap<String, Config>,
     types: HashMap<String, TypeInfo>,
+    enums: HashMap<String, EnumInfo>,
     errors: Vec<String>,
     config_names: HashSet<String>,
+    enum_names: HashSet<String>,
+    enum_variant_names: HashSet<String>,
     builtin_names: HashSet<String>,
 }
 
 impl<'a> Lowerer<'a> {
     fn new(program: &'a Program) -> Self {
         let mut config_names = HashSet::new();
+        let mut enum_names = HashSet::new();
+        let mut enum_variant_names = HashSet::new();
         for item in &program.items {
             if let Item::Config(cfg) = item {
                 config_names.insert(cfg.name.name.clone());
+            } else if let Item::Enum(decl) = item {
+                enum_names.insert(decl.name.name.clone());
+                for variant in &decl.variants {
+                    enum_variant_names.insert(variant.name.name.clone());
+                }
             }
         }
         let builtin_names = ["print", "env", "serve"]
@@ -54,8 +65,11 @@ impl<'a> Lowerer<'a> {
             apps: HashMap::new(),
             configs: HashMap::new(),
             types: HashMap::new(),
+            enums: HashMap::new(),
             errors: Vec::new(),
             config_names,
+            enum_names,
+            enum_variant_names,
             builtin_names,
         }
     }
@@ -67,6 +81,7 @@ impl<'a> Lowerer<'a> {
                 Item::App(app) => self.lower_app(app),
                 Item::Config(cfg) => self.lower_config(cfg),
                 Item::Type(ty) => self.lower_type(ty),
+                Item::Enum(decl) => self.lower_enum(decl),
                 _ => {}
             }
         }
@@ -77,6 +92,8 @@ impl<'a> Lowerer<'a> {
             decl.name.name.clone(),
             decl.ret.clone(),
             &self.config_names,
+            &self.enum_names,
+            &self.enum_variant_names,
             &self.builtin_names,
         );
         for param in &decl.params {
@@ -96,6 +113,8 @@ impl<'a> Lowerer<'a> {
             format!("app:{}", app.name.value),
             None,
             &self.config_names,
+            &self.enum_names,
+            &self.enum_variant_names,
             &self.builtin_names,
         );
         builder.lower_block(&app.body);
@@ -115,6 +134,8 @@ impl<'a> Lowerer<'a> {
                 fn_name.clone(),
                 None,
                 &self.config_names,
+                &self.enum_names,
+                &self.enum_variant_names,
                 &self.builtin_names,
             );
             builder.lower_expr(&field.value);
@@ -148,6 +169,8 @@ impl<'a> Lowerer<'a> {
                     fn_name.clone(),
                     None,
                     &self.config_names,
+                    &self.enum_names,
+                    &self.enum_variant_names,
                     &self.builtin_names,
                 );
                 builder.lower_expr(expr);
@@ -175,6 +198,24 @@ impl<'a> Lowerer<'a> {
             },
         );
     }
+
+    fn lower_enum(&mut self, decl: &EnumDecl) {
+        let variants = decl
+            .variants
+            .iter()
+            .map(|variant| EnumVariantInfo {
+                name: variant.name.name.clone(),
+                arity: variant.payload.len(),
+            })
+            .collect();
+        self.enums.insert(
+            decl.name.name.clone(),
+            EnumInfo {
+                name: decl.name.name.clone(),
+                variants,
+            },
+        );
+    }
 }
 
 struct FuncBuilder {
@@ -186,6 +227,8 @@ struct FuncBuilder {
     scopes: Vec<HashMap<String, usize>>,
     errors: Vec<String>,
     config_names: HashSet<String>,
+    enum_names: HashSet<String>,
+    enum_variant_names: HashSet<String>,
     builtin_names: HashSet<String>,
 }
 
@@ -194,6 +237,8 @@ impl FuncBuilder {
         name: String,
         ret: Option<crate::ast::TypeRef>,
         config_names: &HashSet<String>,
+        enum_names: &HashSet<String>,
+        enum_variant_names: &HashSet<String>,
         builtin_names: &HashSet<String>,
     ) -> Self {
         Self {
@@ -205,6 +250,8 @@ impl FuncBuilder {
             scopes: vec![HashMap::new()],
             errors: Vec::new(),
             config_names: config_names.clone(),
+            enum_names: enum_names.clone(),
+            enum_variant_names: enum_variant_names.clone(),
             builtin_names: builtin_names.clone(),
         }
     }
@@ -263,7 +310,9 @@ impl FuncBuilder {
     fn collect_bindings(&self, pat: &Pattern, out: &mut Vec<Ident>) {
         match &pat.kind {
             PatternKind::Ident(ident) => {
-                if !matches!(ident.name.as_str(), "Some" | "None" | "Ok" | "Err") {
+                if !matches!(ident.name.as_str(), "Some" | "None" | "Ok" | "Err")
+                    && !self.enum_variant_names.contains(&ident.name)
+                {
                     out.push(ident.clone());
                 }
             }
@@ -516,23 +565,46 @@ impl FuncBuilder {
                 }
             }
             ExprKind::Call { callee, args } => {
-                if let ExprKind::Ident(ident) = &callee.kind {
-                    for arg in args {
-                        self.lower_expr(&arg.value);
+                match &callee.kind {
+                    ExprKind::Ident(ident) => {
+                        for arg in args {
+                            self.lower_expr(&arg.value);
+                        }
+                        let kind = if self.builtin_names.contains(&ident.name) {
+                            CallKind::Builtin
+                        } else {
+                            CallKind::Function
+                        };
+                        self.emit(Instr::Call {
+                            name: ident.name.clone(),
+                            argc: args.len(),
+                            kind,
+                        });
                     }
-                    let kind = if self.builtin_names.contains(&ident.name) {
-                        CallKind::Builtin
-                    } else {
-                        CallKind::Function
-                    };
-                    self.emit(Instr::Call {
-                        name: ident.name.clone(),
-                        argc: args.len(),
-                        kind,
-                    });
-                } else {
-                    self.errors
-                        .push("call target not supported in VM yet".to_string());
+                    ExprKind::Member { base, name } => {
+                        if let ExprKind::Ident(enum_name) = &base.kind {
+                            if self.enum_names.contains(&enum_name.name) {
+                                for arg in args {
+                                    self.lower_expr(&arg.value);
+                                }
+                                self.emit(Instr::MakeEnum {
+                                    name: enum_name.name.clone(),
+                                    variant: name.name.clone(),
+                                    argc: args.len(),
+                                });
+                            } else {
+                                self.errors
+                                    .push("call target not supported in VM yet".to_string());
+                            }
+                        } else {
+                            self.errors
+                                .push("call target not supported in VM yet".to_string());
+                        }
+                    }
+                    _ => {
+                        self.errors
+                            .push("call target not supported in VM yet".to_string());
+                    }
                 }
             }
             ExprKind::Member { base, name } => {
@@ -541,6 +613,12 @@ impl FuncBuilder {
                         self.emit(Instr::LoadConfigField {
                             config: ident.name.clone(),
                             field: name.name.clone(),
+                        });
+                    } else if self.enum_names.contains(&ident.name) {
+                        self.emit(Instr::MakeEnum {
+                            name: ident.name.clone(),
+                            variant: name.name.clone(),
+                            argc: 0,
                         });
                     } else {
                         self.errors

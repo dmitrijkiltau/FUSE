@@ -19,6 +19,11 @@ pub enum Value {
         name: String,
         fields: HashMap<String, Value>,
     },
+    Enum {
+        name: String,
+        variant: String,
+        payload: Vec<Value>,
+    },
     ResultOk(Box<Value>),
     ResultErr(Box<Value>),
     Config(String),
@@ -39,6 +44,22 @@ impl Value {
                 Some(Value::String(msg)) => format!("{name}({msg})"),
                 _ => format!("<{name}>"),
             },
+            Value::Enum {
+                name,
+                variant,
+                payload,
+            } => {
+                if payload.is_empty() {
+                    format!("{name}.{variant}")
+                } else {
+                    let args = payload
+                        .iter()
+                        .map(|val| val.to_string_value())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{name}.{variant}({args})")
+                }
+            }
             Value::ResultOk(val) => format!("Ok({})", val.to_string_value()),
             Value::ResultErr(val) => format!("Err({})", val.to_string_value()),
             Value::Config(name) => format!("<config {name}>"),
@@ -923,6 +944,7 @@ impl<'a> Interpreter<'a> {
             }
             _ => match value {
                 Value::Struct { name: struct_name, .. } if struct_name == name => Ok(()),
+                Value::Enum { name: enum_name, .. } if enum_name == name => Ok(()),
                 _ => Err(ExecError::Runtime(format!(
                     "type mismatch at {path}: expected {name}, got {type_name}"
                 ))),
@@ -939,6 +961,7 @@ impl<'a> Interpreter<'a> {
             Value::String(_) => "String".to_string(),
             Value::Null => "Null".to_string(),
             Value::Struct { name, .. } => name.clone(),
+            Value::Enum { name, .. } => name.clone(),
             Value::ResultOk(_) | Value::ResultErr(_) => "Result".to_string(),
             Value::Config(_) => "Config".to_string(),
             Value::Function(_) => "Function".to_string(),

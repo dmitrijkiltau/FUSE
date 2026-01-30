@@ -254,6 +254,15 @@ impl<'a> Vm<'a> {
                     let value = self.make_struct(&name, values)?;
                     frame.stack.push(value);
                 }
+                Instr::MakeEnum { name, variant, argc } => {
+                    let mut payload = Vec::with_capacity(argc);
+                    for _ in 0..argc {
+                        payload.push(frame.pop()?);
+                    }
+                    payload.reverse();
+                    let value = self.make_enum(&name, &variant, payload)?;
+                    frame.stack.push(value);
+                }
                 Instr::MatchLocal {
                     slot,
                     pat,
@@ -510,6 +519,7 @@ impl<'a> Vm<'a> {
             }
             _ => match value {
                 Value::Struct { name: struct_name, .. } if struct_name == name => Ok(()),
+                Value::Enum { name: enum_name, .. } if enum_name == name => Ok(()),
                 _ => Err(VmError::Runtime(format!(
                     "type mismatch at {path}: expected {name}, got {type_name}"
                 ))),
@@ -526,6 +536,7 @@ impl<'a> Vm<'a> {
             Value::String(_) => "String".to_string(),
             Value::Null => "Null".to_string(),
             Value::Struct { name, .. } => name.clone(),
+            Value::Enum { name, .. } => name.clone(),
             Value::ResultOk(_) | Value::ResultErr(_) => "Result".to_string(),
             Value::Config(_) => "Config".to_string(),
             Value::Function(_) => "Function".to_string(),
@@ -618,6 +629,31 @@ impl<'a> Vm<'a> {
         })
     }
 
+    fn make_enum(&self, name: &str, variant: &str, payload: Vec<Value>) -> VmResult<Value> {
+        let info = self
+            .program
+            .enums
+            .get(name)
+            .ok_or_else(|| VmError::Runtime(format!("unknown enum {name}")))?;
+        let variant_info = info
+            .variants
+            .iter()
+            .find(|v| v.name == variant)
+            .ok_or_else(|| VmError::Runtime(format!("unknown variant {name}.{variant}")))?;
+        if variant_info.arity != payload.len() {
+            return Err(VmError::Runtime(format!(
+                "variant {name}.{variant} expects {} value(s), got {}",
+                variant_info.arity,
+                payload.len()
+            )));
+        }
+        Ok(Value::Enum {
+            name: name.to_string(),
+            variant: variant.to_string(),
+            payload,
+        })
+    }
+
     fn match_pattern(
         &self,
         value: &Value,
@@ -649,7 +685,17 @@ impl<'a> Vm<'a> {
             "Some" => Some(!matches!(value, Value::Null)),
             "Ok" => Some(matches!(value, Value::ResultOk(_))),
             "Err" => Some(matches!(value, Value::ResultErr(_))),
-            _ => None,
+            _ => match value {
+                Value::Enum { name: enum_name, variant, payload } => {
+                    if variant == name {
+                        let arity = self.enum_variant_arity(enum_name, variant).unwrap_or(0);
+                        Some(payload.len() == arity && arity == 0)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
         }
     }
 
@@ -694,9 +740,26 @@ impl<'a> Vm<'a> {
                     _ => Ok(false),
                 }
             }
-            _ => Err(VmError::Runtime(format!(
-                "enum patterns not supported in VM yet: {name}"
-            ))),
+            _ => match value {
+                Value::Enum { name: enum_name, variant, payload } => {
+                    if variant != name {
+                        return Ok(false);
+                    }
+                    let arity = self.enum_variant_arity(enum_name, variant).unwrap_or(payload.len());
+                    if args.len() != arity || payload.len() != arity {
+                        return Ok(false);
+                    }
+                    for (arg, val) in args.iter().zip(payload.iter()) {
+                        if !self.match_pattern(val, arg, bindings)? {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                }
+                _ => Err(VmError::Runtime(format!(
+                    "enum patterns not supported in VM yet: {name}"
+                ))),
+            },
         }
     }
 
@@ -724,6 +787,15 @@ impl<'a> Vm<'a> {
             }
         }
         Ok(true)
+    }
+
+    fn enum_variant_arity(&self, enum_name: &str, variant: &str) -> Option<usize> {
+        self.program.enums.get(enum_name).and_then(|info| {
+            info.variants
+                .iter()
+                .find(|v| v.name == variant)
+                .map(|v| v.arity)
+        })
     }
 
     fn literal_matches(&self, value: &Value, lit: &Literal) -> bool {

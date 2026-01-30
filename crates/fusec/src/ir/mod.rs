@@ -47,6 +47,7 @@ pub enum Instr {
     Return,
     Bang { has_error: bool },
     MakeStruct { name: String, fields: Vec<String> },
+    MakeEnum { name: String, variant: String, argc: usize },
     MatchLocal {
         slot: usize,
         pat: Pattern,
@@ -92,11 +93,24 @@ pub struct TypeInfo {
 }
 
 #[derive(Clone, Debug)]
+pub struct EnumVariantInfo {
+    pub name: String,
+    pub arity: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct EnumInfo {
+    pub name: String,
+    pub variants: Vec<EnumVariantInfo>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Program {
     pub functions: HashMap<String, Function>,
     pub apps: HashMap<String, Function>,
     pub configs: HashMap<String, Config>,
     pub types: HashMap<String, TypeInfo>,
+    pub enums: HashMap<String, EnumInfo>,
 }
 
 pub mod lower;
