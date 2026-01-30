@@ -667,6 +667,11 @@ impl<'a> Vm<'a> {
                 if let Some(is_match) = self.match_variant_ident(value, &ident.name) {
                     return Ok(is_match);
                 }
+                if let Value::Enum { name, .. } = value {
+                    if self.enum_variant_exists(name, &ident.name) {
+                        return Ok(false);
+                    }
+                }
                 bindings.insert(ident.name.clone(), value.clone());
                 Ok(true)
             }
@@ -796,6 +801,10 @@ impl<'a> Vm<'a> {
                 .find(|v| v.name == variant)
                 .map(|v| v.arity)
         })
+    }
+
+    fn enum_variant_exists(&self, enum_name: &str, variant: &str) -> bool {
+        self.enum_variant_arity(enum_name, variant).is_some()
     }
 
     fn literal_matches(&self, value: &Value, lit: &Literal) -> bool {

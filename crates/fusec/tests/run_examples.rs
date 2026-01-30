@@ -28,3 +28,24 @@ fn runs_cli_hello_vm() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "Hi, Codex!");
 }
+
+#[test]
+fn runs_enum_match_vm() {
+    let exe = env!("CARGO_BIN_EXE_fusec");
+    let output = Command::new(exe)
+        .arg("--run")
+        .arg("--backend")
+        .arg("vm")
+        .arg(example_path("enum_match.fuse"))
+        .output()
+        .expect("failed to run fusec");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["red", "rgb 1,2,3"]);
+}

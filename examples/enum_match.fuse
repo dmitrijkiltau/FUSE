@@ -1,0 +1,16 @@
+# Enum matching example (VM)
+
+enum Color:
+  Red
+  Rgb(Int, Int, Int)
+
+fn describe(color: Color) -> String:
+  match color:
+    case Red:
+      return "red"
+    case Rgb(r, g, b):
+      return "rgb " + r + "," + g + "," + b
+
+app "enum_match":
+  print(describe(Color.Red))
+  print(describe(Color.Rgb(1, 2, 3)))
