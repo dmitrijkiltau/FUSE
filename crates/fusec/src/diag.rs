@@ -42,4 +42,8 @@ impl Diagnostics {
     pub fn into_vec(self) -> Vec<Diag> {
         self.diags
     }
+
+    pub fn extend(&mut self, other: Vec<Diag>) {
+        self.diags.extend(other);
+    }
 }

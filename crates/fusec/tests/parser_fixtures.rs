@@ -60,3 +60,13 @@ fn load(id: Id) -> User!NotFound:
 "#;
     assert_parse_ok(src);
 }
+
+#[test]
+fn parses_interpolated_strings() {
+    let src = r#"
+fn main(name: String):
+  let msg = "hello ${name}"
+  let more = "sum ${1 + 2}"
+"#;
+    assert_parse_ok(src);
+}

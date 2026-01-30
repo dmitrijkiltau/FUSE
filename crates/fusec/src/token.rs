@@ -7,6 +7,12 @@ pub struct Token {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub enum InterpSegment {
+    Text(String),
+    Expr { src: String, offset: usize },
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum TokenKind {
     Indent,
     Dedent,
@@ -16,6 +22,7 @@ pub enum TokenKind {
     Int(i64),
     Float(f64),
     String(String),
+    InterpString(Vec<InterpSegment>),
     Bool(bool),
     Null,
     DocComment(String),

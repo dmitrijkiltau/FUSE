@@ -1,7 +1,8 @@
 use crate::ast::*;
 use crate::diag::Diagnostics;
+use crate::lexer;
 use crate::span::Span;
-use crate::token::{Keyword, Punct, Token, TokenKind};
+use crate::token::{InterpSegment, Keyword, Punct, Token, TokenKind};
 
 pub struct Parser<'a> {
     tokens: &'a [Token],
@@ -976,6 +977,18 @@ impl<'a> Parser<'a> {
                     span,
                 }
             }
+            TokenKind::InterpString(_) => {
+                let tok = self.bump();
+                let span = tok.span;
+                let parts = match tok.kind {
+                    TokenKind::InterpString(segments) => self.parse_interp_segments(segments, span),
+                    _ => Vec::new(),
+                };
+                Expr {
+                    kind: ExprKind::InterpString(parts),
+                    span,
+                }
+            }
             TokenKind::Ident(_) | TokenKind::Keyword(Keyword::Body) => {
                 let ident = self.expect_ident_or_body();
                 let span = ident.span;
@@ -1048,6 +1061,64 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+    }
+
+    fn parse_interp_segments(
+        &mut self,
+        segments: Vec<InterpSegment>,
+        _span: Span,
+    ) -> Vec<InterpPart> {
+        let mut parts = Vec::new();
+        for segment in segments {
+            match segment {
+                InterpSegment::Text(text) => {
+                    if !text.is_empty() {
+                        parts.push(InterpPart::Text(text));
+                    }
+                }
+                InterpSegment::Expr { src, offset } => {
+                    let expr_span = Span::new(offset, offset + src.len());
+                    if src.trim().is_empty() {
+                        self.diags.error(expr_span, "empty interpolation expression");
+                        parts.push(InterpPart::Expr(Expr {
+                            kind: ExprKind::Literal(Literal::Null),
+                            span: expr_span,
+                        }));
+                        continue;
+                    }
+                    let expr = self.parse_interpolated_expr(&src, offset, expr_span);
+                    parts.push(InterpPart::Expr(expr));
+                }
+            }
+        }
+        if parts.is_empty() {
+            parts.push(InterpPart::Text(String::new()));
+        }
+        parts
+    }
+
+    fn parse_interpolated_expr(&mut self, src: &str, offset: usize, span: Span) -> Expr {
+        let mut lex_diags = Diagnostics::default();
+        let mut tokens = lexer::lex(src, &mut lex_diags);
+        for token in &mut tokens {
+            token.span.start += offset;
+            token.span.end += offset;
+        }
+        let mut parse_diags = Diagnostics::default();
+        let mut parser = Parser::new(&tokens, &mut parse_diags);
+        let expr = parser.parse_expr();
+        parser.consume_newlines();
+        if !parser.at_eof() {
+            parse_diags.error(span, "unexpected tokens in interpolation");
+        }
+        let mut lex_items = lex_diags.into_vec();
+        for diag in &mut lex_items {
+            diag.span.start += offset;
+            diag.span.end += offset;
+        }
+        self.diags.extend(lex_items);
+        self.diags.extend(parse_diags.into_vec());
+        expr
     }
 
     fn parse_call_args(&mut self) -> Vec<CallArg> {
@@ -1185,6 +1256,7 @@ impl<'a> Parser<'a> {
             | TokenKind::Int(_)
             | TokenKind::Float(_)
             | TokenKind::String(_)
+            | TokenKind::InterpString(_)
             | TokenKind::Bool(_)
             | TokenKind::Null
             | TokenKind::Keyword(Keyword::Spawn)
@@ -1396,6 +1468,7 @@ fn token_text(kind: &TokenKind) -> String {
         TokenKind::Int(v) => v.to_string(),
         TokenKind::Float(v) => v.to_string(),
         TokenKind::String(s) => format!("\"{}\"", s),
+        TokenKind::InterpString(_) => "\"<interp>\"".to_string(),
         TokenKind::Bool(v) => v.to_string(),
         TokenKind::Null => "null".to_string(),
         TokenKind::Keyword(k) => format!("{:?}", k),

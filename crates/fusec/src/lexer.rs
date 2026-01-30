@@ -1,6 +1,6 @@
 use crate::diag::Diagnostics;
 use crate::span::Span;
-use crate::token::{Keyword, Punct, Token, TokenKind};
+use crate::token::{InterpSegment, Keyword, Punct, Token, TokenKind};
 
 pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
     let mut tokens = Vec::new();
@@ -209,6 +209,8 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
             if ch == '"' {
                 let mut j = i + 1;
                 let mut out = String::new();
+                let mut segments = Vec::new();
+                let mut has_interp = false;
                 let mut terminated = false;
                 while j < line.len() {
                     let c = line[j..].chars().next().unwrap();
@@ -234,16 +236,81 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
                         j += esc.len_utf8();
                         continue;
                     }
+                    if c == '$' {
+                        let next_idx = j + c.len_utf8();
+                        if next_idx < line.len() {
+                            let next = line[next_idx..].chars().next().unwrap();
+                            if next == '{' {
+                                has_interp = true;
+                                if !out.is_empty() {
+                                    segments.push(InterpSegment::Text(out));
+                                    out = String::new();
+                                }
+                                let expr_start = next_idx + next.len_utf8();
+                                let mut k = expr_start;
+                                let mut depth = 1;
+                                let mut in_string = false;
+                                let mut escape = false;
+                                while k < line.len() {
+                                    let ch = line[k..].chars().next().unwrap();
+                                    if in_string {
+                                        if escape {
+                                            escape = false;
+                                        } else if ch == '\\' {
+                                            escape = true;
+                                        } else if ch == '"' {
+                                            in_string = false;
+                                        }
+                                    } else {
+                                        if ch == '"' {
+                                            in_string = true;
+                                        } else if ch == '{' {
+                                            depth += 1;
+                                        } else if ch == '}' {
+                                            depth -= 1;
+                                            if depth == 0 {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    k += ch.len_utf8();
+                                }
+                                if depth != 0 {
+                                    diags.error(
+                                        Span::new(start, line_start + k),
+                                        "unterminated interpolation",
+                                    );
+                                    j = k;
+                                    break;
+                                }
+                                let expr_src = unescape_fragment(&line[expr_start..k]);
+                                let offset = line_start + expr_start;
+                                segments.push(InterpSegment::Expr { src: expr_src, offset });
+                                j = k + 1;
+                                continue;
+                            }
+                        }
+                    }
                     out.push(c);
                     j += c.len_utf8();
                 }
                 if !terminated {
                     diags.error(Span::new(start, line_start + j), "unterminated string literal");
                 }
-                tokens.push(Token {
-                    kind: TokenKind::String(out),
-                    span: Span::new(start, line_start + j),
-                });
+                if has_interp {
+                    if !out.is_empty() {
+                        segments.push(InterpSegment::Text(out));
+                    }
+                    tokens.push(Token {
+                        kind: TokenKind::InterpString(segments),
+                        span: Span::new(start, line_start + j),
+                    });
+                } else {
+                    tokens.push(Token {
+                        kind: TokenKind::String(out),
+                        span: Span::new(start, line_start + j),
+                    });
+                }
                 i = j;
                 continue;
             }
@@ -302,6 +369,27 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
     });
 
     tokens
+}
+
+fn unescape_fragment(raw: &str) -> String {
+    let mut out = String::new();
+    let mut chars = raw.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('\\') => out.push('\\'),
+            Some('"') => out.push('"'),
+            Some(other) => out.push(other),
+            None => break,
+        }
+    }
+    out
 }
 
 fn is_ident_start(ch: char) -> bool {

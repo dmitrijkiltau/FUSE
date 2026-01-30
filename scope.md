@@ -55,6 +55,7 @@ Best pragmatic MVP: **Cranelift** (via `cranelift-codegen`) to emit native quick
 * fallible results (`T!E` or `T!` with default error)
 * refined types on primitives (`String(1..80)`, `Int(0..130)`)
 * basic generics for `List<T>`, `Map<K,V>`, `Result<T,E>`, `Option<T>`
+* interpolation in double-quoted strings via `${expr}` (escape `$` as `\$`)
 
 **Runtime / “boilerplate killer” MVP**
 

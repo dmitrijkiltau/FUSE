@@ -100,7 +100,27 @@ pub fn format_error_value(value: &Value) -> String {
                 Some(Value::String(msg)) => msg.as_str(),
                 _ => "validation failed",
             };
-            let json = rt_error::validation_error_json(message, &[]);
+            let mut field_items = Vec::new();
+            if let Some(Value::List(items)) = fields.get("fields") {
+                for item in items {
+                    if let Value::Struct { fields, .. } = item {
+                        let path = match fields.get("path") {
+                            Some(Value::String(value)) => value.clone(),
+                            _ => continue,
+                        };
+                        let code = match fields.get("code") {
+                            Some(Value::String(value)) => value.clone(),
+                            _ => continue,
+                        };
+                        let message = match fields.get("message") {
+                            Some(Value::String(value)) => value.clone(),
+                            _ => continue,
+                        };
+                        field_items.push(rt_error::ValidationField { path, code, message });
+                    }
+                }
+            }
+            let json = rt_error::validation_error_json(message, &field_items);
             return rt_json::encode(&json);
         }
         if name == "Error" {
@@ -317,14 +337,17 @@ impl<'a> Interpreter<'a> {
                     let path = format!("{}.{}", decl.name.name, field.name.name);
                     let value = match std::env::var(&key) {
                         Ok(raw) => {
-                            let value = self.parse_env_value(&field.ty, &raw)?;
+                            let value = self
+                                .parse_env_value(&field.ty, &raw)
+                                .map_err(|err| self.map_parse_error(err, &path))?;
                             self.validate_value(&value, &field.ty, &path)?;
                             value
                         }
                         Err(_) => {
                             let value = if let Some(section) = section {
                                 if let Some(raw) = section.get(&field.name.name) {
-                                    self.parse_env_value(&field.ty, raw)?
+                                    self.parse_env_value(&field.ty, raw)
+                                        .map_err(|err| self.map_parse_error(err, &path))?
                                 } else {
                                     self.eval_expr(&field.value)?
                                 }
@@ -342,6 +365,15 @@ impl<'a> Interpreter<'a> {
             }
         }
         Ok(())
+    }
+
+    fn map_parse_error(&self, err: ExecError, path: &str) -> ExecError {
+        match err {
+            ExecError::Runtime(message) => {
+                ExecError::Error(self.validation_error_value(path, "invalid_value", message))
+            }
+            other => other,
+        }
     }
 
     fn eval_block(&mut self, block: &Block) -> ExecResult<Value> {
@@ -1179,8 +1211,13 @@ impl<'a> Interpreter<'a> {
                         Ok(())
                     }
                 }
-                _ => Err(ExecError::Runtime(format!(
-                    "type mismatch at {path}: expected Result"
+                _ => Err(ExecError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    format!(
+                        "expected Result, got {}",
+                        self.value_type_name(value)
+                    ),
                 ))),
             },
             TypeRefKind::Refined { base, args } => {
@@ -1210,8 +1247,13 @@ impl<'a> Interpreter<'a> {
                     match value {
                         Value::ResultOk(inner) => self.validate_value(inner, &args[0], path),
                         Value::ResultErr(inner) => self.validate_value(inner, &args[1], path),
-                        _ => Err(ExecError::Runtime(format!(
-                            "type mismatch at {path}: expected Result"
+                        _ => Err(ExecError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!(
+                                "expected Result, got {}",
+                                self.value_type_name(value)
+                            ),
                         ))),
                     }
                 }
@@ -1229,8 +1271,13 @@ impl<'a> Interpreter<'a> {
                             }
                             Ok(())
                         }
-                        _ => Err(ExecError::Runtime(format!(
-                            "type mismatch at {path}: expected List"
+                        _ => Err(ExecError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!(
+                                "expected List, got {}",
+                                self.value_type_name(value)
+                            ),
                         ))),
                     }
                 }
@@ -1250,8 +1297,13 @@ impl<'a> Interpreter<'a> {
                             }
                             Ok(())
                         }
-                        _ => Err(ExecError::Runtime(format!(
-                            "type mismatch at {path}: expected Map"
+                        _ => Err(ExecError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!(
+                                "expected Map, got {}",
+                                self.value_type_name(value)
+                            ),
                         ))),
                     }
                 }
@@ -1271,7 +1323,7 @@ impl<'a> Interpreter<'a> {
                     Ok(())
                 } else {
                     Err(ExecError::Runtime(format!(
-                        "type mismatch at {path}: expected Int, got {type_name}"
+                        "expected Int, got {type_name}"
                     )))
                 }
             }
@@ -1279,8 +1331,10 @@ impl<'a> Interpreter<'a> {
                 if matches!(value, Value::Float(_)) {
                     Ok(())
                 } else {
-                    Err(ExecError::Runtime(format!(
-                        "type mismatch at {path}: expected Float, got {type_name}"
+                    Err(ExecError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Float, got {type_name}"),
                     )))
                 }
             }
@@ -1288,8 +1342,10 @@ impl<'a> Interpreter<'a> {
                 if matches!(value, Value::Bool(_)) {
                     Ok(())
                 } else {
-                    Err(ExecError::Runtime(format!(
-                        "type mismatch at {path}: expected Bool, got {type_name}"
+                    Err(ExecError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Bool, got {type_name}"),
                     )))
                 }
             }
@@ -1297,37 +1353,57 @@ impl<'a> Interpreter<'a> {
                 if matches!(value, Value::String(_)) {
                     Ok(())
                 } else {
-                    Err(ExecError::Runtime(format!(
-                        "type mismatch at {path}: expected String, got {type_name}"
+                    Err(ExecError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected String, got {type_name}"),
                     )))
                 }
             }
             "Id" => match value {
                 Value::String(s) if !s.is_empty() => Ok(()),
-                _ => Err(ExecError::Runtime(format!(
-                    "type mismatch at {path}: expected Id, got {type_name}"
+                Value::String(_) => Err(ExecError::Error(self.validation_error_value(
+                    path,
+                    "invalid_value",
+                    "expected non-empty Id".to_string(),
+                ))),
+                _ => Err(ExecError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    format!("expected Id, got {type_name}"),
                 ))),
             },
             "Email" => match value {
                 Value::String(s) if rt_validate::is_email(s) => Ok(()),
-                _ => Err(ExecError::Runtime(format!(
-                    "type mismatch at {path}: expected Email, got {type_name}"
+                Value::String(_) => Err(ExecError::Error(self.validation_error_value(
+                    path,
+                    "invalid_value",
+                    "invalid email address".to_string(),
+                ))),
+                _ => Err(ExecError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    format!("expected Email, got {type_name}"),
                 ))),
             },
             "Bytes" => {
                 if matches!(value, Value::String(_)) {
                     Ok(())
                 } else {
-                    Err(ExecError::Runtime(format!(
-                        "type mismatch at {path}: expected Bytes, got {type_name}"
+                    Err(ExecError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Bytes, got {type_name}"),
                     )))
                 }
             }
             _ => match value {
                 Value::Struct { name: struct_name, .. } if struct_name == name => Ok(()),
                 Value::Enum { name: enum_name, .. } if enum_name == name => Ok(()),
-                _ => Err(ExecError::Runtime(format!(
-                    "type mismatch at {path}: expected {name}, got {type_name}"
+                _ => Err(ExecError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    format!("expected {name}, got {type_name}"),
                 ))),
             },
         }
@@ -1367,7 +1443,11 @@ impl<'a> Interpreter<'a> {
                 };
                 if !rt_validate::check_len(len, min, max) {
                     let message = format!("length {len} out of range {min}..{max}");
-                    return Err(ExecError::Error(self.validation_error_value(message)));
+                    return Err(ExecError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        message,
+                    )));
                 }
                 Ok(())
             }
@@ -1383,7 +1463,11 @@ impl<'a> Interpreter<'a> {
                 };
                 if !rt_validate::check_int_range(val, min, max) {
                     let message = format!("value {val} out of range {min}..{max}");
-                    return Err(ExecError::Error(self.validation_error_value(message)));
+                    return Err(ExecError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        message,
+                    )));
                 }
                 Ok(())
             }
@@ -1399,7 +1483,11 @@ impl<'a> Interpreter<'a> {
                 };
                 if !rt_validate::check_float_range(val, min, max) {
                     let message = format!("value {val} out of range {min}..{max}");
-                    return Err(ExecError::Error(self.validation_error_value(message)));
+                    return Err(ExecError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        message,
+                    )));
                 }
                 Ok(())
             }
@@ -1489,11 +1577,27 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn validation_error_value(&self, message: impl Into<String>) -> Value {
+    fn validation_error_value(&self, path: &str, code: &str, message: impl Into<String>) -> Value {
+        let field = self.validation_field_value(path, code, message);
         let mut fields = HashMap::new();
-        fields.insert("message".to_string(), Value::String(message.into()));
+        fields.insert(
+            "message".to_string(),
+            Value::String("validation failed".to_string()),
+        );
+        fields.insert("fields".to_string(), Value::List(vec![field]));
         Value::Struct {
             name: "ValidationError".to_string(),
+            fields,
+        }
+    }
+
+    fn validation_field_value(&self, path: &str, code: &str, message: impl Into<String>) -> Value {
+        let mut fields = HashMap::new();
+        fields.insert("path".to_string(), Value::String(path.to_string()));
+        fields.insert("code".to_string(), Value::String(code.to_string()));
+        fields.insert("message".to_string(), Value::String(message.into()));
+        Value::Struct {
+            name: "ValidationField".to_string(),
             fields,
         }
     }

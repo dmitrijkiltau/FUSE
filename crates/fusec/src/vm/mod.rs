@@ -69,14 +69,17 @@ impl<'a> Vm<'a> {
                 let path = format!("{}.{}", config.name, field.name);
                 let value = match std::env::var(&key) {
                     Ok(raw) => {
-                        let value = self.parse_env_value(&field.ty, &raw)?;
+                        let value = self
+                            .parse_env_value(&field.ty, &raw)
+                            .map_err(|err| self.map_parse_error(err, &path))?;
                         self.validate_value(&value, &field.ty, &path)?;
                         value
                     }
                     Err(_) => {
                         let value = if let Some(section) = section {
                             if let Some(raw) = section.get(&field.name) {
-                                self.parse_env_value(&field.ty, raw)?
+                                self.parse_env_value(&field.ty, raw)
+                                    .map_err(|err| self.map_parse_error(err, &path))?
                             } else if let Some(fn_name) = &field.default_fn {
                                 let func = self
                                     .program
@@ -114,6 +117,15 @@ impl<'a> Vm<'a> {
             self.configs.insert(config.name.clone(), map);
         }
         Ok(())
+    }
+
+    fn map_parse_error(&self, err: VmError, path: &str) -> VmError {
+        match err {
+            VmError::Runtime(message) => {
+                VmError::Error(self.validation_error_value(path, "invalid_value", message))
+            }
+            other => other,
+        }
     }
 
     fn exec_function(&mut self, func: &Function, args: Vec<Value>) -> VmResult<Value> {
@@ -504,8 +516,13 @@ impl<'a> Vm<'a> {
                         Ok(())
                     }
                 }
-                _ => Err(VmError::Runtime(format!(
-                    "type mismatch at {path}: expected Result"
+                _ => Err(VmError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    format!(
+                        "expected Result, got {}",
+                        self.value_type_name(value)
+                    ),
                 ))),
             },
             TypeRefKind::Refined { base, args } => {
@@ -535,8 +552,13 @@ impl<'a> Vm<'a> {
                     match value {
                         Value::ResultOk(inner) => self.validate_value(inner, &args[0], path),
                         Value::ResultErr(inner) => self.validate_value(inner, &args[1], path),
-                        _ => Err(VmError::Runtime(format!(
-                            "type mismatch at {path}: expected Result"
+                        _ => Err(VmError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!(
+                                "expected Result, got {}",
+                                self.value_type_name(value)
+                            ),
                         ))),
                     }
                 }
@@ -554,8 +576,13 @@ impl<'a> Vm<'a> {
                             }
                             Ok(())
                         }
-                        _ => Err(VmError::Runtime(format!(
-                            "type mismatch at {path}: expected List"
+                        _ => Err(VmError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!(
+                                "expected List, got {}",
+                                self.value_type_name(value)
+                            ),
                         ))),
                     }
                 }
@@ -575,8 +602,13 @@ impl<'a> Vm<'a> {
                             }
                             Ok(())
                         }
-                        _ => Err(VmError::Runtime(format!(
-                            "type mismatch at {path}: expected Map"
+                        _ => Err(VmError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!(
+                                "expected Map, got {}",
+                                self.value_type_name(value)
+                            ),
                         ))),
                     }
                 }
@@ -595,8 +627,10 @@ impl<'a> Vm<'a> {
                 if matches!(value, Value::Int(_)) {
                     Ok(())
                 } else {
-                    Err(VmError::Runtime(format!(
-                        "type mismatch at {path}: expected Int, got {type_name}"
+                    Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Int, got {type_name}"),
                     )))
                 }
             }
@@ -604,8 +638,10 @@ impl<'a> Vm<'a> {
                 if matches!(value, Value::Float(_)) {
                     Ok(())
                 } else {
-                    Err(VmError::Runtime(format!(
-                        "type mismatch at {path}: expected Float, got {type_name}"
+                    Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Float, got {type_name}"),
                     )))
                 }
             }
@@ -613,8 +649,10 @@ impl<'a> Vm<'a> {
                 if matches!(value, Value::Bool(_)) {
                     Ok(())
                 } else {
-                    Err(VmError::Runtime(format!(
-                        "type mismatch at {path}: expected Bool, got {type_name}"
+                    Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Bool, got {type_name}"),
                     )))
                 }
             }
@@ -622,37 +660,57 @@ impl<'a> Vm<'a> {
                 if matches!(value, Value::String(_)) {
                     Ok(())
                 } else {
-                    Err(VmError::Runtime(format!(
-                        "type mismatch at {path}: expected String, got {type_name}"
+                    Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected String, got {type_name}"),
                     )))
                 }
             }
             "Id" => match value {
                 Value::String(s) if !s.is_empty() => Ok(()),
-                _ => Err(VmError::Runtime(format!(
-                    "type mismatch at {path}: expected Id, got {type_name}"
+                Value::String(_) => Err(VmError::Error(self.validation_error_value(
+                    path,
+                    "invalid_value",
+                    "expected non-empty Id".to_string(),
+                ))),
+                _ => Err(VmError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    format!("expected Id, got {type_name}"),
                 ))),
             },
             "Email" => match value {
                 Value::String(s) if rt_validate::is_email(s) => Ok(()),
-                _ => Err(VmError::Runtime(format!(
-                    "type mismatch at {path}: expected Email, got {type_name}"
+                Value::String(_) => Err(VmError::Error(self.validation_error_value(
+                    path,
+                    "invalid_value",
+                    "invalid email address".to_string(),
+                ))),
+                _ => Err(VmError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    format!("expected Email, got {type_name}"),
                 ))),
             },
             "Bytes" => {
                 if matches!(value, Value::String(_)) {
                     Ok(())
                 } else {
-                    Err(VmError::Runtime(format!(
-                        "type mismatch at {path}: expected Bytes, got {type_name}"
+                    Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Bytes, got {type_name}"),
                     )))
                 }
             }
             _ => match value {
                 Value::Struct { name: struct_name, .. } if struct_name == name => Ok(()),
                 Value::Enum { name: enum_name, .. } if enum_name == name => Ok(()),
-                _ => Err(VmError::Runtime(format!(
-                    "type mismatch at {path}: expected {name}, got {type_name}"
+                _ => Err(VmError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    format!("expected {name}, got {type_name}"),
                 ))),
             },
         }
@@ -717,11 +775,27 @@ impl<'a> Vm<'a> {
         }
     }
 
-    fn validation_error_value(&self, message: impl Into<String>) -> Value {
+    fn validation_error_value(&self, path: &str, code: &str, message: impl Into<String>) -> Value {
+        let field = self.validation_field_value(path, code, message);
         let mut fields = HashMap::new();
-        fields.insert("message".to_string(), Value::String(message.into()));
+        fields.insert(
+            "message".to_string(),
+            Value::String("validation failed".to_string()),
+        );
+        fields.insert("fields".to_string(), Value::List(vec![field]));
         Value::Struct {
             name: "ValidationError".to_string(),
+            fields,
+        }
+    }
+
+    fn validation_field_value(&self, path: &str, code: &str, message: impl Into<String>) -> Value {
+        let mut fields = HashMap::new();
+        fields.insert("path".to_string(), Value::String(path.to_string()));
+        fields.insert("code".to_string(), Value::String(code.to_string()));
+        fields.insert("message".to_string(), Value::String(message.into()));
+        Value::Struct {
+            name: "ValidationField".to_string(),
             fields,
         }
     }
@@ -957,7 +1031,7 @@ impl<'a> Vm<'a> {
         value: &Value,
         base: &str,
         args: &[Expr],
-        _path: &str,
+        path: &str,
     ) -> VmResult<()> {
         match base {
             "String" => {
@@ -973,9 +1047,11 @@ impl<'a> Vm<'a> {
                 if rt_validate::check_len(len, min, max) {
                     Ok(())
                 } else {
-                    Err(VmError::Error(self.validation_error_value(format!(
-                        "length {len} out of range {min}..{max}"
-                    ))))
+                    Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("length {len} out of range {min}..{max}"),
+                    )))
                 }
             }
             "Int" => {
@@ -991,9 +1067,11 @@ impl<'a> Vm<'a> {
                 if rt_validate::check_int_range(val, min, max) {
                     Ok(())
                 } else {
-                    Err(VmError::Error(self.validation_error_value(format!(
-                        "value {val} out of range {min}..{max}"
-                    ))))
+                    Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("value {val} out of range {min}..{max}"),
+                    )))
                 }
             }
             "Float" => {
@@ -1009,9 +1087,11 @@ impl<'a> Vm<'a> {
                 if rt_validate::check_float_range(val, min, max) {
                     Ok(())
                 } else {
-                    Err(VmError::Error(self.validation_error_value(format!(
-                        "value {val} out of range {min}..{max}"
-                    ))))
+                    Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("value {val} out of range {min}..{max}"),
+                    )))
                 }
             }
             _ => Ok(()),

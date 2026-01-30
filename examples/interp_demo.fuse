@@ -1,0 +1,11 @@
+# Interpolation demo (AST + VM)
+
+config App:
+  greeting: String = "Hello"
+  who: String = "world"
+
+app "demo":
+  print("${App.greeting}, ${App.who}!")
+  let a = 1
+  let b = 2
+  print("sum ${a + b}")

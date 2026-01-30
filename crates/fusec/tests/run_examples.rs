@@ -72,3 +72,45 @@ fn runs_project_demo_ast() {
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines, vec!["Hey, Codex!", "rgb 1,2,3"]);
 }
+
+#[test]
+fn runs_interp_demo_ast() {
+    let exe = env!("CARGO_BIN_EXE_fusec");
+    let output = Command::new(exe)
+        .arg("--run")
+        .arg("--backend")
+        .arg("ast")
+        .arg(example_path("interp_demo.fuse"))
+        .output()
+        .expect("failed to run fusec");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["Hello, world!", "sum 3"]);
+}
+
+#[test]
+fn runs_interp_demo_vm() {
+    let exe = env!("CARGO_BIN_EXE_fusec");
+    let output = Command::new(exe)
+        .arg("--run")
+        .arg("--backend")
+        .arg("vm")
+        .arg(example_path("interp_demo.fuse"))
+        .output()
+        .expect("failed to run fusec");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["Hello, world!", "sum 3"]);
+}
