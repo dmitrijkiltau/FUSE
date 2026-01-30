@@ -16,6 +16,8 @@ pub enum Value {
     Bool(bool),
     String(String),
     Null,
+    List(Vec<Value>),
+    Map(HashMap<String, Value>),
     Struct {
         name: String,
         fields: HashMap<String, Value>,
@@ -45,6 +47,22 @@ impl Value {
             Value::Bool(v) => v.to_string(),
             Value::String(v) => v.clone(),
             Value::Null => "null".to_string(),
+            Value::List(items) => {
+                let text = items
+                    .iter()
+                    .map(|item| item.to_string_value())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("[{text}]")
+            }
+            Value::Map(items) => {
+                let text = items
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {}", v.to_string_value()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{{{text}}}")
+            }
             Value::Struct { name, fields } => match fields.get("message") {
                 Some(Value::String(msg)) => format!("{name}({msg})"),
                 _ => format!("<{name}>"),
@@ -285,10 +303,15 @@ impl<'a> Interpreter<'a> {
     }
 
     fn eval_configs(&mut self) -> ExecResult<()> {
+        let config_path =
+            std::env::var("FUSE_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
+        let file_values =
+            rt_config::load_config_file(&config_path).map_err(ExecError::Runtime)?;
         for item in &self.program.items {
             if let Item::Config(decl) = item {
                 let name = decl.name.name.clone();
                 self.configs.insert(name.clone(), HashMap::new());
+                let section = file_values.get(&name);
                 for field in &decl.fields {
                     let key = self.config_env_key(&decl.name.name, &field.name.name);
                     let path = format!("{}.{}", decl.name.name, field.name.name);
@@ -299,7 +322,15 @@ impl<'a> Interpreter<'a> {
                             value
                         }
                         Err(_) => {
-                            let value = self.eval_expr(&field.value)?;
+                            let value = if let Some(section) = section {
+                                if let Some(raw) = section.get(&field.name.name) {
+                                    self.parse_env_value(&field.ty, raw)?
+                                } else {
+                                    self.eval_expr(&field.value)?
+                                }
+                            } else {
+                                self.eval_expr(&field.value)?
+                            };
                             self.validate_value(&value, &field.ty, &path)?;
                             value
                         }
@@ -1241,6 +1272,8 @@ impl<'a> Interpreter<'a> {
             Value::Bool(_) => "Bool".to_string(),
             Value::String(_) => "String".to_string(),
             Value::Null => "Null".to_string(),
+            Value::List(_) => "List".to_string(),
+            Value::Map(_) => "Map".to_string(),
             Value::Struct { name, .. } => name.clone(),
             Value::Enum { name, .. } => name.clone(),
             Value::EnumCtor { name, .. } => name.clone(),
