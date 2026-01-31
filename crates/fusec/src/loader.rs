@@ -51,7 +51,7 @@ impl ModuleLoader {
     }
 
     fn include_root(&mut self, root: &PathBuf, items: &mut Vec<Item>) {
-        let Some(program) = self.loaded.get(root) else {
+        let Some(program) = self.loaded.get(root).cloned() else {
             return;
         };
         for item in &program.items {
@@ -60,11 +60,12 @@ impl ModuleLoader {
             }
             items.push(item.clone());
         }
+        self.included_all.insert(root.clone());
         for import in program.items.iter().filter_map(|item| match item {
-            Item::Import(decl) => Some(decl),
+            Item::Import(decl) => Some(decl.clone()),
             _ => None,
         }) {
-            self.include_import(root, import, items);
+            self.include_import(root, &import, items);
         }
     }
 
@@ -95,16 +96,16 @@ impl ModuleLoader {
         }
         self.visiting.insert(path.clone());
 
-        let Some(program) = self.loaded.get(path) else {
+        let Some(program) = self.loaded.get(path).cloned() else {
             self.visiting.remove(path);
             return;
         };
 
         for import in program.items.iter().filter_map(|item| match item {
-            Item::Import(decl) => Some(decl),
+            Item::Import(decl) => Some(decl.clone()),
             _ => None,
         }) {
-            self.include_import(path, import, items);
+            self.include_import(path, &import, items);
         }
 
         match mode {
@@ -128,7 +129,7 @@ impl ModuleLoader {
                 self.included_all.insert(path.clone());
             }
             IncludeMode::Names => {
-                let available = module_item_names(program);
+                let available = module_item_names(&program);
                 for name in &names {
                     if !available.contains(name.as_str()) {
                         self.diags.error(
