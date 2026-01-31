@@ -1,23 +1,25 @@
 # Scope + constraints
 
+This document reflects the current scope in this repo and what is planned next.
+
 ## Target platforms
 
-**MVP targets:**
+**Intended runtime targets:**
 
 * **Linux x64/arm64**
 * **macOS arm64/x64**
 * **Windows x64**
 
-Because if it can’t run where humans actually deploy things, it’s just a hobby with extra steps.
+The current implementation is a Rust interpreter + VM, so it runs wherever the host binary runs.
 
-**Runtime modes (both supported):**
+**Runtime modes (supported):**
 
-* **CLI apps** (default)
+* **CLI apps**
 * **HTTP services** (builtin server/runtime)
 
 **Later (non-MVP):**
 
-* WASM (nice, but don’t pretend it’s free)
+* WASM (nice, but not in MVP)
 * Embedded (no)
 * Mobile (no)
 
@@ -28,50 +30,67 @@ Because if it can’t run where humans actually deploy things, it’s just a hob
 * Great for writing compilers/runtimes.
 * Safe concurrency.
 * Distributable single-binary toolchain.
-* Good ecosystem for parsing (logos, nom), LSP, and codegen.
+* Good ecosystem for parsing, LSP, and codegen.
 
-## Interpreter vs compiler
+## Execution model
 
-**Compiler-first**, with a “fast dev loop” mode.
+**Current:**
 
-* Primary output: **native executable** (via LLVM or Cranelift).
-* Secondary output (optional later): **bytecode + small VM** for super-fast `fuse run` reload.
+* AST interpreter backend
+* Bytecode + VM backend
+* No native compiler/codegen yet
 
-**MVP choice:** compile to **bytecode + VM** *or* compile to **C** and use system compiler is tempting, but gross.
-Best pragmatic MVP: **Cranelift** (via `cranelift-codegen`) to emit native quickly without full LLVM complexity.
+**Planned:**
 
-## MVP feature set (what ships first)
+* Native compiler (Cranelift/LLVM TBD)
+* Faster `fuse run` loop once codegen exists
 
-**Language core**
+## Feature scope
 
-* Modules + imports
+**Language core (implemented)**
+
 * `let` / `var`
 * `fn`
 * `type` structs
 * `enum`
-* pattern matching (minimal)
-* string interpolation
+* `config`, `service`, `app`
+* `if` / `else`, `match` (struct/enum/Option/Result patterns)
+* string interpolation via `${expr}` (escape `$` as `\$`)
 * optionals (`T?`)
 * fallible results (`T!E` or `T!` with default error)
 * refined types on primitives (`String(1..80)`, `Int(0..130)`)
-* basic generics for `List<T>`, `Map<K,V>`, `Result<T,E>`, `Option<T>`
-* interpolation in double-quoted strings via `${expr}` (escape `$` as `\$`)
+* generics for `List<T>`, `Map<K,V>`, `Result<T,E>`, `Option<T>`
 
-**Runtime / “boilerplate killer” MVP**
+**Parsed but not executed yet**
 
-* JSON encode/decode auto-derive for structs/enums
-* validators auto-generated from refined types
-* CLI arg parsing from `main` signature
-* HTTP `service` block that generates routing + request binding + response encoding
-* typed errors mapping to HTTP responses
-* minimal logging (`log.info`, `log.warn`, `log.error`)
+* `import` (no module loading)
+* `migration`, `test` declarations
+* `for` / `while` / `break` / `continue`
+* `spawn` / `await` / `box` concurrency
+* `without` type derivations
 
-**Tooling MVP**
+**Runtime / "boilerplate killer" (implemented)**
 
-* formatter (`fuse fmt`)
-* test runner (`fuse test`)
-* package/deps file (`fuse.toml`) with lockfile
-* LSP later, not day one
+* JSON encode/decode for structs/enums
+* validation derived from refined types
+* config loading (env > config file > defaults)
+* HTTP request binding + response encoding
+* error JSON + HTTP status mapping
+* builtins: `print`, `env`, `serve`
+* CLI arg binding for `fn main` when running with program args (AST backend only)
+
+**Tooling (implemented)**
+
+* parser + semantic analysis
+* formatter via `fusec --fmt`
+* `fusec` flags: `--check`, `--run`, `--backend`, `--app`
+
+**Tooling (planned)**
+
+* test runner command
+* package/deps file (`fuse.toml`) + lockfile
+* docs/OpenAPI generation
+* LSP (not day one)
 
 ## Non-goals (explicitly)
 
@@ -79,5 +98,5 @@ Best pragmatic MVP: **Cranelift** (via `cranelift-codegen`) to emit native quick
 * Macro system
 * Metaprogramming beyond basic derives (at first)
 * Custom operator overloads
-* Multiple inheritance / traits at MVP (can add interfaces later)
-* “Everything async by default” (no, we like sleep)
+* Multiple inheritance / traits at MVP (interfaces later, maybe)
+* "Everything async by default" (no, we like sleep)
