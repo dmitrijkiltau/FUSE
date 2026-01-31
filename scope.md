@@ -74,6 +74,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * JSON encode/decode for structs/enums
 * validation derived from refined types
 * config loading (env > config file > defaults)
+* config/env/CLI parsing is limited to scalar types + `Option` + refined ranges
 * HTTP request binding + response encoding
 * error JSON + HTTP status mapping
 * builtins: `print`, `env`, `serve`

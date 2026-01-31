@@ -40,7 +40,8 @@ app "hello":
 ```
 
 Run with `fusec --run` to execute the `app`. If you pass CLI flags (for example `--name=Codex`),
-`fusec` calls `main` directly and binds flags to its parameters (AST backend only).
+`fusec` calls `main` directly and binds flags to its parameters (AST backend only); the `app` block
+is skipped when program args are present.
 
 ## Data model: types that validate at boundaries
 
@@ -56,7 +57,7 @@ What the runtime does today:
 
 * JSON encode/decode for structs and enums.
 * Validation for refined types (ranges, Email).
-* Default values applied during JSON decoding and config loading.
+* Default values applied during struct construction, JSON decoding, and config loading.
 
 ## Functions: small and explicit
 

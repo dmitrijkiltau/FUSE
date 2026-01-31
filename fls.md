@@ -105,7 +105,7 @@ Stmt           := LetStmt
 LetStmt        := "let" Ident [ ":" TypeRef ] "=" Expr NEWLINE
 VarStmt        := "var" Ident [ ":" TypeRef ] "=" Expr NEWLINE
 AssignStmt     := LValue "=" Expr NEWLINE
-LValue         := Ident
+LValue         := Ident | Member | OptionalMember
 ReturnStmt     := "return" [ Expr ] NEWLINE
 ExprStmt       := Expr NEWLINE | SpawnExpr
 
