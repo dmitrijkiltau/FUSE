@@ -45,6 +45,16 @@ impl LogLevel {
             LogLevel::Error => "ERROR",
         }
     }
+
+    fn json_label(self) -> &'static str {
+        match self {
+            LogLevel::Trace => "trace",
+            LogLevel::Debug => "debug",
+            LogLevel::Info => "info",
+            LogLevel::Warn => "warn",
+            LogLevel::Error => "error",
+        }
+    }
 }
 
 fn parse_log_level(raw: &str) -> Option<LogLevel> {
@@ -475,12 +485,41 @@ impl<'a> Vm<'a> {
                     }
                 }
                 if level >= min_log_level() {
-                    let message = args[start_idx..]
-                        .iter()
+                    let message = args
+                        .get(start_idx)
                         .map(|val| val.to_string_value())
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    eprintln!("[{}] {}", level.label(), message);
+                        .unwrap_or_default();
+                    let data_args = &args[start_idx.saturating_add(1)..];
+                    if !data_args.is_empty() {
+                        let data_json = if data_args.len() == 1 {
+                            self.value_to_json(&data_args[0])
+                        } else {
+                            rt_json::JsonValue::Array(
+                                data_args
+                                    .iter()
+                                    .map(|val| self.value_to_json(val))
+                                    .collect(),
+                            )
+                        };
+                        let mut obj = BTreeMap::new();
+                        obj.insert(
+                            "level".to_string(),
+                            rt_json::JsonValue::String(level.json_label().to_string()),
+                        );
+                        obj.insert(
+                            "message".to_string(),
+                            rt_json::JsonValue::String(message),
+                        );
+                        obj.insert("data".to_string(), data_json);
+                        eprintln!("{}", rt_json::encode(&rt_json::JsonValue::Object(obj)));
+                    } else {
+                        let message = args[start_idx..]
+                            .iter()
+                            .map(|val| val.to_string_value())
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        eprintln!("[{}] {}", level.label(), message);
+                    }
                 }
                 Ok(Value::Unit)
             }

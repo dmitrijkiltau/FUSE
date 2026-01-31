@@ -243,14 +243,22 @@ Usage:
 * `log("warn", "message")` logs at `WARN`.
 * If there are 2+ args and the first is a known level (`trace`, `debug`, `info`, `warn`, `error`),
   it is treated as the level; the rest are stringified and joined with spaces.
+* If there is at least one extra argument after the message, `log` emits JSON (see below).
 
 Output format:
 
 * `[LEVEL] message` to stderr.
+* JSON logs are emitted as a single line to stderr.
 
 Filtering:
 
 * `FUSE_LOG` sets the minimum level (default `info`).
+
+Structured logging:
+
+* `log("info", "message", data)` emits JSON:
+  `{"level":"info","message":"message","data":<json>}`
+* If multiple data values are provided, `data` is a JSON array.
 
 ## Unsupported or partial features
 

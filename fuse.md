@@ -125,7 +125,7 @@ The runtime currently handles:
 
 ## Not implemented yet (planned)
 
-* logging, DB/migrations, tests, docs/OpenAPI generation
+* DB/migrations, tests, docs/OpenAPI generation
 * `spawn`/`await`/`box` concurrency
 * `for`/`while`/`break`/`continue` at runtime
 * `without` type derivations
