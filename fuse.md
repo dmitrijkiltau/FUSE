@@ -7,9 +7,10 @@ describes the current implementation in this repo (parser + semantic analysis + 
 
 ## The core vibe (today)
 
-### 1) Small, strict, single-file MVP
+### 1) Small, strict, multi-file MVP
 
-Programs are single files right now. `import` exists in the grammar, but module loading is not wired up yet.
+Programs can span multiple files via `import`. Imports are flattened into a single program
+namespace (no module qualifiers yet).
 
 ### 2) Strong types, low ceremony
 
@@ -115,6 +116,7 @@ The runtime currently handles:
 
 * Parser + semantic analysis for `fn`, `type`, `enum`, `config`, `service`, `app`
 * AST interpreter and VM backends
+* `import` module loading (flattened namespace)
 * Built-ins: `print(...)`, `env(...)`, `serve(...)`
 * Config loading (env > config file > defaults)
 * JSON encode/decode and refined-type validation
@@ -123,7 +125,7 @@ The runtime currently handles:
 
 ## Not implemented yet (planned)
 
-* module loading for `import`
+* module namespaces / qualified imports
 * logging, DB/migrations, tests, docs/OpenAPI generation
 * `spawn`/`await`/`box` concurrency
 * `for`/`while`/`break`/`continue` at runtime

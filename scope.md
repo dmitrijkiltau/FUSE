@@ -53,6 +53,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * `fn`
 * `type` structs
 * `enum`
+* `import` (file loading + flattened scope; no module qualifiers yet)
 * `config`, `service`, `app`
 * `if` / `else`, `match` (struct/enum/Option/Result patterns)
 * string interpolation via `${expr}` (escape `$` as `\$`)
@@ -63,7 +64,6 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 
 **Parsed but not executed yet**
 
-* `import` (no module loading)
 * `migration`, `test` declarations
 * `for` / `while` / `break` / `continue`
 * `spawn` / `await` / `box` concurrency

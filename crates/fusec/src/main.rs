@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::path::Path;
 use std::process;
 
 use fusec::diag::Level;
-use fusec::parse_source;
+use fusec::load_program;
 use fusec::interp::Interpreter;
 use fusec::ast::TypeRefKind;
 use fuse_rt::error::{ValidationError, ValidationField};
@@ -111,7 +112,7 @@ fn main() {
         return;
     }
 
-    let (program, diags) = parse_source(&src);
+    let (program, diags) = load_program(Path::new(&path), &src);
     if !diags.is_empty() {
         for diag in diags {
             let level = match diag.level {

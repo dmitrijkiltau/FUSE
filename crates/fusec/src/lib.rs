@@ -2,6 +2,7 @@ pub mod ast;
 pub mod diag;
 pub mod format;
 pub mod lexer;
+pub mod loader;
 pub mod parser;
 pub mod interp;
 pub mod ir;
@@ -11,6 +12,8 @@ pub mod token;
 pub mod vm;
 
 use crate::diag::Diagnostics;
+
+pub use loader::load_program;
 
 pub fn parse_source(src: &str) -> (ast::Program, Vec<diag::Diag>) {
     let mut diags = Diagnostics::default();

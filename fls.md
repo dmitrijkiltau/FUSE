@@ -317,8 +317,18 @@ Runtime expects range literals or a `..` expression inside the refinement. Other
 
 ## Imports and modules (current)
 
-`import` declarations are parsed and tracked by semantic analysis, but there is no module loader or
-resolution system yet. Imported names are treated as external/module symbols only.
+`import` declarations are resolved at load time and merged into a single program namespace.
+
+Resolution rules:
+
+* `import Foo` loads `Foo.fuse` from the current file's directory.
+* `import X from "path"` loads `path` relative to the current file; `.fuse` is added if missing.
+* `import {A, B} from "path"` loads the module and brings only `A` and `B` into scope.
+
+Notes:
+
+* Imported items are flattened; module-qualified access (`Foo.bar`) is not implemented yet.
+* Aliases in `import X as Y from "path"` are parsed but have no effect without module qualifiers.
 
 ## Services and binding (summary)
 
@@ -332,7 +342,7 @@ Runtime binding + error mapping are described in `runtime.md`.
 
 ## Runtime support notes (current)
 
-* `import`, `migration`, and `test` are parsed but not executed by the runtime.
+* `migration` and `test` are parsed but not executed by the runtime.
 * `for`/`while`/`break`/`continue` are parsed and type-checked, but both backends error at runtime.
 * `spawn`/`await`/`box` are parsed and type-checked, but both backends error at runtime.
 * Assignment targets are limited to identifiers at runtime.

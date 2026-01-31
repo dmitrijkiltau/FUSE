@@ -233,7 +233,7 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 
 ## Unsupported or partial features
 
-* `import`, `migration`, and `test` are parsed but not executed.
+* `migration` and `test` are parsed but not executed.
 * `for`/`while`/`break`/`continue` are parsed and type-checked but error at runtime.
 * `spawn`/`await`/`box` are parsed and type-checked but error at runtime.
 * Assignment targets are limited to identifiers.
