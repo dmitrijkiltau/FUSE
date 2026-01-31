@@ -6,11 +6,14 @@
     {"include": "#strings"},
     {"include": "#definitions"},
     {"include": "#fields"},
+    {"include": "#functionCalls"},
+    {"include": "#errorTypes"},
     {"include": "#keywords"},
     {"include": "#types"},
     {"include": "#userTypes"},
     {"include": "#constants"},
-    {"include": "#numbers"}
+    {"include": "#numbers"},
+    {"include": "#memberAccess"}
   ],
   "repository": {
     "comments": {
@@ -99,6 +102,30 @@
         }
       ]
     },
+    "functionCalls": {
+      "patterns": [
+        {
+          "name": "meta.function-call.fuse",
+          "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(\\()",
+          "captures": {
+            "1": {"name": "entity.name.function.fuse"},
+            "2": {"name": "punctuation.section.arguments.begin.fuse"}
+          }
+        }
+      ]
+    },
+    "errorTypes": {
+      "patterns": [
+        {
+          "name": "meta.error-type.fuse",
+          "match": "!\\s*([A-Z][A-Za-z0-9_]*)",
+          "captures": {
+            "0": {"name": "keyword.operator.fuse"},
+            "1": {"name": "support.type.error.fuse"}
+          }
+        }
+      ]
+    },
     "types": {
       "patterns": [
         {
@@ -128,6 +155,17 @@
         {
           "name": "constant.numeric.fuse",
           "match": "\\b-?\\d+(?:\\.\\d+)?\\b"
+        }
+      ]
+    },
+    "memberAccess": {
+      "patterns": [
+        {
+          "name": "meta.member.fuse",
+          "match": "(?<=\\.)[A-Za-z_][A-Za-z0-9_]*",
+          "captures": {
+            "0": {"name": "variable.other.property.fuse"}
+          }
         }
       ]
     }
