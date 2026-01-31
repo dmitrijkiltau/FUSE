@@ -422,7 +422,9 @@ impl<'a> Vm<'a> {
                     Err(_) => Ok(Value::Null),
                 }
             }
-            "serve" => Ok(Value::Unit),
+            "serve" => Err(VmError::Runtime(
+                "serve is not supported in the VM yet".to_string(),
+            )),
             _ => Err(VmError::Runtime(format!("unknown builtin {name}"))),
         }
     }

@@ -114,7 +114,7 @@ pub struct RouteDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HttpVerb {
     Get,
     Post,

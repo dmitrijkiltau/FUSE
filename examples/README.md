@@ -20,6 +20,12 @@ Run the project demo (AST backend, enum + refined types):
 APP_GREETING=Hey APP_WHO=Codex scripts/cargo_env.sh cargo run -p fusec -- --run --backend ast examples/project_demo.fuse
 ```
 
+Run the HTTP users service (AST backend):
+
+```
+APP_PORT=4000 scripts/cargo_env.sh cargo run -p fusec -- --run --backend ast examples/http_users.fuse
+```
+
 Run the interpolation demo (AST or VM):
 
 ```
