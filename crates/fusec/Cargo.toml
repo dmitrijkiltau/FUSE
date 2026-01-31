@@ -2,6 +2,7 @@
 name = "fusec"
 version = "0.1.0"
 edition = "2021"
+default-run = "fusec"
 
 [lib]
 path = "src/lib.rs"
