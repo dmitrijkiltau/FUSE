@@ -13,7 +13,10 @@ pub mod vm;
 
 use crate::diag::Diagnostics;
 
-pub use loader::{load_program, load_program_with_modules, ModuleExports, ModuleMap};
+pub use loader::{
+    load_program, load_program_with_modules, ModuleExports, ModuleId, ModuleLink, ModuleMap,
+    ModuleRegistry, ModuleUnit,
+};
 
 pub fn parse_source(src: &str) -> (ast::Program, Vec<diag::Diag>) {
     let mut diags = Diagnostics::default();

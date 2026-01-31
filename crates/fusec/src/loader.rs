@@ -7,13 +7,21 @@ use crate::diag::{Diag, Diagnostics};
 use crate::parse_source;
 use crate::span::Span;
 
+pub type ModuleId = usize;
+
+#[derive(Clone, Debug)]
+pub struct ModuleLink {
+    pub id: ModuleId,
+    pub exports: ModuleExports,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ModuleMap {
-    pub modules: HashMap<String, ModuleExports>,
+    pub modules: HashMap<String, ModuleLink>,
 }
 
 impl ModuleMap {
-    pub fn get(&self, name: &str) -> Option<&ModuleExports> {
+    pub fn get(&self, name: &str) -> Option<&ModuleLink> {
         self.modules.get(name)
     }
 
@@ -60,225 +68,256 @@ impl ModuleExports {
         }
         exports
     }
+
+    pub(crate) fn contains(&self, name: &str) -> bool {
+        self.types.contains(name)
+            || self.enums.contains(name)
+            || self.functions.contains(name)
+            || self.configs.contains(name)
+            || self.services.contains(name)
+            || self.apps.contains(name)
+    }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum IncludeMode {
-    All,
-    Names,
+#[derive(Clone, Debug)]
+pub struct ModuleUnit {
+    pub id: ModuleId,
+    pub path: PathBuf,
+    pub program: Program,
+    pub modules: ModuleMap,
+    pub import_items: HashMap<String, ModuleLink>,
+    pub exports: ModuleExports,
 }
 
-pub fn load_program_with_modules(path: &Path, src: &str) -> (Program, ModuleMap, Vec<Diag>) {
+#[derive(Clone, Debug, Default)]
+pub struct ModuleRegistry {
+    pub root: ModuleId,
+    pub modules: HashMap<ModuleId, ModuleUnit>,
+}
+
+impl ModuleRegistry {
+    pub fn root(&self) -> Option<&ModuleUnit> {
+        self.modules.get(&self.root)
+    }
+
+    pub fn get(&self, id: ModuleId) -> Option<&ModuleUnit> {
+        self.modules.get(&id)
+    }
+}
+
+pub fn load_program_with_modules(path: &Path, src: &str) -> (ModuleRegistry, Vec<Diag>) {
     let mut loader = ModuleLoader::new();
     let root = loader.insert_root(path, src);
-    let mut items = Vec::new();
-    if let Some(root) = root {
-        loader.include_root(&root, &mut items);
-    }
+    let root = root.unwrap_or(0);
     (
-        Program { items },
-        loader.module_map,
+        ModuleRegistry {
+            root,
+            modules: loader.modules,
+        },
         loader.diags.into_vec(),
     )
 }
 
-pub fn load_program(path: &Path, src: &str) -> (Program, Vec<Diag>) {
-    let (program, _modules, diags) = load_program_with_modules(path, src);
+pub fn load_program(_path: &Path, src: &str) -> (Program, Vec<Diag>) {
+    let (program, diags) = parse_source(src);
     (program, diags)
 }
 
 struct ModuleLoader {
-    loaded: HashMap<PathBuf, Program>,
-    included_all: HashSet<PathBuf>,
-    included_names: HashMap<PathBuf, HashSet<String>>,
+    next_id: ModuleId,
+    by_path: HashMap<PathBuf, ModuleId>,
+    modules: HashMap<ModuleId, ModuleUnit>,
     visiting: HashSet<PathBuf>,
-    module_exports: HashMap<PathBuf, ModuleExports>,
-    module_aliases: HashMap<String, PathBuf>,
-    module_map: ModuleMap,
     diags: Diagnostics,
+    global_names: HashMap<String, (ModuleId, Span)>,
 }
 
 impl ModuleLoader {
     fn new() -> Self {
         Self {
-            loaded: HashMap::new(),
-            included_all: HashSet::new(),
-            included_names: HashMap::new(),
+            next_id: 1,
+            by_path: HashMap::new(),
+            modules: HashMap::new(),
             visiting: HashSet::new(),
-            module_exports: HashMap::new(),
-            module_aliases: HashMap::new(),
-            module_map: ModuleMap::default(),
             diags: Diagnostics::default(),
+            global_names: HashMap::new(),
         }
     }
 
-    fn insert_root(&mut self, path: &Path, src: &str) -> Option<PathBuf> {
-        let key = self.normalize_path(path);
-        let (program, diags) = parse_source(src);
-        self.diags.extend(diags);
-        self.loaded.insert(key.clone(), program);
-        Some(key)
+    fn insert_root(&mut self, path: &Path, src: &str) -> Option<ModuleId> {
+        self.load_module(path, Some(src), Span::default())
     }
 
-    fn include_root(&mut self, root: &PathBuf, items: &mut Vec<Item>) {
-        let Some(program) = self.loaded.get(root).cloned() else {
-            return;
-        };
-        for item in &program.items {
-            if matches!(item, Item::Import(_)) {
-                continue;
-            }
-            items.push(item.clone());
-        }
-        self.included_all.insert(root.clone());
-        for import in program.items.iter().filter_map(|item| match item {
-            Item::Import(decl) => Some(decl.clone()),
-            _ => None,
-        }) {
-            self.include_import(root, &import, items);
-        }
-    }
-
-    fn include_import(&mut self, from: &PathBuf, import: &ImportDecl, items: &mut Vec<Item>) {
-        let (path, mode, names, alias, span) = match self.resolve_import(from, import) {
-            Some(value) => value,
-            None => return,
-        };
-        let Some(path) = self.load_module(&path, span) else {
-            return;
-        };
-        if let Some(alias) = alias {
-            self.register_module_alias(alias, &path, span);
-        }
-        self.include_module(&path, mode, names, span, items);
-    }
-
-    fn include_module(
+    fn load_module(
         &mut self,
-        path: &PathBuf,
-        mode: IncludeMode,
-        names: Vec<String>,
+        path: &Path,
+        src_override: Option<&str>,
         span: Span,
-        items: &mut Vec<Item>,
-    ) {
-        if self.included_all.contains(path) {
-            return;
+    ) -> Option<ModuleId> {
+        let key = self.normalize_path(path);
+        if let Some(id) = self.by_path.get(&key) {
+            return Some(*id);
         }
-        if self.visiting.contains(path) {
-            return;
+        if self.visiting.contains(&key) {
+            self.diags
+                .error(span, format!("cyclic module import {}", key.display()));
+            return self.by_path.get(&key).copied();
         }
-        self.visiting.insert(path.clone());
+        self.visiting.insert(key.clone());
 
-        let Some(program) = self.loaded.get(path).cloned() else {
-            self.visiting.remove(path);
-            return;
+        let src = match src_override {
+            Some(src) => src.to_string(),
+            None => match fs::read_to_string(&key) {
+                Ok(src) => src,
+                Err(err) => {
+                    self.diags.error(
+                        span,
+                        format!("failed to read module {}: {err}", key.display()),
+                    );
+                    self.visiting.remove(&key);
+                    return None;
+                }
+            },
+        };
+        let (program, diags) = parse_source(&src);
+        self.diags.extend(diags);
+
+        let id = self.next_id;
+        self.next_id += 1;
+        let exports = ModuleExports::from_program(&program);
+        let unit = ModuleUnit {
+            id,
+            path: key.clone(),
+            program,
+            modules: ModuleMap::default(),
+            import_items: HashMap::new(),
+            exports,
+        };
+        self.by_path.insert(key.clone(), id);
+        self.modules.insert(id, unit);
+        self.register_global_exports(id);
+
+        self.resolve_imports(id);
+
+        self.visiting.remove(&key);
+        Some(id)
+    }
+
+    fn resolve_imports(&mut self, id: ModuleId) {
+        let (imports, import_items, base_dir) = {
+            let Some(unit) = self.modules.get(&id) else {
+                return;
+            };
+            let base_dir = unit.path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+            let imports: Vec<ImportDecl> = unit
+                .program
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Import(decl) => Some(decl.clone()),
+                    _ => None,
+                })
+                .collect();
+            (imports, HashMap::new(), base_dir)
         };
 
-        for import in program.items.iter().filter_map(|item| match item {
-            Item::Import(decl) => Some(decl.clone()),
-            _ => None,
-        }) {
-            self.include_import(path, &import, items);
-        }
+        let mut module_map = ModuleMap::default();
+        let mut import_items = import_items;
 
-        match mode {
-            IncludeMode::All => {
-                let existing = self
-                    .included_names
-                    .entry(path.clone())
-                    .or_insert_with(HashSet::new);
-                for item in &program.items {
-                    if matches!(item, Item::Import(_)) {
-                        continue;
+        for import in imports {
+            let span = import.span;
+            match import.spec {
+                ImportSpec::Module { name } => {
+                    let mut path = base_dir.join(&name.name);
+                    if path.extension().is_none() {
+                        path.set_extension("fuse");
                     }
-                    if let Some(name) = item_ident_name(item) {
-                        if existing.contains(name) {
-                            continue;
-                        }
-                        existing.insert(name.to_string());
-                    }
-                    items.push(item.clone());
-                }
-                self.included_all.insert(path.clone());
-            }
-            IncludeMode::Names => {
-                let available = module_item_names(&program);
-                for name in &names {
-                    if !available.contains(name.as_str()) {
-                        self.diags.error(
-                            span,
-                            format!("unknown import {name} in {}", path.display()),
-                        );
+                    if let Some(module_id) = self.load_module(&path, None, span) {
+                        self.insert_module_alias(&mut module_map, &name.name, module_id);
                     }
                 }
-                let entry = self
-                    .included_names
-                    .entry(path.clone())
-                    .or_insert_with(HashSet::new);
-                for item in &program.items {
-                    let Some(name) = item_ident_name(item) else {
+                ImportSpec::ModuleFrom { name, path } => {
+                    let path = self.resolve_path(&base_dir, &path.value);
+                    if let Some(module_id) = self.load_module(&path, None, span) {
+                        self.insert_module_alias(&mut module_map, &name.name, module_id);
+                    }
+                }
+                ImportSpec::AliasFrom { alias, path, .. } => {
+                    let path = self.resolve_path(&base_dir, &path.value);
+                    if let Some(module_id) = self.load_module(&path, None, span) {
+                        self.insert_module_alias(&mut module_map, &alias.name, module_id);
+                    }
+                }
+                ImportSpec::NamedFrom { names, path } => {
+                    let path = self.resolve_path(&base_dir, &path.value);
+                    let Some(module_id) = self.load_module(&path, None, span) else {
                         continue;
                     };
-                    if !names.iter().any(|want| want == name) {
-                        continue;
+                    let exports = self.modules.get(&module_id).map(|unit| &unit.exports);
+                    for name in names {
+                        if import_items.contains_key(&name.name) {
+                            continue;
+                        }
+                        let Some(exports) = exports else { continue };
+                        if !exports.contains(&name.name) {
+                            self.diags.error(
+                                name.span,
+                                format!("unknown import {} in {}", name.name, path.display()),
+                            );
+                            continue;
+                        }
+                        import_items.insert(name.name.clone(), self.link_for(module_id));
                     }
-                    if !entry.insert(name.to_string()) {
-                        continue;
-                    }
-                    items.push(item.clone());
                 }
             }
         }
 
-        self.visiting.remove(path);
+        if let Some(unit) = self.modules.get_mut(&id) {
+            unit.modules = module_map;
+            unit.import_items = import_items;
+        }
     }
 
-    fn resolve_import(
-        &mut self,
-        from: &PathBuf,
-        import: &ImportDecl,
-    ) -> Option<(PathBuf, IncludeMode, Vec<String>, Option<String>, Span)> {
-        let span = import.span;
-        let base_dir = from.parent().unwrap_or_else(|| Path::new("."));
-        match &import.spec {
-            ImportSpec::Module { name } => {
-                let mut path = base_dir.join(&name.name);
-                if path.extension().is_none() {
-                    path.set_extension("fuse");
+    fn insert_module_alias(&mut self, map: &mut ModuleMap, alias: &str, module_id: ModuleId) {
+        if map.modules.contains_key(alias) {
+            return;
+        }
+        map.modules.insert(alias.to_string(), self.link_for(module_id));
+    }
+
+    fn link_for(&self, module_id: ModuleId) -> ModuleLink {
+        let exports = self
+            .modules
+            .get(&module_id)
+            .map(|unit| unit.exports.clone())
+            .unwrap_or_default();
+        ModuleLink { id: module_id, exports }
+    }
+
+    fn register_global_exports(&mut self, module_id: ModuleId) {
+        let Some(unit) = self.modules.get(&module_id) else {
+            return;
+        };
+        for item in &unit.program.items {
+            let (name, span) = match item {
+                Item::Type(decl) => (decl.name.name.as_str(), decl.name.span),
+                Item::Enum(decl) => (decl.name.name.as_str(), decl.name.span),
+                Item::Fn(decl) => (decl.name.name.as_str(), decl.name.span),
+                Item::Config(decl) => (decl.name.name.as_str(), decl.name.span),
+                Item::Service(decl) => (decl.name.name.as_str(), decl.name.span),
+                Item::App(decl) => (decl.name.value.as_str(), decl.name.span),
+                _ => continue,
+            };
+            if let Some((prev_id, prev_span)) = self.global_names.get(name) {
+                if *prev_id != module_id {
+                    self.diags.error(span, format!("duplicate symbol: {name}"));
+                    self.diags
+                        .error(*prev_span, format!("previous definition of {name} here"));
                 }
-                Some((
-                    path,
-                    IncludeMode::All,
-                    Vec::new(),
-                    Some(name.name.clone()),
-                    span,
-                ))
+                continue;
             }
-            ImportSpec::ModuleFrom { name, path } => {
-                let path = self.resolve_path(base_dir, &path.value);
-                Some((
-                    path,
-                    IncludeMode::All,
-                    Vec::new(),
-                    Some(name.name.clone()),
-                    span,
-                ))
-            }
-            ImportSpec::AliasFrom { alias, path, .. } => {
-                let path = self.resolve_path(base_dir, &path.value);
-                Some((
-                    path,
-                    IncludeMode::All,
-                    Vec::new(),
-                    Some(alias.name.clone()),
-                    span,
-                ))
-            }
-            ImportSpec::NamedFrom { names, path } => {
-                let path = self.resolve_path(base_dir, &path.value);
-                let names = names.iter().map(|name| name.name.clone()).collect();
-                Some((path, IncludeMode::Names, names, None, span))
-            }
+            self.global_names
+                .insert(name.to_string(), (module_id, span));
         }
     }
 
@@ -293,81 +332,11 @@ impl ModuleLoader {
         path
     }
 
-    fn load_module(&mut self, path: &PathBuf, span: Span) -> Option<PathBuf> {
-        let key = self.normalize_path(path);
-        if self.loaded.contains_key(&key) {
-            return Some(key);
-        }
-        let src = match fs::read_to_string(&key) {
-            Ok(src) => src,
-            Err(err) => {
-                self.diags
-                    .error(span, format!("failed to read module {}: {err}", key.display()));
-                return None;
-            }
-        };
-        let (program, diags) = parse_source(&src);
-        self.diags.extend(diags);
-        self.loaded.insert(key.clone(), program);
-        Some(key)
-    }
-
     fn normalize_path(&self, path: &Path) -> PathBuf {
         if let Ok(canon) = path.canonicalize() {
             canon
         } else {
             path.to_path_buf()
         }
-    }
-
-    fn module_exports_for(&mut self, path: &PathBuf) -> Option<ModuleExports> {
-        if let Some(exports) = self.module_exports.get(path) {
-            return Some(exports.clone());
-        }
-        let program = self.loaded.get(path)?;
-        let exports = ModuleExports::from_program(program);
-        self.module_exports.insert(path.clone(), exports.clone());
-        Some(exports)
-    }
-
-    fn register_module_alias(&mut self, alias: String, path: &PathBuf, span: Span) {
-        if let Some(existing) = self.module_aliases.get(&alias) {
-            if existing != path {
-                self.diags.error(
-                    span,
-                    format!(
-                        "module alias {alias} already used for {}",
-                        existing.display()
-                    ),
-                );
-            }
-            return;
-        }
-        let Some(exports) = self.module_exports_for(path) else {
-            self.diags
-                .error(span, format!("unknown module {}", path.display()));
-            return;
-        };
-        self.module_aliases.insert(alias.clone(), path.clone());
-        self.module_map.modules.insert(alias, exports);
-    }
-}
-
-fn module_item_names(program: &Program) -> HashSet<&str> {
-    program
-        .items
-        .iter()
-        .filter_map(item_ident_name)
-        .collect()
-}
-
-fn item_ident_name(item: &Item) -> Option<&str> {
-    match item {
-        Item::Type(decl) => Some(decl.name.name.as_str()),
-        Item::Enum(decl) => Some(decl.name.name.as_str()),
-        Item::Fn(decl) => Some(decl.name.name.as_str()),
-        Item::Service(decl) => Some(decl.name.name.as_str()),
-        Item::Config(decl) => Some(decl.name.name.as_str()),
-        _ => None,
     }
 }

@@ -112,7 +112,7 @@ fn main() {
         return;
     }
 
-    let (program, modules, diags) = load_program_with_modules(Path::new(&path), &src);
+    let (registry, diags) = load_program_with_modules(Path::new(&path), &src);
     if !diags.is_empty() {
         for diag in diags {
             let level = match diag.level {
@@ -126,9 +126,17 @@ fn main() {
         }
         process::exit(1);
     }
+    let root = match registry.root() {
+        Some(root) => root,
+        None => {
+            eprintln!("no root module loaded");
+            process::exit(1);
+        }
+    };
+    let program = &root.program;
 
     if check {
-        let (_analysis, diags) = fusec::sema::analyze_program(&program, &modules);
+        let (_analysis, diags) = fusec::sema::analyze_registry(&registry);
         if !diags.is_empty() {
             for diag in diags {
                 let level = match diag.level {
@@ -179,7 +187,7 @@ fn main() {
                     return;
                 }
             };
-            let mut interp = Interpreter::with_modules(&program, modules.clone());
+            let mut interp = Interpreter::with_registry(&registry);
             let mut args_map = HashMap::new();
             let mut errors = Vec::new();
             let param_names: HashSet<String> = main_decl
@@ -264,14 +272,14 @@ fn main() {
         } else {
             match backend {
                 Backend::Ast => {
-                    let mut interp = fusec::interp::Interpreter::with_modules(&program, modules.clone());
+                    let mut interp = fusec::interp::Interpreter::with_registry(&registry);
                     if let Err(err) = interp.run_app(app) {
                         eprintln!("run error: {err}");
                         process::exit(1);
                     }
                 }
                 Backend::Vm => {
-                    let ir = match fusec::ir::lower::lower_program(&program, &modules) {
+                    let ir = match fusec::ir::lower::lower_registry(&registry) {
                         Ok(ir) => ir,
                         Err(errors) => {
                             for error in errors {

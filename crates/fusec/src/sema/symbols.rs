@@ -4,7 +4,7 @@ use crate::ast::{ConfigDecl, EnumDecl, FnDecl, ImportDecl, ImportSpec, Item, Pro
 use crate::diag::Diagnostics;
 use crate::span::Span;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ModuleSymbols {
     pub types: HashMap<String, TypeInfo>,
     pub enums: HashMap<String, EnumInfo>,

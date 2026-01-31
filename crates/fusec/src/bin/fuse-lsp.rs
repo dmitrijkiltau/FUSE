@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 
 use fusec::diag::{Diag, Level};
-use fusec::{parse_source, ModuleMap};
+use fusec::parse_source;
 use fusec::sema;
 use fuse_rt::json::{self, JsonValue};
 
@@ -104,7 +104,7 @@ fn publish_diagnostics(out: &mut impl Write, uri: &str, text: &str) -> io::Resul
     let (program, parse_diags) = parse_source(text);
     diags.extend(parse_diags);
     if !diags.iter().any(|d| matches!(d.level, Level::Error)) {
-        let (_analysis, sema_diags) = sema::analyze_program(&program, &ModuleMap::default());
+        let (_analysis, sema_diags) = sema::analyze_program(&program);
         diags.extend(sema_diags);
     }
     let diagnostics = to_lsp_diags(text, &diags);

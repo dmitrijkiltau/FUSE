@@ -9,7 +9,7 @@ use crate::ast::{
     InterpPart, Item, Literal, Pattern, PatternField, PatternKind, Program, RouteDecl, ServiceDecl,
     Stmt, StmtKind, StructField, TypeDecl, TypeRef, TypeRefKind, UnaryOp,
 };
-use crate::loader::ModuleMap;
+use crate::loader::{ModuleId, ModuleMap, ModuleRegistry};
 
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -226,16 +226,20 @@ impl Env {
 }
 
 pub struct Interpreter<'a> {
-    program: &'a Program,
     env: Env,
     configs: HashMap<String, HashMap<String, Value>>,
     functions: HashMap<String, &'a FnDecl>,
     apps: Vec<&'a AppDecl>,
+    app_owner: HashMap<String, ModuleId>,
     services: HashMap<String, &'a ServiceDecl>,
+    service_owner: HashMap<String, ModuleId>,
     types: HashMap<String, &'a TypeDecl>,
     config_decls: HashMap<String, &'a ConfigDecl>,
     enums: HashMap<String, &'a EnumDecl>,
-    modules: ModuleMap,
+    module_maps: HashMap<ModuleId, ModuleMap>,
+    function_owner: HashMap<String, ModuleId>,
+    config_owner: HashMap<String, ModuleId>,
+    current_module: ModuleId,
 }
 
 impl<'a> Interpreter<'a> {
@@ -245,27 +249,35 @@ impl<'a> Interpreter<'a> {
 
     pub fn with_modules(program: &'a Program, modules: ModuleMap) -> Self {
         let mut functions = HashMap::new();
+        let mut function_owner = HashMap::new();
         let mut apps = Vec::new();
+        let mut app_owner = HashMap::new();
         let mut services = HashMap::new();
+        let mut service_owner = HashMap::new();
         let mut types = HashMap::new();
         let mut config_decls = HashMap::new();
+        let mut config_owner = HashMap::new();
         let mut enums = HashMap::new();
         for item in &program.items {
             match item {
                 Item::Fn(decl) => {
                     functions.insert(decl.name.name.clone(), decl);
+                    function_owner.insert(decl.name.name.clone(), 0);
                 }
                 Item::App(app) => {
                     apps.push(app);
+                    app_owner.insert(app.name.value.clone(), 0);
                 }
                 Item::Service(decl) => {
                     services.insert(decl.name.name.clone(), decl);
+                    service_owner.insert(decl.name.name.clone(), 0);
                 }
                 Item::Type(decl) => {
                     types.insert(decl.name.name.clone(), decl);
                 }
                 Item::Config(decl) => {
                     config_decls.insert(decl.name.name.clone(), decl);
+                    config_owner.insert(decl.name.name.clone(), 0);
                 }
                 Item::Enum(decl) => {
                     enums.insert(decl.name.name.clone(), decl);
@@ -274,16 +286,80 @@ impl<'a> Interpreter<'a> {
             }
         }
         Self {
-            program,
             env: Env::new(),
             configs: HashMap::new(),
             functions,
             apps,
+            app_owner,
             services,
+            service_owner,
             types,
             config_decls,
             enums,
-            modules,
+            module_maps: HashMap::from([(0, modules)]),
+            function_owner,
+            config_owner,
+            current_module: 0,
+        }
+    }
+
+    pub fn with_registry(registry: &'a ModuleRegistry) -> Self {
+        let mut functions = HashMap::new();
+        let mut function_owner = HashMap::new();
+        let mut apps = Vec::new();
+        let mut app_owner = HashMap::new();
+        let mut services = HashMap::new();
+        let mut service_owner = HashMap::new();
+        let mut types = HashMap::new();
+        let mut config_decls = HashMap::new();
+        let mut config_owner = HashMap::new();
+        let mut enums = HashMap::new();
+        let mut module_maps = HashMap::new();
+        for (id, unit) in &registry.modules {
+            module_maps.insert(*id, unit.modules.clone());
+            for item in &unit.program.items {
+                match item {
+                    Item::Fn(decl) => {
+                        functions.insert(decl.name.name.clone(), decl);
+                        function_owner.insert(decl.name.name.clone(), *id);
+                    }
+                    Item::App(app) => {
+                        apps.push(app);
+                        app_owner.insert(app.name.value.clone(), *id);
+                    }
+                    Item::Service(decl) => {
+                        services.insert(decl.name.name.clone(), decl);
+                        service_owner.insert(decl.name.name.clone(), *id);
+                    }
+                    Item::Type(decl) => {
+                        types.insert(decl.name.name.clone(), decl);
+                    }
+                    Item::Config(decl) => {
+                        config_decls.insert(decl.name.name.clone(), decl);
+                        config_owner.insert(decl.name.name.clone(), *id);
+                    }
+                    Item::Enum(decl) => {
+                        enums.insert(decl.name.name.clone(), decl);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Self {
+            env: Env::new(),
+            configs: HashMap::new(),
+            functions,
+            apps,
+            app_owner,
+            services,
+            service_owner,
+            types,
+            config_decls,
+            enums,
+            module_maps,
+            function_owner,
+            config_owner,
+            current_module: registry.root,
         }
     }
 
@@ -303,11 +379,17 @@ impl<'a> Interpreter<'a> {
                 .copied()
                 .ok_or_else(|| "no app found".to_string())?
         };
-        match self.eval_block(&app.body) {
+        let prev_module = self.current_module;
+        if let Some(owner) = self.app_owner.get(&app.name.value) {
+            self.current_module = *owner;
+        }
+        let out = match self.eval_block(&app.body) {
             Ok(_) => Ok(()),
             Err(ExecError::Return(_)) => Ok(()),
             Err(err) => Err(self.render_exec_error(err)),
-        }
+        };
+        self.current_module = prev_module;
+        out
     }
 
     pub fn parse_cli_value(&self, ty: &TypeRef, raw: &str) -> Result<Value, String> {
@@ -326,6 +408,10 @@ impl<'a> Interpreter<'a> {
             Some(decl) => *decl,
             None => return Err(format!("unknown function {name}")),
         };
+        let prev_module = self.current_module;
+        if let Some(owner) = self.function_owner.get(name) {
+            self.current_module = *owner;
+        }
         self.env.push();
         for param in &decl.params {
             let value = if let Some(value) = args.get(&param.name.name) {
@@ -352,11 +438,13 @@ impl<'a> Interpreter<'a> {
         }
         let result = self.eval_block(&decl.body);
         self.env.pop();
-        match result {
+        let out = match result {
             Ok(value) => Ok(value),
             Err(ExecError::Return(value)) => Ok(value),
             Err(err) => Err(self.render_exec_error(err)),
-        }
+        };
+        self.current_module = prev_module;
+        out
     }
 
     fn render_exec_error(&self, err: ExecError) -> String {
@@ -372,42 +460,46 @@ impl<'a> Interpreter<'a> {
             std::env::var("FUSE_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
         let file_values =
             rt_config::load_config_file(&config_path).map_err(ExecError::Runtime)?;
-        for item in &self.program.items {
-            if let Item::Config(decl) = item {
-                let name = decl.name.name.clone();
-                self.configs.insert(name.clone(), HashMap::new());
-                let section = file_values.get(&name);
-                for field in &decl.fields {
-                    let key = self.config_env_key(&decl.name.name, &field.name.name);
-                    let path = format!("{}.{}", decl.name.name, field.name.name);
-                    let value = match std::env::var(&key) {
-                        Ok(raw) => {
-                            let value = self
-                                .parse_env_value(&field.ty, &raw)
-                                .map_err(|err| self.map_parse_error(err, &path))?;
-                            self.validate_value(&value, &field.ty, &path)?;
-                            value
-                        }
-                        Err(_) => {
-                            let value = if let Some(section) = section {
-                                if let Some(raw) = section.get(&field.name.name) {
-                                    self.parse_env_value(&field.ty, raw)
-                                        .map_err(|err| self.map_parse_error(err, &path))?
-                                } else {
-                                    self.eval_expr(&field.value)?
-                                }
+        let decls: Vec<&ConfigDecl> = self.config_decls.values().copied().collect();
+        for decl in decls {
+            let name = decl.name.name.clone();
+            let prev_module = self.current_module;
+            if let Some(owner) = self.config_owner.get(&name) {
+                self.current_module = *owner;
+            }
+            self.configs.insert(name.clone(), HashMap::new());
+            let section = file_values.get(&name);
+            for field in &decl.fields {
+                let key = self.config_env_key(&decl.name.name, &field.name.name);
+                let path = format!("{}.{}", decl.name.name, field.name.name);
+                let value = match std::env::var(&key) {
+                    Ok(raw) => {
+                        let value = self
+                            .parse_env_value(&field.ty, &raw)
+                            .map_err(|err| self.map_parse_error(err, &path))?;
+                        self.validate_value(&value, &field.ty, &path)?;
+                        value
+                    }
+                    Err(_) => {
+                        let value = if let Some(section) = section {
+                            if let Some(raw) = section.get(&field.name.name) {
+                                self.parse_env_value(&field.ty, raw)
+                                    .map_err(|err| self.map_parse_error(err, &path))?
                             } else {
                                 self.eval_expr(&field.value)?
-                            };
-                            self.validate_value(&value, &field.ty, &path)?;
-                            value
-                        }
-                    };
-                    if let Some(map) = self.configs.get_mut(&name) {
-                        map.insert(field.name.name.clone(), value);
+                            }
+                        } else {
+                            self.eval_expr(&field.value)?
+                        };
+                        self.validate_value(&value, &field.ty, &path)?;
+                        value
                     }
+                };
+                if let Some(map) = self.configs.get_mut(&name) {
+                    map.insert(field.name.name.clone(), value);
                 }
             }
+            self.current_module = prev_module;
         }
         Ok(())
     }
@@ -736,6 +828,10 @@ impl<'a> Interpreter<'a> {
             Some(decl) => *decl,
             None => return Err(ExecError::Runtime(format!("unknown function {name}"))),
         };
+        let prev_module = self.current_module;
+        if let Some(owner) = self.function_owner.get(name) {
+            self.current_module = *owner;
+        }
         self.env.push();
         for (idx, param) in decl.params.iter().enumerate() {
             let value = if idx < args.len() {
@@ -752,7 +848,7 @@ impl<'a> Interpreter<'a> {
         }
         let result = self.eval_block(&decl.body);
         self.env.pop();
-        match result {
+        let out = match result {
             Ok(value) => self.wrap_function_result(&decl.ret, value),
             Err(ExecError::Return(value)) => self.wrap_function_result(&decl.ret, value),
             Err(ExecError::Error(value)) => {
@@ -763,11 +859,17 @@ impl<'a> Interpreter<'a> {
                 }
             }
             Err(ExecError::Runtime(msg)) => Err(ExecError::Runtime(msg)),
-        }
+        };
+        self.current_module = prev_module;
+        out
     }
 
     fn eval_serve(&mut self, port: i64) -> ExecResult<Value> {
         let service = self.select_service()?.clone();
+        let prev_module = self.current_module;
+        if let Some(owner) = self.service_owner.get(&service.name.name) {
+            self.current_module = *owner;
+        }
         let host = std::env::var("FUSE_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
         let port: u16 = port
             .try_into()
@@ -799,6 +901,7 @@ impl<'a> Interpreter<'a> {
                 break;
             }
         }
+        self.current_module = prev_module;
         Ok(Value::Unit)
     }
 
@@ -1144,19 +1247,20 @@ impl<'a> Interpreter<'a> {
     }
 
     fn eval_module_member(&mut self, base: &Expr, field: &str) -> ExecResult<Option<Value>> {
+        let module_map = self.module_maps.get(&self.current_module);
         if let ExprKind::Member {
             base: inner_base,
             name: inner_name,
         } = &base.kind
         {
             if let ExprKind::Ident(module_ident) = &inner_base.kind {
-                if let Some(module) = self.modules.get(&module_ident.name) {
+                if let Some(module) = module_map.and_then(|map| map.get(&module_ident.name)) {
                     let member = inner_name.name.as_str();
-                    if module.enums.contains(member) {
+                    if module.exports.enums.contains(member) {
                         let value = self.eval_enum_member(member, field)?;
                         return Ok(Some(value));
                     }
-                    if module.configs.contains(member) {
+                    if module.exports.configs.contains(member) {
                         let value = self.eval_member(Value::Config(member.to_string()), field)?;
                         return Ok(Some(value));
                     }
@@ -1168,14 +1272,14 @@ impl<'a> Interpreter<'a> {
             }
         }
         if let ExprKind::Ident(module_ident) = &base.kind {
-            if let Some(module) = self.modules.get(&module_ident.name) {
-                if module.functions.contains(field) {
+            if let Some(module) = module_map.and_then(|map| map.get(&module_ident.name)) {
+                if module.exports.functions.contains(field) {
                     return Ok(Some(Value::Function(field.to_string())));
                 }
-                if module.configs.contains(field) {
+                if module.exports.configs.contains(field) {
                     return Ok(Some(Value::Config(field.to_string())));
                 }
-                if module.enums.contains(field) || module.types.contains(field) {
+                if module.exports.enums.contains(field) || module.exports.types.contains(field) {
                     return Err(ExecError::Runtime(format!(
                         "{}.{} is a type, not a value",
                         module_ident.name, field

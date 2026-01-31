@@ -1,4 +1,4 @@
-use fusec::{parse_source, sema, ModuleMap};
+use fusec::{parse_source, sema};
 
 fn analyze(src: &str) -> Vec<String> {
     let (program, parse_diags) = parse_source(src);
@@ -12,7 +12,7 @@ fn analyze(src: &str) -> Vec<String> {
         }
         panic!("expected parse success, got diagnostics:\n{out}");
     }
-    let (_analysis, diags) = sema::analyze_program(&program, &ModuleMap::default());
+    let (_analysis, diags) = sema::analyze_program(&program);
     let mut out = Vec::new();
     for diag in diags {
         out.push(format!("{:?}: {}", diag.level, diag.message));

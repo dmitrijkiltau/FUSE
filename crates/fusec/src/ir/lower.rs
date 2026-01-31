@@ -4,7 +4,7 @@ use crate::ast::{
     AppDecl, BinaryOp, Block, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item, Literal, Pattern,
     PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, UnaryOp,
 };
-use crate::loader::ModuleMap;
+use crate::loader::{ModuleMap, ModuleRegistry};
 use crate::span::Span;
 
 use super::{
@@ -26,6 +26,36 @@ pub fn lower_program(program: &Program, modules: &ModuleMap) -> Result<IrProgram
         })
     } else {
         Err(lowerer.errors)
+    }
+}
+
+pub fn lower_registry(registry: &ModuleRegistry) -> Result<IrProgram, Vec<String>> {
+    let mut merged = IrProgram {
+        functions: HashMap::new(),
+        apps: HashMap::new(),
+        configs: HashMap::new(),
+        types: HashMap::new(),
+        enums: HashMap::new(),
+        services: HashMap::new(),
+    };
+    let mut errors = Vec::new();
+    for unit in registry.modules.values() {
+        match lower_program(&unit.program, &unit.modules) {
+            Ok(ir) => {
+                merge_named("function", ir.functions, &mut merged.functions, &mut errors);
+                merge_named("app", ir.apps, &mut merged.apps, &mut errors);
+                merge_named("config", ir.configs, &mut merged.configs, &mut errors);
+                merge_named("type", ir.types, &mut merged.types, &mut errors);
+                merge_named("enum", ir.enums, &mut merged.enums, &mut errors);
+                merge_named("service", ir.services, &mut merged.services, &mut errors);
+            }
+            Err(mut errs) => errors.append(&mut errs),
+        }
+    }
+    if errors.is_empty() {
+        Ok(merged)
+    } else {
+        Err(errors)
     }
 }
 
@@ -315,6 +345,21 @@ fn parse_route_param(segment: &str) -> Option<(String, String)> {
         return None;
     }
     Some((name.to_string(), ty.to_string()))
+}
+
+fn merge_named<T>(
+    kind: &str,
+    items: HashMap<String, T>,
+    out: &mut HashMap<String, T>,
+    errors: &mut Vec<String>,
+) {
+    for (name, value) in items {
+        if out.contains_key(&name) {
+            errors.push(format!("duplicate {kind} {name}"));
+        } else {
+            out.insert(name, value);
+        }
+    }
 }
 
 struct FuncBuilder {
@@ -685,8 +730,8 @@ impl FuncBuilder {
                     }
                     ExprKind::Member { base, name } => {
                         if let ExprKind::Ident(module_ident) = &base.kind {
-                            if let Some(module) = self.modules.get(&module_ident.name) {
-                                if module.functions.contains(&name.name) {
+                        if let Some(module) = self.modules.get(&module_ident.name) {
+                            if module.exports.functions.contains(&name.name) {
                                     for arg in args {
                                         self.lower_expr(&arg.value);
                                     }
@@ -706,7 +751,7 @@ impl FuncBuilder {
                         {
                             if let ExprKind::Ident(module_ident) = &inner_base.kind {
                                 if let Some(module) = self.modules.get(&module_ident.name) {
-                                    if module.enums.contains(&inner_name.name) {
+                                    if module.exports.enums.contains(&inner_name.name) {
                                         for arg in args {
                                             self.lower_expr(&arg.value);
                                         }
@@ -753,14 +798,14 @@ impl FuncBuilder {
                 {
                     if let ExprKind::Ident(module_ident) = &inner_base.kind {
                         if let Some(module) = self.modules.get(&module_ident.name) {
-                            if module.configs.contains(&inner_name.name) {
+                            if module.exports.configs.contains(&inner_name.name) {
                                 self.emit(Instr::LoadConfigField {
                                     config: inner_name.name.clone(),
                                     field: name.name.clone(),
                                 });
                                 return;
                             }
-                            if module.enums.contains(&inner_name.name) {
+                            if module.exports.enums.contains(&inner_name.name) {
                                 self.emit(Instr::MakeEnum {
                                     name: inner_name.name.clone(),
                                     variant: name.name.clone(),
