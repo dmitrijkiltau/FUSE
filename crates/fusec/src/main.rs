@@ -20,6 +20,7 @@ fn main() {
     let mut dump_ast = false;
     let mut check = false;
     let mut run = false;
+    let mut fmt = false;
     let mut program_args: Vec<String> = Vec::new();
     let mut backend = Backend::Ast;
     let mut backend_forced = false;
@@ -39,6 +40,10 @@ fn main() {
             check = true;
             continue;
         }
+        if arg == "--fmt" {
+            fmt = true;
+            continue;
+        }
         if arg == "--run" {
             run = true;
             continue;
@@ -51,13 +56,13 @@ fn main() {
                     "vm" => Backend::Vm,
                     _ => {
                         eprintln!("unknown backend: {name}");
-                        eprintln!("usage: fusec [--dump-ast] [--check] [--run] [--backend ast|vm] [--app NAME] <file>");
+                        eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--backend ast|vm] [--app NAME] <file>");
                         return;
                     }
                 };
             } else {
                 eprintln!("--backend expects a name");
-                eprintln!("usage: fusec [--dump-ast] [--check] [--run] [--backend ast|vm] [--app NAME] <file>");
+                eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--backend ast|vm] [--app NAME] <file>");
                 return;
             }
             continue;
@@ -67,7 +72,7 @@ fn main() {
                 app_name = Some(name);
             } else {
                 eprintln!("--app expects a name");
-                eprintln!("usage: fusec [--dump-ast] [--check] [--run] [--backend ast|vm] [--app NAME] <file>");
+                eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--backend ast|vm] [--app NAME] <file>");
                 return;
             }
             continue;
@@ -82,7 +87,7 @@ fn main() {
     let path = match path {
         Some(p) => p,
         None => {
-            eprintln!("usage: fusec [--dump-ast] [--check] [--run] [--backend ast|vm] [--app NAME] <file>");
+            eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--backend ast|vm] [--app NAME] <file>");
             return;
         }
     };
@@ -94,6 +99,17 @@ fn main() {
             process::exit(1);
         }
     };
+
+    if fmt {
+        let formatted = fusec::format::format_source(&src);
+        if formatted != src {
+            if let Err(err) = fs::write(&path, formatted) {
+                eprintln!("failed to write {path}: {err}");
+                process::exit(1);
+            }
+        }
+        return;
+    }
 
     let (program, diags) = parse_source(&src);
     if !diags.is_empty() {

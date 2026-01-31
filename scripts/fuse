@@ -10,10 +10,14 @@ usage: scripts/fuse <command> [args...]
 commands:
   run   Run a Fuse program (passes through to fusec --run)
   check Parse + sema check (passes through to fusec --check)
+  fmt   Format a Fuse file (passes through to fusec --fmt)
+  lsp   Start the Fuse language server
 
 examples:
   scripts/fuse run examples/cli_hello.fuse
   scripts/fuse check examples/project_demo.fuse
+  scripts/fuse fmt examples/project_demo.fuse
+  scripts/fuse lsp
 EOF
 }
 
@@ -31,6 +35,12 @@ case "$cmd" in
     ;;
   check)
     exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --check "$@"
+    ;;
+  fmt)
+    exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --fmt "$@"
+    ;;
+  lsp)
+    exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec --bin fuse-lsp -- "$@"
     ;;
   *)
     usage
