@@ -90,7 +90,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
-        let builtin_names = ["print", "env", "serve"]
+        let builtin_names = ["print", "env", "serve", "log"]
             .into_iter()
             .map(|s| s.to_string())
             .collect();

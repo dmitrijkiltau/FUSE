@@ -26,6 +26,45 @@ fn split_type_name(name: &str) -> (Option<&str>, &str) {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl LogLevel {
+    fn label(self) -> &'static str {
+        match self {
+            LogLevel::Trace => "TRACE",
+            LogLevel::Debug => "DEBUG",
+            LogLevel::Info => "INFO",
+            LogLevel::Warn => "WARN",
+            LogLevel::Error => "ERROR",
+        }
+    }
+}
+
+fn parse_log_level(raw: &str) -> Option<LogLevel> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "trace" => Some(LogLevel::Trace),
+        "debug" => Some(LogLevel::Debug),
+        "info" => Some(LogLevel::Info),
+        "warn" | "warning" => Some(LogLevel::Warn),
+        "error" => Some(LogLevel::Error),
+        _ => None,
+    }
+}
+
+fn min_log_level() -> LogLevel {
+    std::env::var("FUSE_LOG")
+        .ok()
+        .and_then(|raw| parse_log_level(&raw))
+        .unwrap_or(LogLevel::Info)
+}
+
 pub struct Vm<'a> {
     program: &'a IrProgram,
     configs: HashMap<String, HashMap<String, Value>>,
@@ -422,6 +461,27 @@ impl<'a> Vm<'a> {
             "print" => {
                 let text = args.get(0).map(|v| v.to_string_value()).unwrap_or_default();
                 println!("{text}");
+                Ok(Value::Unit)
+            }
+            "log" => {
+                let mut level = LogLevel::Info;
+                let mut start_idx = 0usize;
+                if args.len() >= 2 {
+                    if let Some(Value::String(raw_level)) = args.get(0) {
+                        if let Some(parsed) = parse_log_level(raw_level) {
+                            level = parsed;
+                            start_idx = 1;
+                        }
+                    }
+                }
+                if level >= min_log_level() {
+                    let message = args[start_idx..]
+                        .iter()
+                        .map(|val| val.to_string_value())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    eprintln!("[{}] {}", level.label(), message);
+                }
                 Ok(Value::Unit)
             }
             "env" => {

@@ -228,8 +228,29 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 ## Builtins (current)
 
 * `print(value)` prints a stringified value to stdout.
+* `log(...)` writes a log line to stderr (see Logging below).
 * `env(name: String) -> String?` returns an env var or `null`.
 * `serve(port)` starts the HTTP server on `FUSE_HOST:port`.
+
+## Logging
+
+`log` is a lightweight builtin for runtime logging. It is intentionally minimal and shared by
+both backends.
+
+Usage:
+
+* `log("message")` logs at `INFO`.
+* `log("warn", "message")` logs at `WARN`.
+* If there are 2+ args and the first is a known level (`trace`, `debug`, `info`, `warn`, `error`),
+  it is treated as the level; the rest are stringified and joined with spaces.
+
+Output format:
+
+* `[LEVEL] message` to stderr.
+
+Filtering:
+
+* `FUSE_LOG` sets the minimum level (default `info`).
 
 ## Unsupported or partial features
 

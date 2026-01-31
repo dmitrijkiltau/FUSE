@@ -78,7 +78,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * config/env/CLI parsing is limited to scalar types + `Option` + refined ranges
 * HTTP request binding + response encoding
 * error JSON + HTTP status mapping
-* builtins: `print`, `env`, `serve`
+* builtins: `print`, `log`, `env`, `serve`
 * CLI arg binding for `fn main` when running with program args (AST backend only)
 
 **Tooling (implemented)**

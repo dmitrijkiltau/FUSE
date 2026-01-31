@@ -117,7 +117,7 @@ The runtime currently handles:
 * AST interpreter and VM backends
 * `import` module loading (namespaced modules + named imports)
 * module-qualified type references in type positions (`Foo.User`, `Foo.Config`)
-* Built-ins: `print(...)`, `env(...)`, `serve(...)`
+* Built-ins: `print(...)`, `log(...)`, `env(...)`, `serve(...)`
 * Config loading (env > config file > defaults)
 * JSON encode/decode and refined-type validation
 * HTTP routing + error JSON mapping
