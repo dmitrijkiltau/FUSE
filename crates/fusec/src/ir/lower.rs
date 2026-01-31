@@ -4,6 +4,7 @@ use crate::ast::{
     AppDecl, BinaryOp, Block, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item, Literal, Pattern,
     PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, UnaryOp,
 };
+use crate::loader::ModuleMap;
 use crate::span::Span;
 
 use super::{
@@ -11,8 +12,8 @@ use super::{
     Program as IrProgram, Service, ServiceRoute, TypeField, TypeInfo,
 };
 
-pub fn lower_program(program: &Program) -> Result<IrProgram, Vec<String>> {
-    let mut lowerer = Lowerer::new(program);
+pub fn lower_program(program: &Program, modules: &ModuleMap) -> Result<IrProgram, Vec<String>> {
+    let mut lowerer = Lowerer::new(program, modules);
     lowerer.lower();
     if lowerer.errors.is_empty() {
         Ok(IrProgram {
@@ -30,6 +31,7 @@ pub fn lower_program(program: &Program) -> Result<IrProgram, Vec<String>> {
 
 struct Lowerer<'a> {
     program: &'a Program,
+    modules: &'a ModuleMap,
     functions: HashMap<String, Function>,
     apps: HashMap<String, Function>,
     configs: HashMap<String, Config>,
@@ -44,7 +46,7 @@ struct Lowerer<'a> {
 }
 
 impl<'a> Lowerer<'a> {
-    fn new(program: &'a Program) -> Self {
+    fn new(program: &'a Program, modules: &'a ModuleMap) -> Self {
         let mut config_names = HashSet::new();
         let mut enum_names = HashSet::new();
         let mut enum_variant_names = HashSet::new();
@@ -64,6 +66,7 @@ impl<'a> Lowerer<'a> {
             .collect();
         Self {
             program,
+            modules,
             functions: HashMap::new(),
             apps: HashMap::new(),
             configs: HashMap::new(),
@@ -100,6 +103,7 @@ impl<'a> Lowerer<'a> {
             &self.enum_names,
             &self.enum_variant_names,
             &self.builtin_names,
+            self.modules,
         );
         for param in &decl.params {
             builder.declare_param(&param.name);
@@ -121,6 +125,7 @@ impl<'a> Lowerer<'a> {
             &self.enum_names,
             &self.enum_variant_names,
             &self.builtin_names,
+            self.modules,
         );
         builder.lower_block(&app.body);
         builder.ensure_return();
@@ -142,6 +147,7 @@ impl<'a> Lowerer<'a> {
                 &self.enum_names,
                 &self.enum_variant_names,
                 &self.builtin_names,
+                self.modules,
             );
             builder.lower_expr(&field.value);
             builder.emit(Instr::Return);
@@ -177,6 +183,7 @@ impl<'a> Lowerer<'a> {
                     &self.enum_names,
                     &self.enum_variant_names,
                     &self.builtin_names,
+                    self.modules,
                 );
                 builder.lower_expr(expr);
                 builder.emit(Instr::Return);
@@ -234,6 +241,7 @@ impl<'a> Lowerer<'a> {
                 &self.enum_names,
                 &self.enum_variant_names,
                 &self.builtin_names,
+                self.modules,
             );
             for name in &params {
                 let ident = Ident {
@@ -321,6 +329,7 @@ struct FuncBuilder {
     enum_names: HashSet<String>,
     enum_variant_names: HashSet<String>,
     builtin_names: HashSet<String>,
+    modules: ModuleMap,
 }
 
 impl FuncBuilder {
@@ -331,6 +340,7 @@ impl FuncBuilder {
         enum_names: &HashSet<String>,
         enum_variant_names: &HashSet<String>,
         builtin_names: &HashSet<String>,
+        modules: &ModuleMap,
     ) -> Self {
         Self {
             name,
@@ -344,6 +354,7 @@ impl FuncBuilder {
             enum_names: enum_names.clone(),
             enum_variant_names: enum_variant_names.clone(),
             builtin_names: builtin_names.clone(),
+            modules: modules.clone(),
         }
     }
 
@@ -673,6 +684,42 @@ impl FuncBuilder {
                         });
                     }
                     ExprKind::Member { base, name } => {
+                        if let ExprKind::Ident(module_ident) = &base.kind {
+                            if let Some(module) = self.modules.get(&module_ident.name) {
+                                if module.functions.contains(&name.name) {
+                                    for arg in args {
+                                        self.lower_expr(&arg.value);
+                                    }
+                                    self.emit(Instr::Call {
+                                        name: name.name.clone(),
+                                        argc: args.len(),
+                                        kind: CallKind::Function,
+                                    });
+                                    return;
+                                }
+                            }
+                        }
+                        if let ExprKind::Member {
+                            base: inner_base,
+                            name: inner_name,
+                        } = &base.kind
+                        {
+                            if let ExprKind::Ident(module_ident) = &inner_base.kind {
+                                if let Some(module) = self.modules.get(&module_ident.name) {
+                                    if module.enums.contains(&inner_name.name) {
+                                        for arg in args {
+                                            self.lower_expr(&arg.value);
+                                        }
+                                        self.emit(Instr::MakeEnum {
+                                            name: inner_name.name.clone(),
+                                            variant: name.name.clone(),
+                                            argc: args.len(),
+                                        });
+                                        return;
+                                    }
+                                }
+                            }
+                        }
                         if let ExprKind::Ident(enum_name) = &base.kind {
                             if self.enum_names.contains(&enum_name.name) {
                                 for arg in args {
@@ -699,6 +746,38 @@ impl FuncBuilder {
                 }
             }
             ExprKind::Member { base, name } => {
+                if let ExprKind::Member {
+                    base: inner_base,
+                    name: inner_name,
+                } = &base.kind
+                {
+                    if let ExprKind::Ident(module_ident) = &inner_base.kind {
+                        if let Some(module) = self.modules.get(&module_ident.name) {
+                            if module.configs.contains(&inner_name.name) {
+                                self.emit(Instr::LoadConfigField {
+                                    config: inner_name.name.clone(),
+                                    field: name.name.clone(),
+                                });
+                                return;
+                            }
+                            if module.enums.contains(&inner_name.name) {
+                                self.emit(Instr::MakeEnum {
+                                    name: inner_name.name.clone(),
+                                    variant: name.name.clone(),
+                                    argc: 0,
+                                });
+                                return;
+                            }
+                        }
+                    }
+                }
+                if let ExprKind::Ident(module_ident) = &base.kind {
+                    if self.modules.contains(&module_ident.name) {
+                        self.errors
+                            .push("module members are not values in the VM yet".to_string());
+                        return;
+                    }
+                }
                 if let ExprKind::Ident(ident) = &base.kind {
                     if self.config_names.contains(&ident.name) {
                         self.emit(Instr::LoadConfigField {

@@ -53,7 +53,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * `fn`
 * `type` structs
 * `enum`
-* `import` (file loading + flattened scope; no module qualifiers yet)
+* `import` (file loading + flattened scope; module aliases for qualified access)
 * `config`, `service`, `app`
 * `if` / `else`, `match` (struct/enum/Option/Result patterns)
 * string interpolation via `${expr}` (escape `$` as `\$`)

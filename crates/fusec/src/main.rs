@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process;
 
 use fusec::diag::Level;
-use fusec::load_program;
+use fusec::load_program_with_modules;
 use fusec::interp::Interpreter;
 use fusec::ast::TypeRefKind;
 use fuse_rt::error::{ValidationError, ValidationField};
@@ -112,7 +112,7 @@ fn main() {
         return;
     }
 
-    let (program, diags) = load_program(Path::new(&path), &src);
+    let (program, modules, diags) = load_program_with_modules(Path::new(&path), &src);
     if !diags.is_empty() {
         for diag in diags {
             let level = match diag.level {
@@ -128,7 +128,7 @@ fn main() {
     }
 
     if check {
-        let (_analysis, diags) = fusec::sema::analyze_program(&program);
+        let (_analysis, diags) = fusec::sema::analyze_program(&program, &modules);
         if !diags.is_empty() {
             for diag in diags {
                 let level = match diag.level {
@@ -179,7 +179,7 @@ fn main() {
                     return;
                 }
             };
-            let mut interp = Interpreter::new(&program);
+            let mut interp = Interpreter::with_modules(&program, modules.clone());
             let mut args_map = HashMap::new();
             let mut errors = Vec::new();
             let param_names: HashSet<String> = main_decl
@@ -264,14 +264,14 @@ fn main() {
         } else {
             match backend {
                 Backend::Ast => {
-                    let mut interp = fusec::interp::Interpreter::new(&program);
+                    let mut interp = fusec::interp::Interpreter::with_modules(&program, modules.clone());
                     if let Err(err) = interp.run_app(app) {
                         eprintln!("run error: {err}");
                         process::exit(1);
                     }
                 }
                 Backend::Vm => {
-                    let ir = match fusec::ir::lower::lower_program(&program) {
+                    let ir = match fusec::ir::lower::lower_program(&program, &modules) {
                         Ok(ir) => ir,
                         Err(errors) => {
                             for error in errors {

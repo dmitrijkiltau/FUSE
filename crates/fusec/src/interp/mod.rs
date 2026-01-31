@@ -9,6 +9,7 @@ use crate::ast::{
     InterpPart, Item, Literal, Pattern, PatternField, PatternKind, Program, RouteDecl, ServiceDecl,
     Stmt, StmtKind, StructField, TypeDecl, TypeRef, TypeRefKind, UnaryOp,
 };
+use crate::loader::ModuleMap;
 
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -234,10 +235,15 @@ pub struct Interpreter<'a> {
     types: HashMap<String, &'a TypeDecl>,
     config_decls: HashMap<String, &'a ConfigDecl>,
     enums: HashMap<String, &'a EnumDecl>,
+    modules: ModuleMap,
 }
 
 impl<'a> Interpreter<'a> {
     pub fn new(program: &'a Program) -> Self {
+        Self::with_modules(program, ModuleMap::default())
+    }
+
+    pub fn with_modules(program: &'a Program, modules: ModuleMap) -> Self {
         let mut functions = HashMap::new();
         let mut apps = Vec::new();
         let mut services = HashMap::new();
@@ -277,6 +283,7 @@ impl<'a> Interpreter<'a> {
             types,
             config_decls,
             enums,
+            modules,
         }
     }
 
@@ -564,6 +571,9 @@ impl<'a> Interpreter<'a> {
                 self.eval_call(callee_val, arg_vals)
             }
             ExprKind::Member { base, name } => {
+                if let Some(value) = self.eval_module_member(base, &name.name)? {
+                    return Ok(value);
+                }
                 if let ExprKind::Ident(ident) = &base.kind {
                     if self.enums.contains_key(&ident.name) {
                         return self.eval_enum_member(&ident.name, &name.name);
@@ -1131,6 +1141,53 @@ impl<'a> Interpreter<'a> {
                 "member access not supported on this value".to_string(),
             )),
         }
+    }
+
+    fn eval_module_member(&mut self, base: &Expr, field: &str) -> ExecResult<Option<Value>> {
+        if let ExprKind::Member {
+            base: inner_base,
+            name: inner_name,
+        } = &base.kind
+        {
+            if let ExprKind::Ident(module_ident) = &inner_base.kind {
+                if let Some(module) = self.modules.get(&module_ident.name) {
+                    let member = inner_name.name.as_str();
+                    if module.enums.contains(member) {
+                        let value = self.eval_enum_member(member, field)?;
+                        return Ok(Some(value));
+                    }
+                    if module.configs.contains(member) {
+                        let value = self.eval_member(Value::Config(member.to_string()), field)?;
+                        return Ok(Some(value));
+                    }
+                    return Err(ExecError::Runtime(format!(
+                        "unknown module member {}.{}",
+                        module_ident.name, inner_name.name
+                    )));
+                }
+            }
+        }
+        if let ExprKind::Ident(module_ident) = &base.kind {
+            if let Some(module) = self.modules.get(&module_ident.name) {
+                if module.functions.contains(field) {
+                    return Ok(Some(Value::Function(field.to_string())));
+                }
+                if module.configs.contains(field) {
+                    return Ok(Some(Value::Config(field.to_string())));
+                }
+                if module.enums.contains(field) || module.types.contains(field) {
+                    return Err(ExecError::Runtime(format!(
+                        "{}.{} is a type, not a value",
+                        module_ident.name, field
+                    )));
+                }
+                return Err(ExecError::Runtime(format!(
+                    "unknown module member {}.{}",
+                    module_ident.name, field
+                )));
+            }
+        }
+        Ok(None)
     }
 
     fn eval_enum_member(&self, enum_name: &str, variant: &str) -> ExecResult<Value> {

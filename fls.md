@@ -318,6 +318,8 @@ Runtime expects range literals or a `..` expression inside the refinement. Other
 ## Imports and modules (current)
 
 `import` declarations are resolved at load time and merged into a single program namespace.
+Module imports also register a module alias for qualified access (`Foo.bar`, `Foo.Config.field`,
+`Foo.Enum.Variant`).
 
 Resolution rules:
 
@@ -327,8 +329,11 @@ Resolution rules:
 
 Notes:
 
-* Imported items are flattened; module-qualified access (`Foo.bar`) is not implemented yet.
-* Aliases in `import X as Y from "path"` are parsed but have no effect without module qualifiers.
+* Imported items are flattened into the global namespace; duplicate names are errors.
+* Module-qualified access works for module imports (`import Foo`, `import Foo from "path"`,
+  `import Foo as Bar from "path"`).
+* Named imports (`import {A, B} from "path"`) do not create a module alias.
+* Qualified access is only for value expressions; type references remain unqualified.
 
 ## Services and binding (summary)
 

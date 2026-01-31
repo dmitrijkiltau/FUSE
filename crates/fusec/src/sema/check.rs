@@ -4,6 +4,7 @@ use crate::ast::{
     Block, Expr, ExprKind, Item, Literal, Pattern, PatternKind, Program, RouteDecl, Stmt, StmtKind,
 };
 use crate::diag::Diagnostics;
+use crate::loader::ModuleMap;
 use crate::span::Span;
 
 use super::symbols::{ImportKind, ModuleSymbols};
@@ -11,6 +12,7 @@ use super::types::{FnSig, ParamSig, Ty};
 
 pub struct Checker<'a> {
     symbols: &'a ModuleSymbols,
+    modules: &'a ModuleMap,
     diags: &'a mut Diagnostics,
     env: TypeEnv,
     fn_cache: HashMap<String, FnSig>,
@@ -18,7 +20,11 @@ pub struct Checker<'a> {
 }
 
 impl<'a> Checker<'a> {
-    pub fn new(symbols: &'a ModuleSymbols, diags: &'a mut Diagnostics) -> Self {
+    pub fn new(
+        symbols: &'a ModuleSymbols,
+        modules: &'a ModuleMap,
+        diags: &'a mut Diagnostics,
+    ) -> Self {
         let mut env = TypeEnv::new();
         env.insert_builtin("log");
         env.insert_builtin("db");
@@ -30,6 +36,7 @@ impl<'a> Checker<'a> {
         env.insert_builtin("errors");
         Self {
             symbols,
+            modules,
             diags,
             env,
             fn_cache: HashMap::new(),
@@ -511,7 +518,25 @@ impl<'a> Checker<'a> {
     }
 
     fn check_member(&mut self, base: &Expr, name: &crate::ast::Ident, is_optional: bool) -> Ty {
-        let base_ty = self.check_expr(base);
+        let base_ty = match &base.kind {
+            ExprKind::Ident(ident) => {
+                if let Some(var) = self.env.lookup(&ident.name) {
+                    var.ty.clone()
+                } else if self.modules.contains(&ident.name)
+                    || matches!(
+                        self.symbols.import_kind(&ident.name),
+                        Some(ImportKind::Module)
+                    )
+                {
+                    Ty::Module(ident.name.clone())
+                } else if self.symbols.enums.contains_key(&ident.name) {
+                    Ty::Enum(ident.name.clone())
+                } else {
+                    self.check_expr(base)
+                }
+            }
+            _ => self.check_expr(base),
+        };
         let mut inner = base_ty.clone();
         if is_optional {
             match base_ty {
@@ -529,7 +554,9 @@ impl<'a> Checker<'a> {
         let field_ty = match inner {
             Ty::Struct(ref name_ty) => self.lookup_field(name_ty, &name.name, name.span),
             Ty::Config(ref name_ty) => self.lookup_config_field(name_ty, &name.name, name.span),
-            Ty::Module(_) | Ty::Unknown => Ty::Unknown,
+            Ty::Enum(ref name_ty) => self.lookup_enum_variant(name_ty, name),
+            Ty::Module(ref module_name) => self.lookup_module_member(module_name, name),
+            Ty::Unknown => Ty::Unknown,
             other => {
                 self.diags.error(
                     name.span,
@@ -564,6 +591,106 @@ impl<'a> Checker<'a> {
         }
         self.diags
             .error(span, format!("unknown field {} on {}", field, type_name));
+        Ty::Unknown
+    }
+
+    fn lookup_enum_variant(&mut self, enum_name: &str, name: &crate::ast::Ident) -> Ty {
+        let info = match self.symbols.enums.get(enum_name) {
+            Some(info) => info,
+            None => {
+                self.diags
+                    .error(name.span, format!("unknown enum {}", enum_name));
+                return Ty::Unknown;
+            }
+        };
+        let variant = match info.variants.iter().find(|v| v.name == name.name) {
+            Some(variant) => variant,
+            None => {
+                self.diags.error(
+                    name.span,
+                    format!("unknown variant {} for {}", name.name, enum_name),
+                );
+                return Ty::Unknown;
+            }
+        };
+        if variant.payload.is_empty() {
+            return Ty::Enum(enum_name.to_string());
+        }
+        let params = variant
+            .payload
+            .iter()
+            .enumerate()
+            .map(|(idx, ty)| ParamSig {
+                name: format!("arg{idx}"),
+                ty: self.resolve_type_ref(ty),
+            })
+            .collect();
+        Ty::Fn(FnSig {
+            params,
+            ret: Box::new(Ty::Enum(enum_name.to_string())),
+        })
+    }
+
+    fn lookup_module_member(&mut self, module_name: &str, name: &crate::ast::Ident) -> Ty {
+        let Some(exports) = self.modules.get(module_name) else {
+            if matches!(
+                self.symbols.import_kind(module_name),
+                Some(ImportKind::Module)
+            ) {
+                return Ty::Unknown;
+            }
+            self.diags
+                .error(name.span, format!("unknown module {}", module_name));
+            return Ty::Unknown;
+        };
+        if exports.functions.contains(&name.name) {
+            if let Some(sig) = self.fn_sig(&name.name) {
+                return Ty::Fn(sig);
+            }
+            self.diags.error(
+                name.span,
+                format!("unknown function {} in {}", name.name, module_name),
+            );
+            return Ty::Unknown;
+        }
+        if exports.configs.contains(&name.name) {
+            if self.symbols.configs.contains_key(&name.name) {
+                return Ty::Config(name.name.clone());
+            }
+            self.diags.error(
+                name.span,
+                format!("unknown config {} in {}", name.name, module_name),
+            );
+            return Ty::Unknown;
+        }
+        if exports.enums.contains(&name.name) {
+            if self.symbols.enums.contains_key(&name.name) {
+                return Ty::Enum(name.name.clone());
+            }
+            self.diags.error(
+                name.span,
+                format!("unknown enum {} in {}", name.name, module_name),
+            );
+            return Ty::Unknown;
+        }
+        if exports.types.contains(&name.name) {
+            self.diags.error(
+                name.span,
+                format!("{}.{} is a type, not a value", module_name, name.name),
+            );
+            return Ty::Unknown;
+        }
+        if exports.services.contains(&name.name) || exports.apps.contains(&name.name) {
+            self.diags.error(
+                name.span,
+                format!("{}.{} is not a value", module_name, name.name),
+            );
+            return Ty::Unknown;
+        }
+        self.diags.error(
+            name.span,
+            format!("unknown module member {}.{}", module_name, name.name),
+        );
         Ty::Unknown
     }
 
@@ -609,9 +736,20 @@ impl<'a> Checker<'a> {
             );
             return Ty::Unknown;
         }
+        if self.modules.contains(&ident.name) {
+            self.diags
+                .error(ident.span, format!("{} is a module, not a value", ident.name));
+            return Ty::Unknown;
+        }
         if let Some(kind) = self.symbols.import_kind(&ident.name) {
             return match kind {
-                ImportKind::Module => Ty::Module(ident.name.clone()),
+                ImportKind::Module => {
+                    self.diags.error(
+                        ident.span,
+                        format!("{} is a module, not a value", ident.name),
+                    );
+                    Ty::Unknown
+                }
                 ImportKind::Item => Ty::Unknown,
             };
         }
