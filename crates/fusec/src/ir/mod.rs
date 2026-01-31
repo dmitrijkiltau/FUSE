@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::ast::{Pattern, TypeRef};
+use crate::ast::{HttpVerb, Pattern, TypeRef};
 
 #[derive(Clone, Debug)]
 pub enum Const {
@@ -99,7 +99,7 @@ pub struct TypeInfo {
 #[derive(Clone, Debug)]
 pub struct EnumVariantInfo {
     pub name: String,
-    pub arity: usize,
+    pub payload: Vec<TypeRef>,
 }
 
 #[derive(Clone, Debug)]
@@ -109,12 +109,30 @@ pub struct EnumInfo {
 }
 
 #[derive(Clone, Debug)]
+pub struct ServiceRoute {
+    pub verb: HttpVerb,
+    pub path: String,
+    pub params: Vec<String>,
+    pub body_type: Option<TypeRef>,
+    pub ret_type: TypeRef,
+    pub handler: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Service {
+    pub name: String,
+    pub base_path: String,
+    pub routes: Vec<ServiceRoute>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Program {
     pub functions: HashMap<String, Function>,
     pub apps: HashMap<String, Function>,
     pub configs: HashMap<String, Config>,
     pub types: HashMap<String, TypeInfo>,
     pub enums: HashMap<String, EnumInfo>,
+    pub services: HashMap<String, Service>,
 }
 
 pub mod lower;

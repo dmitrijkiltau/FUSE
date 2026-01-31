@@ -31,13 +31,13 @@ shift
 
 case "$cmd" in
   run)
-    exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --run "$@"
+    exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec --bin fusec -- --run "$@"
     ;;
   check)
-    exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --check "$@"
+    exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec --bin fusec -- --check "$@"
     ;;
   fmt)
-    exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --fmt "$@"
+    exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec --bin fusec -- --fmt "$@"
     ;;
   lsp)
     exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec --bin fuse-lsp -- "$@"

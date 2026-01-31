@@ -2,12 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
     AppDecl, BinaryOp, Block, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item, Literal, Pattern,
-    PatternKind, Program, Stmt, StmtKind, TypeDecl, UnaryOp,
+    PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, UnaryOp,
 };
+use crate::span::Span;
 
 use super::{
     CallKind, Config, ConfigField, Const, EnumInfo, EnumVariantInfo, Function, Instr,
-    Program as IrProgram, TypeField, TypeInfo,
+    Program as IrProgram, Service, ServiceRoute, TypeField, TypeInfo,
 };
 
 pub fn lower_program(program: &Program) -> Result<IrProgram, Vec<String>> {
@@ -20,6 +21,7 @@ pub fn lower_program(program: &Program) -> Result<IrProgram, Vec<String>> {
             configs: lowerer.configs,
             types: lowerer.types,
             enums: lowerer.enums,
+            services: lowerer.services,
         })
     } else {
         Err(lowerer.errors)
@@ -33,6 +35,7 @@ struct Lowerer<'a> {
     configs: HashMap<String, Config>,
     types: HashMap<String, TypeInfo>,
     enums: HashMap<String, EnumInfo>,
+    services: HashMap<String, Service>,
     errors: Vec<String>,
     config_names: HashSet<String>,
     enum_names: HashSet<String>,
@@ -66,6 +69,7 @@ impl<'a> Lowerer<'a> {
             configs: HashMap::new(),
             types: HashMap::new(),
             enums: HashMap::new(),
+            services: HashMap::new(),
             errors: Vec::new(),
             config_names,
             enum_names,
@@ -82,6 +86,7 @@ impl<'a> Lowerer<'a> {
                 Item::Config(cfg) => self.lower_config(cfg),
                 Item::Type(ty) => self.lower_type(ty),
                 Item::Enum(decl) => self.lower_enum(decl),
+                Item::Service(service) => self.lower_service(service),
                 _ => {}
             }
         }
@@ -205,7 +210,7 @@ impl<'a> Lowerer<'a> {
             .iter()
             .map(|variant| EnumVariantInfo {
                 name: variant.name.name.clone(),
-                arity: variant.payload.len(),
+                payload: variant.payload.clone(),
             })
             .collect();
         self.enums.insert(
@@ -216,6 +221,92 @@ impl<'a> Lowerer<'a> {
             },
         );
     }
+
+    fn lower_service(&mut self, decl: &ServiceDecl) {
+        let mut routes = Vec::new();
+        for (idx, route) in decl.routes.iter().enumerate() {
+            let handler = format!("__service::{}::{}", decl.name.name, idx);
+            let params = extract_route_params(&route.path.value);
+            let mut builder = FuncBuilder::new(
+                handler.clone(),
+                Some(route.ret_type.clone()),
+                &self.config_names,
+                &self.enum_names,
+                &self.enum_variant_names,
+                &self.builtin_names,
+            );
+            for name in &params {
+                let ident = Ident {
+                    name: name.clone(),
+                    span: Span::default(),
+                };
+                builder.declare_param(&ident);
+            }
+            if route.body_type.is_some() {
+                let ident = Ident {
+                    name: "body".to_string(),
+                    span: Span::default(),
+                };
+                builder.declare_param(&ident);
+            }
+            builder.lower_block(&route.body);
+            builder.ensure_return();
+            let (func, errors) = builder.finish();
+            if let Some(func) = func {
+                self.functions.insert(handler.clone(), func);
+            }
+            self.errors.extend(errors);
+            routes.push(ServiceRoute {
+                verb: route.verb.clone(),
+                path: route.path.value.clone(),
+                params,
+                body_type: route.body_type.clone(),
+                ret_type: route.ret_type.clone(),
+                handler,
+            });
+        }
+        self.services.insert(
+            decl.name.name.clone(),
+            Service {
+                name: decl.name.name.clone(),
+                base_path: decl.base_path.value.clone(),
+                routes,
+            },
+        );
+    }
+}
+
+fn extract_route_params(path: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for segment in split_path(path) {
+        if let Some((name, _)) = parse_route_param(&segment) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+fn split_path(path: &str) -> Vec<String> {
+    let trimmed = path.trim_matches('/');
+    if trimmed.is_empty() {
+        Vec::new()
+    } else {
+        trimmed.split('/').map(|s| s.to_string()).collect()
+    }
+}
+
+fn parse_route_param(segment: &str) -> Option<(String, String)> {
+    if !segment.starts_with('{') || !segment.ends_with('}') {
+        return None;
+    }
+    let inner = &segment[1..segment.len() - 1];
+    let mut parts = inner.splitn(2, ':');
+    let name = parts.next().unwrap_or("").trim();
+    let ty = parts.next().unwrap_or("").trim();
+    if name.is_empty() || ty.is_empty() {
+        return None;
+    }
+    Some((name.to_string(), ty.to_string()))
 }
 
 struct FuncBuilder {

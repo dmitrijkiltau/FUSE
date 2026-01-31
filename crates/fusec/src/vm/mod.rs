@@ -1,10 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 
-use fuse_rt::{config as rt_config, validate as rt_validate};
+use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate as rt_validate};
 
-use crate::ast::{Expr, ExprKind, Literal, Pattern, PatternKind, TypeRef, TypeRefKind, UnaryOp};
+use crate::ast::{
+    Expr, ExprKind, HttpVerb, Ident, Literal, Pattern, PatternKind, TypeRef, TypeRefKind, UnaryOp,
+};
 use crate::interp::{format_error_value, Value};
-use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram};
+use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram, Service, ServiceRoute};
+use crate::span::Span;
 
 #[derive(Debug)]
 enum VmError {
@@ -422,11 +427,347 @@ impl<'a> Vm<'a> {
                     Err(_) => Ok(Value::Null),
                 }
             }
-            "serve" => Err(VmError::Runtime(
-                "serve is not supported in the VM yet".to_string(),
-            )),
+            "serve" => {
+                let port = match args.get(0) {
+                    Some(Value::Int(v)) => *v,
+                    Some(Value::Float(v)) => *v as i64,
+                    Some(Value::String(s)) => s.parse::<i64>().unwrap_or(0),
+                    _ => {
+                        return Err(VmError::Runtime(
+                            "serve expects a port number".to_string(),
+                        ))
+                    }
+                };
+                self.eval_serve(port)
+            }
             _ => Err(VmError::Runtime(format!("unknown builtin {name}"))),
         }
+    }
+
+    fn eval_serve(&mut self, port: i64) -> VmResult<Value> {
+        let service = self.select_service()?.clone();
+        let host = std::env::var("FUSE_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let port: u16 = port
+            .try_into()
+            .map_err(|_| VmError::Runtime("invalid port".to_string()))?;
+        let addr = format!("{host}:{port}");
+        let listener = TcpListener::bind(&addr)
+            .map_err(|err| VmError::Runtime(format!("failed to bind {addr}: {err}")))?;
+        let max_requests = std::env::var("FUSE_MAX_REQUESTS")
+            .ok()
+            .and_then(|val| val.parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut handled = 0usize;
+        for stream in listener.incoming() {
+            let mut stream = match stream {
+                Ok(stream) => stream,
+                Err(err) => {
+                    return Err(VmError::Runtime(format!(
+                        "failed to accept connection: {err}"
+                    )))
+                }
+            };
+            let response = match self.handle_http_request(&service, &mut stream) {
+                Ok(resp) => resp,
+                Err(err) => self.http_error_response(err),
+            };
+            let _ = stream.write_all(response.as_bytes());
+            handled += 1;
+            if max_requests > 0 && handled >= max_requests {
+                break;
+            }
+        }
+        Ok(Value::Unit)
+    }
+
+    fn select_service(&self) -> VmResult<&Service> {
+        if self.program.services.is_empty() {
+            return Err(VmError::Runtime("no service declared".to_string()));
+        }
+        if let Ok(name) = std::env::var("FUSE_SERVICE") {
+            return self
+                .program
+                .services
+                .get(&name)
+                .ok_or_else(|| VmError::Runtime(format!("service not found: {name}")));
+        }
+        if self.program.services.len() == 1 {
+            return Ok(self.program.services.values().next().unwrap());
+        }
+        Err(VmError::Runtime(
+            "multiple services declared; set FUSE_SERVICE".to_string(),
+        ))
+    }
+
+    fn handle_http_request(
+        &mut self,
+        service: &Service,
+        stream: &mut TcpStream,
+    ) -> VmResult<String> {
+        let request = self.read_http_request(stream)?;
+        let verb = match request.method.as_str() {
+            "GET" => HttpVerb::Get,
+            "POST" => HttpVerb::Post,
+            "PUT" => HttpVerb::Put,
+            "PATCH" => HttpVerb::Patch,
+            "DELETE" => HttpVerb::Delete,
+            _ => {
+                return Ok(self.http_response(
+                    405,
+                    self.internal_error_json("method not allowed"),
+                ))
+            }
+        };
+        let path = request
+            .path
+            .split('?')
+            .next()
+            .unwrap_or(&request.path)
+            .to_string();
+        let (route, params) = match self.match_route(service, &verb, &path)? {
+            Some(result) => result,
+            None => {
+                let body = self.error_json_from_code("not_found", "not found");
+                return Ok(self.http_response(404, body));
+            }
+        };
+        let body_value = if let Some(body_ty) = &route.body_type {
+            let body_text = String::from_utf8_lossy(&request.body);
+            if body_text.trim().is_empty() {
+                return Err(VmError::Error(self.validation_error_value(
+                    "body",
+                    "missing_field",
+                    "missing JSON body",
+                )));
+            }
+            let json = rt_json::decode(&body_text).map_err(|msg| {
+                VmError::Error(self.validation_error_value("body", "invalid_json", msg))
+            })?;
+            Some(self.decode_json_value(&json, body_ty, "body")?)
+        } else {
+            None
+        };
+        let value = match self.eval_route(route, params, body_value) {
+            Ok(value) => value,
+            Err(err) => return Err(err),
+        };
+        match value {
+            Value::ResultErr(err) => {
+                let status = self.http_status_for_error_value(&err);
+                let json = self.error_json_from_value(&err);
+                Ok(self.http_response(status, json))
+            }
+            Value::ResultOk(ok) => {
+                let json = self.value_to_json(&ok);
+                Ok(self.http_response(200, rt_json::encode(&json)))
+            }
+            other => {
+                let json = self.value_to_json(&other);
+                Ok(self.http_response(200, rt_json::encode(&json)))
+            }
+        }
+    }
+
+    fn eval_route(
+        &mut self,
+        route: &ServiceRoute,
+        mut params: Vec<Value>,
+        body_value: Option<Value>,
+    ) -> VmResult<Value> {
+        if let Some(body) = body_value {
+            params.push(body);
+        }
+        let func = self
+            .program
+            .functions
+            .get(&route.handler)
+            .ok_or_else(|| VmError::Runtime(format!("unknown route handler {}", route.handler)))?;
+        self.exec_function(func, params)
+    }
+
+    fn match_route<'r>(
+        &mut self,
+        service: &'r Service,
+        verb: &HttpVerb,
+        path: &str,
+    ) -> VmResult<Option<(&'r ServiceRoute, Vec<Value>)>> {
+        let base_segments = split_path(&service.base_path);
+        let req_segments = split_path(path);
+        if req_segments.len() < base_segments.len()
+            || req_segments[..base_segments.len()] != base_segments[..]
+        {
+            return Ok(None);
+        }
+        let req_segments = &req_segments[base_segments.len()..];
+        for route in &service.routes {
+            if &route.verb != verb {
+                continue;
+            }
+            let route_segments = split_path(&route.path);
+            if route_segments.len() != req_segments.len() {
+                continue;
+            }
+            let mut params = Vec::new();
+            let mut matched = true;
+            for (seg, req) in route_segments.iter().zip(req_segments.iter()) {
+                if let Some((name, ty_name)) = parse_route_param(seg) {
+                    let ty = TypeRef {
+                        kind: TypeRefKind::Simple(Ident {
+                            name: ty_name.to_string(),
+                            span: Span::default(),
+                        }),
+                        span: Span::default(),
+                    };
+                    let value = self
+                        .parse_env_value(&ty, req)
+                        .map_err(|err| self.map_parse_error(err, &name))?;
+                    self.validate_value(&value, &ty, &name)?;
+                    params.push(value);
+                } else if seg != req {
+                    matched = false;
+                    break;
+                }
+            }
+            if matched {
+                return Ok(Some((route, params)));
+            }
+        }
+        Ok(None)
+    }
+
+    fn read_http_request(&self, stream: &mut TcpStream) -> VmResult<HttpRequest> {
+        let mut buffer = Vec::new();
+        let mut temp = [0u8; 1024];
+        let mut header_end = None;
+        loop {
+            let read = stream
+                .read(&mut temp)
+                .map_err(|err| VmError::Runtime(format!("failed to read request: {err}")))?;
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&temp[..read]);
+            if let Some(pos) = find_header_end(&buffer) {
+                header_end = Some(pos);
+                break;
+            }
+            if buffer.len() > 1024 * 1024 {
+                return Err(VmError::Runtime("request header too large".to_string()));
+            }
+        }
+        let header_end = header_end.ok_or_else(|| {
+            VmError::Runtime("invalid HTTP request: missing headers".to_string())
+        })?;
+        let header_bytes = &buffer[..header_end];
+        let header_text = String::from_utf8_lossy(header_bytes);
+        let mut lines = header_text.split("\r\n");
+        let request_line = lines
+            .next()
+            .ok_or_else(|| VmError::Runtime("invalid HTTP request line".to_string()))?;
+        let mut parts = request_line.split_whitespace();
+        let method = parts
+            .next()
+            .ok_or_else(|| VmError::Runtime("invalid HTTP request line".to_string()))?
+            .to_string();
+        let path = parts
+            .next()
+            .ok_or_else(|| VmError::Runtime("invalid HTTP request line".to_string()))?
+            .to_string();
+        let mut headers = HashMap::new();
+        for line in lines {
+            if line.is_empty() {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once(':') {
+                headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
+            }
+        }
+        let content_length = headers
+            .get("content-length")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut body = buffer[header_end + 4..].to_vec();
+        while body.len() < content_length {
+            let read = stream
+                .read(&mut temp)
+                .map_err(|err| VmError::Runtime(format!("failed to read body: {err}")))?;
+            if read == 0 {
+                break;
+            }
+            body.extend_from_slice(&temp[..read]);
+        }
+        if body.len() > content_length {
+            body.truncate(content_length);
+        }
+        Ok(HttpRequest { method, path, body })
+    }
+
+    fn http_response(&self, status: u16, body: String) -> String {
+        let reason = match status {
+            200 => "OK",
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            404 => "Not Found",
+            409 => "Conflict",
+            500 => "Internal Server Error",
+            _ => "OK",
+        };
+        format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn http_error_response(&self, err: VmError) -> String {
+        match err {
+            VmError::Error(value) => {
+                let status = self.http_status_for_error_value(&value);
+                let body = self.error_json_from_value(&value);
+                self.http_response(status, body)
+            }
+            VmError::Runtime(message) => {
+                let body = self.internal_error_json(&message);
+                self.http_response(500, body)
+            }
+        }
+    }
+
+    fn http_status_for_error_value(&self, value: &Value) -> u16 {
+        match value {
+            Value::Struct { name, fields } => match name.as_str() {
+                "ValidationError" => 400,
+                "BadRequest" => 400,
+                "Unauthorized" => 401,
+                "Forbidden" => 403,
+                "NotFound" => 404,
+                "Conflict" => 409,
+                "Error" => fields
+                    .get("status")
+                    .and_then(|v| match v {
+                        Value::Int(n) => (*n).try_into().ok(),
+                        _ => None,
+                    })
+                    .unwrap_or(500),
+                _ => 500,
+            },
+            _ => 500,
+        }
+    }
+
+    fn error_json_from_value(&self, value: &Value) -> String {
+        if let Some(json) = error_json_for_value(value) {
+            return rt_json::encode(&json);
+        }
+        self.internal_error_json("internal error")
+    }
+
+    fn error_json_from_code(&self, code: &str, message: &str) -> String {
+        rt_json::encode(&rt_error::error_json(code, message, None))
+    }
+
+    fn internal_error_json(&self, message: &str) -> String {
+        self.error_json_from_code("internal_error", message)
     }
 
     fn value_from_const(&self, constant: Const) -> Value {
@@ -738,6 +1079,387 @@ impl<'a> Vm<'a> {
         }
     }
 
+    fn value_to_json(&self, value: &Value) -> rt_json::JsonValue {
+        match value {
+            Value::Unit => rt_json::JsonValue::Null,
+            Value::Int(v) => rt_json::JsonValue::Number(*v as f64),
+            Value::Float(v) => rt_json::JsonValue::Number(*v),
+            Value::Bool(v) => rt_json::JsonValue::Bool(*v),
+            Value::String(v) => rt_json::JsonValue::String(v.clone()),
+            Value::Null => rt_json::JsonValue::Null,
+            Value::List(items) => {
+                rt_json::JsonValue::Array(items.iter().map(|v| self.value_to_json(v)).collect())
+            }
+            Value::Map(items) => {
+                let mut out = BTreeMap::new();
+                for (key, value) in items {
+                    out.insert(key.clone(), self.value_to_json(value));
+                }
+                rt_json::JsonValue::Object(out)
+            }
+            Value::Struct { fields, .. } => {
+                let mut out = BTreeMap::new();
+                for (key, value) in fields {
+                    out.insert(key.clone(), self.value_to_json(value));
+                }
+                rt_json::JsonValue::Object(out)
+            }
+            Value::Enum {
+                variant, payload, ..
+            } => {
+                let mut out = BTreeMap::new();
+                out.insert(
+                    "type".to_string(),
+                    rt_json::JsonValue::String(variant.clone()),
+                );
+                match payload.len() {
+                    0 => {}
+                    1 => {
+                        out.insert("data".to_string(), self.value_to_json(&payload[0]));
+                    }
+                    _ => {
+                        let items = payload.iter().map(|v| self.value_to_json(v)).collect();
+                        out.insert("data".to_string(), rt_json::JsonValue::Array(items));
+                    }
+                }
+                rt_json::JsonValue::Object(out)
+            }
+            Value::ResultOk(value) => self.value_to_json(value),
+            Value::ResultErr(value) => self.value_to_json(value),
+            Value::Config(name) => rt_json::JsonValue::String(name.clone()),
+            Value::Function(name) => rt_json::JsonValue::String(name.clone()),
+            Value::Builtin(name) => rt_json::JsonValue::String(name.clone()),
+            Value::EnumCtor { name, variant } => {
+                rt_json::JsonValue::String(format!("{name}.{variant}"))
+            }
+        }
+    }
+
+    fn decode_json_value(
+        &mut self,
+        json: &rt_json::JsonValue,
+        ty: &TypeRef,
+        path: &str,
+    ) -> VmResult<Value> {
+        let value = match &ty.kind {
+            TypeRefKind::Optional(inner) => {
+                if matches!(json, rt_json::JsonValue::Null) {
+                    Value::Null
+                } else {
+                    self.decode_json_value(json, inner, path)?
+                }
+            }
+            TypeRefKind::Refined { base, .. } => {
+                let base_ty = TypeRef {
+                    kind: TypeRefKind::Simple(base.clone()),
+                    span: ty.span,
+                };
+                let value = self.decode_json_value(json, &base_ty, path)?;
+                self.validate_value(&value, ty, path)?;
+                return Ok(value);
+            }
+            TypeRefKind::Simple(ident) => {
+                if let Some(value) = self.decode_simple_json(json, &ident.name, path)? {
+                    value
+                } else if self.program.types.contains_key(&ident.name) {
+                    self.decode_struct_json(json, &ident.name, path)?
+                } else if self.program.enums.contains_key(&ident.name) {
+                    self.decode_enum_json(json, &ident.name, path)?
+                } else {
+                    return Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("unknown type {}", ident.name),
+                    )));
+                }
+            }
+            TypeRefKind::Result { .. } => {
+                return Err(VmError::Error(self.validation_error_value(
+                    path,
+                    "invalid_value",
+                    "Result is not supported for JSON body",
+                )))
+            }
+            TypeRefKind::Generic { base, args } => match base.name.as_str() {
+                "Option" => {
+                    if args.len() != 1 {
+                        return Err(VmError::Runtime(
+                            "Option expects 1 type argument".to_string(),
+                        ));
+                    }
+                    if matches!(json, rt_json::JsonValue::Null) {
+                        Value::Null
+                    } else {
+                        self.decode_json_value(json, &args[0], path)?
+                    }
+                }
+                "Result" => {
+                    return Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        "Result is not supported for JSON body",
+                    )))
+                }
+                "List" => {
+                    if args.len() != 1 {
+                        return Err(VmError::Runtime(
+                            "List expects 1 type argument".to_string(),
+                        ));
+                    }
+                    let rt_json::JsonValue::Array(items) = json else {
+                        return Err(VmError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            "expected List",
+                        )));
+                    };
+                    let mut values = Vec::with_capacity(items.len());
+                    for (idx, item) in items.iter().enumerate() {
+                        let item_path = format!("{path}[{idx}]");
+                        values.push(self.decode_json_value(item, &args[0], &item_path)?);
+                    }
+                    Value::List(values)
+                }
+                "Map" => {
+                    if args.len() != 2 {
+                        return Err(VmError::Runtime(
+                            "Map expects 2 type arguments".to_string(),
+                        ));
+                    }
+                    let rt_json::JsonValue::Object(items) = json else {
+                        return Err(VmError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            "expected Map",
+                        )));
+                    };
+                    let mut values = HashMap::new();
+                    for (key, item) in items.iter() {
+                        let key_value = Value::String(key.clone());
+                        let key_path = format!("{path}.{key}");
+                        self.validate_value(&key_value, &args[0], &key_path)?;
+                        let value = self.decode_json_value(item, &args[1], &key_path)?;
+                        values.insert(key.clone(), value);
+                    }
+                    Value::Map(values)
+                }
+                _ => {
+                    return Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("unsupported type {}", base.name),
+                    )))
+                }
+            },
+        };
+        self.validate_value(&value, ty, path)?;
+        Ok(value)
+    }
+
+    fn decode_simple_json(
+        &self,
+        json: &rt_json::JsonValue,
+        name: &str,
+        path: &str,
+    ) -> VmResult<Option<Value>> {
+        let value = match name {
+            "Int" => match json {
+                rt_json::JsonValue::Number(n) if n.fract() == 0.0 => Value::Int(*n as i64),
+                _ => {
+                    return Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        "expected Int",
+                    )))
+                }
+            },
+            "Float" => match json {
+                rt_json::JsonValue::Number(n) => Value::Float(*n),
+                _ => {
+                    return Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        "expected Float",
+                    )))
+                }
+            },
+            "Bool" => match json {
+                rt_json::JsonValue::Bool(v) => Value::Bool(*v),
+                _ => {
+                    return Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        "expected Bool",
+                    )))
+                }
+            },
+            "String" | "Id" | "Email" | "Bytes" => match json {
+                rt_json::JsonValue::String(v) => Value::String(v.clone()),
+                _ => {
+                    return Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        "expected String",
+                    )))
+                }
+            },
+            _ => return Ok(None),
+        };
+        Ok(Some(value))
+    }
+
+    fn decode_struct_json(
+        &mut self,
+        json: &rt_json::JsonValue,
+        name: &str,
+        path: &str,
+    ) -> VmResult<Value> {
+        let rt_json::JsonValue::Object(map) = json else {
+            return Err(VmError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                format!("expected {name}"),
+            )));
+        };
+        let decl = self.program.types.get(name).ok_or_else(|| {
+            VmError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                format!("unknown type {name}"),
+            ))
+        })?;
+        let fields = decl.fields.clone();
+        let mut values = HashMap::new();
+        for (key, value) in map {
+            let field = fields.iter().find(|f| f.name == *key);
+            let Some(field_decl) = field else {
+                return Err(VmError::Error(self.validation_error_value(
+                    &format!("{path}.{key}"),
+                    "unknown_field",
+                    "unknown field",
+                )));
+            };
+            let field_path = format!("{path}.{key}");
+            let decoded = self.decode_json_value(value, &field_decl.ty, &field_path)?;
+            values.insert(key.clone(), decoded);
+        }
+        for field_decl in &fields {
+            if values.contains_key(&field_decl.name) {
+                continue;
+            }
+            let field_path = format!("{path}.{}", field_decl.name);
+            if let Some(default_fn) = &field_decl.default_fn {
+                let func = self
+                    .program
+                    .functions
+                    .get(default_fn)
+                    .ok_or_else(|| VmError::Runtime(format!("unknown default {default_fn}")))?;
+                let value = self.exec_function(func, Vec::new())?;
+                self.validate_value(&value, &field_decl.ty, &field_path)?;
+                values.insert(field_decl.name.clone(), value);
+            } else if self.is_optional_type(&field_decl.ty) {
+                values.insert(field_decl.name.clone(), Value::Null);
+            } else {
+                return Err(VmError::Error(self.validation_error_value(
+                    &field_path,
+                    "missing_field",
+                    "missing field",
+                )));
+            }
+        }
+        Ok(Value::Struct {
+            name: name.to_string(),
+            fields: values,
+        })
+    }
+
+    fn decode_enum_json(
+        &mut self,
+        json: &rt_json::JsonValue,
+        name: &str,
+        path: &str,
+    ) -> VmResult<Value> {
+        let rt_json::JsonValue::Object(map) = json else {
+            return Err(VmError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                format!("expected {name}"),
+            )));
+        };
+        let Some(rt_json::JsonValue::String(variant_name)) = map.get("type") else {
+            return Err(VmError::Error(self.validation_error_value(
+                path,
+                "missing_field",
+                "missing enum type",
+            )));
+        };
+        let decl = self.program.enums.get(name).ok_or_else(|| {
+            VmError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                format!("unknown enum {name}"),
+            ))
+        })?;
+        let variants = decl.variants.clone();
+        let variant = variants
+            .iter()
+            .find(|v| v.name == *variant_name)
+            .ok_or_else(|| {
+                VmError::Error(self.validation_error_value(
+                    path,
+                    "invalid_value",
+                    format!("unknown variant {variant_name}"),
+                ))
+            })?;
+        let payload = if variant.payload.is_empty() {
+            Vec::new()
+        } else {
+            let data = map.get("data").ok_or_else(|| {
+                VmError::Error(self.validation_error_value(
+                    path,
+                    "missing_field",
+                    "missing enum data",
+                ))
+            })?;
+            if variant.payload.len() == 1 {
+                vec![self.decode_json_value(
+                    data,
+                    &variant.payload[0],
+                    &format!("{path}.data"),
+                )?]
+            } else {
+                let rt_json::JsonValue::Array(items) = data else {
+                    return Err(VmError::Error(self.validation_error_value(
+                        &format!("{path}.data"),
+                        "type_mismatch",
+                        "expected enum payload array",
+                    )));
+                };
+                if items.len() != variant.payload.len() {
+                    return Err(VmError::Error(self.validation_error_value(
+                        &format!("{path}.data"),
+                        "invalid_value",
+                        "enum payload length mismatch",
+                    )));
+                }
+                let mut out = Vec::new();
+                for (idx, (item, ty)) in items.iter().zip(variant.payload.iter()).enumerate() {
+                    out.push(self.decode_json_value(
+                        item,
+                        ty,
+                        &format!("{path}.data[{idx}]"),
+                    )?);
+                }
+                out
+            }
+        };
+        Ok(Value::Enum {
+            name: name.to_string(),
+            variant: variant_name.clone(),
+            payload,
+        })
+    }
+
     fn wrap_function_result(&self, func: &Function, value: Value) -> VmResult<Value> {
         if self.is_result_type(func.ret.as_ref()) {
             match value {
@@ -850,10 +1572,10 @@ impl<'a> Vm<'a> {
             .iter()
             .find(|v| v.name == variant)
             .ok_or_else(|| VmError::Runtime(format!("unknown variant {name}.{variant}")))?;
-        if variant_info.arity != payload.len() {
+        if variant_info.payload.len() != payload.len() {
             return Err(VmError::Runtime(format!(
                 "variant {name}.{variant} expects {} value(s), got {}",
-                variant_info.arity,
+                variant_info.payload.len(),
                 payload.len()
             )));
         }
@@ -1009,7 +1731,7 @@ impl<'a> Vm<'a> {
             info.variants
                 .iter()
                 .find(|v| v.name == variant)
-                .map(|v| v.arity)
+                .map(|v| v.payload.len())
         })
     }
 
@@ -1322,4 +2044,104 @@ impl<'a> Frame<'a> {
             .last()
             .ok_or_else(|| VmError::Runtime("stack underflow".to_string()))
     }
+}
+
+struct HttpRequest {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+}
+
+fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
+    let Value::Struct { name, fields } = value else {
+        return None;
+    };
+    match name.as_str() {
+        "ValidationError" => {
+            let message = match fields.get("message") {
+                Some(Value::String(msg)) => msg.as_str(),
+                _ => "validation failed",
+            };
+            let field_items = extract_validation_fields(fields.get("fields"));
+            Some(rt_error::validation_error_json(message, &field_items))
+        }
+        "Error" => {
+            let code = match fields.get("code") {
+                Some(Value::String(code)) => code.as_str(),
+                _ => "error",
+            };
+            let message = match fields.get("message") {
+                Some(Value::String(msg)) => msg.as_str(),
+                _ => "error",
+            };
+            Some(rt_error::error_json(code, message, None))
+        }
+        other => {
+            let (code, default_message) = builtin_error_defaults(other)?;
+            let message = match fields.get("message") {
+                Some(Value::String(msg)) => msg.as_str(),
+                _ => default_message,
+            };
+            Some(rt_error::error_json(code, message, None))
+        }
+    }
+}
+
+fn builtin_error_defaults(name: &str) -> Option<(&'static str, &'static str)> {
+    match name {
+        "BadRequest" => Some(("bad_request", "bad request")),
+        "Unauthorized" => Some(("unauthorized", "unauthorized")),
+        "Forbidden" => Some(("forbidden", "forbidden")),
+        "NotFound" => Some(("not_found", "not found")),
+        "Conflict" => Some(("conflict", "conflict")),
+        _ => None,
+    }
+}
+
+fn extract_validation_fields(value: Option<&Value>) -> Vec<rt_error::ValidationField> {
+    let mut out = Vec::new();
+    let Some(Value::List(items)) = value else {
+        return out;
+    };
+    for item in items {
+        let Value::Struct { fields, .. } = item else { continue };
+        let Some(Value::String(path)) = fields.get("path") else { continue };
+        let Some(Value::String(code)) = fields.get("code") else { continue };
+        let Some(Value::String(message)) = fields.get("message") else { continue };
+        out.push(rt_error::ValidationField {
+            path: path.clone(),
+            code: code.clone(),
+            message: message.clone(),
+        });
+    }
+    out
+}
+
+fn split_path(path: &str) -> Vec<String> {
+    let trimmed = path.trim_matches('/');
+    if trimmed.is_empty() {
+        Vec::new()
+    } else {
+        trimmed.split('/').map(|s| s.to_string()).collect()
+    }
+}
+
+fn parse_route_param(segment: &str) -> Option<(String, String)> {
+    if !segment.starts_with('{') || !segment.ends_with('}') {
+        return None;
+    }
+    let inner = &segment[1..segment.len() - 1];
+    let mut parts = inner.splitn(2, ':');
+    let name = parts.next().unwrap_or("").trim();
+    let ty = parts.next().unwrap_or("").trim();
+    if name.is_empty() || ty.is_empty() {
+        return None;
+    }
+    Some((name.to_string(), ty.to_string()))
+}
+
+fn find_header_end(buffer: &[u8]) -> Option<usize> {
+    buffer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
 }
