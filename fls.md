@@ -1,14 +1,32 @@
-# Formal language specification
+# Formal language specification (current parser)
+
+This document mirrors the parser + semantic analysis in `crates/fusec`. Where runtime support is
+incomplete, the notes call it out explicitly.
 
 ## Lexing + indentation rules
 
 ### Tokens
 
 * Identifiers: `[A-Za-z_][A-Za-z0-9_]*`
-* Keywords: `app, service, at, get, post, put, patch, delete, fn, type, enum, let, var, return, if, else, match, case, for, in, while, break, continue, import, from, as, config, migration, table, test`
-* Literals: `Int`, `Float`, `String`, `Bool`, `Null`
-* Operators (MVP):
-  `=, ==, !=, <, <=, >, >=, +, -, *, /, %, ., :, ?, !, ??, ?!, ->, =>`
+* Keywords:
+  `app, service, at, get, post, put, patch, delete, fn, type, enum, let, var, return, if, else,
+  match, case, for, in, while, break, continue, import, from, as, config, migration, table, test,
+  body, and, or, without, spawn, await, box`
+* Literals:
+  * integers (`123`)
+  * floats (`3.14`)
+  * strings (`"hello"`)
+  * booleans (`true`, `false`)
+  * `null`
+* Punctuation/operators:
+  `(` `)` `[` `]` `{` `}` `,` `:` `.` `..` `->` `=>` `=` `==` `!=` `<` `<=` `>` `>=`
+  `+` `-` `*` `/` `%` `?` `!` `??` `?!`
+
+### Strings + interpolation
+
+* Double-quoted strings only (no multiline strings).
+* Escapes: `\n`, `\t`, `\r`, `\\`, `\"`. Unknown escapes pass through (`\$` produces `$`).
+* Interpolation: `${expr}` inside double quotes.
 
 ### Significant indentation
 
@@ -35,7 +53,7 @@ FUSE uses Python-style block structure but with stricter rules.
 ### Comments
 
 * Line comment: `# ...`
-* Doc comment: `## ...` attaches to next declaration (for generated docs)
+* Doc comment: `## ...` attaches to the next declaration
 
 ## Grammar (EBNF-ish)
 
@@ -78,20 +96,23 @@ Stmt           := LetStmt
                 | ReturnStmt
                 | IfStmt
                 | MatchStmt
-                | ExprStmt
                 | ForStmt
                 | WhileStmt
                 | BreakStmt
                 | ContinueStmt
+                | ExprStmt
 
 LetStmt        := "let" Ident [ ":" TypeRef ] "=" Expr NEWLINE
 VarStmt        := "var" Ident [ ":" TypeRef ] "=" Expr NEWLINE
 AssignStmt     := LValue "=" Expr NEWLINE
+LValue         := Ident
 ReturnStmt     := "return" [ Expr ] NEWLINE
-ExprStmt       := Expr NEWLINE
+ExprStmt       := Expr NEWLINE | SpawnExpr
 
 IfStmt         := "if" Expr ":" NEWLINE Block { "else" "if" Expr ":" NEWLINE Block } [ "else" ":" NEWLINE Block ]
 MatchStmt      := "match" Expr ":" NEWLINE INDENT { "case" Pattern ":" NEWLINE Block } DEDENT
+ForStmt        := "for" Pattern "in" Expr ":" NEWLINE Block
+WhileStmt      := "while" Expr ":" NEWLINE Block
 
 AppDecl        := "app" StringLit ":" NEWLINE Block
 ServiceDecl    := "service" Ident "at" StringLit ":" NEWLINE INDENT { RouteDecl } DEDENT
@@ -102,27 +123,42 @@ HttpVerb       := "get" | "post" | "put" | "patch" | "delete"
 ConfigDecl     := "config" Ident ":" NEWLINE INDENT { ConfigField } DEDENT
 ConfigField    := Ident ":" TypeRef "=" Expr NEWLINE
 
+MigrationDecl  := "migration" { Token } ":" NEWLINE Block
 TestDecl       := "test" StringLit ":" NEWLINE Block
 ```
 
-Expressions (minimal):
+Types:
+
+```
+TypeRef        := TypeAtom { "?" | "!" [ TypeRef ] }
+TypeAtom       := Ident
+                | Ident "<" TypeRef { "," TypeRef } ">"
+                | Ident "(" [ Expr { "," Expr } ] ")"
+```
+
+Expressions:
 
 ```
 Expr           := CoalesceExpr
 CoalesceExpr   := OrExpr { "??" OrExpr }
-OrExpr         := AndExpr { "or" AndExpr }        # optional keyword operators
+OrExpr         := AndExpr { "or" AndExpr }
 AndExpr        := EqExpr  { "and" EqExpr }
 EqExpr         := RelExpr { ("==" | "!=") RelExpr }
-RelExpr        := AddExpr { ("<" | "<=" | ">" | ">=") AddExpr }
+RelExpr        := RangeExpr { ("<" | "<=" | ">" | ">=") RangeExpr }
+RangeExpr      := AddExpr { ".." AddExpr }
 AddExpr        := MulExpr { ("+" | "-") MulExpr }
 MulExpr        := UnaryExpr { ("*" | "/" | "%") UnaryExpr }
-UnaryExpr      := ("-" | "!") UnaryExpr | PostfixExpr
-PostfixExpr    := PrimaryExpr { Call | Member | OptionalChain | BangChain }
+UnaryExpr      := ("-" | "!") UnaryExpr
+                | "await" UnaryExpr
+                | "box" UnaryExpr
+                | PostfixExpr
+PostfixExpr    := PrimaryExpr { Call | Member | OptionalMember | BangChain }
 Call           := "(" [ ArgList ] ")"
-ArgList        := Expr { "," Expr }
+ArgList        := Arg { "," Arg }
+Arg            := [ Ident "=" ] Expr
 Member         := "." Ident
-OptionalChain  := "?." Ident               # optional: safe member access
-BangChain      := "?!"
+OptionalMember := "?." Ident
+BangChain      := "?!" [ Expr ]
 PrimaryExpr    := Literal
                 | Ident
                 | "(" Expr ")"
@@ -130,21 +166,35 @@ PrimaryExpr    := Literal
                 | ListLit
                 | MapLit
                 | InterpString
+                | SpawnExpr
 
 StructLit      := Ident "(" [ NamedArgs ] ")"
 NamedArgs      := Ident "=" Expr { "," Ident "=" Expr }
 
 ListLit        := "[" [ Expr { "," Expr } ] "]"
 MapLit         := "{" [ Expr ":" Expr { "," Expr ":" Expr } ] "}"
+SpawnExpr      := "spawn" ":" NEWLINE Block
 ```
 
-(You can evolve this later without breaking the core model.)
+Patterns:
+
+```
+Pattern        := "_" | Literal | Ident [ "(" PatternArgs ")" ]
+PatternArgs    := Pattern { "," Pattern }
+               | PatternField { "," PatternField }
+PatternField   := Ident "=" Pattern
+```
+
+Notes:
+
+* `StructLit` is chosen when an identifier call contains named arguments.
+* `spawn` is an expression whose block provides its own newline.
 
 ---
 
 ## AST model (structural spec)
 
-Here’s a clean AST shape that doesn’t collapse into spaghetti.
+The AST matches `crates/fusec/src/ast.rs`:
 
 **Program**
 
@@ -159,246 +209,132 @@ Here’s a clean AST shape that doesn’t collapse into spaghetti.
 * `Service(ServiceDecl)`
 * `Config(ConfigDecl)`
 * `App(AppDecl)`
-* `Migration(MigrationDecl)` (non-MVP ok)
+* `Migration(MigrationDecl)`
 * `Test(TestDecl)`
 
-**TypeDecl**
+**Decls**
 
-* `name: Ident`
-* `fields: Vec<FieldDecl>`
-* `doc: Option<Doc>`
-
-**FieldDecl**
-
-* `name: Ident`
-* `ty: TypeRef`
-* `default: Option<Expr>`
-
-**EnumDecl**
-
-* `name`
-* `variants: Vec<Variant>`
-
-**Variant**
-
-* `name`
-* `payload: Vec<TypeRef>` (tuple-like payload, MVP)
-
-**FnDecl**
-
-* `name`
-* `params: Vec<Param>`
-* `ret: Option<TypeRef>`
-* `body: Block`
-
-**ServiceDecl**
-
-* `name`
-* `base_path: String`
-* `routes: Vec<RouteDecl>`
-
-**RouteDecl**
-
-* `verb: HttpVerb`
-* `path: String` (contains `{param: Type}`)
-* `body_type: Option<TypeRef>`
-* `ret_type: TypeRef`
-* `body: Block`
+* `TypeDecl { name, fields, doc }`
+* `FieldDecl { name, ty, default }`
+* `EnumDecl { name, variants, doc }`
+* `EnumVariant { name, payload }`
+* `FnDecl { name, params, ret, body, doc }`
+* `ServiceDecl { name, base_path, routes, doc }`
+* `RouteDecl { verb, path, body_type, ret_type, body }`
+* `ConfigDecl { name, fields, doc }`
+* `ConfigField { name, ty, value }`
+* `AppDecl { name, body, doc }`
+* `MigrationDecl { header, body, doc }`
+* `TestDecl { name, body, doc }`
 
 **Stmt**
 
-* `Let(name, opt_ty, expr)`
-* `Var(name, opt_ty, expr)`
-* `Assign(lvalue, expr)`
-* `Return(opt_expr)`
-* `If(cond, then, else_if: Vec<(cond, block)>, else_block)`
-* `Match(expr, cases: Vec<(Pattern, Block)>)`
-* `For(pattern, iterable, block)` (later)
-* `While(cond, block)` (later)
+* `Let { name, ty, expr }`
+* `Var { name, ty, expr }`
+* `Assign { target, expr }`
+* `Return { expr }`
+* `If { cond, then_block, else_if, else_block }`
+* `Match { expr, cases }`
+* `For { pat, iter, block }`
+* `While { cond, block }`
 * `Expr(expr)`
 * `Break`, `Continue`
 
 **Expr**
 
-* `Literal(...)`
-* `Ident(name)`
+* `Literal`
+* `Ident`
 * `Binary(op, left, right)`
 * `Unary(op, expr)`
 * `Call(callee, args)`
 * `Member(base, name)`
+* `OptionalMember(base, name)`
 * `StructLit(name, fields)`
 * `ListLit(items)`
 * `MapLit(pairs)`
 * `InterpString(parts)`
 * `Coalesce(left, right)`
-* `OptionalMember(base, name)` (for `?.`)
-* `BangChain(expr)` (for `?!` sugar as an operator node)
+* `BangChain(expr, error?)`
+* `Spawn(block)`
+* `Await(expr)`
+* `Box(expr)`
 
 **Pattern**
 
 * `Wildcard`
 * `Literal`
-* `IdentBind(name)`
-* `EnumVariant(name, subpatterns...)` (later)
-* `StructPattern` (later)
+* `Ident`
+* `EnumVariant(name, args...)`
+* `Struct(name, fields...)`
 
-## Type system
+## Type system (current)
 
 ### Base types
 
-* `Int`, `Float`, `Bool`, `String`
-* `List<T>`, `Map<K,V>`
-* `Bytes`
-* `Id` (built-in nominal type backed by `String` or `UUID` depending on runtime)
-* `Email` (refined String preset)
+* `Int`, `Float`, `Bool`, `String`, `Bytes`
+* `Id` (non-empty string)
+* `Email` (string validated by a simple `user@host` check)
+* `Error` (built-in error base)
+* `List<T>`, `Map<K,V>`, `Option<T>`, `Result<T,E>`
+* User-defined `type` and `enum` are nominal.
 
-### Nominal user types
+### Optionals (`T?`)
 
-* `type User: ...` creates nominal struct type
-* `enum X: ...` creates nominal tagged union
+* `T?` is `Option<T>`.
+* `null` represents `None`.
+* `x ?? y` returns `x` unless it is `null`, otherwise `y`.
+* `x?.field` returns `null` if `x` is `null`, otherwise the field value.
+* `Some` / `None` are valid match patterns.
+
+### Results (`T!` / `T!E`)
+
+* `T!` means `Result<T, Error>`.
+* `T!E` means `Result<T, E>`.
+* `expr ?! err` converts `Option`/`Result` to a typed error.
+* `expr ?!` uses a default error for `Option` and propagates the existing error for `Result`.
 
 ### Refined types
 
-Refinements attach predicates to a base type.
-
-Syntax examples:
+Refinements attach range predicates to a base type:
 
 * `String(1..80)` length constraint
 * `Int(0..130)` numeric range
-* `String(regex="...")` (optional later)
+* `Float(0.0..1.0)` numeric range
 
-**Semantics:**
-
-* Refinements are checked:
-
-  * at decode boundaries (JSON, CLI, HTTP request)
-  * at constructors (`User(...)`)
-  * optionally at assignment if runtime checks enabled (dev mode)
-
-**Compile-time vs runtime:**
-
-* Compile-time enforces that you can’t pretend a `String` is a `String(1..80)` without validation.
-* Runtime does the actual check.
-
-Introduce a compiler-known function:
-
-* `refine<TRefined>(value: TBase) -> TRefined!ValidationError`
-
-### Optionals
-
-`T?` is `Option<T>`.
-
-Rules:
-
-* Can be `null` in JSON input.
-* Member access on optional requires:
-
-  * unwrap (`x?` style) or safe access (`x?.field`)
-* FUSE supports:
-
-  * `x ?? y` (coalesce)
-  * `x?.field` (safe member, returns optional)
-
-### Fallible results
-
-MVP: `T!` is `Result<T, Error>` where `Error` is a built-in nominal base error.
-Better: `T!E` is `Result<T, E>`.
-
-I recommend **supporting both**:
-
-* `User!` means `Result<User, Error>`
-* `User!NotFound` means `Result<User, NotFound>`
-
-**Propagating errors**
-
-* `expr ?! ErrValue` means:
-
-  * if `expr` is `Option<T>` and is `None`, return `Err(ErrValue)`
-  * if `expr` is `Result<T,E>` and is `Err`, map/replace error with `ErrValue` (or wrap)
-* `try expr` (optional keyword later) or postfix `!`/`?` can be added, but MVP keeps just `?!` + explicit matching.
+Runtime expects range literals or a `..` expression inside the refinement. Other refinements
+(like regex) are not implemented yet.
 
 ### Type inference
 
-* Local inference for `let x = ...`
-* Function param/return types required unless trivially inferrable? MVP can require return types for exported functions, optional for local.
+* Local inference for `let`/`var`.
+* Function parameter types are required.
+* Function return type is optional.
 
 ### Structural vs nominal
 
-* User-defined `type` is nominal: `User` is not interchangeable with another identical struct.
-* Records/anonymous structs are not MVP.
+* User-defined `type` and `enum` are nominal.
+* Anonymous record types do not exist in the current grammar.
 
-### “without” type projection
+## Imports and modules (current)
 
-`User without id` creates a derived struct type:
+`import` declarations are parsed and tracked by semantic analysis, but there is no module loader or
+resolution system yet. Imported names are treated as external/module symbols only.
 
-* name is anonymous or compiler-generated: `User_without_id`
-* fields are copied except excluded
-* keeps refinements and defaults
+## Services and binding (summary)
 
-This is crucial for DTOs and kills boilerplate properly.
-
-## Module + import semantics
-
-### Files and modules
-
-* Each file is a module.
-* Module name defaults to file name (sans extension).
-* Directory modules are supported with `mod.fuse` (optional later). MVP: flat modules is enough.
-
-### Import forms
-
-* `import X` imports module `X` from project or std.
-* `import {A, B} from "net/http"` imports named exports from a module path.
-* `import X as Y from "foo"` aliasing.
-
-### Export rules
-
-Simple and strict:
-
-* Top-level `type/enum/fn/service/config/app/test` are **exported by default** from their module.
-* Prefix with `_` to make private: `_helperFn`.
-* Or allow `pub` later. MVP: underscore rule is fine.
-
-### Resolution order
-
-1. Relative: `from "./foo"` (explicit)
-2. Project modules
-3. Standard library modules (`net/http`, `json`, `log`, etc.)
-4. Dependencies from `fuse.toml`
-
-### Cycles
-
-* Module import cycles are allowed only if they don’t require evaluating top-level values (which MVP doesn’t really have anyway).
-* Since top-level expressions are disallowed in MVP (except declarations), cycle handling is easy.
-
-## “service” and parameter binding (formal-ish)
-
-Route path params have typed bindings:
-
-Example:
+Route syntax uses typed path params inside the string literal, for example:
 `get "/users/{id: Id}" -> User: ...`
 
-Rules:
-
-* `{name: Type}` declares a parameter.
-* Compiler generates:
-
-  * extraction from URL segment
-  * parsing + refinement
-  * availability of `id` as a local variable of type `Id` inside handler body
-
-For request body:
+The `body` keyword introduces the request body type:
 `post "/users" body UserCreate -> User: ...`
 
-* Body is decoded as JSON into `UserCreate`
-* Validation occurs automatically
-* The variable name inside handler is `body` (reserved) unless specified later.
+Runtime binding + error mapping are described in `runtime.md`.
 
-Error mapping:
+## Runtime support notes (current)
 
-* Any `Result` errors returned by handler are mapped to HTTP status codes by convention:
-
-  * `NotFound` -> 404
-  * `ValidationError` -> 400
-  * `Unauthorized` -> 401
-  * fallback -> 500
+* `import`, `migration`, and `test` are parsed but not executed by the runtime.
+* `for`/`while`/`break`/`continue` are parsed and type-checked, but both backends error at runtime.
+* `spawn`/`await`/`box` are parsed and type-checked, but both backends error at runtime.
+* Assignment targets are limited to identifiers at runtime.
+* Enum variants only support tuple payloads (no named payload fields).
+* `..` range expressions are only used in refined type arguments; evaluating them directly is not supported.
