@@ -9,7 +9,7 @@ describes the current implementation in this repo (parser + semantic analysis + 
 
 ### 1) Small, strict, multi-file MVP
 
-Programs can span multiple files via `import`. Module imports are namespaced; named imports bring items into scope, and module-qualified access works.
+Programs can span multiple files via `import`. Module imports are namespaced; named imports bring items into scope, and module-qualified access works for values and types.
 
 ### 2) Strong types, low ceremony
 
@@ -116,6 +116,7 @@ The runtime currently handles:
 * Parser + semantic analysis for `fn`, `type`, `enum`, `config`, `service`, `app`
 * AST interpreter and VM backends
 * `import` module loading (namespaced modules + named imports)
+* module-qualified type references in type positions (`Foo.User`, `Foo.Config`)
 * Built-ins: `print(...)`, `env(...)`, `serve(...)`
 * Config loading (env > config file > defaults)
 * JSON encode/decode and refined-type validation
@@ -124,7 +125,6 @@ The runtime currently handles:
 
 ## Not implemented yet (planned)
 
-* qualified types / full module paths in type positions
 * logging, DB/migrations, tests, docs/OpenAPI generation
 * `spawn`/`await`/`box` concurrency
 * `for`/`while`/`break`/`continue` at runtime

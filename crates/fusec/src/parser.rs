@@ -1163,9 +1163,28 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_type_name(&mut self) -> Ident {
+        let mut base = self.expect_ident();
+        let mut full_name = base.name.clone();
+        let mut span = base.span;
+        while self.eat_punct(Punct::Dot).is_some() {
+            let part = self.expect_ident();
+            if full_name.is_empty() {
+                full_name = part.name.clone();
+            } else {
+                full_name.push('.');
+                full_name.push_str(&part.name);
+            }
+            span = span.merge(part.span);
+        }
+        base.name = full_name;
+        base.span = span;
+        base
+    }
+
     fn parse_type_ref(&mut self) -> TypeRef {
         let start = self.peek_span();
-        let base = self.expect_ident();
+        let base = self.parse_type_name();
         let mut kind = if self.eat_punct(Punct::Lt).is_some() {
             let mut args = Vec::new();
             if !self.at_punct(Punct::Gt) {

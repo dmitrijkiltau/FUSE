@@ -24,10 +24,14 @@ pub fn analyze_program(program: &Program) -> (Analysis, Vec<Diag>) {
     > = std::collections::HashMap::new();
     import_items_by_id.insert(0, empty_items.clone());
     let empty_modules = crate::loader::ModuleMap::default();
+    let mut module_maps_by_id: std::collections::HashMap<ModuleId, crate::loader::ModuleMap> =
+        std::collections::HashMap::new();
+    module_maps_by_id.insert(0, empty_modules.clone());
     let mut checker = check::Checker::new(
         0,
         &symbols,
         &empty_modules,
+        &module_maps_by_id,
         &empty_items,
         &symbols_by_id,
         &import_items_by_id,
@@ -45,10 +49,13 @@ pub fn analyze_registry(registry: &ModuleRegistry) -> (Analysis, Vec<Diag>) {
         ModuleId,
         std::collections::HashMap<String, crate::loader::ModuleLink>,
     > = std::collections::HashMap::new();
+    let mut module_maps_by_id: std::collections::HashMap<ModuleId, crate::loader::ModuleMap> =
+        std::collections::HashMap::new();
     for (id, unit) in &registry.modules {
         let symbols = symbols::collect(&unit.program, &mut diags);
         symbols_by_id.insert(*id, symbols);
         import_items_by_id.insert(*id, unit.import_items.clone());
+        module_maps_by_id.insert(*id, unit.modules.clone());
     }
     for (id, unit) in &registry.modules {
         let symbols = match symbols_by_id.get(id) {
@@ -59,6 +66,7 @@ pub fn analyze_registry(registry: &ModuleRegistry) -> (Analysis, Vec<Diag>) {
             *id,
             symbols,
             &unit.modules,
+            &module_maps_by_id,
             &unit.import_items,
             &symbols_by_id,
             &import_items_by_id,

@@ -131,9 +131,10 @@ Types:
 
 ```
 TypeRef        := TypeAtom { "?" | "!" [ TypeRef ] }
-TypeAtom       := Ident
-                | Ident "<" TypeRef { "," TypeRef } ">"
-                | Ident "(" [ Expr { "," Expr } ] ")"
+TypeAtom       := TypeName
+                | TypeName "<" TypeRef { "," TypeRef } ">"
+                | TypeName "(" [ Expr { "," Expr } ] ")"
+TypeName       := Ident { "." Ident }
 ```
 
 Expressions:
@@ -332,8 +333,8 @@ Notes:
 * Module imports do not add names to the local scope; use `Foo.bar` for access.
 * Named imports (`import {A, B} from "path"`) do not create a module alias.
 * Module-qualified access only exposes items declared in that module (named imports are local).
-* Names are still globally unique across loaded modules (no qualified type paths yet).
-* Qualified access is only for value expressions; type references remain unqualified.
+* Module-qualified type references are allowed in type positions (`Foo.User`, `Foo.Config`).
+* Names are still globally unique across loaded modules.
 
 ## Services and binding (summary)
 

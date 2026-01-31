@@ -54,6 +54,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * `type` structs
 * `enum`
 * `import` (namespaced module imports + named imports for local scope)
+* module-qualified type references in type positions (`Foo.User`)
 * `config`, `service`, `app`
 * `if` / `else`, `match` (struct/enum/Option/Result patterns)
 * string interpolation via `${expr}` (escape `$` as `\$`)

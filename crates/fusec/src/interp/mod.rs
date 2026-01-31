@@ -138,6 +138,13 @@ fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
     }
 }
 
+fn split_type_name(name: &str) -> (Option<&str>, &str) {
+    match name.split_once('.') {
+        Some((module, rest)) if !module.is_empty() && !rest.is_empty() => (Some(module), rest),
+        _ => (None, name),
+    }
+}
+
 fn builtin_error_defaults(name: &str) -> Option<(&'static str, &'static str)> {
     match name {
         "BadRequest" => Some(("bad_request", "bad request")),
@@ -1862,95 +1869,102 @@ impl<'a> Interpreter<'a> {
 
     fn validate_simple(&self, value: &Value, name: &str, path: &str) -> ExecResult<()> {
         let type_name = self.value_type_name(value);
-        match name {
-            "Int" => {
-                if matches!(value, Value::Int(_)) {
-                    Ok(())
-                } else {
-                    Err(ExecError::Runtime(format!(
+        let (module, simple_name) = split_type_name(name);
+        if module.is_none() {
+            match simple_name {
+                "Int" => {
+                    if matches!(value, Value::Int(_)) {
+                        return Ok(());
+                    }
+                    return Err(ExecError::Runtime(format!(
                         "expected Int, got {type_name}"
-                    )))
+                    )));
                 }
-            }
-            "Float" => {
-                if matches!(value, Value::Float(_)) {
-                    Ok(())
-                } else {
-                    Err(ExecError::Error(self.validation_error_value(
+                "Float" => {
+                    if matches!(value, Value::Float(_)) {
+                        return Ok(());
+                    }
+                    return Err(ExecError::Error(self.validation_error_value(
                         path,
                         "type_mismatch",
                         format!("expected Float, got {type_name}"),
-                    )))
+                    )));
                 }
-            }
-            "Bool" => {
-                if matches!(value, Value::Bool(_)) {
-                    Ok(())
-                } else {
-                    Err(ExecError::Error(self.validation_error_value(
+                "Bool" => {
+                    if matches!(value, Value::Bool(_)) {
+                        return Ok(());
+                    }
+                    return Err(ExecError::Error(self.validation_error_value(
                         path,
                         "type_mismatch",
                         format!("expected Bool, got {type_name}"),
-                    )))
+                    )));
                 }
-            }
-            "String" => {
-                if matches!(value, Value::String(_)) {
-                    Ok(())
-                } else {
-                    Err(ExecError::Error(self.validation_error_value(
+                "String" => {
+                    if matches!(value, Value::String(_)) {
+                        return Ok(());
+                    }
+                    return Err(ExecError::Error(self.validation_error_value(
                         path,
                         "type_mismatch",
                         format!("expected String, got {type_name}"),
-                    )))
+                    )));
                 }
-            }
-            "Id" => match value {
-                Value::String(s) if !s.is_empty() => Ok(()),
-                Value::String(_) => Err(ExecError::Error(self.validation_error_value(
-                    path,
-                    "invalid_value",
-                    "expected non-empty Id".to_string(),
-                ))),
-                _ => Err(ExecError::Error(self.validation_error_value(
-                    path,
-                    "type_mismatch",
-                    format!("expected Id, got {type_name}"),
-                ))),
-            },
-            "Email" => match value {
-                Value::String(s) if rt_validate::is_email(s) => Ok(()),
-                Value::String(_) => Err(ExecError::Error(self.validation_error_value(
-                    path,
-                    "invalid_value",
-                    "invalid email address".to_string(),
-                ))),
-                _ => Err(ExecError::Error(self.validation_error_value(
-                    path,
-                    "type_mismatch",
-                    format!("expected Email, got {type_name}"),
-                ))),
-            },
-            "Bytes" => {
-                if matches!(value, Value::String(_)) {
-                    Ok(())
-                } else {
-                    Err(ExecError::Error(self.validation_error_value(
+                "Id" => match value {
+                    Value::String(s) if !s.is_empty() => return Ok(()),
+                    Value::String(_) => {
+                        return Err(ExecError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            "expected non-empty Id".to_string(),
+                        )))
+                    }
+                    _ => {
+                        return Err(ExecError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("expected Id, got {type_name}"),
+                        )))
+                    }
+                },
+                "Email" => match value {
+                    Value::String(s) if rt_validate::is_email(s) => return Ok(()),
+                    Value::String(_) => {
+                        return Err(ExecError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            "invalid email address".to_string(),
+                        )))
+                    }
+                    _ => {
+                        return Err(ExecError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("expected Email, got {type_name}"),
+                        )))
+                    }
+                },
+                "Bytes" => {
+                    if matches!(value, Value::String(_)) {
+                        return Ok(());
+                    }
+                    return Err(ExecError::Error(self.validation_error_value(
                         path,
                         "type_mismatch",
                         format!("expected Bytes, got {type_name}"),
-                    )))
+                    )));
                 }
+                _ => {}
             }
-            _ => match value {
-                Value::Struct { name: struct_name, .. } if struct_name == name => Ok(()),
-                Value::Enum { name: enum_name, .. } if enum_name == name => Ok(()),
-                _ => Err(ExecError::Error(self.validation_error_value(
-                    path,
-                    "type_mismatch",
-                    format!("expected {name}, got {type_name}"),
-                ))),
-            },
+        }
+        match value {
+            Value::Struct { name: struct_name, .. } if struct_name == simple_name => Ok(()),
+            Value::Enum { name: enum_name, .. } if enum_name == simple_name => Ok(()),
+            _ => Err(ExecError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                format!("expected {name}, got {type_name}"),
+            ))),
         }
     }
 
@@ -2054,12 +2068,25 @@ impl<'a> Interpreter<'a> {
                 return Ok(value);
             }
             TypeRefKind::Simple(ident) => {
-                if let Some(value) = self.decode_simple_json(json, &ident.name, path)? {
-                    value
-                } else if self.types.contains_key(&ident.name) {
-                    self.decode_struct_json(json, &ident.name, path)?
-                } else if self.enums.contains_key(&ident.name) {
-                    self.decode_enum_json(json, &ident.name, path)?
+                let (module, simple_name) = split_type_name(&ident.name);
+                if module.is_none() {
+                    if let Some(value) = self.decode_simple_json(json, simple_name, path)? {
+                        value
+                    } else if self.types.contains_key(simple_name) {
+                        self.decode_struct_json(json, simple_name, path)?
+                    } else if self.enums.contains_key(simple_name) {
+                        self.decode_enum_json(json, simple_name, path)?
+                    } else {
+                        return Err(ExecError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("unknown type {}", ident.name),
+                        )));
+                    }
+                } else if self.types.contains_key(simple_name) {
+                    self.decode_struct_json(json, simple_name, path)?
+                } else if self.enums.contains_key(simple_name) {
+                    self.decode_enum_json(json, simple_name, path)?
                 } else {
                     return Err(ExecError::Error(self.validation_error_value(
                         path,
