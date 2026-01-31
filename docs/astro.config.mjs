@@ -13,6 +13,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Language tour', slug: 'guides/getting-started' },
 						{ label: 'Use cases', slug: 'guides/running-examples' },
+						{ label: 'Case study: Webhook router', slug: 'guides/case-study-webhooks' },
 					],
 				},
 				{
