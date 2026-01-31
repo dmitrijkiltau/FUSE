@@ -1,65 +1,35 @@
-# Runtime semantics and contracts (MVP)
+# Runtime semantics (current implementation)
 
-This document specifies the core runtime behavior that the compiler and standard library must implement. It is the contract that keeps "write intent, get software" consistent across CLI and HTTP.
+This document describes the behavior of the AST interpreter and VM in this repo. It is deliberately
+conservative: anything not listed here is either unsupported or not implemented yet.
 
-## Goals
+## Backends
 
-- Validate at boundaries by default.
-- Deterministic error shapes and mappings.
-- Zero config glue: config, CLI, HTTP, and JSON are first-class.
-- Small runtime surface, but strict, predictable behavior.
+* **AST interpreter**: executes the parsed AST directly.
+* **VM**: lowers to bytecode and executes the VM.
+
+Most runtime behavior is shared, with a few differences called out below.
 
 ## Error model
 
-### Built-in error types
+### Recognized error names
 
-All errors are nominal types. The runtime ships these built-ins:
+The runtime recognizes a small set of error struct names when formatting error JSON and mapping
+HTTP statuses:
 
-```
-type Error:
-  code: String
-  message: String
-  details: Map<String, String> = {}
-  status: Int? = null
+* `ValidationError`
+* `Error`
+* `BadRequest`
+* `Unauthorized`
+* `Forbidden`
+* `NotFound`
+* `Conflict`
 
-type ValidationError:
-  message: String = "validation failed"
-  fields: List<ValidationField> = []
-
-type ValidationField:
-  path: String
-  code: String
-  message: String
-
-type NotFound:
-  message: String = "not found"
-
-type Unauthorized:
-  message: String = "unauthorized"
-
-type Forbidden:
-  message: String = "forbidden"
-
-type Conflict:
-  message: String = "conflict"
-
-type BadRequest:
-  message: String = "bad request"
-```
-
-### Result types
-
-- `T!` is `Result<T, Error>`.
-- `T!E` is `Result<T, E>`.
-
-`?!` sugar (from spec) is implemented as:
-
-- If `expr` is `Option<T>` and is `None`, return `Err(ErrValue)`.
-- If `expr` is `Result<T, E>` and is `Err`, return `Err(ErrValue)` (or wrap in `Error` for `T!`).
+These are not built-in types in the language (except `Error`); they are matched by name at runtime.
 
 ### Error JSON shape
 
-HTTP error responses are JSON with a single `error` object:
+Errors are rendered as JSON with a single `error` object:
 
 ```
 {
@@ -67,7 +37,7 @@ HTTP error responses are JSON with a single `error` object:
     "code": "validation_error",
     "message": "validation failed",
     "fields": [
-      { "path": "email", "code": "invalid_email", "message": "invalid email" }
+      { "path": "email", "code": "invalid_value", "message": "invalid email address" }
     ]
   }
 }
@@ -75,96 +45,119 @@ HTTP error responses are JSON with a single `error` object:
 
 Rules:
 
-- For `ValidationError`, `fields` is populated.
-- For other errors, `fields` is omitted or empty.
-- `Error.code` is a stable machine string (lower snake case).
+* `ValidationError` uses `message` and `fields` (list of structs with `path`, `code`, `message`).
+* `Error` uses `code` and `message`. Other fields are ignored for JSON output.
+* `BadRequest`, `Unauthorized`, `Forbidden`, `NotFound`, `Conflict` use their `message` field if
+  present, otherwise a default message.
+* Any other error value renders as `internal_error`.
 
 ### HTTP status mapping
 
-Mapping uses type name first, then `Error.status` if present:
+Status mapping uses the error name first, then `Error.status` if present:
 
-- `ValidationError` -> 400
-- `BadRequest` -> 400
-- `Unauthorized` -> 401
-- `Forbidden` -> 403
-- `NotFound` -> 404
-- `Conflict` -> 409
-- `Error` with `status` -> that status
-- anything else -> 500
+* `ValidationError` -> 400
+* `BadRequest` -> 400
+* `Unauthorized` -> 401
+* `Forbidden` -> 403
+* `NotFound` -> 404
+* `Conflict` -> 409
+* `Error` with `status: Int` -> that status
+* anything else -> 500
+
+### Result types + `?!`
+
+* `T!` is `Result<T, Error>`.
+* `T!E` is `Result<T, E>`.
+
+`expr ?! err` rules:
+
+* If `expr` is `Option<T>` and is `None`, return `Err(err)`.
+* If `expr` is `Result<T, E>` and is `Err`, replace the error with `err`.
+* If `expr ?!` omits `err`, `Option` uses a default error, and `Result` propagates the existing error.
 
 ## Validation model
 
-### When validation happens
+Validation is applied at runtime in these places:
 
-Validation is performed at all decode boundaries:
+* Struct literal construction (`Type(...)`)
+* JSON decode for HTTP body
+* Config loading
+* CLI flag binding
+* Route parameter parsing
 
-- JSON decode
-- CLI argument parsing
-- HTTP request binding
-- Config loading
-- `refine<T>` calls
-- `Type(...)` construction
-
-Validation inside the runtime is optional and off by default (dev mode can enable it).
+There is no global "validate on assignment" mode.
 
 ### Default values
 
-Defaults are applied before validation. If a field is optional and a default is present:
+Defaults are applied before validation:
 
-- Missing field -> default applied.
-- Explicit `null` -> stays `None`.
+* Missing field with default -> default is used.
+* Missing optional field -> `null`.
+* Explicit `null` stays `null` (even if a default exists).
 
-### Validation errors
+### Built-in refinements
 
-`ValidationError.fields` use dot paths and indexes:
+Refinements are range-based only:
 
-- `user.email`
-- `items[0].id`
+* `String(1..80)` length constraint
+* `Int(0..130)` numeric range
+* `Float(0.0..1.0)` numeric range
 
-## JSON codec derivation
+Other refinements (regex, custom predicates) are not implemented.
 
-### Struct encoding
+### `Id` and `Email`
 
-- Structs encode to JSON objects with field names as declared.
-- Encoding includes all fields (including defaults).
-- Optional `None` encodes as `null`.
+* `Id` is a non-empty string.
+* `Email` uses a simple `local@domain` check with a `.` in the domain.
+
+## JSON encoding/decoding
+
+### Structs
+
+* Encode to JSON objects with declared field names.
+* All fields are included (including defaults).
+* `null` represents an optional `None`.
 
 ### Struct decoding
 
-- Missing field with default -> default value.
-- Missing field with no default -> error.
-- Optional fields accept both missing and `null` as `None`.
-- Unknown fields -> error by default.
+* Missing field with default -> default value.
+* Missing field with no default -> error.
+* Optional fields accept missing or `null`.
+* Unknown fields -> error.
 
-### Enum encoding
+### Enums
 
 Enums use a tagged object format:
 
 ```
-{"type":"Variant","data":...}
+{ "type": "Variant", "data": ... }
 ```
 
 Rules:
 
-- No payload: omit `data`.
-- Single payload: `data` is the value.
-- Multiple payloads: `data` is an array.
+* No payload: omit `data`.
+* Single payload: `data` is the value.
+* Multiple payloads: `data` is an array.
 
-### Built-in types
+### Built-in types and generics
 
-- `Id`, `Email` -> JSON string.
-- `Bytes` -> base64 string.
-- `Map<K,V>` -> JSON object if `K` is `String`, otherwise JSON array of pairs.
+* `String`, `Id`, `Email`, `Bytes` -> JSON string.
+* `Bool`, `Int`, `Float` -> JSON number/bool.
+* `List<T>` -> JSON array.
+* `Map<K,V>` -> JSON object. Keys are strings; non-string keys are rejected.
+* `Result<T,E>` is **not** supported in JSON decoding.
 
-## Config binding
+`Bytes` are treated as plain strings; base64 is not implemented.
 
-Each `config` block compiles to a struct plus a loader function that reads configuration from:
+## Config loading
 
-1. A config file (`config.toml` by default, overridable via `FUSE_CONFIG` or `--config`).
-2. Environment variables (override config file).
-3. Field defaults (from the config block expressions).
+Config values are resolved in this order:
 
-Config file format is TOML with a section per config:
+1. Environment variables (override config file)
+2. Config file (default `config.toml`, overridable via `FUSE_CONFIG`)
+3. Default expressions
+
+Config file format is a minimal TOML-like subset:
 
 ```
 [App]
@@ -172,99 +165,76 @@ port = 3000
 dbUrl = "sqlite://app.db"
 ```
 
-Env override naming:
+Notes:
 
-- `APP_PORT`, `APP_DB_URL` for config `App`.
+* Only section headers and `key = value` pairs are supported.
+* Values are parsed as strings (with basic `"` escapes) and then converted using the same rules as env vars.
 
-Field expressions may still call `env()` explicitly; explicit `env()` is evaluated only if the field was not overridden by file or env.
+Env override naming is derived from config and field names:
 
-Loaded config values are validated after resolution and cached for the process lifetime.
+* `App.port` -> `APP_PORT`
+* `dbUrl` -> `DB_URL`
+* Hyphens become underscores, and camelCase is split into `SNAKE_CASE`.
 
-## CLI binding
+Type support for config values is the same as env parsing:
 
-The `app` block exposes a CLI from `main`:
+* simple scalars (`Int`, `Float`, `Bool`, `String`, `Id`, `Email`, `Bytes`)
+* `Option<T>` where `null`/empty is allowed
+* refined ranges on those base types
 
-- Each parameter becomes a flag: `--name`.
-- Required parameters (no default, not optional) are required flags.
-- Optional parameters (`T?`) are optional flags returning `None` when missing.
-- Parameters with defaults are optional flags using the default.
+`List`, `Map`, `Result`, and user-defined types are not supported for config values.
 
-Type parsing:
+## CLI binding (AST backend only)
 
-- `Int`, `Float`, `Bool`, `String`, `Id`, `Email`, `Bytes`.
-- `List<T>` uses repeated flags: `--tag a --tag b`.
-- `Bool` supports `--flag` and `--no-flag`.
-
-Errors:
-
-- Validation error -> exit code 2 with error JSON on stderr.
-- Any other error -> exit code 1.
-
-## HTTP runtime contract
-
-Each `service` block generates a router and a server entry:
-
-- Path params are extracted and validated from route patterns.
-- `body` is decoded and validated as JSON.
-- Return values are encoded as JSON with `content-type: application/json`.
-- Interpreter MVP environment knobs:
-  - `FUSE_HOST` (default `127.0.0.1`) controls bind host.
-  - `FUSE_SERVICE` selects the service when multiple are declared.
-  - `FUSE_MAX_REQUESTS` stops the server after N requests (useful for tests).
-
-Error handling:
-
-- `Result` errors map using the rules above.
-- Unexpected panics map to 500 with code `internal_error`.
-
-## Logging
-
-The `log` module exposes:
+CLI binding is enabled when you pass program arguments after the file name (or after `--`):
 
 ```
-log.debug "msg", key=value
-log.info  "msg", key=value
-log.warn  "msg", key=value
-log.error "msg", key=value
+fusec --run file.fuse -- --name=Codex
 ```
 
-Defaults:
+Rules:
 
-- JSON line output.
-- `debug/info` -> stdout, `warn/error` -> stderr.
-- Level from `FUSE_LOG` (default `info`).
-- Each record includes `ts`, `level`, `msg`, `fields`, `module`.
+* Flags only (no positional arguments).
+* `--flag value` and `--flag=value` are supported.
+* `--flag` sets a `Bool` to `true`, `--no-flag` sets it to `false`.
+* Unknown flags are validation errors.
+* Only scalar types and `Option<T>` are supported (same as env parsing).
+* Multiple values for the same flag are rejected.
+* CLI binding calls `fn main` directly (the `app` block is ignored when program args are present).
 
-## Concurrency model
+Validation errors are printed as JSON on stderr and usually exit with code 2.
 
-- `spawn` creates a task and returns `Task<T>`.
-- `await task` waits and yields `T` (or propagates the task error).
-- `await all` waits for all tasks spawned in the current scope.
+## HTTP runtime
 
-### Shared state (`box`)
+### Routing
 
-`box` creates a shared mutable cell:
+* Paths are split on `/` and matched segment-by-segment.
+* Route params use `{name: Type}` and must occupy the whole segment.
+* Params are parsed with the same rules as env parsing (simple types + optional/refined).
+* `body` introduces a JSON request body and is bound to the name `body` in the handler.
 
-```
-var counter = box 0
-counter += 1
-```
+### Response
 
-Semantics:
+* Successful values encode as JSON with `Content-Type: application/json`.
+* `Result` errors are mapped using the status rules above.
+* Unsupported HTTP methods return `405` with `internal_error` JSON.
 
-- `box` is the only shared mutable type.
-- Mutations are atomic via an internal lock.
-- `counter += 1` is sugar for `counter.set(counter.get() + 1)`.
+### Environment knobs
 
-## Stdlib surface (MVP)
+* `FUSE_HOST` (default `127.0.0.1`) controls bind host.
+* `FUSE_SERVICE` selects the service when multiple are declared.
+* `FUSE_MAX_REQUESTS` stops the server after N requests (useful for tests).
 
-Modules and key items:
+## Builtins (current)
 
-- `json`: `encode`, `decode`, `decode_relaxed`
-- `log`: logging functions (above)
-- `env`: `get(name: String) -> String?`
-- `time`: `now()`, `sleep(ms: Int)`
-- `net/http`: server primitives used by `service` codegen (mostly internal)
-- `errors`: built-in error constructors (optional namespace)
+* `print(value)` prints a stringified value to stdout.
+* `env(name: String) -> String?` returns an env var or `null`.
+* `serve(port)` starts the HTTP server on `FUSE_HOST:port`.
 
-`db` is a separate built-in surface but remains minimal for MVP; the compiler only assumes `db.connect` and basic `table` operations from migrations.
+## Unsupported or partial features
+
+* `import`, `migration`, and `test` are parsed but not executed.
+* `for`/`while`/`break`/`continue` are parsed and type-checked but error at runtime.
+* `spawn`/`await`/`box` are parsed and type-checked but error at runtime.
+* Assignment targets are limited to identifiers.
+* `..` range expressions are only used inside refined type arguments.
