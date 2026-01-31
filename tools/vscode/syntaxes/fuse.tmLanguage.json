@@ -1,0 +1,101 @@
+{
+  "name": "Fuse",
+  "scopeName": "source.fuse",
+  "patterns": [
+    {"include": "#comments"},
+    {"include": "#strings"},
+    {"include": "#keywords"},
+    {"include": "#types"},
+    {"include": "#constants"},
+    {"include": "#numbers"}
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-hash.fuse",
+          "match": "##.*$"
+        },
+        {
+          "name": "comment.line.number-sign.fuse",
+          "match": "#.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.fuse",
+          "begin": "\"",
+          "end": "\"",
+          "beginCaptures": {
+            "0": {"name": "punctuation.definition.string.begin.fuse"}
+          },
+          "endCaptures": {
+            "0": {"name": "punctuation.definition.string.end.fuse"}
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.fuse",
+              "match": "\\\\(\\\\|\"|n|r|t)"
+            },
+            {
+              "name": "constant.character.escape.fuse",
+              "match": "\\\\."
+            },
+            {
+              "name": "meta.embedded.expression.fuse",
+              "begin": "\\$\\{",
+              "end": "\\}",
+              "beginCaptures": {
+                "0": {"name": "punctuation.section.embedded.begin.fuse"}
+              },
+              "endCaptures": {
+                "0": {"name": "punctuation.section.embedded.end.fuse"}
+              },
+              "patterns": [
+                {"include": "#keywords"},
+                {"include": "#types"},
+                {"include": "#constants"},
+                {"include": "#numbers"},
+                {"include": "#strings"}
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.fuse",
+          "match": "\\b(app|service|at|get|post|put|patch|delete|fn|type|enum|let|var|return|if|else|match|case|for|in|while|break|continue|import|from|as|config|migration|table|test|body|and|or|without|spawn|await|box)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.fuse",
+          "match": "\\b(Int|Float|Bool|String|Id|Email|Bytes|Option|Result|List|Map)\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.fuse",
+          "match": "\\b(true|false|null)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.fuse",
+          "match": "\\b-?\\d+(?:\\.\\d+)?\\b"
+        }
+      ]
+    }
+  }
+}

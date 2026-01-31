@@ -1,0 +1,35 @@
+{
+  "name": "fuse-vscode",
+  "displayName": "Fuse Language",
+  "description": "Syntax highlighting for Fuse",
+  "version": "0.0.1",
+  "publisher": "fuse",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "fuse",
+        "aliases": [
+          "Fuse",
+          "fuse"
+        ],
+        "extensions": [
+          ".fuse"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "fuse",
+        "scopeName": "source.fuse",
+        "path": "./syntaxes/fuse.tmLanguage.json"
+      }
+    ]
+  }
+}
