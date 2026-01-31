@@ -66,6 +66,20 @@ fn main() -> io::Result<()> {
                     publish_empty_diagnostics(&mut stdout, &uri)?;
                 }
             }
+            Some("textDocument/formatting") => {
+                let mut edits = Vec::new();
+                if let Some(uri) = extract_text_doc_uri(&obj) {
+                    if let Some(text) = docs.get(&uri) {
+                        let formatted = fusec::format::format_source(text);
+                        if formatted != *text {
+                            edits.push(full_document_edit(text, &formatted));
+                            docs.insert(uri, formatted.clone());
+                        }
+                    }
+                }
+                let response = json_response(id, JsonValue::Array(edits));
+                write_message(&mut stdout, &response)?;
+            }
             _ => {
                 if id.is_some() {
                     let response = json_response(id, JsonValue::Null);
@@ -132,6 +146,17 @@ fn to_lsp_diags(text: &str, diags: &[Diag]) -> Vec<JsonValue> {
             JsonValue::Object(out)
         })
         .collect()
+}
+
+fn full_document_edit(original: &str, new_text: &str) -> JsonValue {
+    let offsets = line_offsets(original);
+    let end_offset = original.len();
+    let (end_line, end_col) = offset_to_line_col(&offsets, end_offset);
+    let range = range_json(0, 0, end_line, end_col);
+    let mut edit = BTreeMap::new();
+    edit.insert("range".to_string(), range);
+    edit.insert("newText".to_string(), JsonValue::String(new_text.to_string()));
+    JsonValue::Object(edit)
 }
 
 fn range_json(start_line: usize, start_col: usize, end_line: usize, end_col: usize) -> JsonValue {
