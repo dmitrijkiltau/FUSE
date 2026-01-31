@@ -4,6 +4,7 @@
 
 - Always run cargo commands through `scripts/cargo_env.sh` to avoid cross-device link errors.
 - Default test command: `scripts/cargo_env.sh cargo test -p fusec`.
+- Docs site lives in `docs/` (Astro + Starlight). Use `npm run build` from `docs/` for a successful build preview.
 
 ## Specs and fixtures
 

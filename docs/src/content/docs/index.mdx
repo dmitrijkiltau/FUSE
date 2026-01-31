@@ -1,0 +1,49 @@
+---
+title: Fuse Language
+description: A typed, config-first language for small services and tools.
+---
+
+# Fuse
+
+Fuse is a typed, config-first language designed for small services and tools. It
+prioritizes clear data shapes, predictable runtime behavior, and quick iteration
+from definition to execution.
+
+## Why Fuse
+
+- **Typed data models**: structs, enums, refined constraints.
+- **Config-first**: env + defaults, predictable overrides.
+- **Service-ready**: minimal HTTP routing with typed JSON IO.
+- **Fast feedback**: parse → check → run in seconds.
+
+## Use cases
+
+- Small JSON APIs and internal tools
+- CLI utilities with validated inputs
+- Prototypes that grow into production services
+- Config-driven workers
+
+## A tiny example
+
+```
+config App:
+  port: Int = env("PORT") ?? 3000
+
+type User:
+  id: Id
+  name: String(1..80)
+  email: Email
+
+service Users at "/api":
+  get "/users/{id: Id}" -> User!NotFound:
+    return NotFound(message="not found")
+
+app "users":
+  serve(App.port)
+```
+
+## Next
+
+- [Language tour](/guides/getting-started/)
+- [Use cases](/guides/running-examples/)
+- [Language reference](/reference/language/)
