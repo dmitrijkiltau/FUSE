@@ -4,8 +4,11 @@
   "patterns": [
     {"include": "#comments"},
     {"include": "#strings"},
+    {"include": "#definitions"},
+    {"include": "#fields"},
     {"include": "#keywords"},
     {"include": "#types"},
+    {"include": "#userTypes"},
     {"include": "#constants"},
     {"include": "#numbers"}
   ],
@@ -73,11 +76,42 @@
         }
       ]
     },
+    "definitions": {
+      "patterns": [
+        {
+          "name": "meta.definition.fuse",
+          "match": "^\\s*(fn|type|enum|config|service|app|migration|table|test)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {"name": "keyword.control.fuse"},
+            "2": {"name": "entity.name.type.fuse"}
+          }
+        }
+      ]
+    },
+    "fields": {
+      "patterns": [
+        {
+          "name": "meta.field.fuse",
+          "match": "^\\s*([a-z_][A-Za-z0-9_]*)\\s*:",
+          "captures": {
+            "1": {"name": "variable.other.property.fuse"}
+          }
+        }
+      ]
+    },
     "types": {
       "patterns": [
         {
           "name": "storage.type.fuse",
           "match": "\\b(Int|Float|Bool|String|Id|Email|Bytes|Option|Result|List|Map)\\b"
+        }
+      ]
+    },
+    "userTypes": {
+      "patterns": [
+        {
+          "name": "support.type.user.fuse",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
         }
       ]
     },

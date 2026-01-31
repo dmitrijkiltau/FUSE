@@ -2,7 +2,7 @@
   "name": "fuse-vscode",
   "displayName": "Fuse Language",
   "description": "Syntax highlighting for Fuse",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "fuse",
   "engines": {
     "vscode": "^1.80.0"
