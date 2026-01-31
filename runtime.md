@@ -229,8 +229,54 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 
 * `print(value)` prints a stringified value to stdout.
 * `log(...)` writes a log line to stderr (see Logging below).
+* `db.exec/query/one` execute SQL against the configured database (see Database below).
 * `env(name: String) -> String?` returns an env var or `null`.
 * `serve(port)` starts the HTTP server on `FUSE_HOST:port`.
+
+## Database (SQLite only)
+
+Database access is intentionally minimal and currently uses SQLite via a single connection.
+
+Configuration:
+
+* `FUSE_DB_URL` (preferred) or `DATABASE_URL`
+* `App.dbUrl` if config has been loaded
+
+URL format:
+
+* `sqlite://path` or `sqlite:path`
+
+Builtins:
+
+* `db.exec(sql)` executes a SQL batch (no return value).
+* `db.query(sql)` returns `List<Map<String, Value>>` (column names -> values).
+* `db.one(sql)` returns the first row as a map, or `null`.
+
+Value mapping:
+
+* `NULL` -> `null`
+* integers -> `Int`
+* reals -> `Float`
+* text -> `String`
+* blobs -> hex string
+
+No parameter binding or connection pooling is implemented yet.
+
+## Migrations
+
+`migration <name>:` declares a migration block. Run them with:
+
+```
+fusec --migrate path/to/file.fuse
+```
+
+Rules:
+
+* Migrations are collected from all loaded modules.
+* They run in ascending order by migration name.
+* Applied migrations are tracked in `__fuse_migrations`.
+* Only “up” migrations exist today (no down/rollback).
+* Migrations are executed by the AST interpreter.
 
 ## Logging
 
@@ -262,7 +308,7 @@ Structured logging:
 
 ## Unsupported or partial features
 
-* `migration` and `test` are parsed but not executed.
+* `test` declarations are parsed but not executed.
 * `for`/`while`/`break`/`continue` are parsed and type-checked but error at runtime.
 * `spawn`/`await`/`box` are parsed and type-checked but error at runtime.
 * Assignment targets are limited to identifiers.

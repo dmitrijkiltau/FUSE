@@ -348,19 +348,23 @@ impl<'a> Parser<'a> {
 
     fn parse_migration_decl(&mut self, doc: Option<Doc>) -> MigrationDecl {
         let start = self.prev_span();
-        let mut header = Vec::new();
-        while !self.at_punct(Punct::Colon) && !self.at_newline() && !self.at_eof() {
-            let tok = self.bump();
-            header.push(TokenLike {
-                text: token_text(&tok.kind),
-                span: tok.span,
-            });
-        }
+        let name = match self.peek_kind() {
+            TokenKind::Ident(_) => self.expect_ident().name,
+            TokenKind::String(_) => self.expect_string_lit().value,
+            TokenKind::Int(_) => match self.bump().kind {
+                TokenKind::Int(v) => v.to_string(),
+                _ => "_".to_string(),
+            },
+            _ => {
+                self.error_here("expected migration name");
+                "_".to_string()
+            }
+        };
         self.expect_punct(Punct::Colon);
         let body = self.parse_block();
         let span = start.merge(body.span);
         MigrationDecl {
-            header,
+            name,
             body,
             doc,
             span,
@@ -1478,25 +1482,6 @@ impl<'a> Parser<'a> {
         } else {
             self.tokens[self.pos - 1].span
         }
-    }
-}
-
-fn token_text(kind: &TokenKind) -> String {
-    match kind {
-        TokenKind::Ident(s) => s.clone(),
-        TokenKind::Int(v) => v.to_string(),
-        TokenKind::Float(v) => v.to_string(),
-        TokenKind::String(s) => format!("\"{}\"", s),
-        TokenKind::InterpString(_) => "\"<interp>\"".to_string(),
-        TokenKind::Bool(v) => v.to_string(),
-        TokenKind::Null => "null".to_string(),
-        TokenKind::Keyword(k) => format!("{:?}", k),
-        TokenKind::Punct(p) => format!("{:?}", p),
-        TokenKind::DocComment(s) => format!("##{}", s),
-        TokenKind::Indent => "INDENT".to_string(),
-        TokenKind::Dedent => "DEDENT".to_string(),
-        TokenKind::Newline => "NEWLINE".to_string(),
-        TokenKind::Eof => "EOF".to_string(),
     }
 }
 

@@ -7,6 +7,7 @@ use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate 
 use crate::ast::{
     Expr, ExprKind, HttpVerb, Ident, Literal, Pattern, PatternKind, TypeRef, TypeRefKind, UnaryOp,
 };
+use crate::db::Db;
 use crate::interp::{format_error_value, Value};
 use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram, Service, ServiceRoute};
 use crate::span::Span;
@@ -78,6 +79,7 @@ fn min_log_level() -> LogLevel {
 pub struct Vm<'a> {
     program: &'a IrProgram,
     configs: HashMap<String, HashMap<String, Value>>,
+    db: Option<Db>,
 }
 
 impl<'a> Vm<'a> {
@@ -85,6 +87,7 @@ impl<'a> Vm<'a> {
         Self {
             program,
             configs: HashMap::new(),
+            db: None,
         }
     }
 
@@ -466,6 +469,34 @@ impl<'a> Vm<'a> {
         }
     }
 
+    fn db_url(&self) -> VmResult<String> {
+        if let Ok(url) = std::env::var("FUSE_DB_URL") {
+            return Ok(url);
+        }
+        if let Ok(url) = std::env::var("DATABASE_URL") {
+            return Ok(url);
+        }
+        if let Some(Value::String(url)) = self
+            .configs
+            .get("App")
+            .and_then(|config| config.get("dbUrl"))
+        {
+            return Ok(url.clone());
+        }
+        Err(VmError::Runtime(
+            "db url not configured (set FUSE_DB_URL or App.dbUrl)".to_string(),
+        ))
+    }
+
+    fn db_mut(&mut self) -> VmResult<&mut Db> {
+        if self.db.is_none() {
+            let url = self.db_url()?;
+            let db = Db::open(&url).map_err(VmError::Runtime)?;
+            self.db = Some(db);
+        }
+        Ok(self.db.as_mut().expect("db initialized"))
+    }
+
     fn eval_builtin(&mut self, name: &str, args: Vec<Value>) -> VmResult<Value> {
         match name {
             "print" => {
@@ -522,6 +553,50 @@ impl<'a> Vm<'a> {
                     }
                 }
                 Ok(Value::Unit)
+            }
+            "db.exec" => {
+                let sql = match args.get(0) {
+                    Some(Value::String(s)) => s,
+                    _ => {
+                        return Err(VmError::Runtime(
+                            "db.exec expects a SQL string".to_string(),
+                        ))
+                    }
+                };
+                let db = self.db_mut()?;
+                db.exec(sql).map_err(VmError::Runtime)?;
+                Ok(Value::Unit)
+            }
+            "db.query" => {
+                let sql = match args.get(0) {
+                    Some(Value::String(s)) => s,
+                    _ => {
+                        return Err(VmError::Runtime(
+                            "db.query expects a SQL string".to_string(),
+                        ))
+                    }
+                };
+                let db = self.db_mut()?;
+                let rows = db.query(sql).map_err(VmError::Runtime)?;
+                let list = rows.into_iter().map(Value::Map).collect();
+                Ok(Value::List(list))
+            }
+            "db.one" => {
+                let sql = match args.get(0) {
+                    Some(Value::String(s)) => s,
+                    _ => {
+                        return Err(VmError::Runtime(
+                            "db.one expects a SQL string".to_string(),
+                        ))
+                    }
+                };
+                let db = self.db_mut()?;
+                let rows = db.query(sql).map_err(VmError::Runtime)?;
+                if let Some(row) = rows.into_iter().next() {
+                    Ok(Value::Map(row))
+                } else {
+                    Ok(Value::Null)
+                }
             }
             "env" => {
                 let key = match args.get(0) {

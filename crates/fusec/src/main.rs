@@ -6,7 +6,7 @@ use std::process;
 
 use fusec::diag::Level;
 use fusec::load_program_with_modules;
-use fusec::interp::Interpreter;
+use fusec::interp::{Interpreter, MigrationJob};
 use fusec::ast::TypeRefKind;
 use fuse_rt::error::{ValidationError, ValidationField};
 use fuse_rt::json;
@@ -26,6 +26,7 @@ fn main() {
     let mut backend = Backend::Ast;
     let mut backend_forced = false;
     let mut app_name: Option<String> = None;
+    let mut migrate = false;
     let mut path = None;
 
     while let Some(arg) = args.next() {
@@ -49,6 +50,10 @@ fn main() {
             run = true;
             continue;
         }
+        if arg == "--migrate" {
+            migrate = true;
+            continue;
+        }
         if arg == "--backend" {
             if let Some(name) = args.next() {
                 backend_forced = true;
@@ -57,13 +62,13 @@ fn main() {
                     "vm" => Backend::Vm,
                     _ => {
                         eprintln!("unknown backend: {name}");
-                        eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--backend ast|vm] [--app NAME] <file>");
+                        eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--migrate] [--backend ast|vm] [--app NAME] <file>");
                         return;
                     }
                 };
             } else {
                 eprintln!("--backend expects a name");
-                eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--backend ast|vm] [--app NAME] <file>");
+                eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--migrate] [--backend ast|vm] [--app NAME] <file>");
                 return;
             }
             continue;
@@ -73,7 +78,7 @@ fn main() {
                 app_name = Some(name);
             } else {
                 eprintln!("--app expects a name");
-                eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--backend ast|vm] [--app NAME] <file>");
+                eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--migrate] [--backend ast|vm] [--app NAME] <file>");
                 return;
             }
             continue;
@@ -88,7 +93,7 @@ fn main() {
     let path = match path {
         Some(p) => p,
         None => {
-            eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--backend ast|vm] [--app NAME] <file>");
+            eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--migrate] [--backend ast|vm] [--app NAME] <file>");
             return;
         }
     };
@@ -149,6 +154,40 @@ fn main() {
                 );
             }
             process::exit(1);
+        }
+    }
+
+    if migrate {
+        let (_analysis, diags) = fusec::sema::analyze_registry(&registry);
+        if !diags.is_empty() {
+            for diag in diags {
+                let level = match diag.level {
+                    Level::Error => "error",
+                    Level::Warning => "warning",
+                };
+                eprintln!(
+                    "{level}: {} ({}..{})",
+                    diag.message, diag.span.start, diag.span.end
+                );
+            }
+            process::exit(1);
+        }
+        let migrations = match collect_migrations(&registry) {
+            Ok(migrations) => migrations,
+            Err(err) => {
+                eprintln!("migration error: {err}");
+                process::exit(1);
+            }
+        };
+        if !migrations.is_empty() {
+            let mut interp = Interpreter::with_registry(&registry);
+            if let Err(err) = interp.run_migrations(&migrations) {
+                eprintln!("migration error: {err}");
+                process::exit(1);
+            }
+        }
+        if !run {
+            return;
         }
     }
 
@@ -301,6 +340,39 @@ fn main() {
     if dump_ast {
         println!("{:#?}", program);
     }
+}
+
+fn collect_migrations<'a>(
+    registry: &'a fusec::ModuleRegistry,
+) -> Result<Vec<MigrationJob<'a>>, String> {
+    let mut jobs = Vec::new();
+    let mut seen: HashMap<String, String> = HashMap::new();
+    for (id, unit) in &registry.modules {
+        let module_path = unit.path.display().to_string();
+        for item in &unit.program.items {
+            if let fusec::ast::Item::Migration(decl) = item {
+                if decl.name.trim().is_empty() {
+                    return Err("migration name cannot be empty".to_string());
+                }
+                if let Some(prev) = seen.insert(decl.name.clone(), module_path.clone()) {
+                    return Err(format!(
+                        "duplicate migration {} (also declared in {})",
+                        decl.name, prev
+                    ));
+                }
+                jobs.push((decl.name.clone(), module_path.clone(), *id, decl));
+            }
+        }
+    }
+    jobs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    Ok(jobs
+        .into_iter()
+        .map(|(id, _path, module_id, decl)| MigrationJob {
+            id,
+            module_id,
+            decl,
+        })
+        .collect())
 }
 
 struct RawArgs {

@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod diag;
+pub mod db;
 pub mod format;
 pub mod lexer;
 pub mod loader;

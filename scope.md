@@ -62,10 +62,11 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * fallible results (`T!E` or `T!` with default error)
 * refined types on primitives (`String(1..80)`, `Int(0..130)`)
 * generics for `List<T>`, `Map<K,V>`, `Result<T,E>`, `Option<T>`
+* `migration` declarations
 
 **Parsed but not executed yet**
 
-* `migration`, `test` declarations
+* `test` declarations
 * `for` / `while` / `break` / `continue`
 * `spawn` / `await` / `box` concurrency
 * `without` type derivations
@@ -78,14 +79,15 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * config/env/CLI parsing is limited to scalar types + `Option` + refined ranges
 * HTTP request binding + response encoding
 * error JSON + HTTP status mapping
-* builtins: `print`, `log`, `env`, `serve`
+* builtins: `print`, `log`, `db`, `env`, `serve`
+* SQLite-backed DB access + migrations via `fusec --migrate`
 * CLI arg binding for `fn main` when running with program args (AST backend only)
 
 **Tooling (implemented)**
 
 * parser + semantic analysis
 * formatter via `fusec --fmt`
-* `fusec` flags: `--check`, `--run`, `--backend`, `--app`
+* `fusec` flags: `--check`, `--run`, `--migrate`, `--backend`, `--app`
 
 **Tooling (planned)**
 

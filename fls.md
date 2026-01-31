@@ -123,7 +123,7 @@ HttpVerb       := "get" | "post" | "put" | "patch" | "delete"
 ConfigDecl     := "config" Ident ":" NEWLINE INDENT { ConfigField } DEDENT
 ConfigField    := Ident ":" TypeRef "=" Expr NEWLINE
 
-MigrationDecl  := "migration" { Token } ":" NEWLINE Block
+MigrationDecl  := "migration" ( Ident | StringLit | Int ) ":" NEWLINE Block
 TestDecl       := "test" StringLit ":" NEWLINE Block
 ```
 
@@ -348,7 +348,8 @@ Runtime binding + error mapping are described in `runtime.md`.
 
 ## Runtime support notes (current)
 
-* `migration` and `test` are parsed but not executed by the runtime.
+* `migration` blocks run via `fusec --migrate` (AST backend only).
+* `test` is parsed but not executed by the runtime.
 * `for`/`while`/`break`/`continue` are parsed and type-checked, but both backends error at runtime.
 * `spawn`/`await`/`box` are parsed and type-checked, but both backends error at runtime.
 * Assignment targets are limited to identifiers at runtime.

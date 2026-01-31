@@ -149,7 +149,7 @@ pub struct AppDecl {
 
 #[derive(Clone, Debug)]
 pub struct MigrationDecl {
-    pub header: Vec<TokenLike>,
+    pub name: String,
     pub body: Block,
     pub doc: Option<Doc>,
     pub span: Span,
@@ -377,11 +377,5 @@ pub enum PatternKind {
 pub struct PatternField {
     pub name: Ident,
     pub pat: Box<Pattern>,
-    pub span: Span,
-}
-
-#[derive(Clone, Debug)]
-pub struct TokenLike {
-    pub text: String,
     pub span: Span,
 }

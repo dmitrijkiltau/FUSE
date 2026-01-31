@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
@@ -6,9 +6,10 @@ use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate 
 
 use crate::ast::{
     AppDecl, BinaryOp, Block, ConfigDecl, EnumDecl, Expr, ExprKind, FnDecl, HttpVerb, Ident,
-    InterpPart, Item, Literal, Pattern, PatternField, PatternKind, Program, RouteDecl, ServiceDecl,
-    Stmt, StmtKind, StructField, TypeDecl, TypeRef, TypeRefKind, UnaryOp,
+    InterpPart, Item, Literal, MigrationDecl, Pattern, PatternField, PatternKind, Program,
+    RouteDecl, ServiceDecl, Stmt, StmtKind, StructField, TypeDecl, TypeRef, TypeRefKind, UnaryOp,
 };
+use crate::db::Db;
 use crate::loader::{ModuleId, ModuleMap, ModuleRegistry};
 
 #[derive(Clone, Debug)]
@@ -284,6 +285,7 @@ impl Env {
 pub struct Interpreter<'a> {
     env: Env,
     configs: HashMap<String, HashMap<String, Value>>,
+    db: Option<Db>,
     functions: HashMap<String, &'a FnDecl>,
     apps: Vec<&'a AppDecl>,
     app_owner: HashMap<String, ModuleId>,
@@ -296,6 +298,12 @@ pub struct Interpreter<'a> {
     function_owner: HashMap<String, ModuleId>,
     config_owner: HashMap<String, ModuleId>,
     current_module: ModuleId,
+}
+
+pub struct MigrationJob<'a> {
+    pub id: String,
+    pub module_id: ModuleId,
+    pub decl: &'a MigrationDecl,
 }
 
 impl<'a> Interpreter<'a> {
@@ -344,6 +352,7 @@ impl<'a> Interpreter<'a> {
         Self {
             env: Env::new(),
             configs: HashMap::new(),
+            db: None,
             functions,
             apps,
             app_owner,
@@ -404,6 +413,7 @@ impl<'a> Interpreter<'a> {
         Self {
             env: Env::new(),
             configs: HashMap::new(),
+            db: None,
             functions,
             apps,
             app_owner,
@@ -446,6 +456,77 @@ impl<'a> Interpreter<'a> {
         };
         self.current_module = prev_module;
         out
+    }
+
+    pub fn run_migrations(&mut self, migrations: &[MigrationJob<'_>]) -> Result<(), String> {
+        if let Err(err) = self.eval_configs() {
+            return Err(self.render_exec_error(err));
+        }
+        {
+            let db = match self.db_mut() {
+                Ok(db) => db,
+                Err(err) => return Err(self.render_exec_error(err)),
+            };
+            db.exec(
+                "CREATE TABLE IF NOT EXISTS __fuse_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
+            )?;
+        }
+        let applied_rows = {
+            let db = match self.db_mut() {
+                Ok(db) => db,
+                Err(err) => return Err(self.render_exec_error(err)),
+            };
+            db.query("SELECT id FROM __fuse_migrations")?
+        };
+        let mut applied = HashSet::new();
+        for row in applied_rows {
+            if let Some(Value::String(id)) = row.get("id") {
+                applied.insert(id.clone());
+            }
+        }
+        for job in migrations {
+            if applied.contains(&job.id) {
+                continue;
+            }
+            {
+                let db = match self.db_mut() {
+                    Ok(db) => db,
+                    Err(err) => return Err(self.render_exec_error(err)),
+                };
+                db.exec("BEGIN")?;
+            }
+            let prev_module = self.current_module;
+            self.current_module = job.module_id;
+            let result = self.eval_block(&job.decl.body);
+            self.current_module = prev_module;
+            match result {
+                Ok(_) => {}
+                Err(ExecError::Return(_)) => {
+                    if let Ok(db) = self.db_mut() {
+                        let _ = db.exec("ROLLBACK");
+                    }
+                    return Err("return not allowed in migration".to_string());
+                }
+                Err(err) => {
+                    if let Ok(db) = self.db_mut() {
+                        let _ = db.exec("ROLLBACK");
+                    }
+                    return Err(self.render_exec_error(err));
+                }
+            }
+            {
+                let db = match self.db_mut() {
+                    Ok(db) => db,
+                    Err(err) => return Err(self.render_exec_error(err)),
+                };
+                db.execute(
+                    "INSERT INTO __fuse_migrations (id, applied_at) VALUES (?1, CURRENT_TIMESTAMP)",
+                    (&job.id,),
+                )?;
+                db.exec("COMMIT")?;
+            }
+        }
+        Ok(())
     }
 
     pub fn parse_cli_value(&self, ty: &TypeRef, raw: &str) -> Result<Value, String> {
@@ -798,6 +879,34 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    fn db_url(&self) -> ExecResult<String> {
+        if let Ok(url) = std::env::var("FUSE_DB_URL") {
+            return Ok(url);
+        }
+        if let Ok(url) = std::env::var("DATABASE_URL") {
+            return Ok(url);
+        }
+        if let Some(Value::String(url)) = self
+            .configs
+            .get("App")
+            .and_then(|config| config.get("dbUrl"))
+        {
+            return Ok(url.clone());
+        }
+        Err(ExecError::Runtime(
+            "db url not configured (set FUSE_DB_URL or App.dbUrl)".to_string(),
+        ))
+    }
+
+    fn db_mut(&mut self) -> ExecResult<&mut Db> {
+        if self.db.is_none() {
+            let url = self.db_url()?;
+            let db = Db::open(&url).map_err(ExecError::Runtime)?;
+            self.db = Some(db);
+        }
+        Ok(self.db.as_mut().expect("db initialized"))
+    }
+
     fn resolve_ident(&self, name: &str) -> ExecResult<Value> {
         if let Some(val) = self.env.get(name) {
             return Ok(val);
@@ -809,7 +918,7 @@ impl<'a> Interpreter<'a> {
             return Ok(Value::Config(name.to_string()));
         }
         match name {
-            "print" | "env" | "serve" | "log" => Ok(Value::Builtin(name.to_string())),
+            "print" | "env" | "serve" | "log" | "db" => Ok(Value::Builtin(name.to_string())),
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),
         }
     }
@@ -897,6 +1006,50 @@ impl<'a> Interpreter<'a> {
                     }
                 }
                 Ok(Value::Unit)
+            }
+            "db.exec" => {
+                let sql = match args.get(0) {
+                    Some(Value::String(s)) => s,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "db.exec expects a SQL string".to_string(),
+                        ))
+                    }
+                };
+                let db = self.db_mut()?;
+                db.exec(sql).map_err(ExecError::Runtime)?;
+                Ok(Value::Unit)
+            }
+            "db.query" => {
+                let sql = match args.get(0) {
+                    Some(Value::String(s)) => s,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "db.query expects a SQL string".to_string(),
+                        ))
+                    }
+                };
+                let db = self.db_mut()?;
+                let rows = db.query(sql).map_err(ExecError::Runtime)?;
+                let list = rows.into_iter().map(Value::Map).collect();
+                Ok(Value::List(list))
+            }
+            "db.one" => {
+                let sql = match args.get(0) {
+                    Some(Value::String(s)) => s,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "db.one expects a SQL string".to_string(),
+                        ))
+                    }
+                };
+                let db = self.db_mut()?;
+                let rows = db.query(sql).map_err(ExecError::Runtime)?;
+                if let Some(row) = rows.into_iter().next() {
+                    Ok(Value::Map(row))
+                } else {
+                    Ok(Value::Null)
+                }
             }
             "env" => {
                 let key = match args.get(0) {
@@ -1333,6 +1486,10 @@ impl<'a> Interpreter<'a> {
 
     fn eval_member(&mut self, base: Value, field: &str) -> ExecResult<Value> {
         match base {
+            Value::Builtin(name) if name == "db" => match field {
+                "exec" | "query" | "one" => Ok(Value::Builtin(format!("db.{field}"))),
+                _ => Err(ExecError::Runtime(format!("unknown db method {field}"))),
+            },
             Value::Config(name) => {
                 let map = self
                     .configs

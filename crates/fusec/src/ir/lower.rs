@@ -729,9 +729,22 @@ impl FuncBuilder {
                         });
                     }
                     ExprKind::Member { base, name } => {
+                        if let ExprKind::Ident(ident) = &base.kind {
+                            if ident.name == "db" {
+                                for arg in args {
+                                    self.lower_expr(&arg.value);
+                                }
+                                self.emit(Instr::Call {
+                                    name: format!("db.{}", name.name),
+                                    argc: args.len(),
+                                    kind: CallKind::Builtin,
+                                });
+                                return;
+                            }
+                        }
                         if let ExprKind::Ident(module_ident) = &base.kind {
-                        if let Some(module) = self.modules.get(&module_ident.name) {
-                            if module.exports.functions.contains(&name.name) {
+                            if let Some(module) = self.modules.get(&module_ident.name) {
+                                if module.exports.functions.contains(&name.name) {
                                     for arg in args {
                                         self.lower_expr(&arg.value);
                                     }

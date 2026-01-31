@@ -13,3 +13,4 @@ path = "src/main.rs"
 
 [dependencies]
 fuse-rt = { path = "../fuse-rt" }
+rusqlite = { version = "0.31", features = ["bundled"] }

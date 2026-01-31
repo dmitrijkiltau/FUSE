@@ -117,7 +117,8 @@ The runtime currently handles:
 * AST interpreter and VM backends
 * `import` module loading (namespaced modules + named imports)
 * module-qualified type references in type positions (`Foo.User`, `Foo.Config`)
-* Built-ins: `print(...)`, `log(...)`, `env(...)`, `serve(...)`
+* Built-ins: `print(...)`, `log(...)`, `db.exec/query/one`, `env(...)`, `serve(...)`
+* SQLite-backed DB access (`db.exec/query/one`) + migrations (`migration` + `fusec --migrate`)
 * Config loading (env > config file > defaults)
 * JSON encode/decode and refined-type validation
 * HTTP routing + error JSON mapping
@@ -125,7 +126,7 @@ The runtime currently handles:
 
 ## Not implemented yet (planned)
 
-* DB/migrations, tests, docs/OpenAPI generation
+* tests, docs/OpenAPI generation
 * `spawn`/`await`/`box` concurrency
 * `for`/`while`/`break`/`continue` at runtime
 * `without` type derivations
