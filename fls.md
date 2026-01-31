@@ -349,7 +349,7 @@ Runtime binding + error mapping are described in `runtime.md`.
 ## Runtime support notes (current)
 
 * `migration` blocks run via `fusec --migrate` (AST backend only).
-* `test` is parsed but not executed by the runtime.
+* `test` blocks run via `fusec --test` (AST backend only).
 * `for`/`while`/`break`/`continue` are parsed and type-checked, but both backends error at runtime.
 * `spawn`/`await`/`box` are parsed and type-checked, but both backends error at runtime.
 * Assignment targets are limited to identifiers at runtime.

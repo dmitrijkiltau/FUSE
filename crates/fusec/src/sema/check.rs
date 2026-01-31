@@ -42,6 +42,7 @@ impl<'a> Checker<'a> {
         env.insert_builtin("json");
         env.insert_builtin("time");
         env.insert_builtin("print");
+        env.insert_builtin("assert");
         env.insert_builtin("serve");
         env.insert_builtin("errors");
         Self {

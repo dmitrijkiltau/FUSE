@@ -56,6 +56,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * `import` (namespaced module imports + named imports for local scope)
 * module-qualified type references in type positions (`Foo.User`)
 * `config`, `service`, `app`
+* `test` declarations
 * `if` / `else`, `match` (struct/enum/Option/Result patterns)
 * string interpolation via `${expr}` (escape `$` as `\$`)
 * optionals (`T?`)
@@ -65,8 +66,6 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * `migration` declarations
 
 **Parsed but not executed yet**
-
-* `test` declarations
 * `for` / `while` / `break` / `continue`
 * `spawn` / `await` / `box` concurrency
 * `without` type derivations
@@ -79,7 +78,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * config/env/CLI parsing is limited to scalar types + `Option` + refined ranges
 * HTTP request binding + response encoding
 * error JSON + HTTP status mapping
-* builtins: `print`, `log`, `db`, `env`, `serve`
+* builtins: `print`, `log`, `db`, `assert`, `env`, `serve`
 * SQLite-backed DB access + migrations via `fusec --migrate`
 * CLI arg binding for `fn main` when running with program args (AST backend only)
 
@@ -87,11 +86,10 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 
 * parser + semantic analysis
 * formatter via `fusec --fmt`
-* `fusec` flags: `--check`, `--run`, `--migrate`, `--backend`, `--app`
+* `fusec` flags: `--check`, `--run`, `--migrate`, `--test`, `--backend`, `--app`
 
 **Tooling (planned)**
 
-* test runner command
 * package/deps file (`fuse.toml`) + lockfile
 * docs/OpenAPI generation
 * LSP (not day one)

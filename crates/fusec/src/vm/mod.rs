@@ -598,6 +598,24 @@ impl<'a> Vm<'a> {
                     Ok(Value::Null)
                 }
             }
+            "assert" => {
+                let cond = match args.get(0) {
+                    Some(Value::Bool(value)) => *value,
+                    _ => {
+                        return Err(VmError::Runtime(
+                            "assert expects a Bool as the first argument".to_string(),
+                        ))
+                    }
+                };
+                if cond {
+                    return Ok(Value::Unit);
+                }
+                let message = args
+                    .get(1)
+                    .map(|val| val.to_string_value())
+                    .unwrap_or_else(|| "assertion failed".to_string());
+                Err(VmError::Runtime(format!("assert failed: {message}")))
+            }
             "env" => {
                 let key = match args.get(0) {
                     Some(Value::String(s)) => s.clone(),

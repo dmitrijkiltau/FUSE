@@ -7,7 +7,8 @@ use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate 
 use crate::ast::{
     AppDecl, BinaryOp, Block, ConfigDecl, EnumDecl, Expr, ExprKind, FnDecl, HttpVerb, Ident,
     InterpPart, Item, Literal, MigrationDecl, Pattern, PatternField, PatternKind, Program,
-    RouteDecl, ServiceDecl, Stmt, StmtKind, StructField, TypeDecl, TypeRef, TypeRefKind, UnaryOp,
+    RouteDecl, ServiceDecl, Stmt, StmtKind, StructField, TestDecl, TypeDecl, TypeRef, TypeRefKind,
+    UnaryOp,
 };
 use crate::db::Db;
 use crate::loader::{ModuleId, ModuleMap, ModuleRegistry};
@@ -306,6 +307,18 @@ pub struct MigrationJob<'a> {
     pub decl: &'a MigrationDecl,
 }
 
+pub struct TestJob<'a> {
+    pub name: String,
+    pub module_id: ModuleId,
+    pub decl: &'a TestDecl,
+}
+
+pub struct TestOutcome {
+    pub name: String,
+    pub ok: bool,
+    pub message: Option<String>,
+}
+
 impl<'a> Interpreter<'a> {
     pub fn new(program: &'a Program) -> Self {
         Self::with_modules(program, ModuleMap::default())
@@ -527,6 +540,37 @@ impl<'a> Interpreter<'a> {
             }
         }
         Ok(())
+    }
+
+    pub fn run_tests(&mut self, tests: &[TestJob<'_>]) -> Result<Vec<TestOutcome>, String> {
+        if let Err(err) = self.eval_configs() {
+            return Err(self.render_exec_error(err));
+        }
+        let mut out = Vec::new();
+        for job in tests {
+            let prev_module = self.current_module;
+            self.current_module = job.module_id;
+            let result = self.eval_block(&job.decl.body);
+            self.current_module = prev_module;
+            match result {
+                Ok(_) => out.push(TestOutcome {
+                    name: job.name.clone(),
+                    ok: true,
+                    message: None,
+                }),
+                Err(ExecError::Return(_)) => out.push(TestOutcome {
+                    name: job.name.clone(),
+                    ok: false,
+                    message: Some("return not allowed in test".to_string()),
+                }),
+                Err(err) => out.push(TestOutcome {
+                    name: job.name.clone(),
+                    ok: false,
+                    message: Some(self.render_exec_error(err)),
+                }),
+            }
+        }
+        Ok(out)
     }
 
     pub fn parse_cli_value(&self, ty: &TypeRef, raw: &str) -> Result<Value, String> {
@@ -918,7 +962,9 @@ impl<'a> Interpreter<'a> {
             return Ok(Value::Config(name.to_string()));
         }
         match name {
-            "print" | "env" | "serve" | "log" | "db" => Ok(Value::Builtin(name.to_string())),
+            "print" | "env" | "serve" | "log" | "db" | "assert" => {
+                Ok(Value::Builtin(name.to_string()))
+            }
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),
         }
     }
@@ -1050,6 +1096,24 @@ impl<'a> Interpreter<'a> {
                 } else {
                     Ok(Value::Null)
                 }
+            }
+            "assert" => {
+                let cond = match args.get(0) {
+                    Some(Value::Bool(value)) => *value,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "assert expects a Bool as the first argument".to_string(),
+                        ))
+                    }
+                };
+                if cond {
+                    return Ok(Value::Unit);
+                }
+                let message = args
+                    .get(1)
+                    .map(|val| val.to_string_value())
+                    .unwrap_or_else(|| "assertion failed".to_string());
+                Err(ExecError::Runtime(format!("assert failed: {message}")))
             }
             "env" => {
                 let key = match args.get(0) {

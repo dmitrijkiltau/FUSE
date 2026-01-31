@@ -230,6 +230,7 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * `print(value)` prints a stringified value to stdout.
 * `log(...)` writes a log line to stderr (see Logging below).
 * `db.exec/query/one` execute SQL against the configured database (see Database below).
+* `assert(cond, message?)` throws a runtime error when `cond` is false.
 * `env(name: String) -> String?` returns an env var or `null`.
 * `serve(port)` starts the HTTP server on `FUSE_HOST:port`.
 
@@ -278,6 +279,21 @@ Rules:
 * Only “up” migrations exist today (no down/rollback).
 * Migrations are executed by the AST interpreter.
 
+## Tests
+
+`test "name":` declares a test block. Run tests with:
+
+```
+fusec --test path/to/file.fuse
+```
+
+Rules:
+
+* Tests are collected from all loaded modules.
+* They run in ascending order by test name.
+* Tests are executed by the AST interpreter.
+* Failures are reported and the process exits non-zero.
+
 ## Logging
 
 `log` is a lightweight builtin for runtime logging. It is intentionally minimal and shared by
@@ -308,7 +324,6 @@ Structured logging:
 
 ## Unsupported or partial features
 
-* `test` declarations are parsed but not executed.
 * `for`/`while`/`break`/`continue` are parsed and type-checked but error at runtime.
 * `spawn`/`await`/`box` are parsed and type-checked but error at runtime.
 * Assignment targets are limited to identifiers.

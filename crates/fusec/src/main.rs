@@ -6,7 +6,7 @@ use std::process;
 
 use fusec::diag::Level;
 use fusec::load_program_with_modules;
-use fusec::interp::{Interpreter, MigrationJob};
+use fusec::interp::{Interpreter, MigrationJob, TestJob, TestOutcome};
 use fusec::ast::TypeRefKind;
 use fuse_rt::error::{ValidationError, ValidationField};
 use fuse_rt::json;
@@ -27,6 +27,7 @@ fn main() {
     let mut backend_forced = false;
     let mut app_name: Option<String> = None;
     let mut migrate = false;
+    let mut test = false;
     let mut path = None;
 
     while let Some(arg) = args.next() {
@@ -54,6 +55,10 @@ fn main() {
             migrate = true;
             continue;
         }
+        if arg == "--test" {
+            test = true;
+            continue;
+        }
         if arg == "--backend" {
             if let Some(name) = args.next() {
                 backend_forced = true;
@@ -62,13 +67,13 @@ fn main() {
                     "vm" => Backend::Vm,
                     _ => {
                         eprintln!("unknown backend: {name}");
-                        eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--migrate] [--backend ast|vm] [--app NAME] <file>");
+                        eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--migrate] [--test] [--backend ast|vm] [--app NAME] <file>");
                         return;
                     }
                 };
             } else {
                 eprintln!("--backend expects a name");
-                eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--migrate] [--backend ast|vm] [--app NAME] <file>");
+                eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--migrate] [--test] [--backend ast|vm] [--app NAME] <file>");
                 return;
             }
             continue;
@@ -78,7 +83,7 @@ fn main() {
                 app_name = Some(name);
             } else {
                 eprintln!("--app expects a name");
-                eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--migrate] [--backend ast|vm] [--app NAME] <file>");
+                eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--migrate] [--test] [--backend ast|vm] [--app NAME] <file>");
                 return;
             }
             continue;
@@ -93,7 +98,7 @@ fn main() {
     let path = match path {
         Some(p) => p,
         None => {
-            eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--migrate] [--backend ast|vm] [--app NAME] <file>");
+            eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--migrate] [--test] [--backend ast|vm] [--app NAME] <file>");
             return;
         }
     };
@@ -185,6 +190,45 @@ fn main() {
                 eprintln!("migration error: {err}");
                 process::exit(1);
             }
+        }
+        if !run {
+            return;
+        }
+    }
+
+    if test {
+        let (_analysis, diags) = fusec::sema::analyze_registry(&registry);
+        if !diags.is_empty() {
+            for diag in diags {
+                let level = match diag.level {
+                    Level::Error => "error",
+                    Level::Warning => "warning",
+                };
+                eprintln!(
+                    "{level}: {} ({}..{})",
+                    diag.message, diag.span.start, diag.span.end
+                );
+            }
+            process::exit(1);
+        }
+        let tests = match collect_tests(&registry) {
+            Ok(tests) => tests,
+            Err(err) => {
+                eprintln!("test error: {err}");
+                process::exit(1);
+            }
+        };
+        let mut interp = Interpreter::with_registry(&registry);
+        let outcomes = match interp.run_tests(&tests) {
+            Ok(outcomes) => outcomes,
+            Err(err) => {
+                eprintln!("test error: {err}");
+                process::exit(1);
+            }
+        };
+        let failed = report_tests(&outcomes);
+        if failed > 0 {
+            process::exit(1);
         }
         if !run {
             return;
@@ -373,6 +417,63 @@ fn collect_migrations<'a>(
             decl,
         })
         .collect())
+}
+
+fn collect_tests<'a>(registry: &'a fusec::ModuleRegistry) -> Result<Vec<TestJob<'a>>, String> {
+    let mut jobs = Vec::new();
+    let mut seen: HashMap<String, String> = HashMap::new();
+    for (id, unit) in &registry.modules {
+        let module_path = unit.path.display().to_string();
+        for item in &unit.program.items {
+            if let fusec::ast::Item::Test(decl) = item {
+                if decl.name.value.trim().is_empty() {
+                    return Err("test name cannot be empty".to_string());
+                }
+                if let Some(prev) = seen.insert(decl.name.value.clone(), module_path.clone()) {
+                    return Err(format!(
+                        "duplicate test {} (also declared in {})",
+                        decl.name.value, prev
+                    ));
+                }
+                jobs.push((decl.name.value.clone(), module_path.clone(), *id, decl));
+            }
+        }
+    }
+    jobs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    Ok(jobs
+        .into_iter()
+        .map(|(name, _path, module_id, decl)| TestJob {
+            name,
+            module_id,
+            decl,
+        })
+        .collect())
+}
+
+fn report_tests(outcomes: &[TestOutcome]) -> usize {
+    if outcomes.is_empty() {
+        println!("0 tests");
+        return 0;
+    }
+    let mut failed = 0usize;
+    for outcome in outcomes {
+        if outcome.ok {
+            println!("ok {}", outcome.name);
+        } else {
+            failed += 1;
+            if let Some(message) = &outcome.message {
+                println!("FAILED {}: {}", outcome.name, message);
+            } else {
+                println!("FAILED {}", outcome.name);
+            }
+        }
+    }
+    if failed == 0 {
+        println!("ok ({} tests)", outcomes.len());
+    } else {
+        println!("FAILED ({} failed of {} tests)", failed, outcomes.len());
+    }
+    failed
 }
 
 struct RawArgs {
