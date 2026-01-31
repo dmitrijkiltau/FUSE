@@ -6,7 +6,7 @@ use std::process;
 use fusec::diag::Level;
 use fusec::parse_source;
 use fusec::interp::Interpreter;
-use fusec::ast::TypeRefKind;
+use fusec::ast::{Item, TypeRefKind};
 use fuse_rt::error::{ValidationError, ValidationField};
 use fuse_rt::json;
 
@@ -22,6 +22,7 @@ fn main() {
     let mut run = false;
     let mut program_args: Vec<String> = Vec::new();
     let mut backend = Backend::Ast;
+    let mut backend_forced = false;
     let mut app_name: Option<String> = None;
     let mut path = None;
 
@@ -44,6 +45,7 @@ fn main() {
         }
         if arg == "--backend" {
             if let Some(name) = args.next() {
+                backend_forced = true;
                 backend = match name.as_str() {
                     "ast" => Backend::Ast,
                     "vm" => Backend::Vm,
@@ -126,6 +128,17 @@ fn main() {
     }
 
     if run {
+        if !backend_forced {
+            let has_service = program
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::Service(_)));
+            backend = if !program_args.is_empty() || has_service {
+                Backend::Ast
+            } else {
+                Backend::Vm
+            };
+        }
         let app = app_name.as_deref();
         if !program_args.is_empty() {
             if !matches!(backend, Backend::Ast) {

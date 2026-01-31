@@ -207,6 +207,10 @@ Each `service` block generates a router and a server entry:
 - Path params are extracted and validated from route patterns.
 - `body` is decoded and validated as JSON.
 - Return values are encoded as JSON with `content-type: application/json`.
+- Interpreter MVP environment knobs:
+  - `FUSE_HOST` (default `127.0.0.1`) controls bind host.
+  - `FUSE_SERVICE` selects the service when multiple are declared.
+  - `FUSE_MAX_REQUESTS` stops the server after N requests (useful for tests).
 
 Error handling:
 

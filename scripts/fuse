@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+usage() {
+  cat <<'EOF'
+usage: scripts/fuse <command> [args...]
+
+commands:
+  run   Run a Fuse program (passes through to fusec --run)
+  check Parse + sema check (passes through to fusec --check)
+
+examples:
+  scripts/fuse run examples/cli_hello.fuse
+  scripts/fuse check examples/project_demo.fuse
+EOF
+}
+
+if [[ $# -lt 1 ]]; then
+  usage
+  exit 1
+fi
+
+cmd="$1"
+shift
+
+case "$cmd" in
+  run)
+    exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --run "$@"
+    ;;
+  check)
+    exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --check "$@"
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac
