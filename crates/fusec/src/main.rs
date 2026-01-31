@@ -6,7 +6,7 @@ use std::process;
 use fusec::diag::Level;
 use fusec::parse_source;
 use fusec::interp::Interpreter;
-use fusec::ast::{Item, TypeRefKind};
+use fusec::ast::TypeRefKind;
 use fuse_rt::error::{ValidationError, ValidationField};
 use fuse_rt::json;
 
@@ -145,11 +145,7 @@ fn main() {
 
     if run {
         if !backend_forced {
-            let has_service = program
-                .items
-                .iter()
-                .any(|item| matches!(item, Item::Service(_)));
-            backend = if !program_args.is_empty() || has_service {
+            backend = if !program_args.is_empty() {
                 Backend::Ast
             } else {
                 Backend::Vm
