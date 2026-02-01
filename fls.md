@@ -362,7 +362,7 @@ Runtime binding + error mapping are described in `runtime.md`.
 * `test` blocks run via `fusec --test` (AST backend only).
 * `for`/`while`/`break`/`continue` run in both backends.
 * `spawn`/`await` run in both backends (tasks execute eagerly today).
-* `box` currently evaluates to the inner value (no-op in both backends).
+* `box` creates a shared cell; boxed values are transparently dereferenced in most expressions.
 * Assignment targets are limited to identifiers at runtime.
 * Enum variants only support tuple payloads (no named payload fields).
 * `..` range expressions are only used in refined type arguments; evaluating them directly is not supported.

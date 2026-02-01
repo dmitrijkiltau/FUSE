@@ -1,6 +1,8 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::rc::Rc;
 
 use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate as rt_validate};
 
@@ -236,7 +238,11 @@ impl<'a> Vm<'a> {
                     if slot >= frame.locals.len() {
                         return Err(VmError::Runtime(format!("invalid local slot {slot}")));
                     }
-                    frame.locals[slot] = value;
+                    if let Value::Boxed(cell) = &frame.locals[slot] {
+                        *cell.borrow_mut() = value.unboxed();
+                    } else {
+                        frame.locals[slot] = value;
+                    }
                 }
                 Instr::Pop => {
                     frame.pop()?;
@@ -299,7 +305,7 @@ impl<'a> Vm<'a> {
                 }
                 Instr::JumpIfNull(target) => {
                     let value = frame.pop()?;
-                    if matches!(value, Value::Null) {
+                    if matches!(value.unboxed(), Value::Null) {
                         frame.ip = target;
                     }
                 }
@@ -384,7 +390,7 @@ impl<'a> Vm<'a> {
                     } else {
                         None
                     };
-                    let value = frame.pop()?;
+                    let value = frame.pop()?.unboxed();
                     match value {
                         Value::Null => {
                             let err = err_value.unwrap_or_else(|| self.default_error_value("missing value"));
@@ -436,6 +442,14 @@ impl<'a> Vm<'a> {
                     }
                     frame.stack.push(Value::Map(map));
                 }
+                Instr::MakeBox => {
+                    let value = frame.pop()?;
+                    let boxed = match value {
+                        Value::Boxed(_) => value,
+                        other => Value::Boxed(Rc::new(RefCell::new(other))),
+                    };
+                    frame.stack.push(boxed);
+                }
                 Instr::MakeStruct { name, fields } => {
                     let mut values = HashMap::new();
                     for field in fields.into_iter().rev() {
@@ -455,7 +469,7 @@ impl<'a> Vm<'a> {
                     frame.stack.push(value);
                 }
                 Instr::GetField { field } => {
-                    let base = frame.pop()?;
+                    let base = frame.pop()?.unboxed();
                     let value = match base {
                         Value::Struct { fields, .. } => fields.get(&field).cloned().ok_or_else(|| {
                             VmError::Runtime(format!("unknown field {field}"))
@@ -524,7 +538,7 @@ impl<'a> Vm<'a> {
                     frame.stack.push(value);
                 }
                 Instr::IterInit => {
-                    let value = frame.pop()?;
+                    let value = frame.pop()?.unboxed();
                     let iter_values = match value {
                         Value::List(items) => items,
                         Value::Map(items) => items.into_values().collect(),
@@ -540,7 +554,7 @@ impl<'a> Vm<'a> {
                     )));
                 }
                 Instr::IterNext { jump } => {
-                    let iter_value = frame.pop()?;
+                    let iter_value = frame.pop()?.unboxed();
                     let mut iter = match iter_value {
                         Value::Iterator(iter) => iter,
                         other => {
@@ -595,6 +609,7 @@ impl<'a> Vm<'a> {
     }
 
     fn eval_builtin(&mut self, name: &str, args: Vec<Value>) -> VmResult<Value> {
+        let args: Vec<Value> = args.into_iter().map(|val| val.unboxed()).collect();
         match name {
             "print" => {
                 let text = args.get(0).map(|v| v.to_string_value()).unwrap_or_default();
@@ -1138,19 +1153,20 @@ impl<'a> Vm<'a> {
     }
 
     fn validate_value(&self, value: &Value, ty: &TypeRef, path: &str) -> VmResult<()> {
+        let value = value.unboxed();
         match &ty.kind {
             TypeRefKind::Optional(inner) => {
                 if matches!(value, Value::Null) {
                     Ok(())
                 } else {
-                    self.validate_value(value, inner, path)
+                    self.validate_value(&value, inner, path)
                 }
             }
             TypeRefKind::Result { ok, err } => match value {
-                Value::ResultOk(inner) => self.validate_value(inner, ok, path),
+                Value::ResultOk(inner) => self.validate_value(&inner, ok, path),
                 Value::ResultErr(inner) => {
                     if let Some(err_ty) = err {
-                        self.validate_value(inner, err_ty, path)
+                        self.validate_value(&inner, err_ty, path)
                     } else {
                         Ok(())
                     }
@@ -1160,15 +1176,15 @@ impl<'a> Vm<'a> {
                     "type_mismatch",
                     format!(
                         "expected Result, got {}",
-                        self.value_type_name(value)
+                        self.value_type_name(&value)
                     ),
                 ))),
             },
             TypeRefKind::Refined { base, args } => {
-                self.validate_simple(value, &base.name, path)?;
-                self.check_refined(value, &base.name, args, path)
+                self.validate_simple(&value, &base.name, path)?;
+                self.check_refined(&value, &base.name, args, path)
             }
-            TypeRefKind::Simple(ident) => self.validate_simple(value, &ident.name, path),
+            TypeRefKind::Simple(ident) => self.validate_simple(&value, &ident.name, path),
             TypeRefKind::Generic { base, args } => match base.name.as_str() {
                 "Option" => {
                     if args.len() != 1 {
@@ -1179,7 +1195,7 @@ impl<'a> Vm<'a> {
                     if matches!(value, Value::Null) {
                         Ok(())
                     } else {
-                        self.validate_value(value, &args[0], path)
+                        self.validate_value(&value, &args[0], path)
                     }
                 }
                 "Result" => {
@@ -1189,14 +1205,14 @@ impl<'a> Vm<'a> {
                         ));
                     }
                     match value {
-                        Value::ResultOk(inner) => self.validate_value(inner, &args[0], path),
-                        Value::ResultErr(inner) => self.validate_value(inner, &args[1], path),
+                        Value::ResultOk(inner) => self.validate_value(&inner, &args[0], path),
+                        Value::ResultErr(inner) => self.validate_value(&inner, &args[1], path),
                         _ => Err(VmError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
                             format!(
                                 "expected Result, got {}",
-                                self.value_type_name(value)
+                                self.value_type_name(&value)
                             ),
                         ))),
                     }
@@ -1220,7 +1236,7 @@ impl<'a> Vm<'a> {
                             "type_mismatch",
                             format!(
                                 "expected List, got {}",
-                                self.value_type_name(value)
+                                self.value_type_name(&value)
                             ),
                         ))),
                     }
@@ -1246,7 +1262,7 @@ impl<'a> Vm<'a> {
                             "type_mismatch",
                             format!(
                                 "expected Map, got {}",
-                                self.value_type_name(value)
+                                self.value_type_name(&value)
                             ),
                         ))),
                     }
@@ -1260,7 +1276,8 @@ impl<'a> Vm<'a> {
     }
 
     fn validate_simple(&self, value: &Value, name: &str, path: &str) -> VmResult<()> {
-        let type_name = self.value_type_name(value);
+        let value = value.unboxed();
+        let type_name = self.value_type_name(&value);
         let (module, simple_name) = split_type_name(name);
         if module.is_none() {
             match simple_name {
@@ -1363,7 +1380,7 @@ impl<'a> Vm<'a> {
     }
 
     fn value_type_name(&self, value: &Value) -> String {
-        match value {
+        match value.unboxed() {
             Value::Unit => "Unit".to_string(),
             Value::Int(_) => "Int".to_string(),
             Value::Float(_) => "Float".to_string(),
@@ -1381,11 +1398,12 @@ impl<'a> Vm<'a> {
             Value::Config(_) => "Config".to_string(),
             Value::Function(_) => "Function".to_string(),
             Value::Builtin(_) => "Builtin".to_string(),
+            Value::Boxed(_) => "Box".to_string(),
         }
     }
 
     fn value_to_json(&self, value: &Value) -> rt_json::JsonValue {
-        match value {
+        match value.unboxed() {
             Value::Unit => rt_json::JsonValue::Null,
             Value::Int(v) => rt_json::JsonValue::Number(*v as f64),
             Value::Float(v) => rt_json::JsonValue::Number(*v),
@@ -1402,6 +1420,7 @@ impl<'a> Vm<'a> {
                 }
                 rt_json::JsonValue::Object(out)
             }
+            Value::Boxed(_) => rt_json::JsonValue::String("<box>".to_string()),
             Value::Task(_) => rt_json::JsonValue::String("<task>".to_string()),
             Value::Iterator(_) => rt_json::JsonValue::String("<iterator>".to_string()),
             Value::Struct { fields, .. } => {
@@ -1912,14 +1931,15 @@ impl<'a> Vm<'a> {
         pat: &Pattern,
         bindings: &mut HashMap<String, Value>,
     ) -> VmResult<bool> {
+        let value = value.unboxed();
         match &pat.kind {
             PatternKind::Wildcard => Ok(true),
-            PatternKind::Literal(lit) => Ok(self.literal_matches(value, lit)),
+            PatternKind::Literal(lit) => Ok(self.literal_matches(&value, lit)),
             PatternKind::Ident(ident) => {
-                if let Some(is_match) = self.match_variant_ident(value, &ident.name) {
+                if let Some(is_match) = self.match_variant_ident(&value, &ident.name) {
                     return Ok(is_match);
                 }
-                if let Value::Enum { name, .. } = value {
+                if let Value::Enum { name, .. } = &value {
                     if self.enum_variant_exists(name, &ident.name) {
                         return Ok(false);
                     }
@@ -1928,15 +1948,16 @@ impl<'a> Vm<'a> {
                 Ok(true)
             }
             PatternKind::EnumVariant { name, args } => {
-                self.match_enum_variant(value, &name.name, args, bindings)
+                self.match_enum_variant(&value, &name.name, args, bindings)
             }
             PatternKind::Struct { name, fields } => {
-                self.match_struct_pattern(value, &name.name, fields, bindings)
+                self.match_struct_pattern(&value, &name.name, fields, bindings)
             }
         }
     }
 
     fn match_variant_ident(&self, value: &Value, name: &str) -> Option<bool> {
+        let value = value.unboxed();
         match name {
             "None" => Some(matches!(value, Value::Null)),
             "Some" => Some(!matches!(value, Value::Null)),
@@ -1963,6 +1984,7 @@ impl<'a> Vm<'a> {
         args: &[Pattern],
         bindings: &mut HashMap<String, Value>,
     ) -> VmResult<bool> {
+        let value = value.unboxed();
         match name {
             "Some" => {
                 if args.len() != 1 {
@@ -1971,7 +1993,7 @@ impl<'a> Vm<'a> {
                 if matches!(value, Value::Null) {
                     return Ok(false);
                 }
-                self.match_pattern(value, &args[0], bindings)
+                self.match_pattern(&value, &args[0], bindings)
             }
             "None" => {
                 if !args.is_empty() {
@@ -1984,7 +2006,7 @@ impl<'a> Vm<'a> {
                     return Err(VmError::Runtime("Ok expects 1 pattern".to_string()));
                 }
                 match value {
-                    Value::ResultOk(inner) => self.match_pattern(inner, &args[0], bindings),
+                    Value::ResultOk(inner) => self.match_pattern(&inner, &args[0], bindings),
                     _ => Ok(false),
                 }
             }
@@ -1993,7 +2015,7 @@ impl<'a> Vm<'a> {
                     return Err(VmError::Runtime("Err expects 1 pattern".to_string()));
                 }
                 match value {
-                    Value::ResultErr(inner) => self.match_pattern(inner, &args[0], bindings),
+                    Value::ResultErr(inner) => self.match_pattern(&inner, &args[0], bindings),
                     _ => Ok(false),
                 }
             }
@@ -2027,6 +2049,7 @@ impl<'a> Vm<'a> {
         fields: &[crate::ast::PatternField],
         bindings: &mut HashMap<String, Value>,
     ) -> VmResult<bool> {
+        let value = value.unboxed();
         let (struct_name, struct_fields) = match value {
             Value::Struct { name, fields } => (name, fields),
             _ => return Ok(false),
@@ -2060,7 +2083,8 @@ impl<'a> Vm<'a> {
     }
 
     fn literal_matches(&self, value: &Value, lit: &Literal) -> bool {
-        match (value, lit) {
+        let value = value.unboxed();
+        match (&value, lit) {
             (Value::Int(a), Literal::Int(b)) => a == b,
             (Value::Float(a), Literal::Float(b)) => a == b,
             (Value::Bool(a), Literal::Bool(b)) => a == b,
@@ -2077,6 +2101,7 @@ impl<'a> Vm<'a> {
         args: &[Expr],
         path: &str,
     ) -> VmResult<()> {
+        let value = value.unboxed();
         match base {
             "String" => {
                 let (min, max) = self.parse_length_range(args)?;
@@ -2225,6 +2250,8 @@ impl<'a> Vm<'a> {
     }
 
     fn eval_add(&self, left: Value, right: Value) -> VmResult<Value> {
+        let left = left.unboxed();
+        let right = right.unboxed();
         match (left, right) {
             (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
             (Value::String(a), b) => Ok(Value::String(format!("{a}{}", b.to_string_value()))),
@@ -2238,6 +2265,8 @@ impl<'a> Vm<'a> {
     }
 
     fn eval_arith(&self, op: &Instr, left: Value, right: Value) -> VmResult<Value> {
+        let left = left.unboxed();
+        let right = right.unboxed();
         match (left, right) {
             (Value::Int(a), Value::Int(b)) => match op {
                 Instr::Sub => Ok(Value::Int(a - b)),
@@ -2280,6 +2309,8 @@ impl<'a> Vm<'a> {
     }
 
     fn eval_compare(&self, op: &Instr, left: Value, right: Value) -> VmResult<Value> {
+        let left = left.unboxed();
+        let right = right.unboxed();
         let result = match (left, right) {
             (Value::Int(a), Value::Int(b)) => match op {
                 Instr::Eq => a == b,
@@ -2329,7 +2360,7 @@ impl<'a> Vm<'a> {
     }
 
     fn as_bool(&self, value: &Value) -> VmResult<bool> {
-        match value {
+        match value.unboxed() {
             Value::Bool(v) => Ok(*v),
             _ => Err(VmError::Runtime("condition must be a Bool".to_string())),
         }
@@ -2373,6 +2404,7 @@ struct HttpRequest {
 }
 
 fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
+    let value = value.unboxed();
     let Value::Struct { name, fields } = value else {
         return None;
     };
@@ -2420,10 +2452,15 @@ fn builtin_error_defaults(name: &str) -> Option<(&'static str, &'static str)> {
 
 fn extract_validation_fields(value: Option<&Value>) -> Vec<rt_error::ValidationField> {
     let mut out = Vec::new();
-    let Some(Value::List(items)) = value else {
+    let Some(value) = value else {
+        return out;
+    };
+    let value = value.unboxed();
+    let Value::List(items) = value else {
         return out;
     };
     for item in items {
+        let item = item.unboxed();
         let Value::Struct { fields, .. } = item else { continue };
         let Some(Value::String(path)) = fields.get("path") else { continue };
         let Some(Value::String(code)) = fields.get("code") else { continue };

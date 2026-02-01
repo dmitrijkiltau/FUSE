@@ -301,8 +301,9 @@ today (no parallelism), but errors are captured and surfaced when awaited.
 
 `await expr` waits on a task and yields its result.
 
-`box expr` currently evaluates to the inner value and is reserved for future shared-state
-semantics.
+`box expr` creates a shared mutable cell. Boxed values are transparently dereferenced in most
+expressions; assigning to a boxed binding updates the shared cell. Passing a box into `spawn`
+shares state across tasks.
 
 ## Loops
 
@@ -340,6 +341,5 @@ Structured logging:
 
 ## Unsupported or partial features
 
-* `box` is currently a no-op (reserved for future shared-state semantics).
 * Assignment targets are limited to identifiers.
 * `..` range expressions are only used inside refined type arguments.

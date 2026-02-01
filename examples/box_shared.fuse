@@ -1,0 +1,12 @@
+# box shared state across spawn/await
+
+fn main():
+  let counter = box 0
+  let task = spawn:
+    counter = counter + 1
+    counter
+  let _ = await task
+  print(counter)
+
+app "box":
+  main()

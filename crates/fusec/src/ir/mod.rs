@@ -48,6 +48,7 @@ pub enum Instr {
     Call { name: String, argc: usize, kind: CallKind },
     Spawn { name: String, argc: usize },
     Await,
+    MakeBox,
     Return,
     Bang { has_error: bool },
     MakeList { len: usize },

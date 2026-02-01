@@ -1103,6 +1103,7 @@ impl FuncBuilder {
             }
             ExprKind::Box { expr } => {
                 self.lower_expr(expr);
+                self.emit(Instr::MakeBox);
             }
             ExprKind::Spawn { block } => {
                 let captured = self.capture_locals();

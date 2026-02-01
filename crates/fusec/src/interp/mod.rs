@@ -25,6 +25,7 @@ pub enum Value {
     Null,
     List(Vec<Value>),
     Map(HashMap<String, Value>),
+    Boxed(Rc<RefCell<Value>>),
     Task(Task),
     Iterator(IteratorValue),
     Struct {
@@ -110,7 +111,7 @@ impl Task {
 
 impl Value {
     pub fn to_string_value(&self) -> String {
-        match self {
+        match self.unboxed() {
             Value::Unit => "()".to_string(),
             Value::Int(v) => v.to_string(),
             Value::Float(v) => v.to_string(),
@@ -133,6 +134,7 @@ impl Value {
                     .join(", ");
                 format!("{{{text}}}")
             }
+            Value::Boxed(_) => "<box>".to_string(),
             Value::Task(_) => "<task>".to_string(),
             Value::Iterator(_) => "<iterator>".to_string(),
             Value::Struct { name, fields } => match fields.get("message") {
@@ -163,6 +165,13 @@ impl Value {
             Value::Builtin(name) => format!("<builtin {name}>"),
         }
     }
+
+    pub(crate) fn unboxed(&self) -> Value {
+        match self {
+            Value::Boxed(cell) => cell.borrow().unboxed(),
+            other => other.clone(),
+        }
+    }
 }
 
 pub fn format_error_value(value: &Value) -> String {
@@ -173,6 +182,7 @@ pub fn format_error_value(value: &Value) -> String {
 }
 
 fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
+    let value = value.unboxed();
     let Value::Struct { name, fields } = value else {
         return None;
     };
@@ -276,10 +286,15 @@ fn builtin_error_defaults(name: &str) -> Option<(&'static str, &'static str)> {
 
 fn extract_validation_fields(value: Option<&Value>) -> Vec<rt_error::ValidationField> {
     let mut out = Vec::new();
-    let Some(Value::List(items)) = value else {
+    let Some(value) = value else {
+        return out;
+    };
+    let value = value.unboxed();
+    let Value::List(items) = value else {
         return out;
     };
     for item in items {
+        let item = item.unboxed();
         let Value::Struct { fields, .. } = item else { continue };
         let Some(Value::String(path)) = fields.get("path") else { continue };
         let Some(Value::String(code)) = fields.get("code") else { continue };
@@ -855,6 +870,10 @@ impl<'a> Interpreter<'a> {
             StmtKind::Assign { target, expr } => match &target.kind {
                 ExprKind::Ident(ident) => {
                     let value = self.eval_expr(expr)?;
+                    if let Some(Value::Boxed(cell)) = self.env.get(&ident.name) {
+                        *cell.borrow_mut() = value.unboxed();
+                        return Ok(Value::Unit);
+                    }
                     if !self.env.assign(&ident.name, value) {
                         return Err(ExecError::Runtime(format!(
                             "unknown variable {}",
@@ -919,6 +938,7 @@ impl<'a> Interpreter<'a> {
             }
             StmtKind::For { pat, iter, block } => {
                 let iter_value = self.eval_expr(iter)?;
+                let iter_value = iter_value.unboxed();
                 let items = match iter_value {
                     Value::List(items) => items,
                     Value::Map(items) => items.into_values().collect(),
@@ -976,8 +996,8 @@ impl<'a> Interpreter<'a> {
             ExprKind::Literal(lit) => Ok(self.value_from_literal(lit)),
             ExprKind::Ident(ident) => self.resolve_ident(&ident.name),
             ExprKind::Binary { op, left, right } => {
-                let left_val = self.eval_expr(left)?;
-                let right_val = self.eval_expr(right)?;
+                let left_val = self.eval_expr(left)?.unboxed();
+                let right_val = self.eval_expr(right)?.unboxed();
                 match op {
                     BinaryOp::Add => self.eval_add(left_val, right_val),
                     BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
@@ -996,7 +1016,7 @@ impl<'a> Interpreter<'a> {
                 }
             }
             ExprKind::Unary { op, expr } => {
-                let value = self.eval_expr(expr)?;
+                let value = self.eval_expr(expr)?.unboxed();
                 match op {
                     UnaryOp::Neg => match value {
                         Value::Int(v) => Ok(Value::Int(-v)),
@@ -1007,7 +1027,7 @@ impl<'a> Interpreter<'a> {
                 }
             }
             ExprKind::Call { callee, args } => {
-                let callee_val = self.eval_expr(callee)?;
+                let callee_val = self.eval_expr(callee)?.unboxed();
                 let mut arg_vals = Vec::new();
                 for arg in args {
                     arg_vals.push(self.eval_expr(&arg.value)?);
@@ -1023,11 +1043,11 @@ impl<'a> Interpreter<'a> {
                         return self.eval_enum_member(&ident.name, &name.name);
                     }
                 }
-                let base_val = self.eval_expr(base)?;
+                let base_val = self.eval_expr(base)?.unboxed();
                 self.eval_member(base_val, &name.name)
             }
             ExprKind::OptionalMember { base, name } => {
-                let base_val = self.eval_expr(base)?;
+                let base_val = self.eval_expr(base)?.unboxed();
                 if matches!(base_val, Value::Null) {
                     Ok(Value::Null)
                 } else {
@@ -1075,7 +1095,7 @@ impl<'a> Interpreter<'a> {
             }
             ExprKind::Coalesce { left, right } => {
                 let left_val = self.eval_expr(left)?;
-                if matches!(left_val, Value::Null) {
+                if matches!(left_val.unboxed(), Value::Null) {
                     self.eval_expr(right)
                 } else {
                     Ok(left_val)
@@ -1095,7 +1115,13 @@ impl<'a> Interpreter<'a> {
                     )),
                 }
             }
-            ExprKind::Box { expr } => self.eval_expr(expr),
+            ExprKind::Box { expr } => {
+                let value = self.eval_expr(expr)?;
+                match value {
+                    Value::Boxed(_) => Ok(value),
+                    other => Ok(Value::Boxed(Rc::new(RefCell::new(other)))),
+                }
+            }
         }
     }
 
@@ -1146,7 +1172,7 @@ impl<'a> Interpreter<'a> {
     }
 
     fn eval_call(&mut self, callee: Value, args: Vec<Value>) -> ExecResult<Value> {
-        match callee {
+        match callee.unboxed() {
             Value::Builtin(name) => self.eval_builtin(&name, args),
             Value::Function(name) => self.eval_function(&name, args),
             Value::EnumCtor { name, variant } => {
@@ -1173,6 +1199,7 @@ impl<'a> Interpreter<'a> {
     }
 
     fn eval_builtin(&mut self, name: &str, args: Vec<Value>) -> ExecResult<Value> {
+        let args: Vec<Value> = args.into_iter().map(|val| val.unboxed()).collect();
         match name {
             "print" => {
                 let text = args.get(0).map(|v| v.to_string_value()).unwrap_or_default();
@@ -1733,7 +1760,7 @@ impl<'a> Interpreter<'a> {
     }
 
     fn eval_member(&mut self, base: Value, field: &str) -> ExecResult<Value> {
-        match base {
+        match base.unboxed() {
             Value::Builtin(name) if name == "db" => match field {
                 "exec" | "query" | "one" => Ok(Value::Builtin(format!("db.{field}"))),
                 _ => Err(ExecError::Runtime(format!("unknown db method {field}"))),
@@ -1891,7 +1918,7 @@ impl<'a> Interpreter<'a> {
     }
 
     fn eval_bang_chain(&mut self, expr: &Expr, error: Option<&Expr>) -> ExecResult<Value> {
-        let value = self.eval_expr(expr)?;
+        let value = self.eval_expr(expr)?.unboxed();
         match value {
             Value::Null => {
                 let err_value = match error {
@@ -1925,13 +1952,15 @@ impl<'a> Interpreter<'a> {
     }
 
     fn as_bool(&self, value: &Value) -> ExecResult<bool> {
-        match value {
+        match value.unboxed() {
             Value::Bool(v) => Ok(*v),
             _ => Err(ExecError::Runtime("condition must be a Bool".to_string())),
         }
     }
 
     fn eval_add(&self, left: Value, right: Value) -> ExecResult<Value> {
+        let left = left.unboxed();
+        let right = right.unboxed();
         match (left, right) {
             (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
             (Value::String(a), b) => Ok(Value::String(format!("{a}{}", b.to_string_value()))),
@@ -1945,6 +1974,8 @@ impl<'a> Interpreter<'a> {
     }
 
     fn eval_arith(&self, op: &BinaryOp, left: Value, right: Value) -> ExecResult<Value> {
+        let left = left.unboxed();
+        let right = right.unboxed();
         match (left, right) {
             (Value::Int(a), Value::Int(b)) => match op {
                 BinaryOp::Sub => Ok(Value::Int(a - b)),
@@ -1987,6 +2018,8 @@ impl<'a> Interpreter<'a> {
     }
 
     fn eval_compare(&self, op: &BinaryOp, left: Value, right: Value) -> ExecResult<Value> {
+        let left = left.unboxed();
+        let right = right.unboxed();
         let result = match (left, right) {
             (Value::Int(a), Value::Int(b)) => match op {
                 BinaryOp::Eq => a == b,
@@ -2033,15 +2066,16 @@ impl<'a> Interpreter<'a> {
         pat: &Pattern,
         bindings: &mut HashMap<String, Value>,
     ) -> ExecResult<bool> {
+        let value = value.unboxed();
         match &pat.kind {
             PatternKind::Wildcard => Ok(true),
-            PatternKind::Literal(lit) => Ok(self.literal_matches(value, lit)),
-            PatternKind::Ident(ident) => self.match_ident_pattern(value, ident, bindings),
+            PatternKind::Literal(lit) => Ok(self.literal_matches(&value, lit)),
+            PatternKind::Ident(ident) => self.match_ident_pattern(&value, ident, bindings),
             PatternKind::EnumVariant { name, args } => {
-                self.match_enum_variant_pattern(value, &name.name, args, bindings)
+                self.match_enum_variant_pattern(&value, &name.name, args, bindings)
             }
             PatternKind::Struct { name, fields } => {
-                self.match_struct_pattern(value, &name.name, fields, bindings)
+                self.match_struct_pattern(&value, &name.name, fields, bindings)
             }
         }
     }
@@ -2167,7 +2201,8 @@ impl<'a> Interpreter<'a> {
     }
 
     fn literal_matches(&self, value: &Value, lit: &Literal) -> bool {
-        match (value, lit) {
+        let value = value.unboxed();
+        match (&value, lit) {
             (Value::Int(a), Literal::Int(b)) => a == b,
             (Value::Float(a), Literal::Float(b)) => a == b,
             (Value::Bool(a), Literal::Bool(b)) => a == b,
@@ -2250,19 +2285,20 @@ impl<'a> Interpreter<'a> {
     }
 
     fn validate_value(&self, value: &Value, ty: &TypeRef, path: &str) -> ExecResult<()> {
+        let value = value.unboxed();
         match &ty.kind {
             TypeRefKind::Optional(inner) => {
                 if matches!(value, Value::Null) {
                     Ok(())
                 } else {
-                    self.validate_value(value, inner, path)
+                    self.validate_value(&value, inner, path)
                 }
             }
             TypeRefKind::Result { ok, err } => match value {
-                Value::ResultOk(inner) => self.validate_value(inner, ok, path),
+                Value::ResultOk(inner) => self.validate_value(&inner, ok, path),
                 Value::ResultErr(inner) => {
                     if let Some(err_ty) = err {
-                        self.validate_value(inner, err_ty, path)
+                        self.validate_value(&inner, err_ty, path)
                     } else {
                         Ok(())
                     }
@@ -2272,15 +2308,15 @@ impl<'a> Interpreter<'a> {
                     "type_mismatch",
                     format!(
                         "expected Result, got {}",
-                        self.value_type_name(value)
+                        self.value_type_name(&value)
                     ),
                 ))),
             },
             TypeRefKind::Refined { base, args } => {
-                self.validate_simple(value, &base.name, path)?;
-                self.check_refined(value, &base.name, args, path)
+                self.validate_simple(&value, &base.name, path)?;
+                self.check_refined(&value, &base.name, args, path)
             }
-            TypeRefKind::Simple(ident) => self.validate_simple(value, &ident.name, path),
+            TypeRefKind::Simple(ident) => self.validate_simple(&value, &ident.name, path),
             TypeRefKind::Generic { base, args } => match base.name.as_str() {
                 "Option" => {
                     if args.len() != 1 {
@@ -2291,7 +2327,7 @@ impl<'a> Interpreter<'a> {
                     if matches!(value, Value::Null) {
                         Ok(())
                     } else {
-                        self.validate_value(value, &args[0], path)
+                        self.validate_value(&value, &args[0], path)
                     }
                 }
                 "Result" => {
@@ -2301,14 +2337,14 @@ impl<'a> Interpreter<'a> {
                         ));
                     }
                     match value {
-                        Value::ResultOk(inner) => self.validate_value(inner, &args[0], path),
-                        Value::ResultErr(inner) => self.validate_value(inner, &args[1], path),
+                        Value::ResultOk(inner) => self.validate_value(&inner, &args[0], path),
+                        Value::ResultErr(inner) => self.validate_value(&inner, &args[1], path),
                         _ => Err(ExecError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
                             format!(
                                 "expected Result, got {}",
-                                self.value_type_name(value)
+                                self.value_type_name(&value)
                             ),
                         ))),
                     }
@@ -2332,7 +2368,7 @@ impl<'a> Interpreter<'a> {
                             "type_mismatch",
                             format!(
                                 "expected List, got {}",
-                                self.value_type_name(value)
+                                self.value_type_name(&value)
                             ),
                         ))),
                     }
@@ -2358,7 +2394,7 @@ impl<'a> Interpreter<'a> {
                             "type_mismatch",
                             format!(
                                 "expected Map, got {}",
-                                self.value_type_name(value)
+                                self.value_type_name(&value)
                             ),
                         ))),
                     }
@@ -2372,7 +2408,8 @@ impl<'a> Interpreter<'a> {
     }
 
     fn validate_simple(&self, value: &Value, name: &str, path: &str) -> ExecResult<()> {
-        let type_name = self.value_type_name(value);
+        let value = value.unboxed();
+        let type_name = self.value_type_name(&value);
         let (module, simple_name) = split_type_name(name);
         if module.is_none() {
             match simple_name {
@@ -2473,7 +2510,7 @@ impl<'a> Interpreter<'a> {
     }
 
     fn value_type_name(&self, value: &Value) -> String {
-        match value {
+        match value.unboxed() {
             Value::Unit => "Unit".to_string(),
             Value::Int(_) => "Int".to_string(),
             Value::Float(_) => "Float".to_string(),
@@ -2491,11 +2528,12 @@ impl<'a> Interpreter<'a> {
             Value::Config(_) => "Config".to_string(),
             Value::Function(_) => "Function".to_string(),
             Value::Builtin(_) => "Builtin".to_string(),
+            Value::Boxed(_) => "Box".to_string(),
         }
     }
 
     fn value_to_json(&self, value: &Value) -> rt_json::JsonValue {
-        match value {
+        match value.unboxed() {
             Value::Unit => rt_json::JsonValue::Null,
             Value::Int(v) => rt_json::JsonValue::Number(*v as f64),
             Value::Float(v) => rt_json::JsonValue::Number(*v),
@@ -2512,6 +2550,7 @@ impl<'a> Interpreter<'a> {
                 }
                 rt_json::JsonValue::Object(out)
             }
+            Value::Boxed(_) => rt_json::JsonValue::String("<box>".to_string()),
             Value::Task(_) => {
                 rt_json::JsonValue::String("<task>".to_string())
             }
@@ -2890,6 +2929,7 @@ impl<'a> Interpreter<'a> {
     }
 
     fn check_refined(&self, value: &Value, base: &str, args: &[Expr], path: &str) -> ExecResult<()> {
+        let value = value.unboxed();
         match base {
             "String" => {
                 let (min, max) = self.parse_length_range(args)?;

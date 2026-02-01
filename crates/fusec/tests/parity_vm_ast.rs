@@ -164,6 +164,20 @@ fn parity_spawn_await_box() {
 }
 
 #[test]
+fn parity_box_shared() {
+    let ast = run_example("ast", "box_shared.fuse", &[]);
+    let vm = run_example("vm", "box_shared.fuse", &[]);
+
+    assert!(ast.status.success(), "ast stderr: {}", String::from_utf8_lossy(&ast.stderr));
+    assert!(vm.status.success(), "vm stderr: {}", String::from_utf8_lossy(&vm.stderr));
+
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stdout),
+        String::from_utf8_lossy(&vm.stdout)
+    );
+}
+
+#[test]
 fn parity_cli_binding() {
     let args = ["--name=Codex", "--excited"];
     let ast = run_example_with_args("ast", "cli_args.fuse", &args);
