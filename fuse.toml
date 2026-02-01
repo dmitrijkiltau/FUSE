@@ -1,0 +1,4 @@
+[package]
+entry = "examples/project_demo.fuse"
+app = "demo"
+backend = "ast"

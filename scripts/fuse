@@ -8,13 +8,19 @@ usage() {
 usage: scripts/fuse <command> [args...]
 
 commands:
-  run   Run a Fuse program (passes through to fusec --run)
-  check Parse + sema check (passes through to fusec --check)
-  fmt   Format a Fuse file (passes through to fusec --fmt)
-  lsp   Start the Fuse language server
+  run      Run a Fuse package (fuse run)
+  test     Run package tests (fuse test)
+  build    Build the package (fuse build)
+  check    Parse + sema check (fuse check)
+  fmt      Format a Fuse file (fuse fmt)
+  openapi  Emit OpenAPI JSON (fuse openapi)
+  migrate  Run DB migrations (fuse migrate)
+  lsp      Start the Fuse language server
 
 examples:
   scripts/fuse run examples/cli_hello.fuse
+  scripts/fuse test examples/project_demo.fuse
+  scripts/fuse build
   scripts/fuse check examples/project_demo.fuse
   scripts/fuse fmt examples/project_demo.fuse
   scripts/fuse lsp
@@ -30,14 +36,8 @@ cmd="$1"
 shift
 
 case "$cmd" in
-  run)
-    exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --run "$@"
-    ;;
-  check)
-    exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --check "$@"
-    ;;
-  fmt)
-    exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --fmt "$@"
+  run|test|build|check|fmt|openapi|migrate)
+    exec "$ROOT/scripts/cargo_env.sh" cargo run -p fuse -- "$cmd" "$@"
     ;;
   lsp)
     exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec --bin fuse-lsp -- "$@"

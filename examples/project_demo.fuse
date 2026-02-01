@@ -17,10 +17,10 @@ fn describe(color: Color) -> String:
     case Red:
       return "red"
     case Rgb(r, g, b):
-      return "rgb " + r + "," + g + "," + b
+      return "rgb ${r},${g},${b}"
 
 fn greet(name: String) -> String:
-  return App.greeting + ", " + name + "!"
+  return "${App.greeting}, ${name}!"
 
 app "demo":
   let user = User(name=App.who, age=42)

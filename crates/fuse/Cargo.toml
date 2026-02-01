@@ -1,0 +1,9 @@
+[package]
+name = "fuse"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fusec = { path = "../fusec" }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"

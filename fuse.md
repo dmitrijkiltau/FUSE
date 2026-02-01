@@ -128,10 +128,24 @@ The runtime currently handles:
 * HTTP routing + error JSON mapping
 * CLI flag binding for `fn main` when running `fusec --run <file> -- <args>` (AST backend only)
 * OpenAPI 3.0 generation via `fusec --openapi` (services, schemas, refined types, error responses)
-
-## Not implemented yet (planned)
-
 * package tooling (`fuse.toml`, `fuse run/test/build`)
+
+## Package tooling
+
+`fuse` reads `fuse.toml` from the current directory (or nearest parent) to find the entrypoint:
+
+```
+[package]
+entry = "src/main.fuse"
+app = "Api"
+backend = "ast"
+
+[build]
+openapi = "build/openapi.json"
+```
+
+`fuse run` and `fuse test` use `package.entry`. `fuse build` runs checks and emits OpenAPI
+if `build.openapi` is set.
 
 ## "Okay but what's novel?"
 

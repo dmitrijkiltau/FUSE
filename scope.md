@@ -86,10 +86,11 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * formatter via `fusec --fmt`
 * OpenAPI 3.0 generation via `fusec --openapi`
 * `fusec` flags: `--check`, `--run`, `--migrate`, `--test`, `--openapi`, `--backend`, `--app`
+* package manifest (`fuse.toml`) + `fuse run/test/build`
 
 **Tooling (planned)**
 
-* package/deps file (`fuse.toml`) + lockfile
+* lockfile + dependency resolution
 * LSP (not day one)
 
 ## Non-goals (explicitly)

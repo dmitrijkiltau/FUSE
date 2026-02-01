@@ -107,7 +107,7 @@ impl<'a> Checker<'a> {
         for field in &decl.fields {
             let field_ty = self.resolve_type_ref(&field.ty);
             let value_ty = self.check_expr(&field.value);
-            if !self.is_assignable(&value_ty, &field_ty) {
+            if !self.is_assignable_with_refined(&value_ty, &field_ty) {
                 self.type_mismatch(field.value.span, &field_ty, &value_ty);
             }
         }
@@ -484,7 +484,7 @@ impl<'a> Checker<'a> {
                 if let Some(field_info) = field_info {
                     let value_ty = self.check_expr(&field.value);
                     let field_ty = self.resolve_type_ref(&field_info.ty);
-                    if !self.is_assignable(&value_ty, &field_ty) {
+                    if !self.is_assignable_with_refined(&value_ty, &field_ty) {
                         self.type_mismatch(field.span, &field_ty, &value_ty);
                     }
                 } else {
@@ -518,7 +518,7 @@ impl<'a> Checker<'a> {
                 if let Some(field_info) = field_info {
                     let value_ty = self.check_expr(&field.value);
                     let field_ty = self.resolve_type_ref(&field_info.ty);
-                    if !self.is_assignable(&value_ty, &field_ty) {
+                    if !self.is_assignable_with_refined(&value_ty, &field_ty) {
                         self.type_mismatch(field.span, &field_ty, &value_ty);
                     }
                 } else {
@@ -1139,6 +1139,16 @@ impl<'a> Checker<'a> {
             (Ty::Option(_), _) => false,
             (_, Ty::Option(inner)) => self.is_assignable(value, inner),
             (Ty::Unknown, _) | (_, Ty::Unknown) => true,
+            _ => false,
+        }
+    }
+
+    fn is_assignable_with_refined(&self, value: &Ty, target: &Ty) -> bool {
+        if self.is_assignable(value, target) {
+            return true;
+        }
+        match target {
+            Ty::Refined { base, .. } => self.is_assignable(value, base),
             _ => false,
         }
     }
