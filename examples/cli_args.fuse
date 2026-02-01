@@ -1,0 +1,10 @@
+# CLI args demo (no config)
+
+fn main(name: String, excited: Bool = false):
+  if excited:
+    print("Hello, ${name}!")
+  else:
+    print("Hello, ${name}")
+
+app "cli":
+  main("world")

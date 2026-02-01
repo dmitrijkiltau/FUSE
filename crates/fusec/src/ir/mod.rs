@@ -46,6 +46,8 @@ pub enum Instr {
     JumpIfFalse(usize),
     JumpIfNull(usize),
     Call { name: String, argc: usize, kind: CallKind },
+    Spawn { name: String, argc: usize },
+    Await,
     Return,
     Bang { has_error: bool },
     MakeList { len: usize },

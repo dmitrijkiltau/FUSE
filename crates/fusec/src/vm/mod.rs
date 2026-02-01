@@ -8,7 +8,7 @@ use crate::ast::{
     Expr, ExprKind, HttpVerb, Ident, Literal, Pattern, PatternKind, TypeRef, TypeRefKind, UnaryOp,
 };
 use crate::db::Db;
-use crate::interp::{format_error_value, Value};
+use crate::interp::{format_error_value, Task, TaskResult, Value};
 use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram, Service, ServiceRoute};
 use crate::span::Span;
 
@@ -111,6 +111,26 @@ impl<'a> Vm<'a> {
             return Err(self.render_error(err));
         }
         Ok(())
+    }
+
+    pub fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, String> {
+        let func = self
+            .program
+            .functions
+            .get(name)
+            .ok_or_else(|| format!("unknown function {name}"))?;
+        let value = match self.exec_function(func, args) {
+            Ok(val) => self.wrap_function_result(func, val).map_err(|err| self.render_error(err))?,
+            Err(VmError::Error(err_val)) => {
+                if self.is_result_type(func.ret.as_ref()) {
+                    Value::ResultErr(Box::new(err_val))
+                } else {
+                    return Err(self.render_error(VmError::Error(err_val)));
+                }
+            }
+            Err(VmError::Runtime(msg)) => return Err(msg),
+        };
+        Ok(value)
     }
 
     fn render_error(&self, err: VmError) -> String {
@@ -311,6 +331,44 @@ impl<'a> Vm<'a> {
                         }
                     };
                     frame.stack.push(value);
+                }
+                Instr::Spawn { name, argc } => {
+                    let mut args = Vec::new();
+                    for _ in 0..argc {
+                        args.push(frame.pop()?);
+                    }
+                    args.reverse();
+                    let func = self
+                        .program
+                        .functions
+                        .get(&name)
+                        .ok_or_else(|| VmError::Runtime(format!("unknown function {name}")))?;
+                    let result = match self.exec_function(func, args) {
+                        Ok(val) => {
+                            let value = self.wrap_function_result(func, val)?;
+                            TaskResult::Ok(value)
+                        }
+                        Err(VmError::Error(err_val)) => TaskResult::Error(err_val),
+                        Err(VmError::Runtime(msg)) => TaskResult::Runtime(msg),
+                    };
+                    frame
+                        .stack
+                        .push(Value::Task(Task::from_task_result(result)));
+                }
+                Instr::Await => {
+                    let value = frame.pop()?;
+                    match value {
+                        Value::Task(task) => match task.result_raw() {
+                            TaskResult::Ok(value) => frame.stack.push(value),
+                            TaskResult::Error(err) => return Err(VmError::Error(err)),
+                            TaskResult::Runtime(msg) => return Err(VmError::Runtime(msg)),
+                        },
+                        _ => {
+                            return Err(VmError::Runtime(
+                                "await expects a Task value".to_string(),
+                            ))
+                        }
+                    }
                 }
                 Instr::Return => {
                     let value = if frame.stack.is_empty() {

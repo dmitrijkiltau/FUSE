@@ -184,7 +184,7 @@ Type support for config values is the same as env parsing:
 
 `List`, `Map`, `Result`, and user-defined types are not supported for config values.
 
-## CLI binding (AST backend only)
+## CLI binding
 
 CLI binding is enabled when you pass program arguments after the file name (or after `--`):
 
@@ -294,7 +294,7 @@ Rules:
 * Tests are executed by the AST interpreter.
 * Failures are reported and the process exits non-zero.
 
-## Concurrency (AST backend only)
+## Concurrency
 
 `spawn:` creates a task and returns `Task<T>` where `T` is the block result. Tasks execute eagerly
 today (no parallelism), but errors are captured and surfaced when awaited.
@@ -340,7 +340,6 @@ Structured logging:
 
 ## Unsupported or partial features
 
-* `spawn`/`await` are only supported by the AST interpreter (the VM backend errors at runtime).
 * `box` is currently a no-op (reserved for future shared-state semantics).
 * Assignment targets are limited to identifiers.
 * `..` range expressions are only used inside refined type arguments.

@@ -277,10 +277,6 @@ where
         }
         let app = app_name.as_deref();
         if !program_args.is_empty() {
-            if !matches!(backend, Backend::Ast) {
-                eprintln!("CLI binding is only supported on --backend ast for now");
-                return 1;
-            }
             let main_decl = program
                 .items
                 .iter()
@@ -377,11 +373,39 @@ where
                 emit_validation_error_fields(errors);
                 return 2;
             }
-            match interp.call_function_with_named_args("main", &args_map) {
-                Ok(_) => {}
-                Err(err) => {
-                    emit_error_json(&err);
-                    return 2;
+            match backend {
+                Backend::Ast => match interp.call_function_with_named_args("main", &args_map) {
+                    Ok(_) => {}
+                    Err(err) => {
+                        emit_error_json(&err);
+                        return 2;
+                    }
+                },
+                Backend::Vm => {
+                    let args = match interp.prepare_call_with_named_args("main", &args_map) {
+                        Ok(args) => args,
+                        Err(err) => {
+                            emit_error_json(&err);
+                            return 2;
+                        }
+                    };
+                    let ir = match crate::ir::lower::lower_registry(&registry) {
+                        Ok(ir) => ir,
+                        Err(errors) => {
+                            for error in errors {
+                                eprintln!("lowering error: {error}");
+                            }
+                            return 1;
+                        }
+                    };
+                    let mut vm = crate::vm::Vm::new(&ir);
+                    match vm.call_function("main", args) {
+                        Ok(_) => {}
+                        Err(err) => {
+                            emit_error_json(&err);
+                            return 2;
+                        }
+                    }
                 }
             }
         } else {

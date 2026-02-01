@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::ast::{
     AppDecl, BinaryOp, Block, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item, Literal, Pattern,
@@ -131,6 +131,17 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn insert_extra_functions(&mut self, funcs: Vec<Function>) {
+        for func in funcs {
+            if self.functions.contains_key(&func.name) {
+                self.errors
+                    .push(format!("duplicate function {}", func.name));
+            } else {
+                self.functions.insert(func.name.clone(), func);
+            }
+        }
+    }
+
     fn lower_fn(&mut self, decl: &FnDecl) {
         let mut builder = FuncBuilder::new(
             decl.name.name.clone(),
@@ -146,11 +157,12 @@ impl<'a> Lowerer<'a> {
         }
         builder.lower_block(&decl.body);
         builder.ensure_return();
-        let (func, errors) = builder.finish();
+        let (func, errors, extra) = builder.finish();
         if let Some(func) = func {
             self.functions.insert(decl.name.name.clone(), func);
         }
         self.errors.extend(errors);
+        self.insert_extra_functions(extra);
     }
 
     fn lower_app(&mut self, app: &AppDecl) {
@@ -165,11 +177,12 @@ impl<'a> Lowerer<'a> {
         );
         builder.lower_block(&app.body);
         builder.ensure_return();
-        let (func, errors) = builder.finish();
+        let (func, errors, extra) = builder.finish();
         if let Some(func) = func {
             self.apps.insert(app.name.value.clone(), func);
         }
         self.errors.extend(errors);
+        self.insert_extra_functions(extra);
     }
 
     fn lower_config(&mut self, cfg: &crate::ast::ConfigDecl) {
@@ -187,11 +200,12 @@ impl<'a> Lowerer<'a> {
             );
             builder.lower_expr(&field.value);
             builder.emit(Instr::Return);
-            let (func, errors) = builder.finish();
+            let (func, errors, extra) = builder.finish();
             if let Some(func) = func {
                 self.functions.insert(fn_name.clone(), func);
             }
             self.errors.extend(errors);
+            self.insert_extra_functions(extra);
             fields.push(ConfigField {
                 name: field.name.name.clone(),
                 ty: field.ty.clone(),
@@ -223,11 +237,12 @@ impl<'a> Lowerer<'a> {
                 );
                 builder.lower_expr(expr);
                 builder.emit(Instr::Return);
-                let (func, errors) = builder.finish();
+                let (func, errors, extra) = builder.finish();
                 if let Some(func) = func {
                     self.functions.insert(fn_name.clone(), func);
                 }
                 self.errors.extend(errors);
+                self.insert_extra_functions(extra);
                 Some(fn_name)
             } else {
                 None
@@ -291,15 +306,16 @@ impl<'a> Lowerer<'a> {
                     name: "body".to_string(),
                     span: Span::default(),
                 };
-                builder.declare_param(&ident);
+            builder.declare_param(&ident);
             }
             builder.lower_block(&route.body);
             builder.ensure_return();
-            let (func, errors) = builder.finish();
+            let (func, errors, extra) = builder.finish();
             if let Some(func) = func {
                 self.functions.insert(handler.clone(), func);
             }
             self.errors.extend(errors);
+            self.insert_extra_functions(extra);
             routes.push(ServiceRoute {
                 verb: route.verb.clone(),
                 path: route.path.value.clone(),
@@ -376,6 +392,8 @@ struct FuncBuilder {
     locals: usize,
     scopes: Vec<HashMap<String, usize>>,
     errors: Vec<String>,
+    extra_functions: Vec<Function>,
+    spawn_counter: usize,
     config_names: HashSet<String>,
     enum_names: HashSet<String>,
     enum_variant_names: HashSet<String>,
@@ -402,6 +420,8 @@ impl FuncBuilder {
             locals: 0,
             scopes: vec![HashMap::new()],
             errors: Vec::new(),
+            extra_functions: Vec::new(),
+            spawn_counter: 0,
             config_names: config_names.clone(),
             enum_names: enum_names.clone(),
             enum_variant_names: enum_variant_names.clone(),
@@ -411,7 +431,7 @@ impl FuncBuilder {
         }
     }
 
-    fn finish(self) -> (Option<Function>, Vec<String>) {
+    fn finish(self) -> (Option<Function>, Vec<String>, Vec<Function>) {
         let func = if self.errors.is_empty() {
             Some(Function {
                 name: self.name,
@@ -423,7 +443,7 @@ impl FuncBuilder {
         } else {
             None
         };
-        (func, self.errors)
+        (func, self.errors, self.extra_functions)
     }
 
     fn emit(&mut self, instr: Instr) {
@@ -460,6 +480,22 @@ impl FuncBuilder {
         let slot = self.locals;
         self.locals += 1;
         slot
+    }
+
+    fn next_spawn_name(&mut self) -> String {
+        let id = self.spawn_counter;
+        self.spawn_counter += 1;
+        format!("__spawn::{}::{}", self.name, id)
+    }
+
+    fn capture_locals(&self) -> Vec<(String, usize)> {
+        let mut captured: BTreeMap<String, usize> = BTreeMap::new();
+        for scope in self.scopes.iter().rev() {
+            for (name, slot) in scope {
+                captured.entry(name.clone()).or_insert(*slot);
+            }
+        }
+        captured.into_iter().collect()
     }
 
     fn collect_bindings(&self, pat: &Pattern, out: &mut Vec<Ident>) {
@@ -1068,9 +1104,44 @@ impl FuncBuilder {
             ExprKind::Box { expr } => {
                 self.lower_expr(expr);
             }
-            ExprKind::Spawn { .. } | ExprKind::Await { .. } => {
-                self.errors
-                    .push("expression not supported in VM yet".to_string());
+            ExprKind::Spawn { block } => {
+                let captured = self.capture_locals();
+                let spawn_name = self.next_spawn_name();
+                let mut builder = FuncBuilder::new(
+                    spawn_name.clone(),
+                    None,
+                    &self.config_names,
+                    &self.enum_names,
+                    &self.enum_variant_names,
+                    &self.builtin_names,
+                    &self.modules,
+                );
+                for (name, _) in &captured {
+                    let ident = Ident {
+                        name: name.clone(),
+                        span: Span::default(),
+                    };
+                    builder.declare_param(&ident);
+                }
+                builder.lower_block(block);
+                builder.ensure_return();
+                let (func, errors, extra) = builder.finish();
+                if let Some(func) = func {
+                    self.extra_functions.push(func);
+                }
+                self.errors.extend(errors);
+                self.extra_functions.extend(extra);
+                for (_, slot) in &captured {
+                    self.emit(Instr::LoadLocal(*slot));
+                }
+                self.emit(Instr::Spawn {
+                    name: spawn_name,
+                    argc: captured.len(),
+                });
+            }
+            ExprKind::Await { expr } => {
+                self.lower_expr(expr);
+                self.emit(Instr::Await);
             }
         }
     }

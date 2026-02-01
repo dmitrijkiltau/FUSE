@@ -70,13 +70,19 @@ struct TaskState {
 }
 
 #[derive(Clone, Debug)]
-enum TaskResult {
+pub(crate) enum TaskResult {
     Ok(Value),
     Error(Value),
     Runtime(String),
 }
 
 impl Task {
+    pub(crate) fn from_task_result(result: TaskResult) -> Self {
+        Task {
+            state: Rc::new(RefCell::new(TaskState { result })),
+        }
+    }
+
     fn new(result: ExecResult<Value>) -> Self {
         let result = match result {
             Ok(value) => TaskResult::Ok(value),
@@ -86,13 +92,15 @@ impl Task {
             Err(ExecError::Break) => TaskResult::Runtime("break outside of loop".to_string()),
             Err(ExecError::Continue) => TaskResult::Runtime("continue outside of loop".to_string()),
         };
-        Task {
-            state: Rc::new(RefCell::new(TaskState { result })),
-        }
+        Task::from_task_result(result)
+    }
+
+    pub(crate) fn result_raw(&self) -> TaskResult {
+        self.state.borrow().result.clone()
     }
 
     fn result(&self) -> ExecResult<Value> {
-        match self.state.borrow().result.clone() {
+        match self.result_raw() {
             TaskResult::Ok(value) => Ok(value),
             TaskResult::Error(value) => Err(ExecError::Error(value)),
             TaskResult::Runtime(message) => Err(ExecError::Runtime(message)),
@@ -639,6 +647,53 @@ impl<'a> Interpreter<'a> {
             Ok(value) => Ok(value),
             Err(err) => Err(self.render_exec_error(err)),
         }
+    }
+
+    pub(crate) fn prepare_call_with_named_args(
+        &mut self,
+        name: &str,
+        args: &HashMap<String, Value>,
+    ) -> Result<Vec<Value>, String> {
+        let decl = match self.functions.get(name) {
+            Some(decl) => *decl,
+            None => return Err(format!("unknown function {name}")),
+        };
+        let prev_module = self.current_module;
+        if let Some(owner) = self.function_owner.get(name) {
+            self.current_module = *owner;
+        }
+        self.env.push();
+        let mut ordered = Vec::with_capacity(decl.params.len());
+        for param in &decl.params {
+            let value = if let Some(value) = args.get(&param.name.name) {
+                value.clone()
+            } else if let Some(default) = &param.default {
+                match self.eval_expr(default) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        self.env.pop();
+                        self.current_module = prev_module;
+                        return Err(self.render_exec_error(err));
+                    }
+                }
+            } else if self.is_optional_type(&param.ty) {
+                Value::Null
+            } else {
+                self.env.pop();
+                self.current_module = prev_module;
+                return Err(format!("missing argument {}", param.name.name));
+            };
+            if let Err(err) = self.validate_value(&value, &param.ty, &param.name.name) {
+                self.env.pop();
+                self.current_module = prev_module;
+                return Err(self.render_exec_error(err));
+            }
+            self.env.insert(&param.name.name, value.clone());
+            ordered.push(value);
+        }
+        self.env.pop();
+        self.current_module = prev_module;
+        Ok(ordered)
     }
 
     pub fn call_function_with_named_args(

@@ -1,0 +1,12 @@
+# spawn/await/box demo
+
+fn main():
+  let base = 10
+  let task = spawn:
+    let inner = box (base + 1)
+    inner
+  let out = await task
+  print(out)
+
+app "spawn":
+  main()

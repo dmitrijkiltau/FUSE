@@ -66,7 +66,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * refined types on primitives (`String(1..80)`, `Int(0..130)`)
 * generics for `List<T>`, `Map<K,V>`, `Result<T,E>`, `Option<T>`
 * `migration` declarations
-* `spawn` / `await` / `box` concurrency (AST backend only)
+* `spawn` / `await` / `box` concurrency
 
 **Runtime / "boilerplate killer" (implemented)**
 
@@ -78,7 +78,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * error JSON + HTTP status mapping
 * builtins: `print`, `log`, `db`, `assert`, `env`, `serve`
 * SQLite-backed DB access + migrations via `fusec --migrate`
-* CLI arg binding for `fn main` when running with program args (AST backend only)
+* CLI arg binding for `fn main` when running with program args
 
 **Tooling (implemented)**
 

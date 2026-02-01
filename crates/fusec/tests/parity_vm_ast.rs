@@ -32,6 +32,20 @@ fn run_example(
     cmd.output().expect("failed to run fusec")
 }
 
+fn run_example_with_args(backend: &str, example: &str, args: &[&str]) -> std::process::Output {
+    let exe = env!("CARGO_BIN_EXE_fusec");
+    let mut cmd = Command::new(exe);
+    cmd.arg("--run")
+        .arg("--backend")
+        .arg(backend)
+        .arg(example_path(example))
+        .arg("--");
+    for arg in args {
+        cmd.arg(arg);
+    }
+    cmd.output().expect("failed to run fusec")
+}
+
 fn find_free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test port");
     listener.local_addr().unwrap().port()
@@ -125,6 +139,35 @@ fn parity_cli_hello() {
 fn parity_interp_demo() {
     let ast = run_example("ast", "interp_demo.fuse", &[]);
     let vm = run_example("vm", "interp_demo.fuse", &[]);
+
+    assert!(ast.status.success(), "ast stderr: {}", String::from_utf8_lossy(&ast.stderr));
+    assert!(vm.status.success(), "vm stderr: {}", String::from_utf8_lossy(&vm.stderr));
+
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stdout),
+        String::from_utf8_lossy(&vm.stdout)
+    );
+}
+
+#[test]
+fn parity_spawn_await_box() {
+    let ast = run_example("ast", "spawn_await_box.fuse", &[]);
+    let vm = run_example("vm", "spawn_await_box.fuse", &[]);
+
+    assert!(ast.status.success(), "ast stderr: {}", String::from_utf8_lossy(&ast.stderr));
+    assert!(vm.status.success(), "vm stderr: {}", String::from_utf8_lossy(&vm.stderr));
+
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stdout),
+        String::from_utf8_lossy(&vm.stdout)
+    );
+}
+
+#[test]
+fn parity_cli_binding() {
+    let args = ["--name=Codex", "--excited"];
+    let ast = run_example_with_args("ast", "cli_args.fuse", &args);
+    let vm = run_example_with_args("vm", "cli_args.fuse", &args);
 
     assert!(ast.status.success(), "ast stderr: {}", String::from_utf8_lossy(&ast.stderr));
     assert!(vm.status.success(), "vm stderr: {}", String::from_utf8_lossy(&vm.stderr));

@@ -40,8 +40,8 @@ app "hello":
 ```
 
 Run with `fusec --run` to execute the `app`. If you pass CLI flags (for example `--name=Codex`),
-`fusec` calls `main` directly and binds flags to its parameters (AST backend only); the `app` block
-is skipped when program args are present.
+`fusec` calls `main` directly and binds flags to its parameters; the `app` block is skipped when
+program args are present.
 
 ## Data model: types that validate at boundaries
 
@@ -120,13 +120,13 @@ The runtime currently handles:
 * Built-ins: `print(...)`, `log(...)`, `db.exec/query/one`, `assert(...)`, `env(...)`, `serve(...)`
 * SQLite-backed DB access (`db.exec/query/one`) + migrations (`migration` + `fusec --migrate`)
 * tests via `test "name":` + `fusec --test` (AST backend)
-* `spawn`/`await`/`box` concurrency (AST backend)
+* `spawn`/`await`/`box` concurrency
 * `for`/`while`/`break`/`continue` loops
 * `without` type derivations
 * Config loading (env > config file > defaults)
 * JSON encode/decode and refined-type validation
 * HTTP routing + error JSON mapping
-* CLI flag binding for `fn main` when running `fusec --run <file> -- <args>` (AST backend only)
+* CLI flag binding for `fn main` when running `fusec --run <file> -- <args>`
 * OpenAPI 3.0 generation via `fusec --openapi` (services, schemas, refined types, error responses)
 * package tooling (`fuse.toml`, `fuse run/test/build`)
 
@@ -162,8 +162,8 @@ Git dependencies support `tag`, `branch`, `rev`, or `version` (resolved as a tag
 `v<version>` first).
 
 `fuse build` also emits a compiled IR cache at `.fuse/build/program.ir`. When present,
-`fuse run` uses the cached IR for faster startup (unless you pass CLI args, which require
-the AST backend).
+`fuse run` uses the cached IR for faster startup (unless you pass CLI args, which currently
+bypass the cache).
 
 Use `fuse build --clean` to remove `.fuse/build` and force a fresh compile on the next run.
 
