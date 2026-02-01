@@ -174,10 +174,13 @@ fn run(args: Vec<String>) -> i32 {
         }
     };
 
-    let app = common
-        .app
-        .clone()
-        .or_else(|| manifest.as_ref().and_then(|m| m.package.app.clone()));
+    let app = common.app.clone().or_else(|| {
+        if common.entry.is_some() {
+            None
+        } else {
+            manifest.as_ref().and_then(|m| m.package.app.clone())
+        }
+    });
     let backend = common
         .backend
         .clone()

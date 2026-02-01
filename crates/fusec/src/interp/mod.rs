@@ -1953,7 +1953,7 @@ impl<'a> Interpreter<'a> {
 
     fn as_bool(&self, value: &Value) -> ExecResult<bool> {
         match value.unboxed() {
-            Value::Bool(v) => Ok(*v),
+            Value::Bool(v) => Ok(v),
             _ => Err(ExecError::Runtime("condition must be a Bool".to_string())),
         }
     }
@@ -2469,7 +2469,7 @@ impl<'a> Interpreter<'a> {
                     }
                 },
                 "Email" => match value {
-                    Value::String(s) if rt_validate::is_email(s) => return Ok(()),
+                    Value::String(s) if rt_validate::is_email(&s) => return Ok(()),
                     Value::String(_) => {
                         return Err(ExecError::Error(self.validation_error_value(
                             path,
@@ -2535,9 +2535,9 @@ impl<'a> Interpreter<'a> {
     fn value_to_json(&self, value: &Value) -> rt_json::JsonValue {
         match value.unboxed() {
             Value::Unit => rt_json::JsonValue::Null,
-            Value::Int(v) => rt_json::JsonValue::Number(*v as f64),
-            Value::Float(v) => rt_json::JsonValue::Number(*v),
-            Value::Bool(v) => rt_json::JsonValue::Bool(*v),
+            Value::Int(v) => rt_json::JsonValue::Number(v as f64),
+            Value::Float(v) => rt_json::JsonValue::Number(v),
+            Value::Bool(v) => rt_json::JsonValue::Bool(v),
             Value::String(v) => rt_json::JsonValue::String(v.clone()),
             Value::Null => rt_json::JsonValue::Null,
             Value::List(items) => {
@@ -2546,7 +2546,7 @@ impl<'a> Interpreter<'a> {
             Value::Map(items) => {
                 let mut out = BTreeMap::new();
                 for (key, value) in items {
-                    out.insert(key.clone(), self.value_to_json(value));
+                    out.insert(key.clone(), self.value_to_json(&value));
                 }
                 rt_json::JsonValue::Object(out)
             }
@@ -2560,7 +2560,7 @@ impl<'a> Interpreter<'a> {
             Value::Struct { fields, .. } => {
                 let mut out = BTreeMap::new();
                 for (key, value) in fields {
-                    out.insert(key.clone(), self.value_to_json(value));
+                    out.insert(key.clone(), self.value_to_json(&value));
                 }
                 rt_json::JsonValue::Object(out)
             }
@@ -2584,8 +2584,8 @@ impl<'a> Interpreter<'a> {
                 }
                 rt_json::JsonValue::Object(out)
             }
-            Value::ResultOk(value) => self.value_to_json(value),
-            Value::ResultErr(value) => self.value_to_json(value),
+            Value::ResultOk(value) => self.value_to_json(value.as_ref()),
+            Value::ResultErr(value) => self.value_to_json(value.as_ref()),
             Value::Config(name) => rt_json::JsonValue::String(name.clone()),
             Value::Function(name) => rt_json::JsonValue::String(name.clone()),
             Value::Builtin(name) => rt_json::JsonValue::String(name.clone()),
@@ -2954,7 +2954,7 @@ impl<'a> Interpreter<'a> {
             "Int" => {
                 let (min, max) = self.parse_int_range(args)?;
                 let val = match value {
-                    Value::Int(v) => *v,
+                    Value::Int(v) => v,
                     _ => {
                         return Err(ExecError::Runtime(format!(
                             "type mismatch at {path}: expected Int"
@@ -2974,7 +2974,7 @@ impl<'a> Interpreter<'a> {
             "Float" => {
                 let (min, max) = self.parse_float_range(args)?;
                 let val = match value {
-                    Value::Float(v) => *v,
+                    Value::Float(v) => v,
                     _ => {
                         return Err(ExecError::Runtime(format!(
                             "type mismatch at {path}: expected Float"
