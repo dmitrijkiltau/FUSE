@@ -70,3 +70,16 @@ fn main(name: String):
 "#;
     assert_parse_ok(src);
 }
+
+#[test]
+fn parses_spawn_await_box() {
+    let src = r#"
+fn main():
+  let task = spawn:
+    let value = box 1
+    value
+  let out = await task
+  out
+"#;
+    assert_parse_ok(src);
+}

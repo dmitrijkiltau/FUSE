@@ -64,10 +64,10 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * refined types on primitives (`String(1..80)`, `Int(0..130)`)
 * generics for `List<T>`, `Map<K,V>`, `Result<T,E>`, `Option<T>`
 * `migration` declarations
+* `spawn` / `await` / `box` concurrency (AST backend only)
 
 **Parsed but not executed yet**
 * `for` / `while` / `break` / `continue`
-* `spawn` / `await` / `box` concurrency
 * `without` type derivations
 
 **Runtime / "boilerplate killer" (implemented)**

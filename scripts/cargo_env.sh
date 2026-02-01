@@ -4,7 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/tmp/fuse-target}"
-export RUSTC_TMPDIR="${RUSTC_TMPDIR:-$ROOT/tmp/fuse-tmp}"
+# Keep rustc temp files on the same filesystem as the target dir to avoid EXDEV.
+export RUSTC_TMPDIR="${RUSTC_TMPDIR:-$CARGO_TARGET_DIR/tmp}"
 export TMPDIR="$RUSTC_TMPDIR"
 export TMP="$RUSTC_TMPDIR"
 export TEMP="$RUSTC_TMPDIR"

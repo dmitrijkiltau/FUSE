@@ -351,7 +351,8 @@ Runtime binding + error mapping are described in `runtime.md`.
 * `migration` blocks run via `fusec --migrate` (AST backend only).
 * `test` blocks run via `fusec --test` (AST backend only).
 * `for`/`while`/`break`/`continue` are parsed and type-checked, but both backends error at runtime.
-* `spawn`/`await`/`box` are parsed and type-checked, but both backends error at runtime.
+* `spawn`/`await` run in the AST interpreter only (the VM backend errors at runtime).
+* `box` currently evaluates to the inner value (no-op in both backends).
 * Assignment targets are limited to identifiers at runtime.
 * Enum variants only support tuple payloads (no named payload fields).
 * `..` range expressions are only used in refined type arguments; evaluating them directly is not supported.

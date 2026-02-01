@@ -461,8 +461,7 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Box { expr: inner } => {
-                let inner_ty = self.check_expr(inner);
-                Ty::Boxed(Box::new(inner_ty))
+                self.check_expr(inner)
             }
         }
     }

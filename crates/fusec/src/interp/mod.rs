@@ -1,6 +1,8 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::rc::Rc;
 
 use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate as rt_validate};
 
@@ -23,6 +25,7 @@ pub enum Value {
     Null,
     List(Vec<Value>),
     Map(HashMap<String, Value>),
+    Task(Task),
     Struct {
         name: String,
         fields: HashMap<String, Value>,
@@ -41,6 +44,45 @@ pub enum Value {
     Config(String),
     Function(String),
     Builtin(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct Task {
+    state: Rc<RefCell<TaskState>>,
+}
+
+#[derive(Clone, Debug)]
+struct TaskState {
+    result: TaskResult,
+}
+
+#[derive(Clone, Debug)]
+enum TaskResult {
+    Ok(Value),
+    Error(Value),
+    Runtime(String),
+}
+
+impl Task {
+    fn new(result: ExecResult<Value>) -> Self {
+        let result = match result {
+            Ok(value) => TaskResult::Ok(value),
+            Err(ExecError::Return(value)) => TaskResult::Ok(value),
+            Err(ExecError::Error(value)) => TaskResult::Error(value),
+            Err(ExecError::Runtime(message)) => TaskResult::Runtime(message),
+        };
+        Task {
+            state: Rc::new(RefCell::new(TaskState { result })),
+        }
+    }
+
+    fn result(&self) -> ExecResult<Value> {
+        match self.state.borrow().result.clone() {
+            TaskResult::Ok(value) => Ok(value),
+            TaskResult::Error(value) => Err(ExecError::Error(value)),
+            TaskResult::Runtime(message) => Err(ExecError::Runtime(message)),
+        }
+    }
 }
 
 impl Value {
@@ -68,6 +110,7 @@ impl Value {
                     .join(", ");
                 format!("{{{text}}}")
             }
+            Value::Task(_) => "<task>".to_string(),
             Value::Struct { name, fields } => match fields.get("message") {
                 Some(Value::String(msg)) => format!("{name}({msg})"),
                 _ => format!("<{name}>"),
@@ -911,15 +954,20 @@ impl<'a> Interpreter<'a> {
                 }
             }
             ExprKind::BangChain { expr, error } => self.eval_bang_chain(expr, error.as_deref()),
-            ExprKind::Spawn { .. } => Err(ExecError::Runtime(
-                "spawn not supported in interpreter yet".to_string(),
-            )),
-            ExprKind::Await { .. } => Err(ExecError::Runtime(
-                "await not supported in interpreter yet".to_string(),
-            )),
-            ExprKind::Box { .. } => Err(ExecError::Runtime(
-                "box not supported in interpreter yet".to_string(),
-            )),
+            ExprKind::Spawn { block } => {
+                let result = self.eval_block(block);
+                Ok(Value::Task(Task::new(result)))
+            }
+            ExprKind::Await { expr } => {
+                let value = self.eval_expr(expr)?;
+                match value {
+                    Value::Task(task) => task.result(),
+                    _ => Err(ExecError::Runtime(
+                        "await expects a Task value".to_string(),
+                    )),
+                }
+            }
+            ExprKind::Box { expr } => self.eval_expr(expr),
         }
     }
 
@@ -2298,6 +2346,7 @@ impl<'a> Interpreter<'a> {
             Value::Null => "Null".to_string(),
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
+            Value::Task(_) => "Task".to_string(),
             Value::Struct { name, .. } => name.clone(),
             Value::Enum { name, .. } => name.clone(),
             Value::EnumCtor { name, .. } => name.clone(),
@@ -2325,6 +2374,9 @@ impl<'a> Interpreter<'a> {
                     out.insert(key.clone(), self.value_to_json(value));
                 }
                 rt_json::JsonValue::Object(out)
+            }
+            Value::Task(_) => {
+                rt_json::JsonValue::String("<task>".to_string())
             }
             Value::Struct { fields, .. } => {
                 let mut out = BTreeMap::new();

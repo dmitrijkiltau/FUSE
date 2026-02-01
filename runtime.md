@@ -294,6 +294,16 @@ Rules:
 * Tests are executed by the AST interpreter.
 * Failures are reported and the process exits non-zero.
 
+## Concurrency (AST backend only)
+
+`spawn:` creates a task and returns `Task<T>` where `T` is the block result. Tasks execute eagerly
+today (no parallelism), but errors are captured and surfaced when awaited.
+
+`await expr` waits on a task and yields its result.
+
+`box expr` currently evaluates to the inner value and is reserved for future shared-state
+semantics.
+
 ## Logging
 
 `log` is a lightweight builtin for runtime logging. It is intentionally minimal and shared by
@@ -324,7 +334,8 @@ Structured logging:
 
 ## Unsupported or partial features
 
+* `spawn`/`await` are only supported by the AST interpreter (the VM backend errors at runtime).
+* `box` is currently a no-op (reserved for future shared-state semantics).
 * `for`/`while`/`break`/`continue` are parsed and type-checked but error at runtime.
-* `spawn`/`await`/`box` are parsed and type-checked but error at runtime.
 * Assignment targets are limited to identifiers.
 * `..` range expressions are only used inside refined type arguments.

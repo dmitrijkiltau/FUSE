@@ -929,9 +929,10 @@ impl FuncBuilder {
                     self.emit(Instr::Bang { has_error: false });
                 }
             }
-            ExprKind::Spawn { .. }
-            | ExprKind::Await { .. }
-            | ExprKind::Box { .. } => {
+            ExprKind::Box { expr } => {
+                self.lower_expr(expr);
+            }
+            ExprKind::Spawn { .. } | ExprKind::Await { .. } => {
                 self.errors
                     .push("expression not supported in VM yet".to_string());
             }

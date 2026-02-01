@@ -474,12 +474,17 @@ impl<'a> Parser<'a> {
                 }
             }
         };
+        let spawn_expr = |expr: &Expr| matches!(expr.kind, ExprKind::Spawn { .. });
         let needs_newline = match &kind {
             StmtKind::If { .. }
             | StmtKind::Match { .. }
             | StmtKind::For { .. }
             | StmtKind::While { .. } => false,
-            StmtKind::Expr(expr) => !matches!(expr.kind, ExprKind::Spawn { .. }),
+            StmtKind::Expr(expr) => !spawn_expr(expr),
+            StmtKind::Let { expr, .. } => !spawn_expr(expr),
+            StmtKind::Var { expr, .. } => !spawn_expr(expr),
+            StmtKind::Assign { expr, .. } => !spawn_expr(expr),
+            StmtKind::Return { expr } => expr.as_ref().map(spawn_expr).map(|v| !v).unwrap_or(true),
             _ => true,
         };
         if needs_newline {

@@ -1275,6 +1275,7 @@ impl<'a> Vm<'a> {
             Value::Null => "Null".to_string(),
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
+            Value::Task(_) => "Task".to_string(),
             Value::Struct { name, .. } => name.clone(),
             Value::Enum { name, .. } => name.clone(),
             Value::EnumCtor { name, .. } => name.clone(),
@@ -1303,6 +1304,7 @@ impl<'a> Vm<'a> {
                 }
                 rt_json::JsonValue::Object(out)
             }
+            Value::Task(_) => rt_json::JsonValue::String("<task>".to_string()),
             Value::Struct { fields, .. } => {
                 let mut out = BTreeMap::new();
                 for (key, value) in fields {
