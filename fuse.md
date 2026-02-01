@@ -142,10 +142,24 @@ backend = "ast"
 
 [build]
 openapi = "build/openapi.json"
+
+[dependencies]
+Auth = { git = "https://github.com/org/auth.fuse", tag = "v0.3.1" }
+Utils = { path = "../utils" }
 ```
 
 `fuse run` and `fuse test` use `package.entry`. `fuse build` runs checks and emits OpenAPI
 if `build.openapi` is set.
+
+Dependencies are fetched into `.fuse/deps` and locked in `fuse.lock`. Use `dep:` import
+paths to reference dependency modules:
+
+```
+import Auth from "dep:Auth/lib"
+```
+
+Git dependencies support `tag`, `branch`, `rev`, or `version` (resolved as a tag, trying
+`v<version>` first).
 
 ## "Okay but what's novel?"
 

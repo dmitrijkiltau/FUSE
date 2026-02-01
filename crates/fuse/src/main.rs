@@ -1,8 +1,10 @@
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const USAGE: &str = r#"usage: fuse <command> [options] [file] [-- <program args>]
 
@@ -27,6 +29,8 @@ struct Manifest {
     package: PackageConfig,
     #[serde(default)]
     build: Option<BuildConfig>,
+    #[serde(default)]
+    dependencies: BTreeMap<String, DependencySpec>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,6 +44,42 @@ struct PackageConfig {
 #[derive(Debug, Deserialize)]
 struct BuildConfig {
     openapi: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+enum DependencySpec {
+    Simple(String),
+    Detailed(DependencyDetail),
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+struct DependencyDetail {
+    version: Option<String>,
+    path: Option<String>,
+    git: Option<String>,
+    rev: Option<String>,
+    tag: Option<String>,
+    branch: Option<String>,
+    subdir: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct Lockfile {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    dependencies: BTreeMap<String, LockedDependency>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct LockedDependency {
+    source: String,
+    git: Option<String>,
+    rev: Option<String>,
+    path: Option<String>,
+    subdir: Option<String>,
+    requested: Option<String>,
 }
 
 #[derive(Default)]
@@ -129,6 +169,14 @@ fn run(args: Vec<String>) -> i32 {
         }
     }
 
+    let deps = match resolve_dependencies(manifest.as_ref(), manifest_dir.as_deref()) {
+        Ok(deps) => deps,
+        Err(err) => {
+            eprintln!("{err}");
+            return 1;
+        }
+    };
+
     match command {
         Command::Run => {
             let mut args = Vec::new();
@@ -146,38 +194,38 @@ fn run(args: Vec<String>) -> i32 {
                 args.push("--".to_string());
                 args.extend(common.program_args);
             }
-            fusec::cli::run(args)
+            fusec::cli::run_with_deps(args, Some(&deps))
         }
         Command::Test => {
             let mut args = Vec::new();
             args.push("--test".to_string());
             args.push(entry.to_string_lossy().to_string());
-            fusec::cli::run(args)
+            fusec::cli::run_with_deps(args, Some(&deps))
         }
-        Command::Build => run_build(&entry, manifest.as_ref(), manifest_dir.as_deref()),
+        Command::Build => run_build(&entry, manifest.as_ref(), manifest_dir.as_deref(), &deps),
         Command::Check => {
             let mut args = Vec::new();
             args.push("--check".to_string());
             args.push(entry.to_string_lossy().to_string());
-            fusec::cli::run(args)
+            fusec::cli::run_with_deps(args, Some(&deps))
         }
         Command::Fmt => {
             let mut args = Vec::new();
             args.push("--fmt".to_string());
             args.push(entry.to_string_lossy().to_string());
-            fusec::cli::run(args)
+            fusec::cli::run_with_deps(args, Some(&deps))
         }
         Command::Openapi => {
             let mut args = Vec::new();
             args.push("--openapi".to_string());
             args.push(entry.to_string_lossy().to_string());
-            fusec::cli::run(args)
+            fusec::cli::run_with_deps(args, Some(&deps))
         }
         Command::Migrate => {
             let mut args = Vec::new();
             args.push("--migrate".to_string());
             args.push(entry.to_string_lossy().to_string());
-            fusec::cli::run(args)
+            fusec::cli::run_with_deps(args, Some(&deps))
         }
     }
 }
@@ -308,11 +356,16 @@ fn resolve_entry(
     Ok(cwd.join(path))
 }
 
-fn run_build(entry: &Path, manifest: Option<&Manifest>, manifest_dir: Option<&Path>) -> i32 {
+fn run_build(
+    entry: &Path,
+    manifest: Option<&Manifest>,
+    manifest_dir: Option<&Path>,
+    deps: &HashMap<String, PathBuf>,
+) -> i32 {
     let mut check_args = Vec::new();
     check_args.push("--check".to_string());
     check_args.push(entry.to_string_lossy().to_string());
-    let code = fusec::cli::run(check_args);
+    let code = fusec::cli::run_with_deps(check_args, Some(deps));
     if code != 0 {
         return code;
     }
@@ -336,17 +389,21 @@ fn run_build(entry: &Path, manifest: Option<&Manifest>, manifest_dir: Option<&Pa
             }
         }
     };
-    if let Err(err) = write_openapi(entry, &out_path) {
+    if let Err(err) = write_openapi(entry, &out_path, deps) {
         eprintln!("{err}");
         return 1;
     }
     0
 }
 
-fn write_openapi(entry: &Path, out_path: &Path) -> Result<(), String> {
+fn write_openapi(
+    entry: &Path,
+    out_path: &Path,
+    deps: &HashMap<String, PathBuf>,
+) -> Result<(), String> {
     let src = fs::read_to_string(entry)
         .map_err(|err| format!("failed to read {}: {err}", entry.display()))?;
-    let (registry, diags) = fusec::load_program_with_modules(entry, &src);
+    let (registry, diags) = fusec::load_program_with_modules_and_deps(entry, &src, deps);
     if !diags.is_empty() {
         for diag in diags {
             let level = match diag.level {
@@ -371,4 +428,438 @@ fn write_openapi(entry: &Path, out_path: &Path) -> Result<(), String> {
     fs::write(out_path, json)
         .map_err(|err| format!("failed to write {}: {err}", out_path.display()))?;
     Ok(())
+}
+
+fn resolve_dependencies(
+    manifest: Option<&Manifest>,
+    manifest_dir: Option<&Path>,
+) -> Result<HashMap<String, PathBuf>, String> {
+    let Some(manifest) = manifest else {
+        return Ok(HashMap::new());
+    };
+    if manifest.dependencies.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let Some(root_dir) = manifest_dir else {
+        return Err("dependencies require a manifest directory".to_string());
+    };
+    let lock_path = root_dir.join("fuse.lock");
+    let mut lock = load_lockfile(&lock_path)?;
+    let deps_dir = root_dir.join(".fuse").join("deps");
+    if !deps_dir.exists() {
+        fs::create_dir_all(&deps_dir)
+            .map_err(|err| format!("failed to create {}: {err}", deps_dir.display()))?;
+    }
+
+    let mut resolved = HashMap::new();
+    let mut requests: HashMap<String, String> = HashMap::new();
+    let mut queue: VecDeque<(String, DependencySpec, PathBuf)> = VecDeque::new();
+    for (name, spec) in &manifest.dependencies {
+        queue.push_back((name.clone(), spec.clone(), root_dir.to_path_buf()));
+    }
+
+    while let Some((name, spec, base_dir)) = queue.pop_front() {
+        let requested = dependency_request_key(&spec, &base_dir)?;
+        if let Some(prev) = requests.get(&name) {
+            if prev != &requested {
+                return Err(format!(
+                    "dependency {name} requested with conflicting specs: {prev} vs {requested}"
+                ));
+            }
+        } else {
+            requests.insert(name.clone(), requested);
+        }
+        if resolved.contains_key(&name) {
+            continue;
+        }
+        let root = resolve_dependency(
+            &name,
+            &spec,
+            &base_dir,
+            root_dir,
+            &deps_dir,
+            &mut lock,
+        )?;
+        resolved.insert(name.clone(), root.clone());
+
+        if let Some(dep_manifest) = load_manifest_from_dir(&root)? {
+            for (dep_name, dep_spec) in dep_manifest.dependencies {
+                queue.push_back((dep_name, dep_spec, root.clone()));
+            }
+        }
+    }
+
+    lock.version = 1;
+    write_lockfile(&lock_path, &lock)?;
+    Ok(resolved)
+}
+
+fn dependency_request_key(spec: &DependencySpec, base_dir: &Path) -> Result<String, String> {
+    let normalized = normalize_dependency_spec(spec, base_dir)?;
+    Ok(normalized.requested)
+}
+
+fn resolve_dependency(
+    name: &str,
+    spec: &DependencySpec,
+    base_dir: &Path,
+    root_dir: &Path,
+    deps_dir: &Path,
+    lock: &mut Lockfile,
+) -> Result<PathBuf, String> {
+    let normalized = normalize_dependency_spec(spec, base_dir)?;
+    if let Some(entry) = lock.dependencies.get(name) {
+        if entry.requested.as_deref() == Some(normalized.requested.as_str()) {
+            return root_from_lock(name, entry, root_dir, deps_dir);
+        }
+    }
+
+    let (root, entry) = match normalized.kind {
+        NormalizedKind::Path { path } => {
+            if !path.exists() {
+                return Err(format!(
+                    "dependency {name} path does not exist: {}",
+                    path.display()
+                ));
+            }
+            let stored_path = store_path(root_dir, &path);
+            (
+                path,
+                LockedDependency {
+                    source: "path".to_string(),
+                    git: None,
+                    rev: None,
+                    path: Some(stored_path),
+                    subdir: None,
+                    requested: Some(normalized.requested),
+                },
+            )
+        }
+        NormalizedKind::Git { git, reference } => {
+            let rev = resolve_git_revision(&git, &reference)?;
+            let checkout = deps_dir.join(name).join(&rev);
+            ensure_checkout(&git, &rev, &checkout)?;
+            let root = if let Some(subdir) = &reference.subdir {
+                checkout.join(subdir)
+            } else {
+                checkout
+            };
+            if !root.exists() {
+                return Err(format!(
+                    "dependency {name} subdir does not exist: {}",
+                    root.display()
+                ));
+            }
+            (
+                root,
+                LockedDependency {
+                    source: "git".to_string(),
+                    git: Some(git),
+                    rev: Some(rev),
+                    path: None,
+                    subdir: reference.subdir,
+                    requested: Some(normalized.requested),
+                },
+            )
+        }
+    };
+
+    lock.dependencies.insert(name.to_string(), entry);
+    Ok(root)
+}
+
+fn root_from_lock(
+    name: &str,
+    entry: &LockedDependency,
+    root_dir: &Path,
+    deps_dir: &Path,
+) -> Result<PathBuf, String> {
+    match entry.source.as_str() {
+        "path" => {
+            let Some(path) = &entry.path else {
+                return Err(format!("lock entry for {name} missing path"));
+            };
+            let path = PathBuf::from(path);
+            if path.is_absolute() {
+                Ok(path)
+            } else {
+                Ok(root_dir.join(path))
+            }
+        }
+        "git" => {
+            let Some(rev) = &entry.rev else {
+                return Err(format!("lock entry for {name} missing rev"));
+            };
+            let Some(git) = &entry.git else {
+                return Err(format!("lock entry for {name} missing git url"));
+            };
+            let base = deps_dir.join(name).join(rev);
+            if !base.exists() {
+                ensure_checkout(git, rev, &base)?;
+            }
+            let mut root = base;
+            if let Some(subdir) = &entry.subdir {
+                root = root.join(subdir);
+            }
+            Ok(root)
+        }
+        other => Err(format!("unknown lock source {other} for {name}")),
+    }
+}
+
+struct NormalizedDependency {
+    requested: String,
+    kind: NormalizedKind,
+}
+
+enum NormalizedKind {
+    Path { path: PathBuf },
+    Git { git: String, reference: GitReference },
+}
+
+struct GitReference {
+    requested: GitRequest,
+    subdir: Option<String>,
+}
+
+enum GitRequest {
+    Rev(String),
+    Tag(String),
+    Branch(String),
+    Version(String),
+    Head,
+}
+
+impl GitReference {
+    fn descriptor(&self) -> String {
+        match &self.requested {
+            GitRequest::Rev(value) => format!("rev:{value}"),
+            GitRequest::Tag(value) => format!("tag:{value}"),
+            GitRequest::Branch(value) => format!("branch:{value}"),
+            GitRequest::Version(value) => format!("version:{value}"),
+            GitRequest::Head => "head".to_string(),
+        }
+    }
+}
+
+fn normalize_dependency_spec(
+    spec: &DependencySpec,
+    base_dir: &Path,
+) -> Result<NormalizedDependency, String> {
+    let detail = match spec {
+        DependencySpec::Simple(value) => {
+            if looks_like_git_url(value) {
+                DependencyDetail {
+                    git: Some(value.clone()),
+                    ..DependencyDetail::default()
+                }
+            } else if looks_like_path(value) {
+                DependencyDetail {
+                    path: Some(value.clone()),
+                    ..DependencyDetail::default()
+                }
+            } else {
+                return Err(format!(
+                    "dependency {value} must use {{ git = \"...\" }} or {{ path = \"...\" }}"
+                ));
+            }
+        }
+        DependencySpec::Detailed(detail) => detail.clone(),
+    };
+
+    if let Some(path) = detail.path {
+        if detail.git.is_some()
+            || detail.version.is_some()
+            || detail.rev.is_some()
+            || detail.tag.is_some()
+            || detail.branch.is_some()
+            || detail.subdir.is_some()
+        {
+            return Err("path dependencies cannot include git/version fields".to_string());
+        }
+        let path = resolve_path(base_dir, &path);
+        let requested = format!("path:{}", path.display());
+        return Ok(NormalizedDependency {
+            requested,
+            kind: NormalizedKind::Path { path },
+        });
+    }
+
+    let Some(git) = detail.git else {
+        return Err("dependency must specify git or path".to_string());
+    };
+    if detail.path.is_some() {
+        return Err("dependency cannot specify both git and path".to_string());
+    }
+
+    let requested_ref = if let Some(rev) = detail.rev {
+        GitRequest::Rev(rev)
+    } else if let Some(tag) = detail.tag {
+        GitRequest::Tag(tag)
+    } else if let Some(branch) = detail.branch {
+        GitRequest::Branch(branch)
+    } else if let Some(version) = detail.version {
+        GitRequest::Version(version)
+    } else {
+        GitRequest::Head
+    };
+    let reference = GitReference {
+        requested: requested_ref,
+        subdir: detail.subdir,
+    };
+    let mut requested = format!("git:{git}|{}", reference.descriptor());
+    if let Some(subdir) = &reference.subdir {
+        requested.push_str(&format!("|subdir:{subdir}"));
+    }
+    Ok(NormalizedDependency {
+        requested,
+        kind: NormalizedKind::Git { git, reference },
+    })
+}
+
+fn resolve_git_revision(url: &str, reference: &GitReference) -> Result<String, String> {
+    match &reference.requested {
+        GitRequest::Rev(value) => Ok(value.clone()),
+        GitRequest::Tag(tag) => resolve_git_tag(url, tag),
+        GitRequest::Branch(branch) => resolve_git_branch(url, branch),
+        GitRequest::Version(version) => resolve_git_version(url, version),
+        GitRequest::Head => resolve_git_head(url),
+    }
+}
+
+fn resolve_git_tag(url: &str, tag: &str) -> Result<String, String> {
+    let ref_name = format!("refs/tags/{tag}");
+    git_ls_remote(url, &ref_name)
+}
+
+fn resolve_git_branch(url: &str, branch: &str) -> Result<String, String> {
+    let ref_name = format!("refs/heads/{branch}");
+    git_ls_remote(url, &ref_name)
+}
+
+fn resolve_git_version(url: &str, version: &str) -> Result<String, String> {
+    let tag = format!("v{version}");
+    if let Ok(rev) = resolve_git_tag(url, &tag) {
+        return Ok(rev);
+    }
+    resolve_git_tag(url, version)
+}
+
+fn resolve_git_head(url: &str) -> Result<String, String> {
+    git_ls_remote(url, "HEAD")
+}
+
+fn git_ls_remote(url: &str, reference: &str) -> Result<String, String> {
+    let output = run_git(&["ls-remote", url, reference], None)?;
+    for line in output.lines() {
+        let mut parts = line.split_whitespace();
+        if let Some(hash) = parts.next() {
+            return Ok(hash.to_string());
+        }
+    }
+    Err(format!("failed to resolve {reference} for {url}"))
+}
+
+fn ensure_checkout(url: &str, rev: &str, dest: &Path) -> Result<(), String> {
+    if dest.exists() {
+        if !dest.join(".git").exists() {
+            return Err(format!(
+                "dependency checkout is not a git repo: {}",
+                dest.display()
+            ));
+        }
+        let dest_str = dest.to_string_lossy();
+        let _ = run_git(&["-C", dest_str.as_ref(), "fetch", "--tags"], None);
+        run_git(
+            &["-C", dest_str.as_ref(), "checkout", rev],
+            None,
+        )?;
+        return Ok(());
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+    }
+    let dest_str = dest.to_string_lossy();
+    run_git(&["clone", url, dest_str.as_ref()], None)?;
+    run_git(
+        &["-C", dest_str.as_ref(), "checkout", rev],
+        None,
+    )?;
+    Ok(())
+}
+
+fn run_git(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
+    let mut cmd = ProcessCommand::new("git");
+    cmd.args(args).env("GIT_TERMINAL_PROMPT", "0");
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let output = cmd
+        .output()
+        .map_err(|err| format!("failed to run git {:?}: {err}", args))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git {:?} failed: {stderr}", args));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn looks_like_git_url(value: &str) -> bool {
+    value.contains("://") || value.starts_with("git@") || value.ends_with(".git")
+}
+
+fn looks_like_path(value: &str) -> bool {
+    value.starts_with('.') || value.starts_with('/') || value.contains('/')
+}
+
+fn resolve_path(base_dir: &Path, raw: &str) -> PathBuf {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        path
+    } else {
+        base_dir.join(path)
+    }
+}
+
+fn load_lockfile(path: &Path) -> Result<Lockfile, String> {
+    if !path.exists() {
+        return Ok(Lockfile::default());
+    }
+    let content =
+        fs::read_to_string(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    let lock: Lockfile =
+        toml::from_str(&content).map_err(|err| format!("invalid lockfile: {err}"))?;
+    if lock.version != 0 && lock.version != 1 {
+        return Err(format!("unsupported lockfile version {}", lock.version));
+    }
+    Ok(lock)
+}
+
+fn write_lockfile(path: &Path, lock: &Lockfile) -> Result<(), String> {
+    let content =
+        toml::to_string_pretty(lock).map_err(|err| format!("lockfile encode failed: {err}"))?;
+    fs::write(path, content)
+        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    Ok(())
+}
+
+fn store_path(root_dir: &Path, path: &Path) -> String {
+    if let Ok(stripped) = path.strip_prefix(root_dir) {
+        stripped.to_string_lossy().to_string()
+    } else {
+        path.to_string_lossy().to_string()
+    }
+}
+
+fn load_manifest_from_dir(dir: &Path) -> Result<Option<Manifest>, String> {
+    let path = dir.join("fuse.toml");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content =
+        fs::read_to_string(&path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    let manifest: Manifest =
+        toml::from_str(&content).map_err(|err| format!("invalid manifest: {err}"))?;
+    Ok(Some(manifest))
 }

@@ -344,6 +344,7 @@ Notes:
 * Module-qualified access only exposes items declared in that module (named imports are local).
 * Module-qualified type references are allowed in type positions (`Foo.User`, `Foo.Config`).
 * Names are still globally unique across loaded modules.
+* Dependency modules are imported with `dep:` prefixes (for example, `dep:Auth/lib`).
 
 ## Services and binding (summary)
 

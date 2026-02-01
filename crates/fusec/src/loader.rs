@@ -106,7 +106,15 @@ impl ModuleRegistry {
 }
 
 pub fn load_program_with_modules(path: &Path, src: &str) -> (ModuleRegistry, Vec<Diag>) {
-    let mut loader = ModuleLoader::new();
+    load_program_with_modules_and_deps(path, src, &HashMap::new())
+}
+
+pub fn load_program_with_modules_and_deps(
+    path: &Path,
+    src: &str,
+    deps: &HashMap<String, PathBuf>,
+) -> (ModuleRegistry, Vec<Diag>) {
+    let mut loader = ModuleLoader::with_deps(deps);
     let root = loader.insert_root(path, src);
     let root = root.unwrap_or(0);
     (
@@ -128,17 +136,19 @@ struct ModuleLoader {
     by_path: HashMap<PathBuf, ModuleId>,
     modules: HashMap<ModuleId, ModuleUnit>,
     visiting: HashSet<PathBuf>,
+    deps: HashMap<String, PathBuf>,
     diags: Diagnostics,
     global_names: HashMap<String, (ModuleId, Span)>,
 }
 
 impl ModuleLoader {
-    fn new() -> Self {
+    fn with_deps(deps: &HashMap<String, PathBuf>) -> Self {
         Self {
             next_id: 1,
             by_path: HashMap::new(),
             modules: HashMap::new(),
             visiting: HashSet::new(),
+            deps: deps.clone(),
             diags: Diagnostics::default(),
             global_names: HashMap::new(),
         }
@@ -237,19 +247,19 @@ impl ModuleLoader {
                     }
                 }
                 ImportSpec::ModuleFrom { name, path } => {
-                    let path = self.resolve_path(&base_dir, &path.value);
+                    let path = self.resolve_path(&base_dir, &path.value, path.span);
                     if let Some(module_id) = self.load_module(&path, None, span) {
                         self.insert_module_alias(&mut module_map, &name.name, module_id);
                     }
                 }
                 ImportSpec::AliasFrom { alias, path, .. } => {
-                    let path = self.resolve_path(&base_dir, &path.value);
+                    let path = self.resolve_path(&base_dir, &path.value, path.span);
                     if let Some(module_id) = self.load_module(&path, None, span) {
                         self.insert_module_alias(&mut module_map, &alias.name, module_id);
                     }
                 }
                 ImportSpec::NamedFrom { names, path } => {
-                    let path = self.resolve_path(&base_dir, &path.value);
+                    let path = self.resolve_path(&base_dir, &path.value, path.span);
                     let Some(module_id) = self.load_module(&path, None, span) else {
                         continue;
                     };
@@ -461,7 +471,27 @@ impl ModuleLoader {
         }
     }
 
-    fn resolve_path(&self, base_dir: &Path, raw: &str) -> PathBuf {
+    fn resolve_path(&mut self, base_dir: &Path, raw: &str, span: Span) -> PathBuf {
+        if let Some(rest) = raw.strip_prefix("dep:") {
+            let (dep, rel) = match rest.split_once('/') {
+                Some((dep, rel)) if !dep.is_empty() && !rel.is_empty() => (dep, rel),
+                _ => {
+                    self.diags
+                        .error(span, "dependency imports require dep:<name>/<path>");
+                    return base_dir.join(raw);
+                }
+            };
+            let Some(root) = self.deps.get(dep) else {
+                self.diags
+                    .error(span, format!("unknown dependency {dep}"));
+                return base_dir.join(raw);
+            };
+            let mut path = root.join(rel);
+            if path.extension().is_none() {
+                path.set_extension("fuse");
+            }
+            return path;
+        }
         let mut path = PathBuf::from(raw);
         if path.extension().is_none() {
             path.set_extension("fuse");

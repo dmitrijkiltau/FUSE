@@ -17,8 +17,8 @@ pub mod vm;
 use crate::diag::Diagnostics;
 
 pub use loader::{
-    load_program, load_program_with_modules, ModuleExports, ModuleId, ModuleLink, ModuleMap,
-    ModuleRegistry, ModuleUnit,
+    load_program, load_program_with_modules, load_program_with_modules_and_deps, ModuleExports,
+    ModuleId, ModuleLink, ModuleMap, ModuleRegistry, ModuleUnit,
 };
 
 pub fn parse_source(src: &str) -> (ast::Program, Vec<diag::Diag>) {

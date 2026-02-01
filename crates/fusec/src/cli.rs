@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use fuse_rt::error::{ValidationError, ValidationField};
 use fuse_rt::json;
@@ -8,7 +8,7 @@ use fuse_rt::json;
 use crate::ast::{Item, TypeRefKind};
 use crate::diag::Level;
 use crate::interp::{Interpreter, MigrationJob, TestJob, TestOutcome};
-use crate::load_program_with_modules;
+use crate::{load_program_with_modules, load_program_with_modules_and_deps};
 
 const USAGE: &str = "usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--backend ast|vm] [--app NAME] <file>";
 
@@ -18,6 +18,13 @@ enum Backend {
 }
 
 pub fn run<I>(args: I) -> i32
+where
+    I: IntoIterator<Item = String>,
+{
+    run_with_deps(args, None)
+}
+
+pub fn run_with_deps<I>(args: I, deps: Option<&HashMap<String, PathBuf>>) -> i32
 where
     I: IntoIterator<Item = String>,
 {
@@ -131,7 +138,10 @@ where
         return 0;
     }
 
-    let (registry, diags) = load_program_with_modules(Path::new(&path), &src);
+    let (registry, diags) = match deps {
+        Some(deps) => load_program_with_modules_and_deps(Path::new(&path), &src, deps),
+        None => load_program_with_modules(Path::new(&path), &src),
+    };
     if !diags.is_empty() {
         for diag in diags {
             let level = match diag.level {
