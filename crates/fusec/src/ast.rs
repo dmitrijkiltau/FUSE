@@ -304,7 +304,7 @@ pub enum Literal {
     Null,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum BinaryOp {
     Add,
     Sub,

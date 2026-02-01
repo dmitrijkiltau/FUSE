@@ -124,10 +124,10 @@ The runtime currently handles:
 * JSON encode/decode and refined-type validation
 * HTTP routing + error JSON mapping
 * CLI flag binding for `fn main` when running `fusec --run <file> -- <args>` (AST backend only)
+* OpenAPI 3.0 generation via `fusec --openapi` (services, schemas, refined types, error responses)
 
 ## Not implemented yet (planned)
 
-* docs/OpenAPI generation
 * `spawn`/`await`/`box` concurrency
 * `for`/`while`/`break`/`continue` at runtime
 * `without` type derivations
@@ -137,7 +137,7 @@ The runtime currently handles:
 
 Not the syntax. The novelty is the **contract at boundaries**:
 config, JSON, validation, and HTTP routing are language-level and consistent across the interpreter and VM.
-Docs generation and richer tooling are planned; see the scope and runtime docs for the roadmap.
+OpenAPI generation is built-in; richer tooling is planned; see the scope and runtime docs for the roadmap.
 
 ## Scope
 

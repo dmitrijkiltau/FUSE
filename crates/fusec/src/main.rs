@@ -22,6 +22,7 @@ fn main() {
     let mut check = false;
     let mut run = false;
     let mut fmt = false;
+    let mut openapi = false;
     let mut program_args: Vec<String> = Vec::new();
     let mut backend = Backend::Ast;
     let mut backend_forced = false;
@@ -47,6 +48,10 @@ fn main() {
             fmt = true;
             continue;
         }
+        if arg == "--openapi" {
+            openapi = true;
+            continue;
+        }
         if arg == "--run" {
             run = true;
             continue;
@@ -67,13 +72,13 @@ fn main() {
                     "vm" => Backend::Vm,
                     _ => {
                         eprintln!("unknown backend: {name}");
-                        eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--migrate] [--test] [--backend ast|vm] [--app NAME] <file>");
+                        eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--backend ast|vm] [--app NAME] <file>");
                         return;
                     }
                 };
             } else {
                 eprintln!("--backend expects a name");
-                eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--migrate] [--test] [--backend ast|vm] [--app NAME] <file>");
+                eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--backend ast|vm] [--app NAME] <file>");
                 return;
             }
             continue;
@@ -83,7 +88,7 @@ fn main() {
                 app_name = Some(name);
             } else {
                 eprintln!("--app expects a name");
-                eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--migrate] [--test] [--backend ast|vm] [--app NAME] <file>");
+                eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--backend ast|vm] [--app NAME] <file>");
                 return;
             }
             continue;
@@ -98,7 +103,7 @@ fn main() {
     let path = match path {
         Some(p) => p,
         None => {
-            eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--run] [--migrate] [--test] [--backend ast|vm] [--app NAME] <file>");
+            eprintln!("usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--backend ast|vm] [--app NAME] <file>");
             return;
         }
     };
@@ -144,6 +149,19 @@ fn main() {
         }
     };
     let program = &root.program;
+
+    if openapi {
+        match fusec::openapi::generate_openapi(&registry) {
+            Ok(json) => {
+                println!("{json}");
+                return;
+            }
+            Err(err) => {
+                eprintln!("openapi error: {err}");
+                process::exit(1);
+            }
+        }
+    }
 
     if check {
         let (_analysis, diags) = fusec::sema::analyze_registry(&registry);
