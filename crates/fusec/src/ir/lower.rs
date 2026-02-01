@@ -75,6 +75,12 @@ struct Lowerer<'a> {
     builtin_names: HashSet<String>,
 }
 
+struct LoopContext {
+    break_jumps: Vec<usize>,
+    continue_jumps: Vec<usize>,
+    continue_target: usize,
+}
+
 impl<'a> Lowerer<'a> {
     fn new(program: &'a Program, modules: &'a ModuleMap) -> Self {
         let mut config_names = HashSet::new();
@@ -375,6 +381,7 @@ struct FuncBuilder {
     enum_variant_names: HashSet<String>,
     builtin_names: HashSet<String>,
     modules: ModuleMap,
+    loop_stack: Vec<LoopContext>,
 }
 
 impl FuncBuilder {
@@ -400,6 +407,7 @@ impl FuncBuilder {
             enum_variant_names: enum_variant_names.clone(),
             builtin_names: builtin_names.clone(),
             modules: modules.clone(),
+            loop_stack: Vec::new(),
         }
     }
 
@@ -551,12 +559,17 @@ impl FuncBuilder {
             StmtKind::Match { expr, cases } => {
                 self.lower_match(expr, cases);
             }
-            StmtKind::For { .. }
-            | StmtKind::While { .. }
-            | StmtKind::Break
-            | StmtKind::Continue => {
-                self.errors
-                    .push("statement not supported in VM yet".to_string());
+            StmtKind::While { cond, block } => {
+                self.lower_while(cond, block);
+            }
+            StmtKind::For { pat, iter, block } => {
+                self.lower_for(pat, iter, block);
+            }
+            StmtKind::Break => {
+                self.lower_break();
+            }
+            StmtKind::Continue => {
+                self.lower_continue();
             }
         }
     }
@@ -635,6 +648,128 @@ impl FuncBuilder {
         }
     }
 
+    fn lower_while(&mut self, cond: &Expr, block: &Block) {
+        let loop_start = self.code.len();
+        self.lower_expr(cond);
+        let jump_end = self.emit_placeholder();
+        self.emit(Instr::JumpIfFalse(0));
+
+        self.loop_stack.push(LoopContext {
+            break_jumps: Vec::new(),
+            continue_jumps: Vec::new(),
+            continue_target: loop_start,
+        });
+
+        self.lower_block(block);
+        self.emit(Instr::Pop);
+        self.emit(Instr::Jump(loop_start));
+
+        let loop_ctx = self.loop_stack.pop().unwrap_or(LoopContext {
+            break_jumps: Vec::new(),
+            continue_jumps: Vec::new(),
+            continue_target: loop_start,
+        });
+
+        let end = self.code.len();
+        self.patch_jump(jump_end, end);
+        for jump in loop_ctx.break_jumps {
+            self.patch_jump(jump, end);
+        }
+        for jump in loop_ctx.continue_jumps {
+            self.patch_jump(jump, loop_ctx.continue_target);
+        }
+
+        self.emit(Instr::Push(Const::Unit));
+    }
+
+    fn lower_for(&mut self, pat: &Pattern, iter: &Expr, block: &Block) {
+        self.lower_expr(iter);
+        self.emit(Instr::IterInit);
+        let iter_slot = self.declare_temp();
+        self.emit(Instr::StoreLocal(iter_slot));
+        let item_slot = self.declare_temp();
+
+        self.enter_scope();
+        let mut bindings = Vec::new();
+        self.collect_bindings(pat, &mut bindings);
+        let mut binding_slots = Vec::new();
+        let mut seen = HashSet::new();
+        for ident in bindings {
+            if seen.insert(ident.name.clone()) {
+                let slot = self.declare(&ident);
+                binding_slots.push((ident.name.clone(), slot));
+            }
+        }
+
+        let loop_start = self.code.len();
+        self.emit(Instr::LoadLocal(iter_slot));
+        let iter_next = self.emit_placeholder();
+        self.emit(Instr::IterNext { jump: 0 });
+        self.emit(Instr::StoreLocal(iter_slot));
+        self.emit(Instr::StoreLocal(item_slot));
+
+        self.loop_stack.push(LoopContext {
+            break_jumps: Vec::new(),
+            continue_jumps: Vec::new(),
+            continue_target: loop_start,
+        });
+
+        let match_idx = self.emit_match(item_slot, pat.clone(), binding_slots);
+        self.lower_block(block);
+        self.emit(Instr::Pop);
+        self.emit(Instr::Jump(loop_start));
+
+        let loop_ctx = self.loop_stack.pop().unwrap_or(LoopContext {
+            break_jumps: Vec::new(),
+            continue_jumps: Vec::new(),
+            continue_target: loop_start,
+        });
+
+        let pattern_error = self.code.len();
+        self.emit(Instr::RuntimeError(
+            "for pattern did not match value".to_string(),
+        ));
+
+        let end = self.code.len();
+        self.patch_jump(iter_next, end);
+        self.patch_match_jump(match_idx, pattern_error);
+        for jump in loop_ctx.break_jumps {
+            self.patch_jump(jump, end);
+        }
+        for jump in loop_ctx.continue_jumps {
+            self.patch_jump(jump, loop_ctx.continue_target);
+        }
+
+        self.exit_scope();
+        self.emit(Instr::Push(Const::Unit));
+    }
+
+    fn lower_break(&mut self) {
+        if self.loop_stack.is_empty() {
+            self.errors.push("break used outside of loop".to_string());
+            self.emit(Instr::Push(Const::Unit));
+            return;
+        }
+        let jump = self.emit_placeholder();
+        self.emit(Instr::Jump(0));
+        if let Some(loop_ctx) = self.loop_stack.last_mut() {
+            loop_ctx.break_jumps.push(jump);
+        }
+    }
+
+    fn lower_continue(&mut self) {
+        if self.loop_stack.is_empty() {
+            self.errors.push("continue used outside of loop".to_string());
+            self.emit(Instr::Push(Const::Unit));
+            return;
+        }
+        let jump = self.emit_placeholder();
+        self.emit(Instr::Jump(0));
+        if let Some(loop_ctx) = self.loop_stack.last_mut() {
+            loop_ctx.continue_jumps.push(jump);
+        }
+    }
+
     fn emit_placeholder(&mut self) -> usize {
         self.code.len()
     }
@@ -644,6 +779,7 @@ impl FuncBuilder {
             Some(Instr::Jump(slot)) => *slot = target,
             Some(Instr::JumpIfFalse(slot)) => *slot = target,
             Some(Instr::JumpIfNull(slot)) => *slot = target,
+            Some(Instr::IterNext { jump }) => *jump = target,
             _ => {
                 self.errors.push("invalid jump patch".to_string());
             }

@@ -465,6 +465,45 @@ impl<'a> Vm<'a> {
                         .ok_or_else(|| VmError::Runtime(format!("unknown config field {config}.{field}")))?;
                     frame.stack.push(value);
                 }
+                Instr::IterInit => {
+                    let value = frame.pop()?;
+                    let iter_values = match value {
+                        Value::List(items) => items,
+                        Value::Map(items) => items.into_values().collect(),
+                        other => {
+                            return Err(VmError::Runtime(format!(
+                                "cannot iterate over {}",
+                                self.value_type_name(&other)
+                            )))
+                        }
+                    };
+                    frame.stack.push(Value::Iterator(crate::interp::IteratorValue::new(
+                        iter_values,
+                    )));
+                }
+                Instr::IterNext { jump } => {
+                    let iter_value = frame.pop()?;
+                    let mut iter = match iter_value {
+                        Value::Iterator(iter) => iter,
+                        other => {
+                            return Err(VmError::Runtime(format!(
+                                "expected iterator, got {}",
+                                self.value_type_name(&other)
+                            )))
+                        }
+                    };
+                    if iter.index >= iter.values.len() {
+                        frame.ip = jump;
+                    } else {
+                        let item = iter.values[iter.index].clone();
+                        iter.index += 1;
+                        frame.stack.push(item);
+                        frame.stack.push(Value::Iterator(iter));
+                    }
+                }
+                Instr::RuntimeError(message) => {
+                    return Err(VmError::Runtime(message));
+                }
             }
         }
     }
@@ -1276,6 +1315,7 @@ impl<'a> Vm<'a> {
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
             Value::Task(_) => "Task".to_string(),
+            Value::Iterator(_) => "Iterator".to_string(),
             Value::Struct { name, .. } => name.clone(),
             Value::Enum { name, .. } => name.clone(),
             Value::EnumCtor { name, .. } => name.clone(),
@@ -1305,6 +1345,7 @@ impl<'a> Vm<'a> {
                 rt_json::JsonValue::Object(out)
             }
             Value::Task(_) => rt_json::JsonValue::String("<task>".to_string()),
+            Value::Iterator(_) => rt_json::JsonValue::String("<iterator>".to_string()),
             Value::Struct { fields, .. } => {
                 let mut out = BTreeMap::new();
                 for (key, value) in fields {

@@ -58,6 +58,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * `config`, `service`, `app`
 * `test` declarations
 * `if` / `else`, `match` (struct/enum/Option/Result patterns)
+* `for` / `while` / `break` / `continue`
 * string interpolation via `${expr}` (escape `$` as `\$`)
 * optionals (`T?`)
 * fallible results (`T!E` or `T!` with default error)
@@ -67,7 +68,6 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * `spawn` / `await` / `box` concurrency (AST backend only)
 
 **Parsed but not executed yet**
-* `for` / `while` / `break` / `continue`
 * `without` type derivations
 
 **Runtime / "boilerplate killer" (implemented)**

@@ -304,6 +304,12 @@ today (no parallelism), but errors are captured and surfaced when awaited.
 `box expr` currently evaluates to the inner value and is reserved for future shared-state
 semantics.
 
+## Loops
+
+`for` iterates over `List<T>` values and `Map<K, V>` values (iterates the map values).
+
+`break` exits the nearest loop, and `continue` skips to the next iteration.
+
 ## Logging
 
 `log` is a lightweight builtin for runtime logging. It is intentionally minimal and shared by
@@ -336,6 +342,5 @@ Structured logging:
 
 * `spawn`/`await` are only supported by the AST interpreter (the VM backend errors at runtime).
 * `box` is currently a no-op (reserved for future shared-state semantics).
-* `for`/`while`/`break`/`continue` are parsed and type-checked but error at runtime.
 * Assignment targets are limited to identifiers.
 * `..` range expressions are only used inside refined type arguments.

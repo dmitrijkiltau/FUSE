@@ -26,6 +26,7 @@ pub enum Value {
     List(Vec<Value>),
     Map(HashMap<String, Value>),
     Task(Task),
+    Iterator(IteratorValue),
     Struct {
         name: String,
         fields: HashMap<String, Value>,
@@ -52,6 +53,18 @@ pub struct Task {
 }
 
 #[derive(Clone, Debug)]
+pub struct IteratorValue {
+    pub values: Vec<Value>,
+    pub index: usize,
+}
+
+impl IteratorValue {
+    pub fn new(values: Vec<Value>) -> Self {
+        Self { values, index: 0 }
+    }
+}
+
+#[derive(Clone, Debug)]
 struct TaskState {
     result: TaskResult,
 }
@@ -70,6 +83,8 @@ impl Task {
             Err(ExecError::Return(value)) => TaskResult::Ok(value),
             Err(ExecError::Error(value)) => TaskResult::Error(value),
             Err(ExecError::Runtime(message)) => TaskResult::Runtime(message),
+            Err(ExecError::Break) => TaskResult::Runtime("break outside of loop".to_string()),
+            Err(ExecError::Continue) => TaskResult::Runtime("continue outside of loop".to_string()),
         };
         Task {
             state: Rc::new(RefCell::new(TaskState { result })),
@@ -111,6 +126,7 @@ impl Value {
                 format!("{{{text}}}")
             }
             Value::Task(_) => "<task>".to_string(),
+            Value::Iterator(_) => "<iterator>".to_string(),
             Value::Struct { name, fields } => match fields.get("message") {
                 Some(Value::String(msg)) => format!("{name}({msg})"),
                 _ => format!("<{name}>"),
@@ -274,6 +290,8 @@ enum ExecError {
     Runtime(String),
     Return(Value),
     Error(Value),
+    Break,
+    Continue,
 }
 
 type ExecResult<T> = Result<T, ExecError>;
@@ -676,6 +694,8 @@ impl<'a> Interpreter<'a> {
             ExecError::Runtime(msg) => msg,
             ExecError::Error(value) => format_error_value(&value),
             ExecError::Return(value) => format!("unexpected return: {}", value.to_string_value()),
+            ExecError::Break => "break outside of loop".to_string(),
+            ExecError::Continue => "continue outside of loop".to_string(),
         }
     }
 
@@ -746,6 +766,14 @@ impl<'a> Interpreter<'a> {
                 Err(ExecError::Return(value)) => {
                     self.env.pop();
                     return Err(ExecError::Return(value));
+                }
+                Err(ExecError::Break) => {
+                    self.env.pop();
+                    return Err(ExecError::Break);
+                }
+                Err(ExecError::Continue) => {
+                    self.env.pop();
+                    return Err(ExecError::Continue);
                 }
                 Err(err) => {
                     self.env.pop();
@@ -834,12 +862,57 @@ impl<'a> Interpreter<'a> {
                 }
                 Ok(Value::Unit)
             }
-            | StmtKind::For { .. }
-            | StmtKind::While { .. }
-            | StmtKind::Break
-            | StmtKind::Continue => Err(ExecError::Runtime(
-                "statement not supported in interpreter yet".to_string(),
-            )),
+            StmtKind::For { pat, iter, block } => {
+                let iter_value = self.eval_expr(iter)?;
+                let items = match iter_value {
+                    Value::List(items) => items,
+                    Value::Map(items) => items.into_values().collect(),
+                    other => {
+                        return Err(ExecError::Runtime(format!(
+                            "cannot iterate over {}",
+                            self.value_type_name(&other)
+                        )))
+                    }
+                };
+                for item in items {
+                    let mut bindings = HashMap::new();
+                    if !self.match_pattern(&item, pat, &mut bindings)? {
+                        return Err(ExecError::Runtime(
+                            "for pattern did not match value".to_string(),
+                        ));
+                    }
+                    self.env.push();
+                    for (name, value) in bindings {
+                        self.env.insert(&name, value);
+                    }
+                    let result = self.eval_block(block);
+                    self.env.pop();
+                    match result {
+                        Ok(_) => {}
+                        Err(ExecError::Break) => break,
+                        Err(ExecError::Continue) => continue,
+                        Err(other) => return Err(other),
+                    }
+                }
+                Ok(Value::Unit)
+            }
+            StmtKind::While { cond, block } => {
+                loop {
+                    let cond_val = self.eval_expr(cond)?;
+                    if !self.as_bool(&cond_val)? {
+                        break;
+                    }
+                    match self.eval_block(block) {
+                        Ok(_) => {}
+                        Err(ExecError::Break) => break,
+                        Err(ExecError::Continue) => continue,
+                        Err(other) => return Err(other),
+                    }
+                }
+                Ok(Value::Unit)
+            }
+            StmtKind::Break => Err(ExecError::Break),
+            StmtKind::Continue => Err(ExecError::Continue),
         }
     }
 
@@ -1230,6 +1303,10 @@ impl<'a> Interpreter<'a> {
                 }
             }
             Err(ExecError::Runtime(msg)) => Err(ExecError::Runtime(msg)),
+            Err(ExecError::Break) => Err(ExecError::Runtime("break outside of loop".to_string())),
+            Err(ExecError::Continue) => {
+                Err(ExecError::Runtime("continue outside of loop".to_string()))
+            }
         };
         self.current_module = prev_module;
         out
@@ -1533,6 +1610,10 @@ impl<'a> Interpreter<'a> {
             }
             ExecError::Return(_) => {
                 self.http_response(500, self.internal_error_json("unexpected return"))
+            }
+            ExecError::Break => self.http_response(500, self.internal_error_json("break outside loop")),
+            ExecError::Continue => {
+                self.http_response(500, self.internal_error_json("continue outside loop"))
             }
         }
     }
@@ -2347,6 +2428,7 @@ impl<'a> Interpreter<'a> {
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
             Value::Task(_) => "Task".to_string(),
+            Value::Iterator(_) => "Iterator".to_string(),
             Value::Struct { name, .. } => name.clone(),
             Value::Enum { name, .. } => name.clone(),
             Value::EnumCtor { name, .. } => name.clone(),
@@ -2377,6 +2459,9 @@ impl<'a> Interpreter<'a> {
             }
             Value::Task(_) => {
                 rt_json::JsonValue::String("<task>".to_string())
+            }
+            Value::Iterator(_) => {
+                rt_json::JsonValue::String("<iterator>".to_string())
             }
             Value::Struct { fields, .. } => {
                 let mut out = BTreeMap::new();

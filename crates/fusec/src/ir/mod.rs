@@ -59,6 +59,9 @@ pub enum Instr {
         jump: usize,
     },
     LoadConfigField { config: String, field: String },
+    IterInit,
+    IterNext { jump: usize },
+    RuntimeError(String),
 }
 
 #[derive(Clone, Debug)]

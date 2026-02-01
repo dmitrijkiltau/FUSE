@@ -121,6 +121,7 @@ The runtime currently handles:
 * SQLite-backed DB access (`db.exec/query/one`) + migrations (`migration` + `fusec --migrate`)
 * tests via `test "name":` + `fusec --test` (AST backend)
 * `spawn`/`await`/`box` concurrency (AST backend)
+* `for`/`while`/`break`/`continue` loops
 * Config loading (env > config file > defaults)
 * JSON encode/decode and refined-type validation
 * HTTP routing + error JSON mapping
@@ -129,7 +130,6 @@ The runtime currently handles:
 
 ## Not implemented yet (planned)
 
-* `for`/`while`/`break`/`continue` at runtime
 * `without` type derivations
 * package tooling (`fuse.toml`, `fuse run/test/build`)
 
