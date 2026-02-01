@@ -21,6 +21,7 @@ examples:
   scripts/fuse run examples/cli_hello.fuse
   scripts/fuse test examples/project_demo.fuse
   scripts/fuse build
+  scripts/fuse build --clean
   scripts/fuse check examples/project_demo.fuse
   scripts/fuse fmt examples/project_demo.fuse
   scripts/fuse lsp

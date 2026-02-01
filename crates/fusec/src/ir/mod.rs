@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::ast::{HttpVerb, Pattern, TypeRef};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Const {
     Unit,
     Int(i64),
@@ -12,13 +14,13 @@ pub enum Const {
     Null,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum CallKind {
     Function,
     Builtin,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Instr {
     Push(Const),
     LoadLocal(usize),
@@ -64,7 +66,7 @@ pub enum Instr {
     RuntimeError(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Function {
     pub name: String,
     pub params: Vec<String>,
@@ -73,45 +75,45 @@ pub struct Function {
     pub code: Vec<Instr>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConfigField {
     pub name: String,
     pub ty: TypeRef,
     pub default_fn: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub name: String,
     pub fields: Vec<ConfigField>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TypeField {
     pub name: String,
     pub ty: TypeRef,
     pub default_fn: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TypeInfo {
     pub name: String,
     pub fields: Vec<TypeField>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EnumVariantInfo {
     pub name: String,
     pub payload: Vec<TypeRef>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EnumInfo {
     pub name: String,
     pub variants: Vec<EnumVariantInfo>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ServiceRoute {
     pub verb: HttpVerb,
     pub path: String,
@@ -121,14 +123,14 @@ pub struct ServiceRoute {
     pub handler: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Service {
     pub name: String,
     pub base_path: String,
     pub routes: Vec<ServiceRoute>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Program {
     pub functions: HashMap<String, Function>,
     pub apps: HashMap<String, Function>,

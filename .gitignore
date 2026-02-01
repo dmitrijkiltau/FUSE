@@ -6,6 +6,7 @@ __pycache__/
 .cargo-*/
 tmp/
 logs/
+.fuse/
 *.log
 *.tmp
 .DS_Store

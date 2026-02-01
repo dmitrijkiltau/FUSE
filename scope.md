@@ -88,6 +88,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * `fusec` flags: `--check`, `--run`, `--migrate`, `--test`, `--openapi`, `--backend`, `--app`
 * package manifest (`fuse.toml`) + `fuse run/test/build`
 * dependency fetching + `fuse.lock`
+* IR cache for fast `fuse run` (`.fuse/build/program.ir`)
 
 **Tooling (planned)**
 

@@ -161,6 +161,12 @@ import Auth from "dep:Auth/lib"
 Git dependencies support `tag`, `branch`, `rev`, or `version` (resolved as a tag, trying
 `v<version>` first).
 
+`fuse build` also emits a compiled IR cache at `.fuse/build/program.ir`. When present,
+`fuse run` uses the cached IR for faster startup (unless you pass CLI args, which require
+the AST backend).
+
+Use `fuse build --clean` to remove `.fuse/build` and force a fresh compile on the next run.
+
 ## "Okay but what's novel?"
 
 Not the syntax. The novelty is the **contract at boundaries**:

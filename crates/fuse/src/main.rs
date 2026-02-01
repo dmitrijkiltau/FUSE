@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +23,7 @@ options:
   --file <path>           Entry file override
   --app <name>            App name override
   --backend <ast|vm>      Backend override (run only)
+  --clean                 Remove .fuse/build before building (build only)
 "#;
 
 #[derive(Debug, Deserialize)]
@@ -82,6 +84,22 @@ struct LockedDependency {
     requested: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct IrMeta {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    files: Vec<IrFileMeta>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct IrFileMeta {
+    path: String,
+    modified_secs: u64,
+    modified_nanos: u32,
+    size: u64,
+}
+
 #[derive(Default)]
 struct CommonArgs {
     manifest_path: Option<PathBuf>,
@@ -89,6 +107,7 @@ struct CommonArgs {
     app: Option<String>,
     backend: Option<String>,
     program_args: Vec<String>,
+    clean: bool,
 }
 
 enum Command {
@@ -128,7 +147,8 @@ fn run(args: Vec<String>) -> i32 {
         }
     };
     let allow_program_args = matches!(command, Command::Run);
-    let common = match parse_common_args(rest, allow_program_args) {
+    let allow_clean = matches!(command, Command::Build);
+    let common = match parse_common_args(rest, allow_program_args, allow_clean) {
         Ok(args) => args,
         Err(err) => {
             eprintln!("{err}");
@@ -179,6 +199,11 @@ fn run(args: Vec<String>) -> i32 {
 
     match command {
         Command::Run => {
+            if common.program_args.is_empty() && backend.as_deref() != Some("ast") {
+                if let Some(ir) = try_load_ir(manifest_dir.as_deref()) {
+                    return run_vm_ir(ir, app.as_deref());
+                }
+            }
             let mut args = Vec::new();
             args.push("--run".to_string());
             if let Some(backend) = backend {
@@ -202,7 +227,13 @@ fn run(args: Vec<String>) -> i32 {
             args.push(entry.to_string_lossy().to_string());
             fusec::cli::run_with_deps(args, Some(&deps))
         }
-        Command::Build => run_build(&entry, manifest.as_ref(), manifest_dir.as_deref(), &deps),
+        Command::Build => run_build(
+            &entry,
+            manifest.as_ref(),
+            manifest_dir.as_deref(),
+            &deps,
+            common.clean,
+        ),
         Command::Check => {
             let mut args = Vec::new();
             args.push("--check".to_string());
@@ -230,7 +261,11 @@ fn run(args: Vec<String>) -> i32 {
     }
 }
 
-fn parse_common_args(args: &[String], allow_program_args: bool) -> Result<CommonArgs, String> {
+fn parse_common_args(
+    args: &[String],
+    allow_program_args: bool,
+    allow_clean: bool,
+) -> Result<CommonArgs, String> {
     let mut out = CommonArgs::default();
     let mut idx = 0;
     while idx < args.len() {
@@ -276,6 +311,14 @@ fn parse_common_args(args: &[String], allow_program_args: bool) -> Result<Common
                 return Err("--backend expects a name".to_string());
             };
             out.backend = Some(name.clone());
+            idx += 1;
+            continue;
+        }
+        if arg == "--clean" {
+            if !allow_clean {
+                return Err("--clean is only supported for fuse build".to_string());
+            }
+            out.clean = true;
             idx += 1;
             continue;
         }
@@ -361,13 +404,25 @@ fn run_build(
     manifest: Option<&Manifest>,
     manifest_dir: Option<&Path>,
     deps: &HashMap<String, PathBuf>,
+    clean: bool,
 ) -> i32 {
+    if clean {
+        if let Err(err) = clean_build_dir(manifest_dir) {
+            eprintln!("{err}");
+            return 1;
+        }
+        return 0;
+    }
     let mut check_args = Vec::new();
     check_args.push("--check".to_string());
     check_args.push(entry.to_string_lossy().to_string());
     let code = fusec::cli::run_with_deps(check_args, Some(deps));
     if code != 0 {
         return code;
+    }
+    if let Err(err) = write_ir(entry, manifest_dir, deps) {
+        eprintln!("{err}");
+        return 1;
     }
     let openapi_out = manifest.and_then(|m| m.build.as_ref().and_then(|b| b.openapi.clone()));
     let Some(out_path) = openapi_out else {
@@ -428,6 +483,155 @@ fn write_openapi(
     fs::write(out_path, json)
         .map_err(|err| format!("failed to write {}: {err}", out_path.display()))?;
     Ok(())
+}
+
+fn write_ir(
+    entry: &Path,
+    manifest_dir: Option<&Path>,
+    deps: &HashMap<String, PathBuf>,
+) -> Result<(), String> {
+    let build_dir = build_dir(manifest_dir)?;
+    if !build_dir.exists() {
+        fs::create_dir_all(&build_dir)
+            .map_err(|err| format!("failed to create {}: {err}", build_dir.display()))?;
+    }
+    let out_path = build_dir.join("program.ir");
+    let src = fs::read_to_string(entry)
+        .map_err(|err| format!("failed to read {}: {err}", entry.display()))?;
+    let (registry, diags) = fusec::load_program_with_modules_and_deps(entry, &src, deps);
+    if !diags.is_empty() {
+        for diag in diags {
+            let level = match diag.level {
+                fusec::diag::Level::Error => "error",
+                fusec::diag::Level::Warning => "warning",
+            };
+            eprintln!(
+                "{level}: {} ({}..{})",
+                diag.message, diag.span.start, diag.span.end
+            );
+        }
+        return Err("build failed".to_string());
+    }
+    let ir = fusec::ir::lower::lower_registry(&registry).map_err(|errors| {
+        let mut out = String::new();
+        for err in errors {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&format!("lowering error: {err}"));
+        }
+        out
+    })?;
+    let bytes = bincode::serialize(&ir).map_err(|err| format!("ir encode failed: {err}"))?;
+    fs::write(&out_path, bytes)
+        .map_err(|err| format!("failed to write {}: {err}", out_path.display()))?;
+    let meta = build_ir_meta(&registry)?;
+    let meta_bytes = bincode::serialize(&meta).map_err(|err| format!("ir meta encode failed: {err}"))?;
+    let meta_path = build_dir.join("program.meta");
+    fs::write(&meta_path, meta_bytes)
+        .map_err(|err| format!("failed to write {}: {err}", meta_path.display()))?;
+    Ok(())
+}
+
+fn try_load_ir(manifest_dir: Option<&Path>) -> Option<fusec::ir::Program> {
+    let build_dir = build_dir(manifest_dir).ok()?;
+    let path = build_dir.join("program.ir");
+    let meta_path = build_dir.join("program.meta");
+    let meta = load_ir_meta(&meta_path)?;
+    if !ir_meta_is_valid(&meta) {
+        return None;
+    }
+    let bytes = fs::read(&path).ok()?;
+    bincode::deserialize(&bytes).ok()
+}
+
+fn run_vm_ir(ir: fusec::ir::Program, app: Option<&str>) -> i32 {
+    let mut vm = fusec::vm::Vm::new(&ir);
+    match vm.run_app(app) {
+        Ok(_) => 0,
+        Err(err) => {
+            eprintln!("run error: {err}");
+            1
+        }
+    }
+}
+
+fn build_dir(manifest_dir: Option<&Path>) -> Result<PathBuf, String> {
+    let base = match manifest_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => env::current_dir().map_err(|err| format!("cwd error: {err}"))?,
+    };
+    Ok(base.join(".fuse").join("build"))
+}
+
+fn clean_build_dir(manifest_dir: Option<&Path>) -> Result<(), String> {
+    let dir = build_dir(manifest_dir)?;
+    if dir.exists() {
+        fs::remove_dir_all(&dir)
+            .map_err(|err| format!("failed to remove {}: {err}", dir.display()))?;
+    }
+    Ok(())
+}
+
+fn build_ir_meta(registry: &fusec::ModuleRegistry) -> Result<IrMeta, String> {
+    let mut files = Vec::new();
+    for unit in registry.modules.values() {
+        let stamp = file_stamp(&unit.path)?;
+        files.push(IrFileMeta {
+            path: unit.path.to_string_lossy().to_string(),
+            modified_secs: stamp.modified_secs,
+            modified_nanos: stamp.modified_nanos,
+            size: stamp.size,
+        });
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(IrMeta { version: 1, files })
+}
+
+fn load_ir_meta(path: &Path) -> Option<IrMeta> {
+    let bytes = fs::read(path).ok()?;
+    bincode::deserialize(&bytes).ok()
+}
+
+fn ir_meta_is_valid(meta: &IrMeta) -> bool {
+    if meta.version != 1 || meta.files.is_empty() {
+        return false;
+    }
+    for file in &meta.files {
+        let stamp = match file_stamp(Path::new(&file.path)) {
+            Ok(stamp) => stamp,
+            Err(_) => return false,
+        };
+        if stamp.modified_secs != file.modified_secs
+            || stamp.modified_nanos != file.modified_nanos
+            || stamp.size != file.size
+        {
+            return false;
+        }
+    }
+    true
+}
+
+struct FileStamp {
+    modified_secs: u64,
+    modified_nanos: u32,
+    size: u64,
+}
+
+fn file_stamp(path: &Path) -> Result<FileStamp, String> {
+    let metadata =
+        fs::metadata(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    let modified = metadata
+        .modified()
+        .map_err(|err| format!("failed to read mtime for {}: {err}", path.display()))?;
+    let duration = modified
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| format!("mtime before epoch for {}: {err}", path.display()))?;
+    Ok(FileStamp {
+        modified_secs: duration.as_secs(),
+        modified_nanos: duration.subsec_nanos(),
+        size: metadata.len(),
+    })
 }
 
 fn resolve_dependencies(
