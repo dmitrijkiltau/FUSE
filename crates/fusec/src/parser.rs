@@ -115,40 +115,75 @@ impl<'a> Parser<'a> {
 
     fn parse_type_decl(&mut self, doc: Option<Doc>) -> TypeDecl {
         let name = self.expect_ident();
-        self.expect_punct(Punct::Colon);
-        self.expect_newline();
-        self.expect_indent();
-        let mut fields = Vec::new();
-        while !self.at_dedent() && !self.at_eof() {
-            self.consume_newlines();
-            if self.at_dedent() || self.at_eof() {
-                break;
-            }
-            let field_start = self.peek_span();
-            let field_name = self.expect_ident();
-            self.expect_punct(Punct::Colon);
-            let ty = self.parse_type_ref();
-            let default = if self.eat_punct(Punct::Assign).is_some() {
-                Some(self.parse_expr())
-            } else {
-                None
-            };
+        if self.eat_punct(Punct::Colon).is_some() {
             self.expect_newline();
-            let field_end = self.prev_span();
-            fields.push(FieldDecl {
-                name: field_name,
-                ty,
-                default,
-                span: field_start.merge(field_end),
-            });
-        }
-        let end = self.expect_dedent();
-        let span = name.span.merge(end);
-        TypeDecl {
-            name,
-            fields,
-            doc,
-            span,
+            self.expect_indent();
+            let mut fields = Vec::new();
+            while !self.at_dedent() && !self.at_eof() {
+                self.consume_newlines();
+                if self.at_dedent() || self.at_eof() {
+                    break;
+                }
+                let field_start = self.peek_span();
+                let field_name = self.expect_ident();
+                self.expect_punct(Punct::Colon);
+                let ty = self.parse_type_ref();
+                let default = if self.eat_punct(Punct::Assign).is_some() {
+                    Some(self.parse_expr())
+                } else {
+                    None
+                };
+                self.expect_newline();
+                let field_end = self.prev_span();
+                fields.push(FieldDecl {
+                    name: field_name,
+                    ty,
+                    default,
+                    span: field_start.merge(field_end),
+                });
+            }
+            let end = self.expect_dedent();
+            let span = name.span.merge(end);
+            TypeDecl {
+                name,
+                fields,
+                derive: None,
+                doc,
+                span,
+            }
+        } else if self.eat_punct(Punct::Assign).is_some() {
+            let base = self.parse_type_name();
+            self.expect_keyword(Keyword::Without);
+            let mut without = Vec::new();
+            loop {
+                without.push(self.expect_ident());
+                if self.eat_punct(Punct::Comma).is_none() {
+                    break;
+                }
+            }
+            self.expect_newline();
+            let span = name.span.merge(self.prev_span());
+            TypeDecl {
+                name,
+                fields: Vec::new(),
+                derive: Some(TypeDerive {
+                    base,
+                    without,
+                    span,
+                }),
+                doc,
+                span,
+            }
+        } else {
+            self.error_here("expected ':' or '=' after type name");
+            let span = name.span;
+            TypeDecl {
+                name,
+                fields: Vec::new(),
+                derive: None,
+                doc,
+                span,
+            }
         }
     }
 

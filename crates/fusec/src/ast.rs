@@ -50,7 +50,15 @@ pub enum ImportSpec {
 pub struct TypeDecl {
     pub name: Ident,
     pub fields: Vec<FieldDecl>,
+    pub derive: Option<TypeDerive>,
     pub doc: Option<Doc>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct TypeDerive {
+    pub base: Ident,
+    pub without: Vec<Ident>,
     pub span: Span,
 }
 

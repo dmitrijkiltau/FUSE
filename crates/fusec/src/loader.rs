@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::ast::{ImportDecl, ImportSpec, Item, Program};
+use crate::ast::{FieldDecl, ImportDecl, ImportSpec, Item, Program, TypeDecl, TypeDerive};
 use crate::diag::{Diag, Diagnostics};
 use crate::parse_source;
 use crate::span::Span;
@@ -276,6 +276,146 @@ impl ModuleLoader {
             unit.modules = module_map;
             unit.import_items = import_items;
         }
+
+        self.expand_type_derivations(id);
+    }
+
+    fn expand_type_derivations(&mut self, module_id: ModuleId) {
+        let mut cache: HashMap<(ModuleId, String), Vec<FieldDecl>> = HashMap::new();
+        let mut visiting: HashSet<(ModuleId, String)> = HashSet::new();
+
+        let Some(unit) = self.modules.get(&module_id) else {
+            return;
+        };
+        let derived: Vec<String> = unit
+            .program
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Type(decl) if decl.derive.is_some() => Some(decl.name.name.clone()),
+                _ => None,
+            })
+            .collect();
+
+        for name in derived {
+            let fields =
+                self.resolve_derived_fields(module_id, &name, &mut cache, &mut visiting);
+            if let Some(fields) = fields {
+                if let Some(unit) = self.modules.get_mut(&module_id) {
+                    for item in &mut unit.program.items {
+                        if let Item::Type(decl) = item {
+                            if decl.name.name == name {
+                                decl.fields = fields.clone();
+                                decl.derive = None;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn resolve_derived_fields(
+        &mut self,
+        module_id: ModuleId,
+        name: &str,
+        cache: &mut HashMap<(ModuleId, String), Vec<FieldDecl>>,
+        visiting: &mut HashSet<(ModuleId, String)>,
+    ) -> Option<Vec<FieldDecl>> {
+        let key = (module_id, name.to_string());
+        if let Some(fields) = cache.get(&key) {
+            return Some(fields.clone());
+        }
+        if visiting.contains(&key) {
+            self.diags
+                .error(Span::default(), format!("cyclic type derivation for {name}"));
+            return None;
+        }
+        visiting.insert(key.clone());
+
+        let decl = match self.find_type_decl(module_id, name) {
+            Some(decl) => decl,
+            None => {
+                self.diags
+                    .error(Span::default(), format!("unknown type {name}"));
+                visiting.remove(&key);
+                return None;
+            }
+        };
+
+        let fields = if let Some(derive) = &decl.derive {
+            self.resolve_without_fields(module_id, derive, cache, visiting)
+        } else {
+            Some(decl.fields.clone())
+        };
+
+        if let Some(fields) = &fields {
+            cache.insert(key.clone(), fields.clone());
+        }
+        visiting.remove(&key);
+        fields
+    }
+
+    fn resolve_without_fields(
+        &mut self,
+        module_id: ModuleId,
+        derive: &TypeDerive,
+        cache: &mut HashMap<(ModuleId, String), Vec<FieldDecl>>,
+        visiting: &mut HashSet<(ModuleId, String)>,
+    ) -> Option<Vec<FieldDecl>> {
+        let (base_module, base_name) = match self.resolve_type_target(module_id, &derive.base) {
+            Some(value) => value,
+            None => {
+                self.diags.error(
+                    derive.base.span,
+                    format!("unknown base type {}", derive.base.name),
+                );
+                return None;
+            }
+        };
+        let base_fields =
+            self.resolve_derived_fields(base_module, &base_name, cache, visiting)?;
+
+        let mut removed = HashSet::new();
+        for field in &derive.without {
+            removed.insert(field.name.clone());
+        }
+
+        for field in &derive.without {
+            if !base_fields.iter().any(|f| f.name.name == field.name) {
+                self.diags.error(
+                    field.span,
+                    format!("unknown field {} in {}", field.name, derive.base.name),
+                );
+            }
+        }
+
+        let fields = base_fields
+            .into_iter()
+            .filter(|field| !removed.contains(&field.name.name))
+            .collect();
+        Some(fields)
+    }
+
+    fn resolve_type_target(&self, module_id: ModuleId, base: &crate::ast::Ident) -> Option<(ModuleId, String)> {
+        let unit = self.modules.get(&module_id)?;
+        let name = base.name.as_str();
+        if let Some((module, item)) = split_qualified_name(name) {
+            let link = unit.modules.get(module)?;
+            return Some((link.id, item.to_string()));
+        }
+        if let Some(link) = unit.import_items.get(name) {
+            return Some((link.id, name.to_string()));
+        }
+        Some((module_id, name.to_string()))
+    }
+
+    fn find_type_decl(&self, module_id: ModuleId, name: &str) -> Option<TypeDecl> {
+        let unit = self.modules.get(&module_id)?;
+        unit.program.items.iter().find_map(|item| match item {
+            Item::Type(decl) if decl.name.name == name => Some(decl.clone()),
+            _ => None,
+        })
     }
 
     fn insert_module_alias(&mut self, map: &mut ModuleMap, alias: &str, module_id: ModuleId) {
@@ -339,4 +479,14 @@ impl ModuleLoader {
             path.to_path_buf()
         }
     }
+}
+
+fn split_qualified_name(name: &str) -> Option<(&str, &str)> {
+    let mut parts = name.split('.');
+    let module = parts.next()?;
+    let item = parts.next()?;
+    if module.is_empty() || item.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    Some((module, item))
 }

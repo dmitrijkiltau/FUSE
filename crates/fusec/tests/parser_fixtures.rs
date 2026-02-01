@@ -62,6 +62,19 @@ fn load(id: Id) -> User!NotFound:
 }
 
 #[test]
+fn parses_without_type_derivations() {
+    let src = r#"
+type User:
+  id: Id
+  name: String
+  email: String
+
+type PublicUser = User without email, id
+"#;
+    assert_parse_ok(src);
+}
+
+#[test]
 fn parses_interpolated_strings() {
     let src = r#"
 fn main(name: String):

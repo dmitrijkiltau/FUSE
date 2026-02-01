@@ -2,9 +2,12 @@ pub mod check;
 pub mod symbols;
 pub mod types;
 
-use crate::ast::Program;
+use std::collections::{HashMap, HashSet};
+
+use crate::ast::{FieldDecl, Item, Program, TypeDecl, TypeDerive};
 use crate::diag::{Diag, Diagnostics};
 use crate::loader::{ModuleId, ModuleRegistry};
+use crate::span::Span;
 
 pub struct Analysis {
     pub symbols: symbols::ModuleSymbols,
@@ -12,7 +15,9 @@ pub struct Analysis {
 
 pub fn analyze_program(program: &Program) -> (Analysis, Vec<Diag>) {
     let mut diags = Diagnostics::default();
-    let symbols = symbols::collect(program, &mut diags);
+    let mut expanded = program.clone();
+    expand_type_derivations(&mut expanded, &mut diags);
+    let symbols = symbols::collect(&expanded, &mut diags);
     let mut symbols_by_id: std::collections::HashMap<ModuleId, symbols::ModuleSymbols> =
         std::collections::HashMap::new();
     symbols_by_id.insert(0, symbols.clone());
@@ -37,7 +42,7 @@ pub fn analyze_program(program: &Program) -> (Analysis, Vec<Diag>) {
         &import_items_by_id,
         &mut diags,
     );
-    checker.check_program(program);
+    checker.check_program(&expanded);
     (Analysis { symbols }, diags.into_vec())
 }
 
@@ -80,4 +85,117 @@ pub fn analyze_registry(registry: &ModuleRegistry) -> (Analysis, Vec<Diag>) {
         .cloned()
         .unwrap_or_else(|| symbols::ModuleSymbols::default());
     (Analysis { symbols: root_symbols }, diags.into_vec())
+}
+
+fn expand_type_derivations(program: &mut Program, diags: &mut Diagnostics) {
+    let mut cache: HashMap<String, Vec<FieldDecl>> = HashMap::new();
+    let mut visiting: HashSet<String> = HashSet::new();
+    let derived: Vec<String> = program
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Type(decl) if decl.derive.is_some() => Some(decl.name.name.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for name in derived {
+        let fields = resolve_derived_fields(program, diags, &name, &mut cache, &mut visiting);
+        if let Some(fields) = fields {
+            for item in &mut program.items {
+                if let Item::Type(decl) = item {
+                    if decl.name.name == name {
+                        decl.fields = fields.clone();
+                        decl.derive = None;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn resolve_derived_fields(
+    program: &Program,
+    diags: &mut Diagnostics,
+    name: &str,
+    cache: &mut HashMap<String, Vec<FieldDecl>>,
+    visiting: &mut HashSet<String>,
+) -> Option<Vec<FieldDecl>> {
+    if let Some(fields) = cache.get(name) {
+        return Some(fields.clone());
+    }
+    if visiting.contains(name) {
+        diags.error(
+            Span::default(),
+            format!("cyclic type derivation for {name}"),
+        );
+        return None;
+    }
+    visiting.insert(name.to_string());
+
+    let decl = match find_type_decl(program, name) {
+        Some(decl) => decl,
+        None => {
+            diags.error(Span::default(), format!("unknown type {name}"));
+            visiting.remove(name);
+            return None;
+        }
+    };
+
+    let fields = if let Some(derive) = &decl.derive {
+        resolve_without_fields(program, diags, derive, cache, visiting)
+    } else {
+        Some(decl.fields.clone())
+    };
+
+    if let Some(fields) = &fields {
+        cache.insert(name.to_string(), fields.clone());
+    }
+    visiting.remove(name);
+    fields
+}
+
+fn resolve_without_fields(
+    program: &Program,
+    diags: &mut Diagnostics,
+    derive: &TypeDerive,
+    cache: &mut HashMap<String, Vec<FieldDecl>>,
+    visiting: &mut HashSet<String>,
+) -> Option<Vec<FieldDecl>> {
+    let base_name = derive.base.name.as_str();
+    if base_name.contains('.') {
+        diags.error(
+            derive.base.span,
+            format!("unknown base type {}", derive.base.name),
+        );
+        return None;
+    }
+    let base_fields = resolve_derived_fields(program, diags, base_name, cache, visiting)?;
+
+    let mut removed = HashSet::new();
+    for field in &derive.without {
+        removed.insert(field.name.clone());
+    }
+
+    for field in &derive.without {
+        if !base_fields.iter().any(|f| f.name.name == field.name) {
+            diags.error(
+                field.span,
+                format!("unknown field {} in {}", field.name, derive.base.name),
+            );
+        }
+    }
+
+    let fields = base_fields
+        .into_iter()
+        .filter(|field| !removed.contains(&field.name.name))
+        .collect();
+    Some(fields)
+}
+
+fn find_type_decl(program: &Program, name: &str) -> Option<TypeDecl> {
+    program.items.iter().find_map(|item| match item {
+        Item::Type(decl) if decl.name.name == name => Some(decl.clone()),
+        _ => None,
+    })
 }

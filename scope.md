@@ -52,6 +52,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * `let` / `var`
 * `fn`
 * `type` structs
+* `without` type derivations
 * `enum`
 * `import` (namespaced module imports + named imports for local scope)
 * module-qualified type references in type positions (`Foo.User`)
@@ -66,9 +67,6 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * generics for `List<T>`, `Map<K,V>`, `Result<T,E>`, `Option<T>`
 * `migration` declarations
 * `spawn` / `await` / `box` concurrency (AST backend only)
-
-**Parsed but not executed yet**
-* `without` type derivations
 
 **Runtime / "boilerplate killer" (implemented)**
 

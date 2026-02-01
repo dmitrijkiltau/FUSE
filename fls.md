@@ -79,6 +79,7 @@ ImportSpec     := Ident { "," Ident }
                 | Ident "as" Ident "from" StringLit
 
 TypeDecl       := "type" Ident ":" NEWLINE INDENT { FieldDecl } DEDENT
+                | "type" Ident "=" TypeName "without" Ident { "," Ident } NEWLINE
 FieldDecl      := Ident ":" TypeRef [ "=" Expr ] NEWLINE
 
 EnumDecl       := "enum" Ident ":" NEWLINE INDENT { EnumVariant } DEDENT
@@ -215,7 +216,8 @@ The AST matches `crates/fusec/src/ast.rs`:
 
 **Decls**
 
-* `TypeDecl { name, fields, doc }`
+* `TypeDecl { name, fields, derive, doc }`
+* `TypeDerive { base, without }`
 * `FieldDecl { name, ty, default }`
 * `EnumDecl { name, variants, doc }`
 * `EnumVariant { name, payload }`
@@ -315,6 +317,13 @@ Runtime expects range literals or a `..` expression inside the refinement. Other
 
 * User-defined `type` and `enum` are nominal.
 * Anonymous record types do not exist in the current grammar.
+
+### Type derivations (`without`)
+
+`type PublicUser = User without password, secret` creates a new nominal type by copying
+fields from the base `type` and removing the listed fields. Field types and defaults are
+preserved. Base types can be module-qualified (`Foo.User`). Unknown base types or fields
+are errors.
 
 ## Imports and modules (current)
 
