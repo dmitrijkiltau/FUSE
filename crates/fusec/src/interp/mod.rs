@@ -49,6 +49,20 @@ pub enum Value {
 }
 
 #[derive(Clone, Debug)]
+enum AssignStep {
+    Field { name: String, optional: bool },
+    Index { key: Value, optional: bool },
+}
+
+impl AssignStep {
+    fn is_optional(&self) -> bool {
+        match self {
+            AssignStep::Field { optional, .. } | AssignStep::Index { optional, .. } => *optional,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Task {
     state: Rc<RefCell<TaskState>>,
 }
@@ -1051,6 +1065,20 @@ impl<'a> Interpreter<'a> {
                     self.eval_member(base_val, &name.name)
                 }
             }
+            ExprKind::Index { base, index } => {
+                let base_val = self.eval_expr(base)?.unboxed();
+                let index_val = self.eval_expr(index)?.unboxed();
+                self.eval_index(base_val, index_val)
+            }
+            ExprKind::OptionalIndex { base, index } => {
+                let base_val = self.eval_expr(base)?.unboxed();
+                if matches!(base_val, Value::Null) {
+                    Ok(Value::Null)
+                } else {
+                    let index_val = self.eval_expr(index)?.unboxed();
+                    self.eval_index(base_val, index_val)
+                }
+            }
             ExprKind::StructLit { name, fields } => self.eval_struct_lit(name, fields),
             ExprKind::ListLit(items) => {
                 let mut values = Vec::with_capacity(items.len());
@@ -1781,6 +1809,26 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    fn eval_index(&self, base: Value, index: Value) -> ExecResult<Value> {
+        match base.unboxed() {
+            Value::List(items) => {
+                let idx = Self::list_index(&index)?;
+                items
+                    .get(idx)
+                    .cloned()
+                    .ok_or_else(|| ExecError::Runtime("index out of bounds".to_string()))
+            }
+            Value::Map(items) => {
+                let key = Self::map_key(&index)?;
+                Ok(items.get(&key).cloned().unwrap_or(Value::Null))
+            }
+            Value::Null => Err(ExecError::Runtime("null access".to_string())),
+            _ => Err(ExecError::Runtime(
+                "index access not supported on this value".to_string(),
+            )),
+        }
+    }
+
     fn eval_module_member(&mut self, base: &Expr, field: &str) -> ExecResult<Option<Value>> {
         let module_map = self.module_maps.get(&self.current_module);
         if let ExprKind::Member {
@@ -1953,18 +2001,16 @@ impl<'a> Interpreter<'a> {
                 }
                 Ok(())
             }
-            ExprKind::Member { .. } | ExprKind::OptionalMember { .. } => {
-                let mut path = Vec::new();
-                let mut has_optional = false;
-                let Some(root) = self.collect_assign_path(target, &mut path, &mut has_optional) else {
+            ExprKind::Member { .. }
+            | ExprKind::OptionalMember { .. }
+            | ExprKind::Index { .. }
+            | ExprKind::OptionalIndex { .. } => {
+                let mut steps = Vec::new();
+                let root = self.collect_assign_steps(target, &mut steps)?;
+                let Some(root) = root else {
                     return Err(ExecError::Runtime("invalid assignment target".to_string()));
                 };
-                if has_optional {
-                    return Err(ExecError::Runtime(
-                        "cannot assign through optional access".to_string(),
-                    ));
-                }
-                if path.is_empty() {
+                if steps.is_empty() {
                     return Err(ExecError::Runtime("invalid assignment target".to_string()));
                 }
                 let Some(root_value) = self.env.get_mut(&root) else {
@@ -1973,36 +2019,55 @@ impl<'a> Interpreter<'a> {
                         root
                     )));
                 };
-                Self::assign_in_value(root_value, &path, value)
+                Self::assign_in_value(root_value, &steps, value)
             }
             _ => Err(ExecError::Runtime("invalid assignment target".to_string())),
         }
     }
 
-    fn collect_assign_path(
-        &self,
+    fn collect_assign_steps(
+        &mut self,
         target: &Expr,
-        out: &mut Vec<String>,
-        has_optional: &mut bool,
-    ) -> Option<String> {
+        out: &mut Vec<AssignStep>,
+    ) -> ExecResult<Option<String>> {
         match &target.kind {
-            ExprKind::Ident(ident) => Some(ident.name.clone()),
+            ExprKind::Ident(ident) => Ok(Some(ident.name.clone())),
             ExprKind::Member { base, name } => {
-                let root = self.collect_assign_path(base, out, has_optional)?;
-                out.push(name.name.clone());
-                Some(root)
+                let root = self.collect_assign_steps(base, out)?;
+                out.push(AssignStep::Field {
+                    name: name.name.clone(),
+                    optional: false,
+                });
+                Ok(root)
             }
             ExprKind::OptionalMember { base, name } => {
-                *has_optional = true;
-                let root = self.collect_assign_path(base, out, has_optional)?;
-                out.push(name.name.clone());
-                Some(root)
+                let root = self.collect_assign_steps(base, out)?;
+                out.push(AssignStep::Field {
+                    name: name.name.clone(),
+                    optional: true,
+                });
+                Ok(root)
             }
-            _ => None,
+            ExprKind::Index { base, index } => {
+                let root = self.collect_assign_steps(base, out)?;
+                let key = self.eval_expr(index)?;
+                out.push(AssignStep::Index {
+                    key,
+                    optional: false,
+                });
+                Ok(root)
+            }
+            ExprKind::OptionalIndex { base, index } => {
+                let root = self.collect_assign_steps(base, out)?;
+                let key = self.eval_expr(index)?;
+                out.push(AssignStep::Index { key, optional: true });
+                Ok(root)
+            }
+            _ => Ok(None),
         }
     }
 
-    fn assign_in_value(target: &mut Value, path: &[String], value: Value) -> ExecResult<()> {
+    fn assign_in_value(target: &mut Value, path: &[AssignStep], value: Value) -> ExecResult<()> {
         if path.is_empty() {
             *target = value;
             return Ok(());
@@ -2010,22 +2075,81 @@ impl<'a> Interpreter<'a> {
         match target {
             Value::Boxed(cell) => {
                 let mut inner = cell.borrow_mut();
-                Self::assign_in_value(&mut inner, path, value)
+                return Self::assign_in_value(&mut inner, path, value);
             }
-            Value::Struct { fields, .. } => {
-                let field = &path[0];
-                if path.len() == 1 {
-                    fields.insert(field.clone(), value);
-                    return Ok(());
+            Value::Null => {
+                if path[0].is_optional() {
+                    return Err(ExecError::Runtime(
+                        "cannot assign through optional access".to_string(),
+                    ));
                 }
-                let next = fields.get_mut(field).ok_or_else(|| {
-                    ExecError::Runtime(format!("unknown field {field}"))
-                })?;
-                Self::assign_in_value(next, &path[1..], value)
             }
-            _ => Err(ExecError::Runtime(
-                "assignment target must be a struct field".to_string(),
-            )),
+            _ => {}
+        }
+        match &path[0] {
+            AssignStep::Field { name, .. } => match target {
+                Value::Struct { fields, .. } => {
+                    if path.len() == 1 {
+                        fields.insert(name.clone(), value);
+                        Ok(())
+                    } else {
+                        let next = fields.get_mut(name).ok_or_else(|| {
+                            ExecError::Runtime(format!("unknown field {name}"))
+                        })?;
+                        Self::assign_in_value(next, &path[1..], value)
+                    }
+                }
+                _ => Err(ExecError::Runtime(
+                    "assignment target must be a struct field".to_string(),
+                )),
+            },
+            AssignStep::Index { key, .. } => match target {
+                Value::List(items) => {
+                    let idx = Self::list_index(key)?;
+                    if idx >= items.len() {
+                        return Err(ExecError::Runtime("index out of bounds".to_string()));
+                    }
+                    if path.len() == 1 {
+                        items[idx] = value;
+                        Ok(())
+                    } else {
+                        let next = items
+                            .get_mut(idx)
+                            .ok_or_else(|| ExecError::Runtime("index out of bounds".to_string()))?;
+                        Self::assign_in_value(next, &path[1..], value)
+                    }
+                }
+                Value::Map(items) => {
+                    let key = Self::map_key(key)?;
+                    if path.len() == 1 {
+                        items.insert(key, value);
+                        Ok(())
+                    } else {
+                        let next = items
+                            .get_mut(&key)
+                            .ok_or_else(|| ExecError::Runtime("missing map entry".to_string()))?;
+                        Self::assign_in_value(next, &path[1..], value)
+                    }
+                }
+                _ => Err(ExecError::Runtime(
+                    "assignment target must be an indexable value".to_string(),
+                )),
+            },
+        }
+    }
+
+    fn list_index(value: &Value) -> ExecResult<usize> {
+        match value.unboxed() {
+            Value::Int(v) if v >= 0 => Ok(v as usize),
+            Value::Int(_) => Err(ExecError::Runtime("index out of bounds".to_string())),
+            _ => Err(ExecError::Runtime("list index must be Int".to_string())),
+        }
+    }
+
+    fn map_key(value: &Value) -> ExecResult<String> {
+        match value.unboxed() {
+            Value::String(key) => Ok(key),
+            _ => Err(ExecError::Runtime("map keys must be strings".to_string())),
         }
     }
 

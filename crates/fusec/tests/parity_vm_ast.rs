@@ -192,6 +192,20 @@ fn parity_assign_field() {
 }
 
 #[test]
+fn parity_assign_index() {
+    let ast = run_example("ast", "assign_index.fuse", &[]);
+    let vm = run_example("vm", "assign_index.fuse", &[]);
+
+    assert!(ast.status.success(), "ast stderr: {}", String::from_utf8_lossy(&ast.stderr));
+    assert!(vm.status.success(), "vm stderr: {}", String::from_utf8_lossy(&vm.stderr));
+
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stdout),
+        String::from_utf8_lossy(&vm.stdout)
+    );
+}
+
+#[test]
 fn parity_cli_binding() {
     let args = ["--name=Codex", "--excited"];
     let ast = run_example_with_args("ast", "cli_args.fuse", &args);

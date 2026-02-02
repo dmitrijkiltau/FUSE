@@ -96,3 +96,15 @@ fn main():
 "#;
     assert_parse_ok(src);
 }
+
+#[test]
+fn parses_index_access() {
+    let src = r#"
+fn main():
+  let items = [1, 2, 3]
+  let first = items[0]
+  let map = {"a": 1, "b": 2}
+  let value = map["a"]
+"#;
+    assert_parse_ok(src);
+}

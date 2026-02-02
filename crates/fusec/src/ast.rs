@@ -258,6 +258,14 @@ pub enum ExprKind {
         base: Box<Expr>,
         name: Ident,
     },
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
+    OptionalIndex {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
     StructLit {
         name: Ident,
         fields: Vec<StructField>,

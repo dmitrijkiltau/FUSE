@@ -106,7 +106,7 @@ Stmt           := LetStmt
 LetStmt        := "let" Ident [ ":" TypeRef ] "=" Expr NEWLINE
 VarStmt        := "var" Ident [ ":" TypeRef ] "=" Expr NEWLINE
 AssignStmt     := LValue "=" Expr NEWLINE
-LValue         := Ident | Member | OptionalMember
+LValue         := Ident | Member | OptionalMember | Index | OptionalIndex
 ReturnStmt     := "return" [ Expr ] NEWLINE
 ExprStmt       := Expr NEWLINE | SpawnExpr
 
@@ -154,12 +154,14 @@ UnaryExpr      := ("-" | "!") UnaryExpr
                 | "await" UnaryExpr
                 | "box" UnaryExpr
                 | PostfixExpr
-PostfixExpr    := PrimaryExpr { Call | Member | OptionalMember | BangChain }
+PostfixExpr    := PrimaryExpr { Call | Member | OptionalMember | Index | OptionalIndex | BangChain }
 Call           := "(" [ ArgList ] ")"
 ArgList        := Arg { "," Arg }
 Arg            := [ Ident "=" ] Expr
 Member         := "." Ident
 OptionalMember := "?." Ident
+Index          := "[" Expr "]"
+OptionalIndex  := "?[" Expr "]"
 BangChain      := "?!" [ Expr ]
 PrimaryExpr    := Literal
                 | Ident
@@ -363,6 +365,6 @@ Runtime binding + error mapping are described in `runtime.md`.
 * `for`/`while`/`break`/`continue` run in both backends.
 * `spawn`/`await` run in both backends (tasks execute eagerly today).
 * `box` creates a shared cell; boxed values are transparently dereferenced in most expressions.
-* Assignment targets are limited to identifiers and struct fields at runtime (no indexing or optional access).
+* Assignment targets include identifiers, struct fields, and list/map indexing; optional access in assignments errors on null.
 * Enum variants only support tuple payloads (no named payload fields).
 * `..` range expressions are only used in refined type arguments; evaluating them directly is not supported.

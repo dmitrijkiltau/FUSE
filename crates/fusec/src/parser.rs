@@ -972,13 +972,42 @@ impl<'a> Parser<'a> {
                 continue;
             }
             if self.eat_punct(Punct::Question).is_some() {
-                self.expect_punct(Punct::Dot);
-                let name = self.expect_ident_or_body();
-                let span = expr.span.merge(name.span);
+                if self.eat_punct(Punct::Dot).is_some() {
+                    let name = self.expect_ident_or_body();
+                    let span = expr.span.merge(name.span);
+                    expr = Expr {
+                        kind: ExprKind::OptionalMember {
+                            base: Box::new(expr),
+                            name,
+                        },
+                        span,
+                    };
+                    continue;
+                }
+                if self.eat_punct(Punct::LBracket).is_some() {
+                    let index = self.parse_expr();
+                    let end = self.expect_punct(Punct::RBracket);
+                    let span = expr.span.merge(end);
+                    expr = Expr {
+                        kind: ExprKind::OptionalIndex {
+                            base: Box::new(expr),
+                            index: Box::new(index),
+                        },
+                        span,
+                    };
+                    continue;
+                }
+                self.error_here("expected '.' or '[' after '?'");
+                continue;
+            }
+            if self.eat_punct(Punct::LBracket).is_some() {
+                let index = self.parse_expr();
+                let end = self.expect_punct(Punct::RBracket);
+                let span = expr.span.merge(end);
                 expr = Expr {
-                    kind: ExprKind::OptionalMember {
+                    kind: ExprKind::Index {
                         base: Box::new(expr),
-                        name,
+                        index: Box::new(index),
                     },
                     span,
                 };

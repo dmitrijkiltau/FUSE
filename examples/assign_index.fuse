@@ -1,0 +1,12 @@
+# index assignment
+
+fn main():
+  let nums = [1, 2, 3]
+  nums[1] = 5
+  print(nums[1])
+  let scores = {"a": 1}
+  scores["b"] = 2
+  print(scores["a"] + scores["b"])
+
+app "index":
+  main()

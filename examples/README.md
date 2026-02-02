@@ -48,7 +48,12 @@ scripts/check_examples.sh
 Files:
 
 - `examples/cli_hello.fuse`: CLI hello with config defaults.
+- `examples/cli_args.fuse`: CLI args binding (flags + values).
 - `examples/http_users.fuse`: HTTP service with routes and `?!` error handling.
 - `examples/types_patterns.fuse`: enums, structs, and pattern matching (Option/Result).
 - `examples/project_demo.fuse`: config env overrides, refined types, enums, and match.
 - `examples/interp_demo.fuse`: string interpolation (AST + VM).
+- `examples/spawn_await_box.fuse`: spawn/await/box parity demo.
+- `examples/box_shared.fuse`: shared `box` state across tasks.
+- `examples/assign_field.fuse`: struct field assignment.
+- `examples/assign_index.fuse`: list/map index assignment.

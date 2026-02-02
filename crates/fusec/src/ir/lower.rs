@@ -81,6 +81,15 @@ struct LoopContext {
     continue_target: usize,
 }
 
+enum AssignStep<'a> {
+    Field { name: String, optional: bool },
+    Index {
+        index: &'a Expr,
+        slot: usize,
+        optional: bool,
+    },
+}
+
 impl<'a> Lowerer<'a> {
     fn new(program: &'a Program, modules: &'a ModuleMap) -> Self {
         let mut config_names = HashSet::new();
@@ -521,23 +530,47 @@ impl FuncBuilder {
         }
     }
 
-    fn collect_assign_path(
-        &self,
-        target: &Expr,
-        out: &mut Vec<String>,
-        has_optional: &mut bool,
+    fn collect_assign_steps<'e>(
+        &mut self,
+        target: &'e Expr,
+        out: &mut Vec<AssignStep<'e>>,
     ) -> Option<String> {
         match &target.kind {
             ExprKind::Ident(ident) => Some(ident.name.clone()),
             ExprKind::Member { base, name } => {
-                let root = self.collect_assign_path(base, out, has_optional)?;
-                out.push(name.name.clone());
+                let root = self.collect_assign_steps(base, out)?;
+                out.push(AssignStep::Field {
+                    name: name.name.clone(),
+                    optional: false,
+                });
                 Some(root)
             }
             ExprKind::OptionalMember { base, name } => {
-                *has_optional = true;
-                let root = self.collect_assign_path(base, out, has_optional)?;
-                out.push(name.name.clone());
+                let root = self.collect_assign_steps(base, out)?;
+                out.push(AssignStep::Field {
+                    name: name.name.clone(),
+                    optional: true,
+                });
+                Some(root)
+            }
+            ExprKind::Index { base, index } => {
+                let root = self.collect_assign_steps(base, out)?;
+                let slot = self.declare_temp();
+                out.push(AssignStep::Index {
+                    index,
+                    slot,
+                    optional: false,
+                });
+                Some(root)
+            }
+            ExprKind::OptionalIndex { base, index } => {
+                let root = self.collect_assign_steps(base, out)?;
+                let slot = self.declare_temp();
+                out.push(AssignStep::Index {
+                    index,
+                    slot,
+                    optional: true,
+                });
                 Some(root)
             }
             _ => None,
@@ -594,24 +627,18 @@ impl FuncBuilder {
                     }
                     None => self.errors.push(format!("unknown variable {}", ident.name)),
                 },
-                ExprKind::Member { .. } | ExprKind::OptionalMember { .. } => {
-                    let mut path = Vec::new();
-                    let mut has_optional = false;
-                    let Some(root) =
-                        self.collect_assign_path(target, &mut path, &mut has_optional)
-                    else {
+                ExprKind::Member { .. }
+                | ExprKind::OptionalMember { .. }
+                | ExprKind::Index { .. }
+                | ExprKind::OptionalIndex { .. } => {
+                    let mut steps = Vec::new();
+                    let Some(root) = self.collect_assign_steps(target, &mut steps) else {
                         self.errors
                             .push("unsupported assignment target".to_string());
                         self.emit(Instr::Push(Const::Unit));
                         return;
                     };
-                    if has_optional {
-                        self.errors
-                            .push("optional assignment not supported in VM yet".to_string());
-                        self.emit(Instr::Push(Const::Unit));
-                        return;
-                    }
-                    if path.is_empty() {
+                    if steps.is_empty() {
                         self.errors
                             .push("unsupported assignment target".to_string());
                         self.emit(Instr::Push(Const::Unit));
@@ -623,18 +650,62 @@ impl FuncBuilder {
                         return;
                     };
                     self.emit(Instr::LoadLocal(slot));
-                    if path.len() > 1 {
-                        for field in path[..path.len() - 1].iter() {
-                            self.emit(Instr::Dup);
-                            self.emit(Instr::GetField { field: field.clone() });
+                    for (idx, step) in steps.iter().enumerate() {
+                        let is_last = idx + 1 == steps.len();
+                        match step {
+                            AssignStep::Field { name, optional } => {
+                                if *optional {
+                                    self.emit_optional_assign_guard();
+                                }
+                                if !is_last {
+                                    self.emit(Instr::Dup);
+                                    self.emit(Instr::GetField { field: name.clone() });
+                                }
+                            }
+                            AssignStep::Index {
+                                index,
+                                slot: index_slot,
+                                optional,
+                            } => {
+                                if *optional {
+                                    self.emit_optional_assign_guard();
+                                }
+                                if !is_last {
+                                    self.emit(Instr::Dup);
+                                    self.lower_expr(index);
+                                    self.emit(Instr::StoreLocal(*index_slot));
+                                    self.emit(Instr::LoadLocal(*index_slot));
+                                    self.emit(Instr::GetIndex);
+                                } else {
+                                    self.lower_expr(index);
+                                    self.emit(Instr::StoreLocal(*index_slot));
+                                }
+                            }
                         }
                     }
-                    self.lower_expr(expr);
-                    let last = path.last().cloned().unwrap();
-                    self.emit(Instr::SetField { field: last });
-                    if path.len() > 1 {
-                        for field in path[..path.len() - 1].iter().rev() {
-                            self.emit(Instr::SetField { field: field.clone() });
+                    let last = steps.last().unwrap();
+                    match last {
+                        AssignStep::Field { name, .. } => {
+                            self.lower_expr(expr);
+                            self.emit(Instr::SetField { field: name.clone() });
+                        }
+                        AssignStep::Index { slot: index_slot, .. } => {
+                            self.emit(Instr::LoadLocal(*index_slot));
+                            self.lower_expr(expr);
+                            self.emit(Instr::SetIndex);
+                        }
+                    }
+                    if steps.len() > 1 {
+                        for step in steps[..steps.len() - 1].iter().rev() {
+                            match step {
+                                AssignStep::Field { name, .. } => {
+                                    self.emit(Instr::SetField { field: name.clone() });
+                                }
+                                AssignStep::Index { slot: index_slot, .. } => {
+                                    self.emit(Instr::LoadLocal(*index_slot));
+                                    self.emit(Instr::SetIndex);
+                                }
+                            }
                         }
                     }
                     self.emit(Instr::StoreLocal(slot));
@@ -879,6 +950,21 @@ impl FuncBuilder {
         self.code.len()
     }
 
+    fn emit_optional_assign_guard(&mut self) {
+        self.emit(Instr::Dup);
+        let jump_err = self.emit_placeholder();
+        self.emit(Instr::JumpIfNull(0));
+        let jump_ok = self.emit_placeholder();
+        self.emit(Instr::Jump(0));
+        let err_pos = self.code.len();
+        self.emit(Instr::RuntimeError(
+            "cannot assign through optional access".to_string(),
+        ));
+        let ok_pos = self.code.len();
+        self.patch_jump(jump_err, err_pos);
+        self.patch_jump(jump_ok, ok_pos);
+    }
+
     fn patch_jump(&mut self, at: usize, target: usize) {
         match self.code.get_mut(at) {
             Some(Instr::Jump(slot)) => *slot = target,
@@ -1110,6 +1196,20 @@ impl FuncBuilder {
                 self.emit(Instr::GetField {
                     field: name.name.clone(),
                 });
+                self.patch_jump(jump_idx, self.code.len());
+            }
+            ExprKind::Index { base, index } => {
+                self.lower_expr(base);
+                self.lower_expr(index);
+                self.emit(Instr::GetIndex);
+            }
+            ExprKind::OptionalIndex { base, index } => {
+                self.lower_expr(base);
+                self.emit(Instr::Dup);
+                let jump_idx = self.emit_placeholder();
+                self.emit(Instr::JumpIfNull(0));
+                self.lower_expr(index);
+                self.emit(Instr::GetIndex);
                 self.patch_jump(jump_idx, self.code.len());
             }
             ExprKind::StructLit { name, fields } => {

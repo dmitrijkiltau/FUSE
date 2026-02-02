@@ -311,6 +311,20 @@ shares state across tasks.
 
 `break` exits the nearest loop, and `continue` skips to the next iteration.
 
+## Indexing
+
+`list[idx]` reads a list element. `idx` must be an `Int` and within bounds.
+Out-of-bounds indexes raise a runtime error (no auto-extend).
+
+`map[key]` reads a map element. Missing keys return `null`.
+
+Assignment targets allow:
+
+* `list[idx] = value` (bounds-checked).
+* `map[key] = value` (insert or overwrite).
+
+Optional access in assignment targets (e.g. `foo?.bar = x`, `items?[0] = x`) errors if the base is `null`.
+
 ## Logging
 
 `log` is a lightweight builtin for runtime logging. It is intentionally minimal and shared by
@@ -341,5 +355,4 @@ Structured logging:
 
 ## Unsupported or partial features
 
-* Assignment targets are limited to identifiers and struct fields (no indexing or optional access).
 * `..` range expressions are only used inside refined type arguments.

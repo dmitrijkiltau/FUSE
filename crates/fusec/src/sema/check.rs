@@ -379,6 +379,8 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Member { base, name } => self.check_member(base, name, false),
             ExprKind::OptionalMember { base, name } => self.check_member(base, name, true),
+            ExprKind::Index { base, index } => self.check_index(base, index, false),
+            ExprKind::OptionalIndex { base, index } => self.check_index(base, index, true),
             ExprKind::StructLit { name, fields } => self.check_struct_lit(name, fields, expr.span),
             ExprKind::ListLit(items) => {
                 let mut elem_ty = Ty::Unknown;
@@ -583,6 +585,52 @@ impl<'a> Checker<'a> {
             Ty::Option(Box::new(field_ty))
         } else {
             field_ty
+        }
+    }
+
+    fn check_index(&mut self, base: &Expr, index: &Expr, is_optional: bool) -> Ty {
+        let base_ty = self.check_expr(base);
+        let mut inner = base_ty.clone();
+        if is_optional {
+            match base_ty {
+                Ty::Option(inner_ty) => inner = *inner_ty,
+                Ty::Unknown => return Ty::Option(Box::new(Ty::Unknown)),
+                other => {
+                    self.diags.error(
+                        base.span,
+                        format!("optional access on non-optional {}", other),
+                    );
+                    return Ty::Unknown;
+                }
+            }
+        }
+        let index_ty = self.check_expr(index);
+        let value_ty = match inner {
+            Ty::List(elem_ty) => {
+                if !matches!(index_ty, Ty::Unknown) && !self.is_int_like(&index_ty) {
+                    self.diags.error(index.span, "list index must be Int");
+                }
+                *elem_ty
+            }
+            Ty::Map(key_ty, value_ty) => {
+                if !self.is_assignable(&index_ty, &key_ty) {
+                    self.diags.error(index.span, "map index type mismatch");
+                }
+                *value_ty
+            }
+            Ty::Unknown => Ty::Unknown,
+            other => {
+                self.diags.error(
+                    base.span,
+                    format!("type {} is not indexable", other),
+                );
+                Ty::Unknown
+            }
+        };
+        if is_optional {
+            Ty::Option(Box::new(value_ty))
+        } else {
+            value_ty
         }
     }
 
@@ -799,10 +847,93 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            ExprKind::OptionalMember { .. } => {
-                self.diags
-                    .error(target.span, "cannot assign through optional access");
-                Ty::Unknown
+            ExprKind::OptionalMember { base, name } => {
+                let base_ty = self.check_expr(base);
+                let inner = match base_ty {
+                    Ty::Option(inner) => *inner,
+                    Ty::Unknown => return Ty::Unknown,
+                    other => {
+                        self.diags.error(
+                            base.span,
+                            format!("optional access on non-optional {}", other),
+                        );
+                        return Ty::Unknown;
+                    }
+                };
+                match inner {
+                    Ty::Struct(name_ty) => self.lookup_field(&name_ty, &name.name, name.span),
+                    Ty::Unknown => Ty::Unknown,
+                    other => {
+                        self.diags.error(
+                            target.span,
+                            format!("assignment target must be a struct field (got {other})"),
+                        );
+                        Ty::Unknown
+                    }
+                }
+            }
+            ExprKind::Index { base, index } => {
+                let base_ty = self.check_expr(base);
+                let index_ty = self.check_expr(index);
+                match base_ty {
+                    Ty::List(elem_ty) => {
+                        if !matches!(index_ty, Ty::Unknown) && !self.is_int_like(&index_ty) {
+                            self.diags.error(index.span, "list index must be Int");
+                        }
+                        *elem_ty
+                    }
+                    Ty::Map(key_ty, value_ty) => {
+                        if !self.is_assignable(&index_ty, &key_ty) {
+                            self.diags.error(index.span, "map index type mismatch");
+                        }
+                        *value_ty
+                    }
+                    Ty::Unknown => Ty::Unknown,
+                    other => {
+                        self.diags.error(
+                            target.span,
+                            format!("assignment target must be an indexable value (got {other})"),
+                        );
+                        Ty::Unknown
+                    }
+                }
+            }
+            ExprKind::OptionalIndex { base, index } => {
+                let base_ty = self.check_expr(base);
+                let inner = match base_ty {
+                    Ty::Option(inner) => *inner,
+                    Ty::Unknown => return Ty::Unknown,
+                    other => {
+                        self.diags.error(
+                            base.span,
+                            format!("optional access on non-optional {}", other),
+                        );
+                        return Ty::Unknown;
+                    }
+                };
+                let index_ty = self.check_expr(index);
+                match inner {
+                    Ty::List(elem_ty) => {
+                        if !matches!(index_ty, Ty::Unknown) && !self.is_int_like(&index_ty) {
+                            self.diags.error(index.span, "list index must be Int");
+                        }
+                        *elem_ty
+                    }
+                    Ty::Map(key_ty, value_ty) => {
+                        if !self.is_assignable(&index_ty, &key_ty) {
+                            self.diags.error(index.span, "map index type mismatch");
+                        }
+                        *value_ty
+                    }
+                    Ty::Unknown => Ty::Unknown,
+                    other => {
+                        self.diags.error(
+                            target.span,
+                            format!("assignment target must be an indexable value (got {other})"),
+                        );
+                        Ty::Unknown
+                    }
+                }
             }
             _ => {
                 self.diags.error(target.span, "invalid assignment target");
@@ -1135,6 +1266,14 @@ impl<'a> Checker<'a> {
         match ty {
             Ty::Int | Ty::Float => true,
             Ty::Refined { base, .. } => self.is_numeric(base),
+            _ => false,
+        }
+    }
+
+    fn is_int_like(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Int => true,
+            Ty::Refined { base, .. } => self.is_int_like(base),
             _ => false,
         }
     }

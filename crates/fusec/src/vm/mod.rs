@@ -490,6 +490,31 @@ impl<'a> Vm<'a> {
                     };
                     frame.stack.push(value);
                 }
+                Instr::GetIndex => {
+                    let index = frame.pop()?;
+                    let base = frame.pop()?.unboxed();
+                    let value = match base {
+                        Value::List(items) => {
+                            let idx = self.list_index(&index)?;
+                            items.get(idx).cloned().ok_or_else(|| {
+                                VmError::Runtime("index out of bounds".to_string())
+                            })?
+                        }
+                        Value::Map(items) => {
+                            let key = self.map_key(&index)?;
+                            items.get(&key).cloned().unwrap_or(Value::Null)
+                        }
+                        Value::Null => {
+                            return Err(VmError::Runtime("null access".to_string()));
+                        }
+                        _ => {
+                            return Err(VmError::Runtime(
+                                "index access not supported on this value".to_string(),
+                            ))
+                        }
+                    };
+                    frame.stack.push(value);
+                }
                 Instr::SetField { field } => {
                     let value = frame.pop()?;
                     let base = frame.pop()?;
@@ -518,6 +543,63 @@ impl<'a> Vm<'a> {
                         _ => {
                             return Err(VmError::Runtime(
                                 "assignment target must be a struct field".to_string(),
+                            ))
+                        }
+                    };
+                    frame.stack.push(updated);
+                }
+                Instr::SetIndex => {
+                    let value = frame.pop()?;
+                    let index = frame.pop()?;
+                    let base = frame.pop()?;
+                    let updated = match base {
+                        Value::Boxed(cell) => {
+                            {
+                                let mut inner = cell.borrow_mut();
+                                match &mut *inner {
+                                    Value::List(items) => {
+                                        let idx = self.list_index(&index)?;
+                                        if idx >= items.len() {
+                                            return Err(VmError::Runtime(
+                                                "index out of bounds".to_string(),
+                                            ));
+                                        }
+                                        items[idx] = value;
+                                    }
+                                    Value::Map(items) => {
+                                        let key = self.map_key(&index)?;
+                                        items.insert(key, value);
+                                    }
+                                    Value::Null => {
+                                        return Err(VmError::Runtime("null access".to_string()))
+                                    }
+                                    _ => {
+                                        return Err(VmError::Runtime(
+                                            "assignment target must be an indexable value"
+                                                .to_string(),
+                                        ))
+                                    }
+                                }
+                            }
+                            Value::Boxed(cell)
+                        }
+                        Value::List(mut items) => {
+                            let idx = self.list_index(&index)?;
+                            if idx >= items.len() {
+                                return Err(VmError::Runtime("index out of bounds".to_string()));
+                            }
+                            items[idx] = value;
+                            Value::List(items)
+                        }
+                        Value::Map(mut items) => {
+                            let key = self.map_key(&index)?;
+                            items.insert(key, value);
+                            Value::Map(items)
+                        }
+                        Value::Null => return Err(VmError::Runtime("null access".to_string())),
+                        _ => {
+                            return Err(VmError::Runtime(
+                                "assignment target must be an indexable value".to_string(),
                             ))
                         }
                     };
@@ -1432,6 +1514,21 @@ impl<'a> Vm<'a> {
             Value::Function(_) => "Function".to_string(),
             Value::Builtin(_) => "Builtin".to_string(),
             Value::Boxed(_) => "Box".to_string(),
+        }
+    }
+
+    fn list_index(&self, value: &Value) -> VmResult<usize> {
+        match value.unboxed() {
+            Value::Int(v) if v >= 0 => Ok(v as usize),
+            Value::Int(_) => Err(VmError::Runtime("index out of bounds".to_string())),
+            _ => Err(VmError::Runtime("list index must be Int".to_string())),
+        }
+    }
+
+    fn map_key(&self, value: &Value) -> VmResult<String> {
+        match value.unboxed() {
+            Value::String(key) => Ok(key),
+            _ => Err(VmError::Runtime("map keys must be strings".to_string())),
         }
     }
 

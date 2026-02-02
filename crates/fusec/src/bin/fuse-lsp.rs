@@ -1014,6 +1014,10 @@ impl<'a> IndexBuilder<'a> {
                 }
                 self.visit_expr(base);
             }
+            ExprKind::Index { base, index } | ExprKind::OptionalIndex { base, index } => {
+                self.visit_expr(base);
+                self.visit_expr(index);
+            }
             ExprKind::StructLit { name, fields } => {
                 self.add_type_ref(name);
                 for field in fields {
