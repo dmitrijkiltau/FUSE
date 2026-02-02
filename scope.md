@@ -90,10 +90,14 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * package manifest (`fuse.toml`) + `fuse run/test/build`
 * dependency fetching + `fuse.lock`
 * IR cache for fast `fuse run` (`.fuse/build/program.ir`)
+* LSP (single-file): diagnostics, formatting, go-to-definition, hover, rename, workspace symbols
 
 **Tooling (planned)**
 
-* LSP (not day one)
+* LSP: find-references
+* LSP: code actions
+* LSP UX: semantic tokens + docstrings/inlay hints
+* Project indexing for multi-file workspace queries (cross-file defs/refs/rename)
 
 ## Non-goals (explicitly)
 
