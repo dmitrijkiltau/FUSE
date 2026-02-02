@@ -341,5 +341,5 @@ Structured logging:
 
 ## Unsupported or partial features
 
-* Assignment targets are limited to identifiers.
+* Assignment targets are limited to identifiers and struct fields (no indexing or optional access).
 * `..` range expressions are only used inside refined type arguments.

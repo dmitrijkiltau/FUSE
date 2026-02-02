@@ -363,6 +363,6 @@ Runtime binding + error mapping are described in `runtime.md`.
 * `for`/`while`/`break`/`continue` run in both backends.
 * `spawn`/`await` run in both backends (tasks execute eagerly today).
 * `box` creates a shared cell; boxed values are transparently dereferenced in most expressions.
-* Assignment targets are limited to identifiers at runtime.
+* Assignment targets are limited to identifiers and struct fields at runtime (no indexing or optional access).
 * Enum variants only support tuple payloads (no named payload fields).
 * `..` range expressions are only used in refined type arguments; evaluating them directly is not supported.

@@ -521,6 +521,29 @@ impl FuncBuilder {
         }
     }
 
+    fn collect_assign_path(
+        &self,
+        target: &Expr,
+        out: &mut Vec<String>,
+        has_optional: &mut bool,
+    ) -> Option<String> {
+        match &target.kind {
+            ExprKind::Ident(ident) => Some(ident.name.clone()),
+            ExprKind::Member { base, name } => {
+                let root = self.collect_assign_path(base, out, has_optional)?;
+                out.push(name.name.clone());
+                Some(root)
+            }
+            ExprKind::OptionalMember { base, name } => {
+                *has_optional = true;
+                let root = self.collect_assign_path(base, out, has_optional)?;
+                out.push(name.name.clone());
+                Some(root)
+            }
+            _ => None,
+        }
+    }
+
     fn resolve(&self, name: &str) -> Option<usize> {
         for scope in self.scopes.iter().rev() {
             if let Some(slot) = scope.get(name) {
@@ -571,6 +594,52 @@ impl FuncBuilder {
                     }
                     None => self.errors.push(format!("unknown variable {}", ident.name)),
                 },
+                ExprKind::Member { .. } | ExprKind::OptionalMember { .. } => {
+                    let mut path = Vec::new();
+                    let mut has_optional = false;
+                    let Some(root) =
+                        self.collect_assign_path(target, &mut path, &mut has_optional)
+                    else {
+                        self.errors
+                            .push("unsupported assignment target".to_string());
+                        self.emit(Instr::Push(Const::Unit));
+                        return;
+                    };
+                    if has_optional {
+                        self.errors
+                            .push("optional assignment not supported in VM yet".to_string());
+                        self.emit(Instr::Push(Const::Unit));
+                        return;
+                    }
+                    if path.is_empty() {
+                        self.errors
+                            .push("unsupported assignment target".to_string());
+                        self.emit(Instr::Push(Const::Unit));
+                        return;
+                    }
+                    let Some(slot) = self.resolve(&root) else {
+                        self.errors.push(format!("unknown variable {}", root));
+                        self.emit(Instr::Push(Const::Unit));
+                        return;
+                    };
+                    self.emit(Instr::LoadLocal(slot));
+                    if path.len() > 1 {
+                        for field in path[..path.len() - 1].iter() {
+                            self.emit(Instr::Dup);
+                            self.emit(Instr::GetField { field: field.clone() });
+                        }
+                    }
+                    self.lower_expr(expr);
+                    let last = path.last().cloned().unwrap();
+                    self.emit(Instr::SetField { field: last });
+                    if path.len() > 1 {
+                        for field in path[..path.len() - 1].iter().rev() {
+                            self.emit(Instr::SetField { field: field.clone() });
+                        }
+                    }
+                    self.emit(Instr::StoreLocal(slot));
+                    self.emit(Instr::Push(Const::Unit));
+                }
                 _ => self.errors.push("unsupported assignment target".to_string()),
             },
             StmtKind::Return { expr } => {
@@ -1125,6 +1194,7 @@ impl FuncBuilder {
                     builder.declare_param(&ident);
                 }
                 builder.lower_block(block);
+                builder.emit(Instr::Return);
                 builder.ensure_return();
                 let (func, errors, extra) = builder.finish();
                 if let Some(func) = func {

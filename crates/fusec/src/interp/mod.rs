@@ -365,6 +365,15 @@ impl Env {
         }
         None
     }
+
+    fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
+        for scope in self.scopes.iter_mut().rev() {
+            if scope.contains_key(name) {
+                return scope.get_mut(name);
+            }
+        }
+        None
+    }
 }
 
 pub struct Interpreter<'a> {
@@ -868,23 +877,11 @@ impl<'a> Interpreter<'a> {
                 Ok(Value::Unit)
             }
             StmtKind::Assign { target, expr } => match &target.kind {
-                ExprKind::Ident(ident) => {
+                _ => {
                     let value = self.eval_expr(expr)?;
-                    if let Some(Value::Boxed(cell)) = self.env.get(&ident.name) {
-                        *cell.borrow_mut() = value.unboxed();
-                        return Ok(Value::Unit);
-                    }
-                    if !self.env.assign(&ident.name, value) {
-                        return Err(ExecError::Runtime(format!(
-                            "unknown variable {}",
-                            ident.name
-                        )));
-                    }
+                    self.assign_target(target, value)?;
                     Ok(Value::Unit)
                 }
-                _ => Err(ExecError::Runtime(
-                    "unsupported assignment target".to_string(),
-                )),
             },
             StmtKind::Return { expr } => {
                 let value = match expr {
@@ -1937,6 +1934,97 @@ impl<'a> Interpreter<'a> {
             }
             _ => Err(ExecError::Runtime(
                 "?! expects Option or Result".to_string(),
+            )),
+        }
+    }
+
+    fn assign_target(&mut self, target: &Expr, value: Value) -> ExecResult<()> {
+        match &target.kind {
+            ExprKind::Ident(ident) => {
+                if let Some(Value::Boxed(cell)) = self.env.get(&ident.name) {
+                    *cell.borrow_mut() = value.unboxed();
+                    return Ok(());
+                }
+                if !self.env.assign(&ident.name, value) {
+                    return Err(ExecError::Runtime(format!(
+                        "unknown variable {}",
+                        ident.name
+                    )));
+                }
+                Ok(())
+            }
+            ExprKind::Member { .. } | ExprKind::OptionalMember { .. } => {
+                let mut path = Vec::new();
+                let mut has_optional = false;
+                let Some(root) = self.collect_assign_path(target, &mut path, &mut has_optional) else {
+                    return Err(ExecError::Runtime("invalid assignment target".to_string()));
+                };
+                if has_optional {
+                    return Err(ExecError::Runtime(
+                        "cannot assign through optional access".to_string(),
+                    ));
+                }
+                if path.is_empty() {
+                    return Err(ExecError::Runtime("invalid assignment target".to_string()));
+                }
+                let Some(root_value) = self.env.get_mut(&root) else {
+                    return Err(ExecError::Runtime(format!(
+                        "unknown variable {}",
+                        root
+                    )));
+                };
+                Self::assign_in_value(root_value, &path, value)
+            }
+            _ => Err(ExecError::Runtime("invalid assignment target".to_string())),
+        }
+    }
+
+    fn collect_assign_path(
+        &self,
+        target: &Expr,
+        out: &mut Vec<String>,
+        has_optional: &mut bool,
+    ) -> Option<String> {
+        match &target.kind {
+            ExprKind::Ident(ident) => Some(ident.name.clone()),
+            ExprKind::Member { base, name } => {
+                let root = self.collect_assign_path(base, out, has_optional)?;
+                out.push(name.name.clone());
+                Some(root)
+            }
+            ExprKind::OptionalMember { base, name } => {
+                *has_optional = true;
+                let root = self.collect_assign_path(base, out, has_optional)?;
+                out.push(name.name.clone());
+                Some(root)
+            }
+            _ => None,
+        }
+    }
+
+    fn assign_in_value(target: &mut Value, path: &[String], value: Value) -> ExecResult<()> {
+        if path.is_empty() {
+            *target = value;
+            return Ok(());
+        }
+        match target {
+            Value::Boxed(cell) => {
+                let mut inner = cell.borrow_mut();
+                Self::assign_in_value(&mut inner, path, value)
+            }
+            Value::Struct { fields, .. } => {
+                let field = &path[0];
+                if path.len() == 1 {
+                    fields.insert(field.clone(), value);
+                    return Ok(());
+                }
+                let next = fields.get_mut(field).ok_or_else(|| {
+                    ExecError::Runtime(format!("unknown field {field}"))
+                })?;
+                Self::assign_in_value(next, &path[1..], value)
+            }
+            _ => Err(ExecError::Runtime(
+                "assignment target must be a struct field".to_string(),
             )),
         }
     }

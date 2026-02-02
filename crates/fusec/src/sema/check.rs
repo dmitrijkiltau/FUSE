@@ -785,8 +785,25 @@ impl<'a> Checker<'a> {
                     Ty::Unknown
                 }
             }
-            ExprKind::Member { base, name } => self.check_member(base, name, false),
-            ExprKind::OptionalMember { base, name } => self.check_member(base, name, true),
+            ExprKind::Member { base, name } => {
+                let base_ty = self.check_expr(base);
+                match base_ty {
+                    Ty::Struct(name_ty) => self.lookup_field(&name_ty, &name.name, name.span),
+                    Ty::Unknown => Ty::Unknown,
+                    other => {
+                        self.diags.error(
+                            target.span,
+                            format!("assignment target must be a struct field (got {other})"),
+                        );
+                        Ty::Unknown
+                    }
+                }
+            }
+            ExprKind::OptionalMember { .. } => {
+                self.diags
+                    .error(target.span, "cannot assign through optional access");
+                Ty::Unknown
+            }
             _ => {
                 self.diags.error(target.span, "invalid assignment target");
                 Ty::Unknown

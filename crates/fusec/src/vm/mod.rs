@@ -490,6 +490,39 @@ impl<'a> Vm<'a> {
                     };
                     frame.stack.push(value);
                 }
+                Instr::SetField { field } => {
+                    let value = frame.pop()?;
+                    let base = frame.pop()?;
+                    let field_name = field;
+                    let updated = match base {
+                        Value::Boxed(cell) => {
+                            {
+                                let mut inner = cell.borrow_mut();
+                                match &mut *inner {
+                                    Value::Struct { fields, .. } => {
+                                        fields.insert(field_name.clone(), value);
+                                    }
+                                    _ => {
+                                        return Err(VmError::Runtime(
+                                            "assignment target must be a struct field".to_string(),
+                                        ))
+                                    }
+                                }
+                            }
+                            Value::Boxed(cell)
+                        }
+                        Value::Struct { name, mut fields } => {
+                            fields.insert(field_name, value);
+                            Value::Struct { name, fields }
+                        }
+                        _ => {
+                            return Err(VmError::Runtime(
+                                "assignment target must be a struct field".to_string(),
+                            ))
+                        }
+                    };
+                    frame.stack.push(updated);
+                }
                 Instr::InterpString { parts } => {
                     let mut items = Vec::with_capacity(parts);
                     for _ in 0..parts {

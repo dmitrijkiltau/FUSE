@@ -1,0 +1,13 @@
+# struct field assignment
+
+type User:
+  name: String
+  age: Int
+
+fn main():
+  let user = User(name="Ada", age=1)
+  user.age = user.age + 1
+  print(user.age)
+
+app "assign":
+  main()

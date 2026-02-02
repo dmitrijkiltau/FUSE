@@ -56,6 +56,7 @@ pub enum Instr {
     MakeStruct { name: String, fields: Vec<String> },
     MakeEnum { name: String, variant: String, argc: usize },
     GetField { field: String },
+    SetField { field: String },
     InterpString { parts: usize },
     MatchLocal {
         slot: usize,
