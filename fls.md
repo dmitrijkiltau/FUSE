@@ -367,4 +367,4 @@ Runtime binding + error mapping are described in `runtime.md`.
 * `box` creates a shared cell; boxed values are transparently dereferenced in most expressions.
 * Assignment targets include identifiers, struct fields, and list/map indexing; optional access in assignments errors on null.
 * Enum variants only support tuple payloads (no named payload fields).
-* `..` range expressions are only used in refined type arguments; evaluating them directly is not supported.
+* `a..b` yields a numeric list (inclusive) when evaluated; descending ranges error.

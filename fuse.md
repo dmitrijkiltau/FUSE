@@ -122,6 +122,7 @@ The runtime currently handles:
 * tests via `test "name":` + `fusec --test` (AST backend)
 * `spawn`/`await`/`box` concurrency
 * `for`/`while`/`break`/`continue` loops
+* range expressions (`a..b`) evaluate to inclusive numeric lists
 * `without` type derivations
 * Config loading (env > config file > defaults)
 * JSON encode/decode and refined-type validation

@@ -1234,9 +1234,10 @@ impl<'a> Checker<'a> {
             }
             Range => {
                 if self.is_numeric(&left) && self.is_numeric(&right) {
-                    Ty::Range(Box::new(left))
+                    let elem_ty = self.range_elem_type(&left, &right);
+                    Ty::List(Box::new(elem_ty))
                 } else if left.is_unknown() || right.is_unknown() {
-                    Ty::Range(Box::new(Ty::Unknown))
+                    Ty::List(Box::new(Ty::Unknown))
                 } else {
                     self.diags.error(span, "range requires numeric types");
                     Ty::Unknown
@@ -1275,6 +1276,28 @@ impl<'a> Checker<'a> {
             Ty::Int => true,
             Ty::Refined { base, .. } => self.is_int_like(base),
             _ => false,
+        }
+    }
+
+    fn range_elem_type(&self, left: &Ty, right: &Ty) -> Ty {
+        let left_base = self.numeric_base_type(left);
+        let right_base = self.numeric_base_type(right);
+        match (left_base, right_base) {
+            (Some(Ty::Unknown), _) | (_, Some(Ty::Unknown)) => Ty::Unknown,
+            (Some(Ty::Float), _) | (_, Some(Ty::Float)) => Ty::Float,
+            (Some(Ty::Int), Some(Ty::Int)) => Ty::Int,
+            (Some(_), Some(_)) => Ty::Float,
+            _ => Ty::Unknown,
+        }
+    }
+
+    fn numeric_base_type(&self, ty: &Ty) -> Option<Ty> {
+        match ty {
+            Ty::Int => Some(Ty::Int),
+            Ty::Float => Some(Ty::Float),
+            Ty::Unknown => Some(Ty::Unknown),
+            Ty::Refined { base, .. } => self.numeric_base_type(base),
+            _ => None,
         }
     }
 

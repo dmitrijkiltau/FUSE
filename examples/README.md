@@ -57,3 +57,4 @@ Files:
 - `examples/box_shared.fuse`: shared `box` state across tasks.
 - `examples/assign_field.fuse`: struct field assignment.
 - `examples/assign_index.fuse`: list/map index assignment.
+- `examples/range_demo.fuse`: range expressions (inclusive lists).

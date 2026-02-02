@@ -1026,8 +1026,11 @@ impl FuncBuilder {
                     BinaryOp::And => self.emit(Instr::And),
                     BinaryOp::Or => self.emit(Instr::Or),
                     BinaryOp::Range => {
-                        self.errors
-                            .push("range not supported in VM yet".to_string());
+                        self.emit(Instr::Call {
+                            name: "range".to_string(),
+                            argc: 2,
+                            kind: CallKind::Builtin,
+                        });
                     }
                 }
             }

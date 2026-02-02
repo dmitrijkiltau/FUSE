@@ -843,6 +843,14 @@ impl<'a> Vm<'a> {
                     .unwrap_or_else(|| "assertion failed".to_string());
                 Err(VmError::Runtime(format!("assert failed: {message}")))
             }
+            "range" => {
+                if args.len() != 2 {
+                    return Err(VmError::Runtime(
+                        "range expects 2 arguments".to_string(),
+                    ));
+                }
+                self.eval_range(&args[0], &args[1])
+            }
             "env" => {
                 let key = match args.get(0) {
                     Some(Value::String(s)) => s.clone(),
@@ -868,6 +876,43 @@ impl<'a> Vm<'a> {
             }
             _ => Err(VmError::Runtime(format!("unknown builtin {name}"))),
         }
+    }
+
+    fn eval_range(&self, start: &Value, end: &Value) -> VmResult<Value> {
+        match (start.unboxed(), end.unboxed()) {
+            (Value::Int(start), Value::Int(end)) => {
+                if start > end {
+                    return Err(VmError::Runtime(
+                        "range start must be <= end".to_string(),
+                    ));
+                }
+                let items = (start..=end).map(Value::Int).collect();
+                Ok(Value::List(items))
+            }
+            (Value::Float(start), Value::Float(end)) => self.eval_float_range(start, end),
+            (Value::Int(start), Value::Float(end)) => self.eval_float_range(start as f64, end),
+            (Value::Float(start), Value::Int(end)) => self.eval_float_range(start, end as f64),
+            _ => Err(VmError::Runtime("range expects numeric bounds".to_string())),
+        }
+    }
+
+    fn eval_float_range(&self, start: f64, end: f64) -> VmResult<Value> {
+        if !start.is_finite() || !end.is_finite() {
+            return Err(VmError::Runtime("invalid range bounds".to_string()));
+        }
+        if start > end {
+            return Err(VmError::Runtime(
+                "range start must be <= end".to_string(),
+            ));
+        }
+        let mut items = Vec::new();
+        let mut current = start;
+        let epsilon = 1e-9;
+        while current <= end + epsilon {
+            items.push(Value::Float(current));
+            current += 1.0;
+        }
+        Ok(Value::List(items))
     }
 
     fn eval_serve(&mut self, port: i64) -> VmResult<Value> {

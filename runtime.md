@@ -325,6 +325,14 @@ Assignment targets allow:
 
 Optional access in assignment targets (e.g. `foo?.bar = x`, `items?[0] = x`) errors if the base is `null`.
 
+## Ranges
+
+`a..b` evaluates to a `List` of numbers from `a` to `b` (inclusive).
+
+* Only numeric bounds are allowed.
+* If `a > b`, the range raises a runtime error.
+* Float ranges step by `1.0` (for example, `1.5..3.5` yields `[1.5, 2.5, 3.5]`).
+
 ## Logging
 
 `log` is a lightweight builtin for runtime logging. It is intentionally minimal and shared by
@@ -352,7 +360,3 @@ Structured logging:
 * `log("info", "message", data)` emits JSON:
   `{"level":"info","message":"message","data":<json>}`
 * If multiple data values are provided, `data` is a JSON array.
-
-## Unsupported or partial features
-
-* `..` range expressions are only used inside refined type arguments.

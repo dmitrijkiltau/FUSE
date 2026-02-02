@@ -108,3 +108,13 @@ fn main():
 "#;
     assert_parse_ok(src);
 }
+
+#[test]
+fn parses_range_expr() {
+    let src = r#"
+fn main():
+  let nums = 1..3
+  let floats = 1.5..3.5
+"#;
+    assert_parse_ok(src);
+}

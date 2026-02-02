@@ -1021,9 +1021,7 @@ impl<'a> Interpreter<'a> {
                     | BinaryOp::Gt
                     | BinaryOp::GtEq => self.eval_compare(op, left_val, right_val),
                     BinaryOp::And | BinaryOp::Or => self.eval_bool(op, left_val, right_val),
-                    BinaryOp::Range => Err(ExecError::Runtime(
-                        "range not supported in interpreter yet".to_string(),
-                    )),
+                    BinaryOp::Range => self.eval_range(left_val, right_val),
                 }
             }
             ExprKind::Unary { op, expr } => {
@@ -2227,6 +2225,45 @@ impl<'a> Interpreter<'a> {
                 "unsupported arithmetic operands".to_string(),
             )),
         }
+    }
+
+    fn eval_range(&self, left: Value, right: Value) -> ExecResult<Value> {
+        match (left.unboxed(), right.unboxed()) {
+            (Value::Int(start), Value::Int(end)) => {
+                if start > end {
+                    return Err(ExecError::Runtime(
+                        "range start must be <= end".to_string(),
+                    ));
+                }
+                let items = (start..=end).map(Value::Int).collect();
+                Ok(Value::List(items))
+            }
+            (Value::Float(start), Value::Float(end)) => self.eval_float_range(start, end),
+            (Value::Int(start), Value::Float(end)) => self.eval_float_range(start as f64, end),
+            (Value::Float(start), Value::Int(end)) => self.eval_float_range(start, end as f64),
+            _ => Err(ExecError::Runtime(
+                "range expects numeric bounds".to_string(),
+            )),
+        }
+    }
+
+    fn eval_float_range(&self, start: f64, end: f64) -> ExecResult<Value> {
+        if !start.is_finite() || !end.is_finite() {
+            return Err(ExecError::Runtime("invalid range bounds".to_string()));
+        }
+        if start > end {
+            return Err(ExecError::Runtime(
+                "range start must be <= end".to_string(),
+            ));
+        }
+        let mut items = Vec::new();
+        let mut current = start;
+        let epsilon = 1e-9;
+        while current <= end + epsilon {
+            items.push(Value::Float(current));
+            current += 1.0;
+        }
+        Ok(Value::List(items))
     }
 
     fn eval_compare(&self, op: &BinaryOp, left: Value, right: Value) -> ExecResult<Value> {
