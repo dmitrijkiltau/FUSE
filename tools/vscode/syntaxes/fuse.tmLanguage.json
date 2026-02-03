@@ -3,6 +3,7 @@
   "scopeName": "source.fuse",
   "patterns": [
     {"include": "#comments"},
+    {"include": "#imports"},
     {"include": "#strings"},
     {"include": "#definitions"},
     {"include": "#fields"},
@@ -13,9 +14,44 @@
     {"include": "#userTypes"},
     {"include": "#constants"},
     {"include": "#numbers"},
+    {"include": "#namespaces"},
     {"include": "#memberAccess"}
   ],
   "repository": {
+    "imports": {
+      "patterns": [
+        {
+          "name": "meta.import.fuse",
+          "begin": "^\\s*(import)\\b",
+          "beginCaptures": {
+            "1": {"name": "keyword.control.fuse"}
+          },
+          "end": "$",
+          "patterns": [
+            {
+              "name": "keyword.control.fuse",
+              "match": "\\b(from|as)\\b"
+            },
+            {
+              "name": "punctuation.section.braces.fuse",
+              "match": "[{},]"
+            },
+            {
+              "name": "entity.name.type.fuse",
+              "match": "\\b(?!import\\b|from\\b|as\\b)[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\b"
+            },
+            {
+              "name": "string.quoted.double.fuse",
+              "match": "\"[^\"]*\""
+            },
+            {
+              "name": "constant.other.import-path.fuse",
+              "match": "dep:[^\"\\s]+"
+            }
+          ]
+        }
+      ]
+    },
     "comments": {
       "patterns": [
         {
@@ -48,6 +84,10 @@
             {
               "name": "constant.character.escape.fuse",
               "match": "\\\\."
+            },
+            {
+              "name": "constant.other.import-path.fuse",
+              "match": "dep:[^\"\\s]+"
             },
             {
               "name": "meta.embedded.expression.fuse",
@@ -83,10 +123,18 @@
       "patterns": [
         {
           "name": "meta.definition.fuse",
-          "match": "^\\s*(fn|type|enum|config|service|app|migration|table|test)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "match": "^\\s*(fn|type|enum|config|service|app|migration|table|test)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
           "captures": {
             "1": {"name": "keyword.control.fuse"},
             "2": {"name": "entity.name.type.fuse"}
+          }
+        },
+        {
+          "name": "meta.definition.app.fuse",
+          "match": "^\\s*(app)\\s+(\"[^\"]*\")",
+          "captures": {
+            "1": {"name": "keyword.control.fuse"},
+            "2": {"name": "string.quoted.double.fuse"}
           }
         }
       ]
@@ -106,7 +154,7 @@
       "patterns": [
         {
           "name": "meta.function-call.fuse",
-          "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(\\()",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s*(\\()",
           "captures": {
             "1": {"name": "entity.name.function.fuse"},
             "2": {"name": "punctuation.section.arguments.begin.fuse"}
@@ -118,7 +166,7 @@
       "patterns": [
         {
           "name": "meta.error-type.fuse",
-          "match": "!\\s*([A-Z][A-Za-z0-9_]*)",
+          "match": "!\\s*([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
           "captures": {
             "0": {"name": "keyword.operator.fuse"},
             "1": {"name": "support.type.error.fuse"}
@@ -130,7 +178,7 @@
       "patterns": [
         {
           "name": "storage.type.fuse",
-          "match": "\\b(Int|Float|Bool|String|Id|Email|Bytes|Option|Result|List|Map)\\b"
+          "match": "\\b(Int|Float|Bool|String|Id|Email|Bytes|Error|Option|Result|List|Map|Task|Range)\\b"
         }
       ]
     },
@@ -155,6 +203,28 @@
         {
           "name": "constant.numeric.fuse",
           "match": "\\b-?\\d+(?:\\.\\d+)?\\b"
+        }
+      ]
+    },
+    "namespaces": {
+      "patterns": [
+        {
+          "match": "(?:^\\s*(?:type|enum|config)\\s+|[:!]|->)\\s*([A-Za-z_][A-Za-z0-9_]*)(?=\\.)",
+          "captures": {
+            "1": {"name": "entity.name.namespace.fuse"}
+          }
+        },
+        {
+          "match": "\\b(?:List|Map|Option|Result|Task|Range)\\s*<\\s*([A-Za-z_][A-Za-z0-9_]*)(?=\\.)",
+          "captures": {
+            "1": {"name": "entity.name.namespace.fuse"}
+          }
+        },
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(?=\\.[A-Za-z_][A-Za-z0-9_]*\\s*\\()",
+          "captures": {
+            "1": {"name": "entity.name.namespace.fuse"}
+          }
         }
       ]
     },
