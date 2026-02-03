@@ -8,7 +8,7 @@ type User:
   name: String
   age: Int
 
-type NotFound:
+type std.Error.NotFound:
   message: String
 
 fn describe(color: Color) -> String:
@@ -30,7 +30,7 @@ fn maybe_name(user: User?) -> String:
     case None:
       return "unknown"
 
-fn handle(result: User!NotFound) -> String:
+fn handle(result: User!std.Error.NotFound) -> String:
   match result:
     case Ok(u):
       return u.name

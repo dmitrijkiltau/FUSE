@@ -283,6 +283,10 @@ The AST matches `crates/fusec/src/ast.rs`:
 * `List<T>`, `Map<K,V>`, `Option<T>`, `Result<T,E>`
 * User-defined `type` and `enum` are nominal.
 
+Reserved namespace:
+
+* `std.Error.*` is reserved for runtime error mapping/JSON rendering.
+
 ### Optionals (`T?`)
 
 * `T?` is `Option<T>`.

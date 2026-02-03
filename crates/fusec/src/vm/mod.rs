@@ -23,6 +23,9 @@ enum VmError {
 type VmResult<T> = Result<T, VmError>;
 
 fn split_type_name(name: &str) -> (Option<&str>, &str) {
+    if name.starts_with("std.") {
+        return (None, name);
+    }
     match name.split_once('.') {
         Some((module, rest)) if !module.is_empty() && !rest.is_empty() => (Some(module), rest),
         _ => (None, name),
@@ -1207,13 +1210,13 @@ impl<'a> Vm<'a> {
     fn http_status_for_error_value(&self, value: &Value) -> u16 {
         match value {
             Value::Struct { name, fields } => match name.as_str() {
-                "ValidationError" => 400,
-                "BadRequest" => 400,
-                "Unauthorized" => 401,
-                "Forbidden" => 403,
-                "NotFound" => 404,
-                "Conflict" => 409,
-                "Error" => fields
+                "std.Error.Validation" => 400,
+                "std.Error.BadRequest" => 400,
+                "std.Error.Unauthorized" => 401,
+                "std.Error.Forbidden" => 403,
+                "std.Error.NotFound" => 404,
+                "std.Error.Conflict" => 409,
+                "std.Error" => fields
                     .get("status")
                     .and_then(|v| match v {
                         Value::Int(n) => (*n).try_into().ok(),
@@ -2008,7 +2011,7 @@ impl<'a> Vm<'a> {
         let mut fields = HashMap::new();
         fields.insert("message".to_string(), Value::String(message.into()));
         Value::Struct {
-            name: "Error".to_string(),
+            name: "std.Error".to_string(),
             fields,
         }
     }
@@ -2022,7 +2025,7 @@ impl<'a> Vm<'a> {
         );
         fields.insert("fields".to_string(), Value::List(vec![field]));
         Value::Struct {
-            name: "ValidationError".to_string(),
+            name: "std.Error.Validation".to_string(),
             fields,
         }
     }
@@ -2585,8 +2588,9 @@ fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
     let Value::Struct { name, fields } = value else {
         return None;
     };
-    match name.as_str() {
-        "ValidationError" => {
+    let name = name.as_str();
+    match name {
+        "std.Error.Validation" => {
             let message = match fields.get("message") {
                 Some(Value::String(msg)) => msg.as_str(),
                 _ => "validation failed",
@@ -2594,7 +2598,7 @@ fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
             let field_items = extract_validation_fields(fields.get("fields"));
             Some(rt_error::validation_error_json(message, &field_items))
         }
-        "Error" => {
+        "std.Error" => {
             let code = match fields.get("code") {
                 Some(Value::String(code)) => code.as_str(),
                 _ => "error",
@@ -2618,11 +2622,11 @@ fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
 
 fn builtin_error_defaults(name: &str) -> Option<(&'static str, &'static str)> {
     match name {
-        "BadRequest" => Some(("bad_request", "bad request")),
-        "Unauthorized" => Some(("unauthorized", "unauthorized")),
-        "Forbidden" => Some(("forbidden", "forbidden")),
-        "NotFound" => Some(("not_found", "not found")),
-        "Conflict" => Some(("conflict", "conflict")),
+        "std.Error.BadRequest" => Some(("bad_request", "bad request")),
+        "std.Error.Unauthorized" => Some(("unauthorized", "unauthorized")),
+        "std.Error.Forbidden" => Some(("forbidden", "forbidden")),
+        "std.Error.NotFound" => Some(("not_found", "not found")),
+        "std.Error.Conflict" => Some(("conflict", "conflict")),
         _ => None,
     }
 }

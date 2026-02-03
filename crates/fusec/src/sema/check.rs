@@ -1058,50 +1058,52 @@ impl<'a> Checker<'a> {
     }
 
     fn resolve_simple_type_name_in(&mut self, module_id: ModuleId, name: &str, span: Span) -> Ty {
-        if let Some((module_name, item_name)) = split_qualified_type_name(name) {
-            let module_map = self
-                .module_maps
-                .get(&module_id)
-                .unwrap_or(self.modules);
-            let Some(link) = module_map.get(module_name) else {
-                self.diags
-                    .error(span, format!("unknown module {}", module_name));
+        if !name.starts_with("std.") {
+            if let Some((module_name, item_name)) = split_qualified_type_name(name) {
+                let module_map = self
+                    .module_maps
+                    .get(&module_id)
+                    .unwrap_or(self.modules);
+                let Some(link) = module_map.get(module_name) else {
+                    self.diags
+                        .error(span, format!("unknown module {}", module_name));
+                    return Ty::Unknown;
+                };
+                let Some(symbols) = self.module_symbols.get(&link.id) else {
+                    self.diags
+                        .error(span, format!("unknown module {}", module_name));
+                    return Ty::Unknown;
+                };
+                if symbols.types.contains_key(item_name) {
+                    return Ty::Struct(item_name.to_string());
+                }
+                if symbols.enums.contains_key(item_name) {
+                    return Ty::Enum(item_name.to_string());
+                }
+                if symbols.configs.contains_key(item_name) {
+                    return Ty::Config(item_name.to_string());
+                }
+                if symbols.functions.contains_key(item_name)
+                    || symbols.services.contains_key(item_name)
+                    || link.exports.apps.contains(item_name)
+                {
+                    self.diags.error(
+                        span,
+                        format!("{}.{} is not a type", module_name, item_name),
+                    );
+                } else {
+                    self.diags.error(
+                        span,
+                        format!("unknown type {}.{}", module_name, item_name),
+                    );
+                }
                 return Ty::Unknown;
-            };
-            let Some(symbols) = self.module_symbols.get(&link.id) else {
+            }
+            if name.contains('.') {
                 self.diags
-                    .error(span, format!("unknown module {}", module_name));
+                    .error(span, format!("invalid type path {}", name));
                 return Ty::Unknown;
-            };
-            if symbols.types.contains_key(item_name) {
-                return Ty::Struct(item_name.to_string());
             }
-            if symbols.enums.contains_key(item_name) {
-                return Ty::Enum(item_name.to_string());
-            }
-            if symbols.configs.contains_key(item_name) {
-                return Ty::Config(item_name.to_string());
-            }
-            if symbols.functions.contains_key(item_name)
-                || symbols.services.contains_key(item_name)
-                || link.exports.apps.contains(item_name)
-            {
-                self.diags.error(
-                    span,
-                    format!("{}.{} is not a type", module_name, item_name),
-                );
-            } else {
-                self.diags.error(
-                    span,
-                    format!("unknown type {}.{}", module_name, item_name),
-                );
-            }
-            return Ty::Unknown;
-        }
-        if name.contains('.') {
-            self.diags
-                .error(span, format!("invalid type path {}", name));
-            return Ty::Unknown;
         }
         match name {
             "Int" => Ty::Int,

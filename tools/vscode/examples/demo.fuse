@@ -1,6 +1,6 @@
 # Demo file for syntax highlighting
 
-type NotFound:
+type std.Error.NotFound:
   message: String
 
 type User:
@@ -16,8 +16,8 @@ fn greeting(name: String) -> String:
   return "Hello, ${name}!"
 
 service Users at "/api":
-  get "/users/{id: Id}" -> User!NotFound:
-    return NotFound(message="not found")
+  get "/users/{id: Id}" -> User!std.Error.NotFound:
+    return std.Error.NotFound(message="not found")
 
   post "/users" body User -> User:
     return body

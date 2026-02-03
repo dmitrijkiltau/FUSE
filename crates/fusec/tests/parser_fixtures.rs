@@ -55,7 +55,11 @@ type User:
   age: Int(0..130) = 18
   nickname: String?
 
-fn load(id: Id) -> User!NotFound:
+type std.Error.NotFound:
+  message: String
+
+fn load(id: Id) -> User!std.Error.NotFound:
+  let err = std.Error.NotFound(message="missing")
   User(name="Ada", age=18)
 "#;
     assert_parse_ok(src);

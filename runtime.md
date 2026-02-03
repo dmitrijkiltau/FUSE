@@ -15,17 +15,17 @@ Most runtime behavior is shared, with a few differences called out below.
 ### Recognized error names
 
 The runtime recognizes a small set of error struct names when formatting error JSON and mapping
-HTTP statuses:
+HTTP statuses. These live under a reserved namespace:
 
-* `ValidationError`
-* `Error`
-* `BadRequest`
-* `Unauthorized`
-* `Forbidden`
-* `NotFound`
-* `Conflict`
+* `std.Error.Validation`
+* `std.Error`
+* `std.Error.BadRequest`
+* `std.Error.Unauthorized`
+* `std.Error.Forbidden`
+* `std.Error.NotFound`
+* `std.Error.Conflict`
 
-These are not built-in types in the language (except `Error`); they are matched by name at runtime.
+Names outside `std.Error.*` do not participate in HTTP status mapping or error JSON formatting.
 
 ### Error JSON shape
 
@@ -45,28 +45,29 @@ Errors are rendered as JSON with a single `error` object:
 
 Rules:
 
-* `ValidationError` uses `message` and `fields` (list of structs with `path`, `code`, `message`).
-* `Error` uses `code` and `message`. Other fields are ignored for JSON output.
-* `BadRequest`, `Unauthorized`, `Forbidden`, `NotFound`, `Conflict` use their `message` field if
+* `std.Error.Validation` uses `message` and `fields` (list of structs with `path`, `code`, `message`).
+* `std.Error` uses `code` and `message`. Other fields are ignored for JSON output.
+* `std.Error.BadRequest`, `std.Error.Unauthorized`, `std.Error.Forbidden`, `std.Error.NotFound`,
+  `std.Error.Conflict` use their `message` field if
   present, otherwise a default message.
 * Any other error value renders as `internal_error`.
 
 ### HTTP status mapping
 
-Status mapping uses the error name first, then `Error.status` if present:
+Status mapping uses the error name first, then `std.Error.status` if present:
 
-* `ValidationError` -> 400
-* `BadRequest` -> 400
-* `Unauthorized` -> 401
-* `Forbidden` -> 403
-* `NotFound` -> 404
-* `Conflict` -> 409
-* `Error` with `status: Int` -> that status
+* `std.Error.Validation` -> 400
+* `std.Error.BadRequest` -> 400
+* `std.Error.Unauthorized` -> 401
+* `std.Error.Forbidden` -> 403
+* `std.Error.NotFound` -> 404
+* `std.Error.Conflict` -> 409
+* `std.Error` with `status: Int` -> that status
 * anything else -> 500
 
 ### Result types + `?!`
 
-* `T!` is `Result<T, Error>`.
+* `T!` is `Result<T, Error>` (the built-in error base).
 * `T!E` is `Result<T, E>`.
 
 `expr ?! err` rules:

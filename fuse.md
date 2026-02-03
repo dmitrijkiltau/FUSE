@@ -71,14 +71,14 @@ Expression-last returns implicitly, but you can `return` when you feel dramatic.
 ## Errors: Result + optional sugar
 
 ```fuse
-type NotFound:
+type std.Error.NotFound:
   message: String
 
 fn find_user(id: Id) -> User?:
   return null
 
-fn get_user(id: Id) -> User!NotFound:
-  let user = find_user(id) ?! NotFound(message="User ${id} not found")
+fn get_user(id: Id) -> User!std.Error.NotFound:
+  let user = find_user(id) ?! std.Error.NotFound(message="User ${id} not found")
   return user
 ```
 

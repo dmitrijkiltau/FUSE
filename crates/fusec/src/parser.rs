@@ -114,7 +114,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type_decl(&mut self, doc: Option<Doc>) -> TypeDecl {
-        let name = self.expect_ident();
+        let name = self.parse_type_name();
         if self.eat_punct(Punct::Colon).is_some() {
             self.expect_newline();
             self.expect_indent();
@@ -188,7 +188,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_enum_decl(&mut self, doc: Option<Doc>) -> EnumDecl {
-        let name = self.expect_ident();
+        let name = self.parse_type_name();
         self.expect_punct(Punct::Colon);
         self.expect_newline();
         self.expect_indent();
@@ -612,7 +612,52 @@ impl<'a> Parser<'a> {
                 self.bump();
                 PatternKind::Wildcard
             }
-            TokenKind::Ident(_) | TokenKind::Keyword(Keyword::Body) => {
+            TokenKind::Ident(_) => {
+                let ident = self.parse_type_name();
+                if self.eat_punct(Punct::LParen).is_some() {
+                    let mut args = Vec::new();
+                    let mut fields = Vec::new();
+                    let mut has_named = false;
+                    let mut has_positional = false;
+                    if !self.at_punct(Punct::RParen) {
+                        loop {
+                            if self.is_named_pattern() {
+                                has_named = true;
+                                let field_name = self.expect_ident();
+                                self.expect_punct(Punct::Assign);
+                                let pat = self.parse_pattern();
+                                let span = field_name.span.merge(pat.span);
+                                fields.push(PatternField {
+                                    name: field_name,
+                                    pat: Box::new(pat),
+                                    span,
+                                });
+                            } else {
+                                has_positional = true;
+                                args.push(self.parse_pattern());
+                            }
+                            if self.eat_punct(Punct::Comma).is_none() {
+                                break;
+                            }
+                        }
+                    }
+                    let end = self.expect_punct(Punct::RParen);
+                    if has_named && has_positional {
+                        self.diags.error(
+                            start.merge(end),
+                            "cannot mix positional and named patterns",
+                        );
+                    }
+                    if has_named {
+                        PatternKind::Struct { name: ident, fields }
+                    } else {
+                        PatternKind::EnumVariant { name: ident, args }
+                    }
+                } else {
+                    PatternKind::Ident(ident)
+                }
+            }
+            TokenKind::Keyword(Keyword::Body) => {
                 let ident = self.expect_ident_or_body();
                 if self.eat_punct(Punct::LParen).is_some() {
                     let mut args = Vec::new();
@@ -675,6 +720,23 @@ impl<'a> Parser<'a> {
         Pattern {
             kind,
             span: start.merge(end),
+        }
+    }
+
+    fn struct_literal_name(&self, expr: &Expr) -> Option<Ident> {
+        match &expr.kind {
+            ExprKind::Ident(ident) => Some(ident.clone()),
+            ExprKind::Member { base, name } => {
+                let mut base_ident = self.struct_literal_name(base)?;
+                if base_ident.name.is_empty() {
+                    return None;
+                }
+                base_ident.name.push('.');
+                base_ident.name.push_str(&name.name);
+                base_ident.span = base_ident.span.merge(name.span);
+                Some(base_ident)
+            }
+            _ => None,
         }
     }
 
@@ -921,19 +983,13 @@ impl<'a> Parser<'a> {
                 let args = self.parse_call_args();
                 let end = self.expect_punct(Punct::RParen);
                 let span = expr.span.merge(end);
-                let is_struct_lit = matches!(&expr.kind, ExprKind::Ident(_))
-                    && args.iter().any(|arg| arg.name.is_some());
-                if is_struct_lit {
-                    let name = match expr.kind {
-                        ExprKind::Ident(id) => id,
-                        _ => {
-                            self.error_here("expected identifier for struct literal");
-                            Ident {
-                                name: "_".to_string(),
-                                span: expr.span,
-                            }
-                        }
-                    };
+                let has_named = args.iter().any(|arg| arg.name.is_some());
+                let struct_name = if has_named {
+                    self.struct_literal_name(&expr)
+                } else {
+                    None
+                };
+                if let Some(name) = struct_name {
                     let fields = args
                         .into_iter()
                         .filter_map(|arg| {
