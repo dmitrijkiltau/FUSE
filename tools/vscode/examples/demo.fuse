@@ -9,11 +9,18 @@ type User:
   email: Email
 
 enum Status:
-  Ok
-  Error(message: String)
+  Success
+  Error(String)
 
 fn greeting(name: String) -> String:
   return "Hello, ${name}!"
+
+fn status_message(status: Status) -> String:
+  match status:
+    case Success:
+      return "ok"
+    case Error(m):
+      return "error: ${m}"
 
 service Users at "/api":
   get "/users/{id: Id}" -> User!std.Error.NotFound:
@@ -27,4 +34,5 @@ config App:
 
 app "demo":
   print(greeting("Fuse"))
+  print(status_message(Status.Success))
   serve(App.port)
