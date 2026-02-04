@@ -7,7 +7,7 @@ conservative: anything not listed here is either unsupported or not implemented 
 
 * **AST interpreter**: executes the parsed AST directly.
 * **VM**: lowers to bytecode and executes the VM.
-* **Native (stage 1)**: uses a compiled native image (`program.native`) but currently executes with VM-compatible runtime semantics.
+* **Native (stage 1)**: uses a compiled native image (`program.native`) and VM-compatible runtime semantics, with a Cranelift JIT fast-path for direct Int/Bool arithmetic/control-flow function calls.
 
 Most runtime behavior is shared, with a few differences called out below.
 

@@ -131,8 +131,8 @@ The runtime currently handles:
 * OpenAPI 3.0 generation via `fusec --openapi` (services, schemas, refined types, error responses)
 * package tooling (`fuse.toml`, `fuse run/test/build`)
 
-Today, `native` uses the same runtime semantics as VM while preparing the compiler pipeline for
-true machine-code codegen.
+Today, `native` keeps VM-compatible semantics, with an initial Cranelift JIT fast-path for
+direct Int/Bool arithmetic/control-flow function calls. Unsupported instructions fall back to VM.
 
 ## Package tooling
 

@@ -15,3 +15,7 @@ path = "src/main.rs"
 fuse-rt = { path = "../fuse-rt" }
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
+cranelift-codegen = "0.104"
+cranelift-frontend = "0.104"
+cranelift-jit = "0.104"
+cranelift-module = "0.104"

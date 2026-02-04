@@ -39,6 +39,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * AST interpreter backend
 * Bytecode + VM backend
 * Experimental `native` backend path (`--backend native`) backed by compiled IR image + VM compatibility runtime
+* Native includes a Cranelift JIT slice for direct `fn` calls over Int/Bool arithmetic + control flow, with VM fallback for unsupported instructions
 
 **Planned:**
 

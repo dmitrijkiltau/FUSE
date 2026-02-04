@@ -100,6 +100,12 @@ struct IrFileMeta {
     size: u64,
 }
 
+struct BuildArtifacts {
+    ir: fusec::ir::Program,
+    native: fusec::native::NativeProgram,
+    meta: IrMeta,
+}
+
 #[derive(Default)]
 struct CommonArgs {
     manifest_path: Option<PathBuf>,
@@ -224,21 +230,19 @@ fn run(args: Vec<String>) -> i32 {
     };
 
     match command {
-        Command::Run if common.program_args.is_empty() => {
-            match backend {
-                Some(RunBackend::Ast) => {}
-                Some(RunBackend::Native) => {
-                    if let Some(native) = try_load_native(manifest_dir.as_deref()) {
-                        return run_native_program(native, app.as_deref());
-                    }
-                }
-                _ => {
-                    if let Some(ir) = try_load_ir(manifest_dir.as_deref()) {
-                        return run_vm_ir(ir, app.as_deref());
-                    }
+        Command::Run if common.program_args.is_empty() => match backend {
+            Some(RunBackend::Ast) => {}
+            Some(RunBackend::Native) => {
+                if let Some(native) = try_load_native(manifest_dir.as_deref()) {
+                    return run_native_program(native, app.as_deref());
                 }
             }
-        }
+            _ => {
+                if let Some(ir) = try_load_ir(manifest_dir.as_deref()) {
+                    return run_vm_ir(ir, app.as_deref());
+                }
+            }
+        },
         _ => {}
     }
 
@@ -393,12 +397,17 @@ fn load_manifest(
             let file = path.join("fuse.toml");
             (Some(file), Some(path.to_path_buf()))
         } else {
-            (Some(path.to_path_buf()), path.parent().map(|p| p.to_path_buf()))
+            (
+                Some(path.to_path_buf()),
+                path.parent().map(|p| p.to_path_buf()),
+            )
         }
     } else {
         let cwd = env::current_dir().map_err(|err| format!("cwd error: {err}"))?;
         let path = find_manifest(&cwd);
-        let dir = path.as_ref().and_then(|p| p.parent().map(|p| p.to_path_buf()));
+        let dir = path
+            .as_ref()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()));
         (path, dir)
     };
 
@@ -436,7 +445,9 @@ fn resolve_entry(
         .clone()
         .or_else(|| manifest.and_then(|m| m.package.entry.clone()));
     let Some(entry) = entry else {
-        return Err("missing entry: pass a file path or set package.entry in fuse.toml".to_string());
+        return Err(
+            "missing entry: pass a file path or set package.entry in fuse.toml".to_string(),
+        );
     };
     let path = PathBuf::from(&entry);
     if path.is_absolute() {
@@ -470,11 +481,14 @@ fn run_build(
     if code != 0 {
         return code;
     }
-    if let Err(err) = write_ir(entry, manifest_dir, deps) {
-        eprintln!("{err}");
-        return 1;
-    }
-    if let Err(err) = write_native(entry, manifest_dir, deps) {
+    let artifacts = match compile_artifacts(entry, deps) {
+        Ok(artifacts) => artifacts,
+        Err(err) => {
+            eprintln!("{err}");
+            return 1;
+        }
+    };
+    if let Err(err) = write_compiled_artifacts(manifest_dir, &artifacts) {
         eprintln!("{err}");
         return 1;
     }
@@ -539,17 +553,10 @@ fn write_openapi(
     Ok(())
 }
 
-fn write_ir(
+fn compile_artifacts(
     entry: &Path,
-    manifest_dir: Option<&Path>,
     deps: &HashMap<String, PathBuf>,
-) -> Result<(), String> {
-    let build_dir = build_dir(manifest_dir)?;
-    if !build_dir.exists() {
-        fs::create_dir_all(&build_dir)
-            .map_err(|err| format!("failed to create {}: {err}", build_dir.display()))?;
-    }
-    let out_path = build_dir.join("program.ir");
+) -> Result<BuildArtifacts, String> {
     let src = fs::read_to_string(entry)
         .map_err(|err| format!("failed to read {}: {err}", entry.display()))?;
     let (registry, diags) = fusec::load_program_with_modules_and_deps(entry, &src, deps);
@@ -576,57 +583,38 @@ fn write_ir(
         }
         out
     })?;
-    let bytes = bincode::serialize(&ir).map_err(|err| format!("ir encode failed: {err}"))?;
-    fs::write(&out_path, bytes)
-        .map_err(|err| format!("failed to write {}: {err}", out_path.display()))?;
+    let native = fusec::native::NativeProgram::from_ir(ir.clone());
     let meta = build_ir_meta(&registry)?;
-    let meta_bytes = bincode::serialize(&meta).map_err(|err| format!("ir meta encode failed: {err}"))?;
-    let meta_path = build_dir.join("program.meta");
-    fs::write(&meta_path, meta_bytes)
-        .map_err(|err| format!("failed to write {}: {err}", meta_path.display()))?;
-    Ok(())
+    Ok(BuildArtifacts { ir, native, meta })
 }
 
-fn write_native(
-    entry: &Path,
+fn write_compiled_artifacts(
     manifest_dir: Option<&Path>,
-    deps: &HashMap<String, PathBuf>,
+    artifacts: &BuildArtifacts,
 ) -> Result<(), String> {
     let build_dir = build_dir(manifest_dir)?;
     if !build_dir.exists() {
         fs::create_dir_all(&build_dir)
             .map_err(|err| format!("failed to create {}: {err}", build_dir.display()))?;
     }
-    let out_path = build_dir.join("program.native");
-    let src = fs::read_to_string(entry)
-        .map_err(|err| format!("failed to read {}: {err}", entry.display()))?;
-    let (registry, diags) = fusec::load_program_with_modules_and_deps(entry, &src, deps);
-    if !diags.is_empty() {
-        for diag in diags {
-            let level = match diag.level {
-                fusec::diag::Level::Error => "error",
-                fusec::diag::Level::Warning => "warning",
-            };
-            eprintln!(
-                "{level}: {} ({}..{})",
-                diag.message, diag.span.start, diag.span.end
-            );
-        }
-        return Err("build failed".to_string());
-    }
-    let native = fusec::native::compile_registry(&registry).map_err(|errors| {
-        let mut out = String::new();
-        for err in errors {
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(&format!("lowering error: {err}"));
-        }
-        out
-    })?;
-    let bytes = bincode::serialize(&native).map_err(|err| format!("native encode failed: {err}"))?;
-    fs::write(&out_path, bytes)
-        .map_err(|err| format!("failed to write {}: {err}", out_path.display()))?;
+
+    let ir_path = build_dir.join("program.ir");
+    let ir_bytes =
+        bincode::serialize(&artifacts.ir).map_err(|err| format!("ir encode failed: {err}"))?;
+    fs::write(&ir_path, ir_bytes)
+        .map_err(|err| format!("failed to write {}: {err}", ir_path.display()))?;
+
+    let native_path = build_dir.join("program.native");
+    let native_bytes = bincode::serialize(&artifacts.native)
+        .map_err(|err| format!("native encode failed: {err}"))?;
+    fs::write(&native_path, native_bytes)
+        .map_err(|err| format!("failed to write {}: {err}", native_path.display()))?;
+
+    let meta_path = build_dir.join("program.meta");
+    let meta_bytes = bincode::serialize(&artifacts.meta)
+        .map_err(|err| format!("ir meta encode failed: {err}"))?;
+    fs::write(&meta_path, meta_bytes)
+        .map_err(|err| format!("failed to write {}: {err}", meta_path.display()))?;
     Ok(())
 }
 
@@ -800,14 +788,7 @@ fn resolve_dependencies(
         if resolved.contains_key(&name) {
             continue;
         }
-        let root = resolve_dependency(
-            &name,
-            &spec,
-            &base_dir,
-            root_dir,
-            &deps_dir,
-            &mut lock,
-        )?;
+        let root = resolve_dependency(&name, &spec, &base_dir, root_dir, &deps_dir, &mut lock)?;
         resolved.insert(name.clone(), root.clone());
 
         if let Some(dep_manifest) = load_manifest_from_dir(&root)? {
@@ -941,8 +922,13 @@ struct NormalizedDependency {
 }
 
 enum NormalizedKind {
-    Path { path: PathBuf },
-    Git { git: String, reference: GitReference },
+    Path {
+        path: PathBuf,
+    },
+    Git {
+        git: String,
+        reference: GitReference,
+    },
 }
 
 struct GitReference {
@@ -1098,10 +1084,7 @@ fn ensure_checkout(url: &str, rev: &str, dest: &Path) -> Result<(), String> {
         }
         let dest_str = dest.to_string_lossy();
         let _ = run_git(&["-C", dest_str.as_ref(), "fetch", "--tags"], None);
-        run_git(
-            &["-C", dest_str.as_ref(), "checkout", rev],
-            None,
-        )?;
+        run_git(&["-C", dest_str.as_ref(), "checkout", rev], None)?;
         return Ok(());
     }
     if let Some(parent) = dest.parent() {
@@ -1110,10 +1093,7 @@ fn ensure_checkout(url: &str, rev: &str, dest: &Path) -> Result<(), String> {
     }
     let dest_str = dest.to_string_lossy();
     run_git(&["clone", url, dest_str.as_ref()], None)?;
-    run_git(
-        &["-C", dest_str.as_ref(), "checkout", rev],
-        None,
-    )?;
+    run_git(&["-C", dest_str.as_ref(), "checkout", rev], None)?;
     Ok(())
 }
 
@@ -1154,8 +1134,8 @@ fn load_lockfile(path: &Path) -> Result<Lockfile, String> {
     if !path.exists() {
         return Ok(Lockfile::default());
     }
-    let content =
-        fs::read_to_string(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    let content = fs::read_to_string(path)
+        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
     let lock: Lockfile =
         toml::from_str(&content).map_err(|err| format!("invalid lockfile: {err}"))?;
     if lock.version != 0 && lock.version != 1 {
@@ -1167,8 +1147,7 @@ fn load_lockfile(path: &Path) -> Result<Lockfile, String> {
 fn write_lockfile(path: &Path, lock: &Lockfile) -> Result<(), String> {
     let content =
         toml::to_string_pretty(lock).map_err(|err| format!("lockfile encode failed: {err}"))?;
-    fs::write(path, content)
-        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    fs::write(path, content).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     Ok(())
 }
 
@@ -1185,8 +1164,8 @@ fn load_manifest_from_dir(dir: &Path) -> Result<Option<Manifest>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    let content =
-        fs::read_to_string(&path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    let content = fs::read_to_string(&path)
+        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
     let manifest: Manifest =
         toml::from_str(&content).map_err(|err| format!("invalid manifest: {err}"))?;
     Ok(Some(manifest))
