@@ -145,7 +145,7 @@ Rules:
 * `String`, `Id`, `Email`, `Bytes` -> JSON string.
 * `Bool`, `Int`, `Float` -> JSON number/bool.
 * `List<T>` -> JSON array.
-* `Map<K,V>` -> JSON object. Keys are strings; non-string keys are rejected.
+* `Map<K,V>` -> JSON object. At runtime, `Map<K,V>` requires `K = String`; non-string keys are rejected.
 * `Result<T,E>` is **not** supported in JSON decoding.
 
 `Bytes` are treated as plain strings; base64 is not implemented.

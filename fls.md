@@ -281,6 +281,7 @@ The AST matches `crates/fusec/src/ast.rs`:
 * `Email` (string validated by a simple `user@host` check)
 * `Error` (built-in error base)
 * `List<T>`, `Map<K,V>`, `Option<T>`, `Result<T,E>`
+* Runtime constraint: `Map<K,V>` requires `K = String`.
 * User-defined `type` and `enum` are nominal.
 
 Reserved namespace:
