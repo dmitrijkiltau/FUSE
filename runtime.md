@@ -1,12 +1,13 @@
 # Runtime semantics (current implementation)
 
-This document describes the behavior of the AST interpreter and VM in this repo. It is deliberately
+This document describes the behavior of the AST interpreter, VM, and native backend path in this repo. It is deliberately
 conservative: anything not listed here is either unsupported or not implemented yet.
 
 ## Backends
 
 * **AST interpreter**: executes the parsed AST directly.
 * **VM**: lowers to bytecode and executes the VM.
+* **Native (stage 1)**: uses a compiled native image (`program.native`) but currently executes with VM-compatible runtime semantics.
 
 Most runtime behavior is shared, with a few differences called out below.
 
@@ -347,7 +348,7 @@ Optional access in assignment targets (e.g. `foo?.bar = x`, `items?[0] = x`) err
 ## Logging
 
 `log` is a lightweight builtin for runtime logging. It is intentionally minimal and shared by
-both backends.
+all runtime backends.
 
 Usage:
 

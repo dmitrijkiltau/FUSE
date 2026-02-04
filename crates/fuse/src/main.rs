@@ -22,7 +22,7 @@ options:
   --manifest-path <path>  Path to fuse.toml (defaults to nearest parent)
   --file <path>           Entry file override
   --app <name>            App name override
-  --backend <ast|vm>      Backend override (run only)
+  --backend <ast|vm|native>  Backend override (run only)
   --clean                 Remove .fuse/build before building (build only)
 "#;
 
@@ -120,6 +120,32 @@ enum Command {
     Migrate,
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum RunBackend {
+    Ast,
+    Vm,
+    Native,
+}
+
+impl RunBackend {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "ast" => Some(Self::Ast),
+            "vm" => Some(Self::Vm),
+            "native" => Some(Self::Native),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ast => "ast",
+            Self::Vm => "vm",
+            Self::Native => "native",
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let code = run(args);
@@ -185,12 +211,38 @@ fn run(args: Vec<String>) -> i32 {
         .backend
         .clone()
         .or_else(|| manifest.as_ref().and_then(|m| m.package.backend.clone()));
-    if let Some(backend) = &backend {
-        if backend != "ast" && backend != "vm" {
-            eprintln!("unknown backend: {backend}");
-            return 1;
+    let backend = if let Some(name) = backend {
+        match RunBackend::parse(&name) {
+            Some(backend) => Some(backend),
+            None => {
+                eprintln!("unknown backend: {name}");
+                return 1;
+            }
         }
+    } else {
+        None
+    };
+
+    match command {
+        Command::Run if common.program_args.is_empty() => {
+            match backend {
+                Some(RunBackend::Ast) => {}
+                Some(RunBackend::Native) => {
+                    if let Some(native) = try_load_native(manifest_dir.as_deref()) {
+                        return run_native_program(native, app.as_deref());
+                    }
+                }
+                _ => {
+                    if let Some(ir) = try_load_ir(manifest_dir.as_deref()) {
+                        return run_vm_ir(ir, app.as_deref());
+                    }
+                }
+            }
+        }
+        _ => {}
     }
+
+    let backend_flag = backend.map(|backend| backend.as_str().to_string());
 
     let deps = match resolve_dependencies(manifest.as_ref(), manifest_dir.as_deref()) {
         Ok(deps) => deps,
@@ -202,14 +254,9 @@ fn run(args: Vec<String>) -> i32 {
 
     match command {
         Command::Run => {
-            if common.program_args.is_empty() && backend.as_deref() != Some("ast") {
-                if let Some(ir) = try_load_ir(manifest_dir.as_deref()) {
-                    return run_vm_ir(ir, app.as_deref());
-                }
-            }
             let mut args = Vec::new();
             args.push("--run".to_string());
-            if let Some(backend) = backend {
+            if let Some(backend) = backend_flag {
                 args.push("--backend".to_string());
                 args.push(backend);
             }
@@ -427,6 +474,10 @@ fn run_build(
         eprintln!("{err}");
         return 1;
     }
+    if let Err(err) = write_native(entry, manifest_dir, deps) {
+        eprintln!("{err}");
+        return 1;
+    }
     let openapi_out = manifest.and_then(|m| m.build.as_ref().and_then(|b| b.openapi.clone()));
     let Some(out_path) = openapi_out else {
         return 0;
@@ -536,6 +587,49 @@ fn write_ir(
     Ok(())
 }
 
+fn write_native(
+    entry: &Path,
+    manifest_dir: Option<&Path>,
+    deps: &HashMap<String, PathBuf>,
+) -> Result<(), String> {
+    let build_dir = build_dir(manifest_dir)?;
+    if !build_dir.exists() {
+        fs::create_dir_all(&build_dir)
+            .map_err(|err| format!("failed to create {}: {err}", build_dir.display()))?;
+    }
+    let out_path = build_dir.join("program.native");
+    let src = fs::read_to_string(entry)
+        .map_err(|err| format!("failed to read {}: {err}", entry.display()))?;
+    let (registry, diags) = fusec::load_program_with_modules_and_deps(entry, &src, deps);
+    if !diags.is_empty() {
+        for diag in diags {
+            let level = match diag.level {
+                fusec::diag::Level::Error => "error",
+                fusec::diag::Level::Warning => "warning",
+            };
+            eprintln!(
+                "{level}: {} ({}..{})",
+                diag.message, diag.span.start, diag.span.end
+            );
+        }
+        return Err("build failed".to_string());
+    }
+    let native = fusec::native::compile_registry(&registry).map_err(|errors| {
+        let mut out = String::new();
+        for err in errors {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&format!("lowering error: {err}"));
+        }
+        out
+    })?;
+    let bytes = bincode::serialize(&native).map_err(|err| format!("native encode failed: {err}"))?;
+    fs::write(&out_path, bytes)
+        .map_err(|err| format!("failed to write {}: {err}", out_path.display()))?;
+    Ok(())
+}
+
 fn try_load_ir(manifest_dir: Option<&Path>) -> Option<fusec::ir::Program> {
     let build_dir = build_dir(manifest_dir).ok()?;
     let path = build_dir.join("program.ir");
@@ -548,8 +642,35 @@ fn try_load_ir(manifest_dir: Option<&Path>) -> Option<fusec::ir::Program> {
     bincode::deserialize(&bytes).ok()
 }
 
+fn try_load_native(manifest_dir: Option<&Path>) -> Option<fusec::native::NativeProgram> {
+    let build_dir = build_dir(manifest_dir).ok()?;
+    let path = build_dir.join("program.native");
+    let meta_path = build_dir.join("program.meta");
+    let meta = load_ir_meta(&meta_path)?;
+    if !ir_meta_is_valid(&meta) {
+        return None;
+    }
+    let bytes = fs::read(&path).ok()?;
+    let native: fusec::native::NativeProgram = bincode::deserialize(&bytes).ok()?;
+    if native.version != fusec::native::NativeProgram::VERSION {
+        return None;
+    }
+    Some(native)
+}
+
 fn run_vm_ir(ir: fusec::ir::Program, app: Option<&str>) -> i32 {
     let mut vm = fusec::vm::Vm::new(&ir);
+    match vm.run_app(app) {
+        Ok(_) => 0,
+        Err(err) => {
+            eprintln!("run error: {err}");
+            1
+        }
+    }
+}
+
+fn run_native_program(program: fusec::native::NativeProgram, app: Option<&str>) -> i32 {
+    let mut vm = fusec::native::NativeVm::new(&program);
     match vm.run_app(app) {
         Ok(_) => 0,
         Err(err) => {

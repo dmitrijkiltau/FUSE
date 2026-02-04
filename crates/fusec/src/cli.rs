@@ -10,11 +10,13 @@ use crate::diag::Level;
 use crate::interp::{Interpreter, MigrationJob, TestJob, TestOutcome};
 use crate::{load_program_with_modules, load_program_with_modules_and_deps};
 
-const USAGE: &str = "usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--backend ast|vm] [--app NAME] <file>";
+const USAGE: &str = "usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--backend ast|vm|native] [--app NAME] <file>";
 
+#[derive(Copy, Clone)]
 enum Backend {
     Ast,
     Vm,
+    Native,
 }
 
 pub fn run<I>(args: I) -> i32
@@ -81,6 +83,7 @@ where
                 backend = match name.as_str() {
                     "ast" => Backend::Ast,
                     "vm" => Backend::Vm,
+                    "native" => Backend::Native,
                     _ => {
                         eprintln!("unknown backend: {name}");
                         eprintln!("{USAGE}");
@@ -381,7 +384,7 @@ where
                         return 2;
                     }
                 },
-                Backend::Vm => {
+                Backend::Vm | Backend::Native => {
                     let args = match interp.prepare_call_with_named_args("main", &args_map) {
                         Ok(args) => args,
                         Err(err) => {
@@ -389,22 +392,46 @@ where
                             return 2;
                         }
                     };
-                    let ir = match crate::ir::lower::lower_registry(&registry) {
-                        Ok(ir) => ir,
-                        Err(errors) => {
-                            for error in errors {
-                                eprintln!("lowering error: {error}");
+                    match backend {
+                        Backend::Vm => {
+                            let ir = match crate::ir::lower::lower_registry(&registry) {
+                                Ok(ir) => ir,
+                                Err(errors) => {
+                                    for error in errors {
+                                        eprintln!("lowering error: {error}");
+                                    }
+                                    return 1;
+                                }
+                            };
+                            let mut vm = crate::vm::Vm::new(&ir);
+                            match vm.call_function("main", args) {
+                                Ok(_) => {}
+                                Err(err) => {
+                                    emit_error_json(&err);
+                                    return 2;
+                                }
                             }
-                            return 1;
                         }
-                    };
-                    let mut vm = crate::vm::Vm::new(&ir);
-                    match vm.call_function("main", args) {
-                        Ok(_) => {}
-                        Err(err) => {
-                            emit_error_json(&err);
-                            return 2;
+                        Backend::Native => {
+                            let native = match crate::native::compile_registry(&registry) {
+                                Ok(native) => native,
+                                Err(errors) => {
+                                    for error in errors {
+                                        eprintln!("lowering error: {error}");
+                                    }
+                                    return 1;
+                                }
+                            };
+                            let mut vm = crate::native::NativeVm::new(&native);
+                            match vm.call_function("main", args) {
+                                Ok(_) => {}
+                                Err(err) => {
+                                    emit_error_json(&err);
+                                    return 2;
+                                }
+                            }
                         }
+                        Backend::Ast => unreachable!(),
                     }
                 }
             }
@@ -428,6 +455,22 @@ where
                         }
                     };
                     let mut vm = crate::vm::Vm::new(&ir);
+                    if let Err(err) = vm.run_app(app) {
+                        eprintln!("run error: {err}");
+                        return 1;
+                    }
+                }
+                Backend::Native => {
+                    let native = match crate::native::compile_registry(&registry) {
+                        Ok(native) => native,
+                        Err(errors) => {
+                            for error in errors {
+                                eprintln!("lowering error: {error}");
+                            }
+                            return 1;
+                        }
+                    };
+                    let mut vm = crate::native::NativeVm::new(&native);
                     if let Err(err) = vm.run_app(app) {
                         eprintln!("run error: {err}");
                         return 1;

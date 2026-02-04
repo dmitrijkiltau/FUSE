@@ -5,6 +5,7 @@ pub mod db;
 pub mod format;
 pub mod lexer;
 pub mod loader;
+pub mod native;
 pub mod openapi;
 pub mod parser;
 pub mod interp;

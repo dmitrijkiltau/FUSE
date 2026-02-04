@@ -150,6 +150,24 @@ fn parity_interp_demo() {
 }
 
 #[test]
+fn parity_vm_native_interp_demo() {
+    let vm = run_example("vm", "interp_demo.fuse", &[]);
+    let native = run_example("native", "interp_demo.fuse", &[]);
+
+    assert!(vm.status.success(), "vm stderr: {}", String::from_utf8_lossy(&vm.stderr));
+    assert!(
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout)
+    );
+}
+
+#[test]
 fn parity_spawn_await_box() {
     let ast = run_example("ast", "spawn_await_box.fuse", &[]);
     let vm = run_example("vm", "spawn_await_box.fuse", &[]);

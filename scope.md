@@ -38,12 +38,12 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 
 * AST interpreter backend
 * Bytecode + VM backend
-* No native compiler/codegen yet
+* Experimental `native` backend path (`--backend native`) backed by compiled IR image + VM compatibility runtime
 
 **Planned:**
 
-* Native compiler (Cranelift/LLVM TBD)
-* Faster `fuse run` loop once codegen exists
+* True native codegen (Cranelift/LLVM TBD)
+* Faster `fuse run` loop from native machine-code artifacts (beyond current IR/native image cache)
 * Concurrency API maturity: task identity, cancellation hooks, and structured-concurrency semantics
 
 ## Feature scope
@@ -87,10 +87,11 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * parser + semantic analysis
 * formatter via `fusec --fmt`
 * OpenAPI 3.0 generation via `fusec --openapi`
-* `fusec` flags: `--check`, `--run`, `--migrate`, `--test`, `--openapi`, `--backend`, `--app`
+* `fusec` flags: `--check`, `--run`, `--migrate`, `--test`, `--openapi`, `--backend` (`ast|vm|native`), `--app`
 * package manifest (`fuse.toml`) + `fuse run/test/build`
 * dependency fetching + `fuse.lock`
 * IR cache for fast `fuse run` (`.fuse/build/program.ir`)
+* native image cache (`.fuse/build/program.native`) for `--backend native`
 * LSP (single-file): diagnostics, formatting, go-to-definition, hover, rename, workspace symbols
 
 **Tooling (planned)**

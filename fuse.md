@@ -114,7 +114,7 @@ The runtime currently handles:
 ## What works today (MVP)
 
 * Parser + semantic analysis for `fn`, `type`, `enum`, `config`, `service`, `app`
-* AST interpreter and VM backends
+* AST interpreter, VM, and experimental native backend (`--backend native`)
 * `import` module loading (namespaced modules + named imports)
 * module-qualified type references in type positions (`Foo.User`, `Foo.Config`)
 * Built-ins: `print(...)`, `log(...)`, `db.exec/query/one`, `assert(...)`, `env(...)`, `serve(...)`, `task.id/done/cancel`
@@ -131,6 +131,9 @@ The runtime currently handles:
 * OpenAPI 3.0 generation via `fusec --openapi` (services, schemas, refined types, error responses)
 * package tooling (`fuse.toml`, `fuse run/test/build`)
 
+Today, `native` uses the same runtime semantics as VM while preparing the compiler pipeline for
+true machine-code codegen.
+
 ## Package tooling
 
 `fuse` reads `fuse.toml` from the current directory (or nearest parent) to find the entrypoint:
@@ -139,7 +142,7 @@ The runtime currently handles:
 [package]
 entry = "src/main.fuse"
 app = "Api"
-backend = "ast"
+backend = "native"
 
 [build]
 openapi = "build/openapi.json"
@@ -162,16 +165,17 @@ import Auth from "dep:Auth/lib"
 Git dependencies support `tag`, `branch`, `rev`, or `version` (resolved as a tag, trying
 `v<version>` first).
 
-`fuse build` also emits a compiled IR cache at `.fuse/build/program.ir`. When present,
-`fuse run` uses the cached IR for faster startup (unless you pass CLI args, which currently
-bypass the cache).
+`fuse build` emits a compiled IR cache at `.fuse/build/program.ir` and a native image cache at
+`.fuse/build/program.native`. When present, `fuse run` uses the cached artifact for faster startup
+(unless you pass CLI args, which currently bypass the cache).
 
 Use `fuse build --clean` to remove `.fuse/build` and force a fresh compile on the next run.
 
 ## "Okay but what's novel?"
 
 Not the syntax. The novelty is the **contract at boundaries**:
-config, JSON, validation, and HTTP routing are language-level and consistent across the interpreter and VM.
+config, JSON, validation, and HTTP routing are language-level and consistent across the interpreter,
+VM, and current VM-compatible native path.
 OpenAPI generation is built-in; richer tooling is planned; see the scope and runtime docs for the roadmap.
 
 ## Scope
