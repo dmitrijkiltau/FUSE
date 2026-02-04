@@ -117,7 +117,7 @@ The runtime currently handles:
 * AST interpreter and VM backends
 * `import` module loading (namespaced modules + named imports)
 * module-qualified type references in type positions (`Foo.User`, `Foo.Config`)
-* Built-ins: `print(...)`, `log(...)`, `db.exec/query/one`, `assert(...)`, `env(...)`, `serve(...)`
+* Built-ins: `print(...)`, `log(...)`, `db.exec/query/one`, `assert(...)`, `env(...)`, `serve(...)`, `task.id/done/cancel`
 * SQLite-backed DB access (`db.exec/query/one`) + migrations (`migration` + `fusec --migrate`)
 * tests via `test "name":` + `fusec --test` (AST backend)
 * `spawn`/`await`/`box` concurrency

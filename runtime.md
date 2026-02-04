@@ -302,6 +302,16 @@ today (no parallelism), but errors are captured and surfaced when awaited.
 
 `await expr` waits on a task and yields its result.
 
+Tasks are currently opaque runtime values: there is no exposed task identity, status inspection,
+or lifecycle control beyond a minimal task API:
+
+* `task.id(t: Task<T>) -> Id` returns a stable task identity.
+* `task.done(t: Task<T>) -> Bool` returns completion state.
+* `task.cancel(t: Task<T>) -> Bool` attempts cancellation.
+
+With today's eager execution model, spawned tasks complete immediately, so `task.done` is usually
+`true` and `task.cancel` usually returns `false`.
+
 `box expr` creates a shared mutable cell. Boxed values are transparently dereferenced in most
 expressions; assigning to a boxed binding updates the shared cell. Passing a box into `spawn`
 shares state across tasks.

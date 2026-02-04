@@ -369,6 +369,9 @@ Runtime binding + error mapping are described in `runtime.md`.
 * `test` blocks run via `fusec --test` (AST backend only).
 * `for`/`while`/`break`/`continue` run in both backends.
 * `spawn`/`await` run in both backends (tasks execute eagerly today).
+* `Task<T>` values are opaque runtime values with a minimal task API.
+* Minimal task API is available: `task.id`, `task.done`, and `task.cancel`.
+* With eager execution today, tasks are usually already done and `task.cancel` usually returns `false`.
 * `box` creates a shared cell; boxed values are transparently dereferenced in most expressions.
 * Assignment targets include identifiers, struct fields, and list/map indexing; optional access in assignments errors on null.
 * Enum variants only support tuple payloads (no named payload fields).

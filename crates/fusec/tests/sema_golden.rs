@@ -97,3 +97,17 @@ fn describe_user(user: User) -> String:
 "#;
     assert_diags(src, &[]);
 }
+
+#[test]
+fn checks_task_api_types() {
+    let src = r#"
+fn main():
+  let t = spawn:
+    1
+  let a = task.id(t)
+  let b = task.done(t)
+  let c = task.cancel(t)
+  let bad = task.id(1)
+"#;
+    assert_diags(src, &["Error: type mismatch: expected Task<_>, found Int"]);
+}

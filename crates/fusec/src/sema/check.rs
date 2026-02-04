@@ -44,6 +44,7 @@ impl<'a> Checker<'a> {
         env.insert_builtin("print");
         env.insert_builtin("assert");
         env.insert_builtin("serve");
+        env.insert_builtin_with_ty("task", Ty::External("task".to_string()));
         env.insert_builtin("errors");
         Self {
             module_id,
@@ -572,6 +573,7 @@ impl<'a> Checker<'a> {
             Ty::Config(ref name_ty) => self.lookup_config_field(name_ty, &name.name, name.span),
             Ty::Enum(ref name_ty) => self.lookup_enum_variant(name_ty, name),
             Ty::Module(ref module_name) => self.lookup_module_member(module_name, name),
+            Ty::External(ref external) => self.lookup_external_member(external, name),
             Ty::Unknown => Ty::Unknown,
             other => {
                 self.diags.error(
@@ -647,6 +649,44 @@ impl<'a> Checker<'a> {
         self.diags
             .error(span, format!("unknown field {} on {}", field, type_name));
         Ty::Unknown
+    }
+
+    fn lookup_external_member(&mut self, external: &str, name: &crate::ast::Ident) -> Ty {
+        match external {
+            "task" => self.lookup_task_member(name),
+            _ => {
+                self.diags.error(
+                    name.span,
+                    format!("{} has no field {}", external, name.name),
+                );
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn lookup_task_member(&mut self, name: &crate::ast::Ident) -> Ty {
+        let task_arg = Ty::Task(Box::new(Ty::Unknown));
+        match name.name.as_str() {
+            "id" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "task".to_string(),
+                    ty: task_arg,
+                }],
+                ret: Box::new(Ty::Id),
+            }),
+            "done" | "cancel" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "task".to_string(),
+                    ty: task_arg,
+                }],
+                ret: Box::new(Ty::Bool),
+            }),
+            _ => {
+                self.diags
+                    .error(name.span, format!("unknown task method {}", name.name));
+                Ty::Unknown
+            }
+        }
     }
 
     fn lookup_config_field(&mut self, type_name: &str, field: &str, span: Span) -> Ty {
@@ -1317,6 +1357,9 @@ impl<'a> Checker<'a> {
             (Ty::Option(value_inner), Ty::Option(target_inner)) => {
                 self.is_assignable(value_inner, target_inner)
             }
+            (Ty::Task(value_inner), Ty::Task(target_inner)) => {
+                self.is_assignable(value_inner, target_inner)
+            }
             (Ty::Option(_), _) => false,
             (_, Ty::Option(inner)) => self.is_assignable(value, inner),
             (Ty::Unknown, _) | (_, Ty::Unknown) => true,
@@ -1616,6 +1659,10 @@ impl TypeEnv {
 
     fn insert_builtin(&mut self, name: &str) {
         let _ = self.insert(name, Ty::Unknown, false);
+    }
+
+    fn insert_builtin_with_ty(&mut self, name: &str, ty: Ty) {
+        let _ = self.insert(name, ty, false);
     }
 
     fn insert(&mut self, name: &str, ty: Ty, mutable: bool) -> Result<(), String> {

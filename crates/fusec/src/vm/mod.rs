@@ -828,6 +828,24 @@ impl<'a> Vm<'a> {
                     Ok(Value::Null)
                 }
             }
+            "task.id" => match args.get(0) {
+                Some(Value::Task(task)) => Ok(Value::String(format!("task-{}", task.id()))),
+                _ => Err(VmError::Runtime(
+                    "task.id expects a Task argument".to_string(),
+                )),
+            },
+            "task.done" => match args.get(0) {
+                Some(Value::Task(task)) => Ok(Value::Bool(task.is_done())),
+                _ => Err(VmError::Runtime(
+                    "task.done expects a Task argument".to_string(),
+                )),
+            },
+            "task.cancel" => match args.get(0) {
+                Some(Value::Task(task)) => Ok(Value::Bool(task.cancel())),
+                _ => Err(VmError::Runtime(
+                    "task.cancel expects a Task argument".to_string(),
+                )),
+            },
             "assert" => {
                 let cond = match args.get(0) {
                     Some(Value::Bool(value)) => *value,

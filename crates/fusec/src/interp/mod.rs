@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate as rt_validate};
 
@@ -81,8 +82,13 @@ impl IteratorValue {
 
 #[derive(Clone, Debug)]
 struct TaskState {
+    id: u64,
+    done: bool,
+    cancelled: bool,
     result: TaskResult,
 }
+
+static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
 pub(crate) enum TaskResult {
@@ -94,7 +100,12 @@ pub(crate) enum TaskResult {
 impl Task {
     pub(crate) fn from_task_result(result: TaskResult) -> Self {
         Task {
-            state: Rc::new(RefCell::new(TaskState { result })),
+            state: Rc::new(RefCell::new(TaskState {
+                id: NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
+                done: true,
+                cancelled: false,
+                result,
+            })),
         }
     }
 
@@ -112,6 +123,23 @@ impl Task {
 
     pub(crate) fn result_raw(&self) -> TaskResult {
         self.state.borrow().result.clone()
+    }
+
+    pub fn id(&self) -> u64 {
+        self.state.borrow().id
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.state.borrow().done
+    }
+
+    pub fn cancel(&self) -> bool {
+        let mut state = self.state.borrow_mut();
+        if state.done || state.cancelled {
+            return false;
+        }
+        state.cancelled = true;
+        true
     }
 
     fn result(&self) -> ExecResult<Value> {
@@ -1191,7 +1219,7 @@ impl<'a> Interpreter<'a> {
             return Ok(Value::Config(name.to_string()));
         }
         match name {
-            "print" | "env" | "serve" | "log" | "db" | "assert" => {
+            "print" | "env" | "serve" | "log" | "db" | "assert" | "task" => {
                 Ok(Value::Builtin(name.to_string()))
             }
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),
@@ -1327,6 +1355,24 @@ impl<'a> Interpreter<'a> {
                     Ok(Value::Null)
                 }
             }
+            "task.id" => match args.get(0) {
+                Some(Value::Task(task)) => Ok(Value::String(format!("task-{}", task.id()))),
+                _ => Err(ExecError::Runtime(
+                    "task.id expects a Task argument".to_string(),
+                )),
+            },
+            "task.done" => match args.get(0) {
+                Some(Value::Task(task)) => Ok(Value::Bool(task.is_done())),
+                _ => Err(ExecError::Runtime(
+                    "task.done expects a Task argument".to_string(),
+                )),
+            },
+            "task.cancel" => match args.get(0) {
+                Some(Value::Task(task)) => Ok(Value::Bool(task.cancel())),
+                _ => Err(ExecError::Runtime(
+                    "task.cancel expects a Task argument".to_string(),
+                )),
+            },
             "assert" => {
                 let cond = match args.get(0) {
                     Some(Value::Bool(value)) => *value,
@@ -1791,6 +1837,10 @@ impl<'a> Interpreter<'a> {
             Value::Builtin(name) if name == "db" => match field {
                 "exec" | "query" | "one" => Ok(Value::Builtin(format!("db.{field}"))),
                 _ => Err(ExecError::Runtime(format!("unknown db method {field}"))),
+            },
+            Value::Builtin(name) if name == "task" => match field {
+                "id" | "done" | "cancel" => Ok(Value::Builtin(format!("task.{field}"))),
+                _ => Err(ExecError::Runtime(format!("unknown task method {field}"))),
             },
             Value::Config(name) => {
                 let map = self

@@ -44,6 +44,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 
 * Native compiler (Cranelift/LLVM TBD)
 * Faster `fuse run` loop once codegen exists
+* Concurrency API maturity: task identity, cancellation hooks, and structured-concurrency semantics
 
 ## Feature scope
 
@@ -77,7 +78,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * config/env/CLI parsing is limited to scalar types + `Option` + refined ranges
 * HTTP request binding + response encoding
 * error JSON + HTTP status mapping
-* builtins: `print`, `log`, `db`, `assert`, `env`, `serve`
+* builtins: `print`, `log`, `db`, `assert`, `env`, `serve`, `task.id`, `task.done`, `task.cancel`
 * SQLite-backed DB access + migrations via `fusec --migrate`
 * CLI arg binding for `fn main` when running with program args
 

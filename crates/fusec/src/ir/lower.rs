@@ -1060,12 +1060,12 @@ impl FuncBuilder {
                     }
                     ExprKind::Member { base, name } => {
                         if let ExprKind::Ident(ident) = &base.kind {
-                            if ident.name == "db" {
+                            if ident.name == "db" || ident.name == "task" {
                                 for arg in args {
                                     self.lower_expr(&arg.value);
                                 }
                                 self.emit(Instr::Call {
-                                    name: format!("db.{}", name.name),
+                                    name: format!("{}.{}", ident.name, name.name),
                                     argc: args.len(),
                                     kind: CallKind::Builtin,
                                 });
