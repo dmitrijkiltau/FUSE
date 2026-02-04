@@ -111,3 +111,14 @@ fn main():
 "#;
     assert_diags(src, &["Error: type mismatch: expected Task<_>, found Int"]);
 }
+
+#[test]
+fn checks_db_api_types() {
+    let src = r#"
+fn main():
+  let rows = db.query("select 1")
+  let first = db.one("select 1")
+  db.exec(1)
+"#;
+    assert_diags(src, &["Error: type mismatch: expected String, found Int"]);
+}

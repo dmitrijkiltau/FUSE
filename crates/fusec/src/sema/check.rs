@@ -37,7 +37,7 @@ impl<'a> Checker<'a> {
     ) -> Self {
         let mut env = TypeEnv::new();
         env.insert_builtin("log");
-        env.insert_builtin("db");
+        env.insert_builtin_with_ty("db", Ty::External("db".to_string()));
         env.insert_builtin("env");
         env.insert_builtin("json");
         env.insert_builtin("time");
@@ -653,12 +653,40 @@ impl<'a> Checker<'a> {
 
     fn lookup_external_member(&mut self, external: &str, name: &crate::ast::Ident) -> Ty {
         match external {
+            "db" => self.lookup_db_member(name),
             "task" => self.lookup_task_member(name),
             _ => {
                 self.diags.error(
                     name.span,
                     format!("{} has no field {}", external, name.name),
                 );
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn lookup_db_member(&mut self, name: &crate::ast::Ident) -> Ty {
+        let sql_arg = ParamSig {
+            name: "sql".to_string(),
+            ty: Ty::String,
+        };
+        let row_ty = Ty::Map(Box::new(Ty::String), Box::new(Ty::Unknown));
+        match name.name.as_str() {
+            "exec" => Ty::Fn(FnSig {
+                params: vec![sql_arg.clone()],
+                ret: Box::new(Ty::Unit),
+            }),
+            "query" => Ty::Fn(FnSig {
+                params: vec![sql_arg.clone()],
+                ret: Box::new(Ty::List(Box::new(row_ty))),
+            }),
+            "one" => Ty::Fn(FnSig {
+                params: vec![sql_arg],
+                ret: Box::new(Ty::Option(Box::new(row_ty))),
+            }),
+            _ => {
+                self.diags
+                    .error(name.span, format!("unknown db method {}", name.name));
                 Ty::Unknown
             }
         }
