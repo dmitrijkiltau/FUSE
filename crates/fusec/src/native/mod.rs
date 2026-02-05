@@ -1,4 +1,5 @@
 mod jit;
+pub mod value;
 
 use serde::{Deserialize, Serialize};
 
@@ -6,6 +7,7 @@ use crate::interp::Value;
 use crate::ir::Program as IrProgram;
 use crate::loader::ModuleRegistry;
 use crate::vm::Vm;
+use crate::native::value::NativeHeap;
 use jit::JitRuntime;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -34,6 +36,7 @@ pub struct NativeVm<'a> {
     program: &'a NativeProgram,
     vm: Vm<'a>,
     jit: JitRuntime,
+    heap: NativeHeap,
 }
 
 impl<'a> NativeVm<'a> {
@@ -42,6 +45,7 @@ impl<'a> NativeVm<'a> {
             program,
             vm: Vm::new(&program.ir),
             jit: JitRuntime::build(),
+            heap: NativeHeap::new(),
         }
     }
 
@@ -50,7 +54,9 @@ impl<'a> NativeVm<'a> {
     }
 
     pub fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, String> {
-        if let Some(value) = self.jit.try_call(&self.program.ir, name, &args) {
+        if let Some(value) =
+            self.jit.try_call(&self.program.ir, name, &args, &mut self.heap)
+        {
             return Ok(value);
         }
         self.vm.call_function(name, args)
