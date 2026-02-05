@@ -252,6 +252,42 @@ fn parity_range_demo() {
 }
 
 #[test]
+fn parity_vm_native_range_demo() {
+    let vm = run_example("vm", "range_demo.fuse", &[]);
+    let native = run_example("native", "range_demo.fuse", &[]);
+
+    assert!(vm.status.success(), "vm stderr: {}", String::from_utf8_lossy(&vm.stderr));
+    assert!(
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout)
+    );
+}
+
+#[test]
+fn parity_vm_native_float_compare() {
+    let vm = run_example("vm", "float_compare.fuse", &[]);
+    let native = run_example("native", "float_compare.fuse", &[]);
+
+    assert!(vm.status.success(), "vm stderr: {}", String::from_utf8_lossy(&vm.stderr));
+    assert!(
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout)
+    );
+}
+
+#[test]
 fn parity_cli_binding() {
     let args = ["--name=Codex", "--excited"];
     let ast = run_example_with_args("ast", "cli_args.fuse", &args);

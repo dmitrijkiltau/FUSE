@@ -43,14 +43,14 @@ fn call_once_vm(ir: &fusec::ir::Program, n: i64) -> Duration {
 
 fn call_once_native(native: &NativeProgram, n: i64) -> Duration {
     let mut vm = NativeVm::new(native);
-    assert!(
-        vm.has_jit_function("main"),
-        "expected JIT compilation for main"
-    );
     let start = Instant::now();
     let out = vm
         .call_function("main", vec![Value::Int(n)])
         .expect("native call failed");
+    assert!(
+        vm.has_jit_function("main"),
+        "expected JIT compilation for main"
+    );
     assert!(
         matches!(out, Value::Int(_)),
         "native returned unexpected value: {out:?}"

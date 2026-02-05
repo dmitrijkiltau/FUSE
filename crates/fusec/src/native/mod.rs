@@ -31,6 +31,7 @@ pub fn compile_registry(registry: &ModuleRegistry) -> Result<NativeProgram, Vec<
 }
 
 pub struct NativeVm<'a> {
+    program: &'a NativeProgram,
     vm: Vm<'a>,
     jit: JitRuntime,
 }
@@ -38,8 +39,9 @@ pub struct NativeVm<'a> {
 impl<'a> NativeVm<'a> {
     pub fn new(program: &'a NativeProgram) -> Self {
         Self {
+            program,
             vm: Vm::new(&program.ir),
-            jit: JitRuntime::build(&program.ir),
+            jit: JitRuntime::build(),
         }
     }
 
@@ -48,7 +50,7 @@ impl<'a> NativeVm<'a> {
     }
 
     pub fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, String> {
-        if let Some(value) = self.jit.try_call(name, &args) {
+        if let Some(value) = self.jit.try_call(&self.program.ir, name, &args) {
             return Ok(value);
         }
         self.vm.call_function(name, args)

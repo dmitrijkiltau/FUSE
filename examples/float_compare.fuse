@@ -1,0 +1,14 @@
+# float comparison demo
+
+fn main():
+  let a = 1.5
+  let b = 2.0
+  print(a < b)
+  print(a == 1.5)
+  print(2.0 < 1.0)
+  print(2.0 >= 2.0)
+  print(2.5 + 3)
+  print(5 + 2.5)
+
+app "float-compare":
+  main()
