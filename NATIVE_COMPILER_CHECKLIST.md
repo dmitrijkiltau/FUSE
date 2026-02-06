@@ -44,7 +44,7 @@ Status legend: [x] done, [ ] pending, [~] partial
 ## Stage 4 — Builtins + runtime interop
 
 - [x] `log`, `env`, `assert`
-- [ ] `db.exec/query/one`
+- [x] `db.exec/query/one`
 - [ ] JSON encode/decode
 - [ ] Validation hooks (refinements, Email/Id)
 - [ ] HTTP routing + handler calls

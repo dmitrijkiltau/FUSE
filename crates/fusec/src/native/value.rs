@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::db::Db;
 use crate::interp::{Task, TaskResult, Value};
 
 #[repr(u64)]
@@ -51,6 +52,7 @@ pub struct NativeHeap {
     free_list: Vec<usize>,
     pinned: std::collections::HashSet<u64>,
     interned: std::collections::HashMap<String, u64>,
+    db: Option<Db>,
 }
 
 impl NativeHeap {
@@ -80,6 +82,14 @@ impl NativeHeap {
         self.pinned.insert(handle);
         self.interned.insert(value, handle);
         handle
+    }
+
+    pub fn db_mut(&mut self, url: String) -> Result<&mut Db, String> {
+        if self.db.is_none() {
+            let db = Db::open(&url)?;
+            self.db = Some(db);
+        }
+        Ok(self.db.as_mut().expect("db initialized"))
     }
 
     pub fn collect_garbage(&mut self) {

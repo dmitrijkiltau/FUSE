@@ -19,7 +19,7 @@ use crate::interp::Value;
 use crate::native::value::{HeapValue, NativeHeap, NativeTag, NativeValue};
 use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram};
 
-use fuse_rt::json as rt_json;
+use fuse_rt::{config as rt_config, json as rt_json};
 
 type EntryFn = unsafe extern "C" fn(*const NativeValue, *mut NativeValue, *mut NativeHeap) -> u8;
 
@@ -73,6 +73,9 @@ struct HostCalls {
     builtin_log: FuncId,
     builtin_env: FuncId,
     builtin_assert: FuncId,
+    db_exec: FuncId,
+    db_query: FuncId,
+    db_one: FuncId,
 }
 
 pub(crate) struct JitRuntime {
@@ -116,6 +119,9 @@ impl JitRuntime {
             "fuse_native_builtin_assert",
             fuse_native_builtin_assert as *const u8,
         );
+        builder.symbol("fuse_native_db_exec", fuse_native_db_exec as *const u8);
+        builder.symbol("fuse_native_db_query", fuse_native_db_query as *const u8);
+        builder.symbol("fuse_native_db_one", fuse_native_db_one as *const u8);
         let mut module = JITModule::new(builder);
         let hostcalls = HostCalls::declare(&mut module);
         Self {
@@ -291,6 +297,15 @@ impl HostCalls {
         let builtin_assert = module
             .declare_function("fuse_native_builtin_assert", Linkage::Import, &builtin_sig)
             .expect("declare builtin assert hostcall");
+        let db_exec = module
+            .declare_function("fuse_native_db_exec", Linkage::Import, &builtin_sig)
+            .expect("declare db exec hostcall");
+        let db_query = module
+            .declare_function("fuse_native_db_query", Linkage::Import, &builtin_sig)
+            .expect("declare db query hostcall");
+        let db_one = module
+            .declare_function("fuse_native_db_one", Linkage::Import, &builtin_sig)
+            .expect("declare db one hostcall");
 
         Self {
             make_list,
@@ -304,6 +319,9 @@ impl HostCalls {
             builtin_log,
             builtin_env,
             builtin_assert,
+            db_exec,
+            db_query,
+            db_one,
         }
     }
 }
@@ -427,6 +445,28 @@ fn builtin_runtime_error(
         payload: handle,
     };
     2
+}
+
+fn db_url() -> Result<String, String> {
+    if let Ok(url) = std::env::var("FUSE_DB_URL") {
+        return Ok(url);
+    }
+    if let Ok(url) = std::env::var("DATABASE_URL") {
+        return Ok(url);
+    }
+    let key = rt_config::env_key("App", "dbUrl");
+    if let Ok(url) = std::env::var(key) {
+        return Ok(url);
+    }
+    let config_path =
+        std::env::var("FUSE_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
+    let file_values = rt_config::load_config_file(&config_path)?;
+    if let Some(section) = file_values.get("App") {
+        if let Some(raw) = section.get("dbUrl") {
+            return Ok(raw.clone());
+        }
+    }
+    Err("db url not configured (set FUSE_DB_URL or App.dbUrl)".to_string())
 }
 
 #[unsafe(no_mangle)]
@@ -840,6 +880,157 @@ extern "C" fn fuse_native_builtin_assert(
     builtin_runtime_error(out, heap, format!("assert failed: {message}"))
 }
 
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_db_exec(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+
+    if len == 0 {
+        return builtin_runtime_error(out, heap, "db.exec expects a SQL string");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "db.exec expects a SQL string");
+    };
+    let Some(value) = value.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "db.exec expects a SQL string");
+    };
+    let sql = match value {
+        Value::String(text) => text,
+        _ => return builtin_runtime_error(out, heap, "db.exec expects a SQL string"),
+    };
+    let url = match db_url() {
+        Ok(url) => url,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let db = match heap.db_mut(url) {
+        Ok(db) => db,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    if let Err(err) = db.exec(&sql) {
+        return builtin_runtime_error(out, heap, err);
+    }
+    *out = NativeValue::int(0);
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_db_query(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+
+    if len == 0 {
+        return builtin_runtime_error(out, heap, "db.query expects a SQL string");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "db.query expects a SQL string");
+    };
+    let Some(value) = value.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "db.query expects a SQL string");
+    };
+    let sql = match value {
+        Value::String(text) => text,
+        _ => return builtin_runtime_error(out, heap, "db.query expects a SQL string"),
+    };
+    let url = match db_url() {
+        Ok(url) => url,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let db = match heap.db_mut(url) {
+        Ok(db) => db,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let rows = match db.query(&sql) {
+        Ok(rows) => rows,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let list: Vec<Value> = rows.into_iter().map(Value::Map).collect();
+    let value = Value::List(list);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "db.query result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_db_one(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+
+    if len == 0 {
+        return builtin_runtime_error(out, heap, "db.one expects a SQL string");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "db.one expects a SQL string");
+    };
+    let Some(value) = value.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "db.one expects a SQL string");
+    };
+    let sql = match value {
+        Value::String(text) => text,
+        _ => return builtin_runtime_error(out, heap, "db.one expects a SQL string"),
+    };
+    let url = match db_url() {
+        Ok(url) => url,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let db = match heap.db_mut(url) {
+        Ok(db) => db,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let rows = match db.query(&sql) {
+        Ok(rows) => rows,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    if let Some(row) = rows.into_iter().next() {
+        let value = Value::Map(row);
+        let Some(native) = NativeValue::from_value(&value, heap) else {
+            return builtin_runtime_error(out, heap, "db.one result unsupported");
+        };
+        *out = native;
+        0
+    } else {
+        *out = NativeValue::null();
+        0
+    }
+}
+
 fn compile_function(
     module: &mut JITModule,
     hostcalls: &HostCalls,
@@ -1227,6 +1418,9 @@ fn compile_function(
                         "log" => hostcalls.builtin_log,
                         "env" => hostcalls.builtin_env,
                         "assert" => hostcalls.builtin_assert,
+                        "db.exec" => hostcalls.db_exec,
+                        "db.query" => hostcalls.db_query,
+                        "db.one" => hostcalls.db_one,
                         _ => return None,
                     };
                     let mut args = Vec::with_capacity(*argc);
@@ -1653,7 +1847,10 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                 kind: CallKind::Builtin,
                 name,
                 ..
-            } if matches!(name.as_str(), "log" | "env" | "assert") => {
+            } if matches!(
+                name.as_str(),
+                "log" | "env" | "assert" | "db.exec" | "db.query" | "db.one"
+            ) => {
                 if ip + 1 < code.len() {
                     starts.insert(ip + 1);
                 }
@@ -1974,7 +2171,7 @@ fn analyze_types(
                         return None;
                     }
                     match name.as_str() {
-                        "log" | "env" | "assert" => {}
+                        "log" | "env" | "assert" | "db.exec" | "db.query" | "db.one" => {}
                         _ => return None,
                     }
                     for _ in 0..*argc {
