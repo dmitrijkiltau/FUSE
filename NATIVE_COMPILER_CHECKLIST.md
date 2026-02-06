@@ -20,19 +20,19 @@ Status legend: [x] done, [ ] pending, [~] partial
 - [x] Refined numeric types in native fast path (return types covered)
 - [x] Parity tests for numeric examples under native
 
-## Stage 2 — Value representation + heap types (in progress)
+## Stage 2 — Value representation + heap types (done)
 
 - [x] Define native value ABI (tagged layout + handle rules)
 - [x] Native ABI wired into JIT boundary (numeric fast path)
-- [~] Allocate/GC strategy for heap values (simple heap arena for strings)
-- [~] Strings (native heap + round-trip encoding + JIT literals)
+- [x] Allocate/GC strategy for heap values (arena + mark/sweep over pinned roots)
+- [x] Strings (native heap + round-trip encoding + JIT literals + interpolation)
 - [x] JIT supports heap-tagged params/returns + string literals
-- [~] Lists (native heap + round-trip encoding + JIT MakeList)
-- [~] Maps (native heap + round-trip encoding + JIT MakeMap)
-- [~] Structs (heap representation + JIT MakeStruct/GetField for heap fields)
-- [~] Enums (heap representation + JIT MakeEnum)
-- [~] Boxed/shared values (heap representation + JIT MakeBox)
-- [~] Task values (heap representation + ABI round-trip)
+- [x] Lists (native heap + round-trip encoding + JIT MakeList)
+- [x] Maps (native heap + round-trip encoding + JIT MakeMap)
+- [x] Structs (heap representation + JIT MakeStruct/GetField for heap fields)
+- [x] Enums (heap representation + JIT MakeEnum)
+- [x] Boxed/shared values (heap representation + JIT MakeBox)
+- [x] Task values (heap representation + ABI round-trip)
 
 ## Stage 3 — Option/Result + error model
 

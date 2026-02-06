@@ -105,4 +105,13 @@ fn native_heap_literals_smoke() {
         },
         other => panic!("unexpected boxed value: {other:?}"),
     }
+
+    let greeting = vm
+        .call_function("greet", vec![Value::String("jit".to_string())])
+        .expect("native greet call failed");
+    assert!(vm.has_jit_function("greet"), "expected JIT for greet");
+    match greeting {
+        Value::String(text) => assert_eq!(text, "hello jit"),
+        other => panic!("unexpected greeting value: {other:?}"),
+    }
 }

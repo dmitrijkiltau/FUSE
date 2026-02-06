@@ -63,6 +63,7 @@ struct HostCalls {
     get_struct_field: FuncId,
     make_enum: FuncId,
     make_box: FuncId,
+    interp_string: FuncId,
 }
 
 pub(crate) struct JitRuntime {
@@ -92,6 +93,7 @@ impl JitRuntime {
         );
         builder.symbol("fuse_native_make_enum", fuse_native_make_enum as *const u8);
         builder.symbol("fuse_native_make_box", fuse_native_make_box as *const u8);
+        builder.symbol("fuse_native_interp_string", fuse_native_interp_string as *const u8);
         let mut module = JITModule::new(builder);
         let hostcalls = HostCalls::declare(&mut module);
         Self {
@@ -225,6 +227,15 @@ impl HostCalls {
             .declare_function("fuse_native_make_box", Linkage::Import, &box_sig)
             .expect("declare make_box hostcall");
 
+        let mut interp_sig = module.make_signature();
+        interp_sig.params.push(AbiParam::new(pointer_ty));
+        interp_sig.params.push(AbiParam::new(pointer_ty));
+        interp_sig.params.push(AbiParam::new(types::I64));
+        interp_sig.returns.push(AbiParam::new(types::I64));
+        let interp_string = module
+            .declare_function("fuse_native_interp_string", Linkage::Import, &interp_sig)
+            .expect("declare interp_string hostcall");
+
         Self {
             make_list,
             make_map,
@@ -232,6 +243,7 @@ impl HostCalls {
             get_struct_field,
             make_enum,
             make_box,
+            interp_string,
         }
     }
 }
@@ -400,6 +412,28 @@ extern "C" fn fuse_native_make_box(heap: *mut NativeHeap, value: *const NativeVa
     heap.insert(HeapValue::Boxed(*value))
 }
 
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_interp_string(
+    heap: *mut NativeHeap,
+    parts: *const NativeValue,
+    len: u64,
+) -> u64 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return u64::MAX;
+    };
+    let count = len as usize;
+    let slice = unsafe { std::slice::from_raw_parts(parts, count) };
+    let mut out = String::new();
+    for value in slice {
+        let Some(part) = value.to_value(heap) else {
+            return u64::MAX;
+        };
+        out.push_str(&part.to_string_value());
+    }
+    heap.insert(HeapValue::String(out))
+}
+
 fn compile_function(
     module: &mut JITModule,
     hostcalls: &HostCalls,
@@ -498,7 +532,7 @@ fn compile_function(
                     });
                 }
                 Instr::Push(Const::String(value)) => {
-                    let handle = NativeValue::string(value.clone(), heap).payload;
+                    let handle = NativeValue::intern_string(value.clone(), heap).payload;
                     stack.push(StackValue {
                         value: builder.ins().iconst(types::I64, handle as i64),
                         kind: JitType::Heap,
@@ -579,10 +613,10 @@ fn compile_function(
                         values.push(stack.pop()?);
                     }
                     values.reverse();
-                    let name_handle = NativeValue::string(name.clone(), heap).payload;
+                    let name_handle = NativeValue::intern_string(name.clone(), heap).payload;
                     let field_handles: Vec<u64> = fields
                         .iter()
-                        .map(|field| NativeValue::string(field.clone(), heap).payload)
+                        .map(|field| NativeValue::intern_string(field.clone(), heap).payload)
                         .collect();
                     let count = u32::try_from(field_handles.len()).ok()?;
                     let base = if count == 0 {
@@ -631,8 +665,8 @@ fn compile_function(
                         payload.push(stack.pop()?);
                     }
                     payload.reverse();
-                    let name_handle = NativeValue::string(name.clone(), heap).payload;
-                    let variant_handle = NativeValue::string(variant.clone(), heap).payload;
+                    let name_handle = NativeValue::intern_string(name.clone(), heap).payload;
+                    let variant_handle = NativeValue::intern_string(variant.clone(), heap).payload;
                     let count = u32::try_from(payload.len()).ok()?;
                     let base = if count == 0 {
                         builder.ins().iconst(pointer_ty, 0)
@@ -685,6 +719,38 @@ fn compile_function(
                         });
                     }
                 }
+                Instr::InterpString { parts } => {
+                    let mut items = Vec::with_capacity(*parts);
+                    for _ in 0..*parts {
+                        items.push(stack.pop()?);
+                    }
+                    items.reverse();
+                    let count = u32::try_from(items.len()).ok()?;
+                    let base = if count == 0 {
+                        builder.ins().iconst(pointer_ty, 0)
+                    } else {
+                        let slot_size = count.checked_mul(NATIVE_VALUE_SIZE as u32)?;
+                        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            slot_size,
+                        ));
+                        let base = builder.ins().stack_addr(pointer_ty, slot, 0);
+                        for (idx, item) in items.into_iter().enumerate() {
+                            let offset = i32::try_from(idx).ok()?.checked_mul(NATIVE_VALUE_SIZE)?;
+                            store_native_value(&mut builder, base, offset, item)?;
+                        }
+                        base
+                    };
+                    let len_val = builder.ins().iconst(types::I64, count as i64);
+                    let func_ref =
+                        module.declare_func_in_func(hostcalls.interp_string, builder.func);
+                    let call = builder.ins().call(func_ref, &[heap_ptr, base, len_val]);
+                    let handle = builder.inst_results(call)[0];
+                    stack.push(StackValue {
+                        value: handle,
+                        kind: JitType::Heap,
+                    });
+                }
                 Instr::LoadLocal(slot) => {
                     let var = *locals.get(*slot)?;
                     let kind = *local_types.get(*slot)?;
@@ -707,7 +773,7 @@ fn compile_function(
                     if base.kind != JitType::Struct {
                         return None;
                     }
-                    let field_handle = NativeValue::string(field.clone(), heap).payload;
+                    let field_handle = NativeValue::intern_string(field.clone(), heap).payload;
                     let field_val = builder.ins().iconst(types::I64, field_handle as i64);
                     let func_ref =
                         module.declare_func_in_func(hostcalls.get_struct_field, builder.func);
@@ -986,7 +1052,7 @@ fn return_kind(ty: &TypeRef, program: &IrProgram) -> Option<ReturnKind> {
             Some(ReturnKind::Heap)
         }
         TypeRefKind::Generic { base, .. }
-            if base.name == "List" || base.name == "Map" =>
+            if base.name == "List" || base.name == "Map" || base.name == "Task" =>
         {
             Some(ReturnKind::Heap)
         }
@@ -1003,6 +1069,7 @@ fn value_kind(value: &Value) -> Option<JitType> {
         Value::Struct { .. } => Some(JitType::Struct),
         Value::Enum { .. } => Some(JitType::Enum),
         Value::Boxed(_) => Some(JitType::Boxed),
+        Value::Task(_) => Some(JitType::Heap),
         _ => None,
     }
 }
@@ -1071,6 +1138,12 @@ fn infer_local_types(
                         JitType::Boxed => stack.push(JitType::Boxed),
                         _ => stack.push(JitType::Boxed),
                     }
+                }
+                Instr::InterpString { parts } => {
+                    for _ in 0..*parts {
+                        stack.pop()?;
+                    }
+                    stack.push(JitType::Heap);
                 }
                 Instr::LoadLocal(slot) => {
                     let kind = locals.get(*slot)?.as_ref()?;

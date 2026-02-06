@@ -45,22 +45,113 @@ pub enum TaskResultValue {
 
 #[derive(Default)]
 pub struct NativeHeap {
-    values: Vec<HeapValue>,
+    values: Vec<Option<HeapValue>>,
+    free_list: Vec<usize>,
+    pinned: std::collections::HashSet<u64>,
+    interned: std::collections::HashMap<String, u64>,
 }
 
 impl NativeHeap {
     pub fn new() -> Self {
-        Self { values: Vec::new() }
+        Self::default()
     }
 
     pub fn insert(&mut self, value: HeapValue) -> u64 {
-        let idx = self.values.len() as u64;
-        self.values.push(value);
-        idx
+        if let Some(idx) = self.free_list.pop() {
+            self.values[idx] = Some(value);
+            return idx as u64;
+        }
+        let idx = self.values.len();
+        self.values.push(Some(value));
+        idx as u64
     }
 
     pub fn get(&self, handle: u64) -> Option<&HeapValue> {
-        self.values.get(handle as usize)
+        self.values.get(handle as usize)?.as_ref()
+    }
+
+    pub fn intern_string(&mut self, value: String) -> u64 {
+        if let Some(handle) = self.interned.get(&value) {
+            return *handle;
+        }
+        let handle = self.insert(HeapValue::String(value.clone()));
+        self.pinned.insert(handle);
+        self.interned.insert(value, handle);
+        handle
+    }
+
+    pub fn collect_garbage(&mut self) {
+        if self.values.is_empty() {
+            return;
+        }
+        let mut marks = vec![false; self.values.len()];
+        let mut stack: Vec<u64> = self.pinned.iter().copied().collect();
+        while let Some(handle) = stack.pop() {
+            self.mark_handle(handle, &mut marks, &mut stack);
+        }
+        for (idx, slot) in self.values.iter_mut().enumerate() {
+            if slot.is_some() && !marks[idx] {
+                *slot = None;
+                self.free_list.push(idx);
+            }
+        }
+    }
+
+    fn mark_handle(&self, handle: u64, marks: &mut [bool], stack: &mut Vec<u64>) {
+        let idx = handle as usize;
+        if idx >= self.values.len() || marks[idx] {
+            return;
+        }
+        let Some(value) = self.values[idx].as_ref() else {
+            return;
+        };
+        marks[idx] = true;
+        self.mark_children(value, marks, stack);
+    }
+
+    fn mark_children(&self, value: &HeapValue, marks: &mut [bool], stack: &mut Vec<u64>) {
+        match value {
+            HeapValue::String(_) => {}
+            HeapValue::List(items) => {
+                for item in items {
+                    self.mark_native_value(item, marks, stack);
+                }
+            }
+            HeapValue::Map(items) => {
+                for value in items.values() {
+                    self.mark_native_value(value, marks, stack);
+                }
+            }
+            HeapValue::Struct { fields, .. } => {
+                for value in fields.values() {
+                    self.mark_native_value(value, marks, stack);
+                }
+            }
+            HeapValue::Enum { payload, .. } => {
+                for value in payload {
+                    self.mark_native_value(value, marks, stack);
+                }
+            }
+            HeapValue::Boxed(value) => {
+                self.mark_native_value(value, marks, stack);
+            }
+            HeapValue::Task(task) => match &task.result {
+                TaskResultValue::Ok(value) | TaskResultValue::Error(value) => {
+                    self.mark_native_value(value, marks, stack);
+                }
+                TaskResultValue::Runtime(_) => {}
+            },
+        }
+    }
+
+    fn mark_native_value(&self, value: &NativeValue, marks: &mut [bool], stack: &mut Vec<u64>) {
+        if value.tag == NativeTag::Heap {
+            let handle = value.payload;
+            let idx = handle as usize;
+            if idx < marks.len() && !marks[idx] {
+                stack.push(handle);
+            }
+        }
     }
 }
 
@@ -102,6 +193,14 @@ impl NativeValue {
 
     pub fn string(value: String, heap: &mut NativeHeap) -> Self {
         let handle = heap.insert(HeapValue::String(value));
+        Self {
+            tag: NativeTag::Heap,
+            payload: handle,
+        }
+    }
+
+    pub fn intern_string(value: String, heap: &mut NativeHeap) -> Self {
+        let handle = heap.intern_string(value);
         Self {
             tag: NativeTag::Heap,
             payload: handle,
@@ -325,5 +424,20 @@ mod tests {
             },
             other => panic!("unexpected value: {other:?}"),
         }
+    }
+
+    #[test]
+    fn native_heap_gc_collects_unpinned() {
+        let mut heap = NativeHeap::new();
+        let keep_handle = heap.intern_string("keep".to_string());
+        let drop_handle = NativeValue::string("drop".to_string(), &mut heap).payload;
+
+        heap.collect_garbage();
+
+        match heap.get(keep_handle) {
+            Some(HeapValue::String(value)) => assert_eq!(value, "keep"),
+            other => panic!("expected interned string, got {other:?}"),
+        }
+        assert!(heap.get(drop_handle).is_none(), "expected drop_handle to be collected");
     }
 }

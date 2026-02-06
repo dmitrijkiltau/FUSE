@@ -57,8 +57,10 @@ impl<'a> NativeVm<'a> {
         if let Some(value) =
             self.jit.try_call(&self.program.ir, name, &args, &mut self.heap)
         {
+            self.heap.collect_garbage();
             return Ok(value);
         }
+        self.heap.collect_garbage();
         self.vm.call_function(name, args)
     }
 
