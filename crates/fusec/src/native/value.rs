@@ -53,6 +53,7 @@ pub struct NativeHeap {
     pinned: std::collections::HashSet<u64>,
     interned: std::collections::HashMap<String, u64>,
     db: Option<Db>,
+    configs: std::collections::HashMap<String, std::collections::HashMap<String, Value>>,
 }
 
 impl NativeHeap {
@@ -90,6 +91,24 @@ impl NativeHeap {
             self.db = Some(db);
         }
         Ok(self.db.as_mut().expect("db initialized"))
+    }
+
+    pub fn set_configs(
+        &mut self,
+        configs: std::collections::HashMap<String, std::collections::HashMap<String, Value>>,
+    ) {
+        self.configs = configs;
+    }
+
+    pub fn config_field(&self, config: &str, field: &str) -> Option<Value> {
+        self.configs
+            .get(config)
+            .and_then(|fields| fields.get(field))
+            .cloned()
+    }
+
+    pub fn has_config(&self, config: &str) -> bool {
+        self.configs.contains_key(config)
     }
 
     pub fn collect_garbage(&mut self) {

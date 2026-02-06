@@ -48,7 +48,7 @@ Status legend: [x] done, [ ] pending, [~] partial
 - [x] JSON encode/decode
 - [x] Validation hooks (refinements, Email/Id)
 - [x] HTTP routing + handler calls
-- [ ] Config loading
+- [x] Config loading
 - [ ] Task APIs (`task.*`)
 
 ## Stage 5 — De‑VM

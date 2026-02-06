@@ -73,6 +73,7 @@ struct HostCalls {
     builtin_log: FuncId,
     builtin_env: FuncId,
     builtin_assert: FuncId,
+    config_get: FuncId,
     db_exec: FuncId,
     db_query: FuncId,
     db_one: FuncId,
@@ -122,6 +123,7 @@ impl JitRuntime {
             "fuse_native_builtin_assert",
             fuse_native_builtin_assert as *const u8,
         );
+        builder.symbol("fuse_native_config_get", fuse_native_config_get as *const u8);
         builder.symbol("fuse_native_json_encode", fuse_native_json_encode as *const u8);
         builder.symbol("fuse_native_json_decode", fuse_native_json_decode as *const u8);
         builder.symbol(
@@ -306,6 +308,9 @@ impl HostCalls {
         let builtin_assert = module
             .declare_function("fuse_native_builtin_assert", Linkage::Import, &builtin_sig)
             .expect("declare builtin assert hostcall");
+        let config_get = module
+            .declare_function("fuse_native_config_get", Linkage::Import, &builtin_sig)
+            .expect("declare config get hostcall");
         let db_exec = module
             .declare_function("fuse_native_db_exec", Linkage::Import, &builtin_sig)
             .expect("declare db exec hostcall");
@@ -344,6 +349,7 @@ impl HostCalls {
             builtin_log,
             builtin_env,
             builtin_assert,
+            config_get,
             db_exec,
             db_query,
             db_one,
@@ -1358,6 +1364,63 @@ extern "C" fn fuse_native_builtin_assert(
 }
 
 #[unsafe(no_mangle)]
+extern "C" fn fuse_native_config_get(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+
+    if len < 2 {
+        return builtin_runtime_error(out, heap, "config.get expects config and field");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(config_val) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "config.get expects config and field");
+    };
+    let Some(field_val) = args.get(1) else {
+        return builtin_runtime_error(out, heap, "config.get expects config and field");
+    };
+    let Some(config_val) = config_val.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "config.get expects config and field");
+    };
+    let Some(field_val) = field_val.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "config.get expects config and field");
+    };
+    let config = match config_val {
+        Value::String(text) => text,
+        _ => return builtin_runtime_error(out, heap, "config.get expects config and field"),
+    };
+    let field = match field_val {
+        Value::String(text) => text,
+        _ => return builtin_runtime_error(out, heap, "config.get expects config and field"),
+    };
+    if !heap.has_config(&config) {
+        return builtin_runtime_error(out, heap, format!("unknown config {config}"));
+    }
+    let Some(value) = heap.config_field(&config, &field) else {
+        return builtin_runtime_error(
+            out,
+            heap,
+            format!("unknown config field {config}.{field}"),
+        );
+    };
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "config value unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn fuse_native_json_encode(
     heap: *mut NativeHeap,
     args: *const NativeValue,
@@ -2074,6 +2137,65 @@ fn compile_function(
                         kind: JitType::Heap,
                     });
                 }
+                Instr::LoadConfigField { config, field } => {
+                    let config_handle = NativeValue::intern_string(config.clone(), heap).payload;
+                    let field_handle = NativeValue::intern_string(field.clone(), heap).payload;
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        (NATIVE_VALUE_SIZE * 2) as u32,
+                    ));
+                    let base = builder.ins().stack_addr(pointer_ty, slot, 0);
+                    let config_val = StackValue {
+                        value: builder.ins().iconst(types::I64, config_handle as i64),
+                        kind: JitType::Heap,
+                    };
+                    store_native_value(&mut builder, base, 0, config_val)?;
+                    let field_val = StackValue {
+                        value: builder.ins().iconst(types::I64, field_handle as i64),
+                        kind: JitType::Heap,
+                    };
+                    store_native_value(&mut builder, base, NATIVE_VALUE_SIZE, field_val)?;
+                    let len_val = builder.ins().iconst(types::I64, 2);
+                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        NATIVE_VALUE_SIZE as u32,
+                    ));
+                    let builtin_out_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
+                    let func_ref = module.declare_func_in_func(hostcalls.config_get, builder.func);
+                    let call =
+                        builder.ins().call(func_ref, &[heap_ptr, base, len_val, builtin_out_ptr]);
+                    let status = builder.inst_results(call)[0];
+                    let ok_idx = *block_for_start.get(&(ip + 1))?;
+                    let mut ok_stack = stack.clone();
+                    ok_stack.push(StackValue {
+                        value: builtin_out_ptr,
+                        kind: JitType::Value,
+                    });
+                    let ok_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &ok_stack,
+                        entry_stacks.get(ok_idx)?,
+                    )?;
+                    let err_block = builder.create_block();
+                    builder.append_block_param(err_block, types::I8);
+                    builder.append_block_param(err_block, pointer_ty);
+                    let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    builder.ins().brif(
+                        is_ok,
+                        blocks[ok_idx],
+                        &ok_args,
+                        err_block,
+                        &[status, builtin_out_ptr],
+                    );
+                    builder.switch_to_block(err_block);
+                    let status_val = builder.block_params(err_block)[0];
+                    let err_out_ptr = builder.block_params(err_block)[1];
+                    copy_native_value(&mut builder, err_out_ptr, out_ptr);
+                    builder.ins().return_(&[status_val]);
+                    terminated = true;
+                    break;
+                }
                 Instr::Call { name, argc, kind } => {
                     if !matches!(kind, CallKind::Builtin) {
                         return None;
@@ -2533,6 +2655,11 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     starts.insert(ip + 1);
                 }
             }
+            Instr::LoadConfigField { .. } => {
+                if ip + 1 < code.len() {
+                    starts.insert(ip + 1);
+                }
+            }
             _ => {}
         }
     }
@@ -2784,6 +2911,19 @@ fn analyze_types(
                 Instr::LoadLocal(slot) => {
                     let kind = locals.get(*slot)?.as_ref()?;
                     stack.push(*kind);
+                }
+                Instr::LoadConfigField { .. } => {
+                    stack.push(JitType::Value);
+                    let ok_ip = ip + 1;
+                    let ok_idx = *block_for_start.get(&ok_ip)?;
+                    merge_block_stack(
+                        &mut entry_stacks[ok_idx],
+                        &stack,
+                        &mut worklist,
+                        ok_idx,
+                    )?;
+                    terminated = true;
+                    break;
                 }
                 Instr::StoreLocal(slot) => {
                     let kind = stack.pop()?;

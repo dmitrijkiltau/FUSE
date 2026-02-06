@@ -53,6 +53,7 @@ pub struct NativeVm<'a> {
     vm: Vm<'a>,
     jit: JitRuntime,
     heap: NativeHeap,
+    configs_loaded: bool,
 }
 
 impl<'a> NativeVm<'a> {
@@ -62,10 +63,12 @@ impl<'a> NativeVm<'a> {
             vm: Vm::new(&program.ir),
             jit: JitRuntime::build(),
             heap: NativeHeap::new(),
+            configs_loaded: false,
         }
     }
 
     pub fn run_app(&mut self, name: Option<&str>) -> Result<(), String> {
+        self.ensure_configs_loaded()?;
         let self_ptr: *mut NativeVm<'a> = self;
         self.vm.set_serve_hook(Some(Box::new(move |port| unsafe {
             (*self_ptr).eval_serve_native(port)
@@ -76,6 +79,7 @@ impl<'a> NativeVm<'a> {
     }
 
     pub fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, String> {
+        self.ensure_configs_loaded()?;
         let func = self
             .program
             .ir
@@ -105,12 +109,25 @@ impl<'a> NativeVm<'a> {
         self.jit.has_function(name)
     }
 
+    fn ensure_configs_loaded(&mut self) -> Result<(), String> {
+        if self.configs_loaded {
+            return Ok(());
+        }
+        self.vm.eval_configs_for_native()?;
+        let configs = self.vm.configs_snapshot();
+        self.heap.set_configs(configs);
+        self.configs_loaded = true;
+        Ok(())
+    }
+
     fn eval_serve_native(&mut self, port: i64) -> Result<Value, String> {
         self.eval_serve_native_inner(port)
             .map_err(|err| self.render_native_error(err))
     }
 
     fn eval_serve_native_inner(&mut self, port: i64) -> NativeResult<Value> {
+        self.ensure_configs_loaded()
+            .map_err(NativeError::Runtime)?;
         let service = self.select_service()?.clone();
         let host = std::env::var("FUSE_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
         let port: u16 = port
