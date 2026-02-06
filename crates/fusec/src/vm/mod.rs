@@ -21,6 +21,7 @@ enum VmError {
 }
 
 type VmResult<T> = Result<T, VmError>;
+type ServeHook<'a> = Box<dyn FnMut(i64) -> Result<Value, String> + 'a>;
 
 fn split_type_name(name: &str) -> (Option<&str>, &str) {
     if name.starts_with("std.") {
@@ -85,6 +86,7 @@ pub struct Vm<'a> {
     program: &'a IrProgram,
     configs: HashMap<String, HashMap<String, Value>>,
     db: Option<Db>,
+    serve_hook: Option<ServeHook<'a>>,
 }
 
 impl<'a> Vm<'a> {
@@ -93,7 +95,12 @@ impl<'a> Vm<'a> {
             program,
             configs: HashMap::new(),
             db: None,
+            serve_hook: None,
         }
+    }
+
+    pub fn set_serve_hook(&mut self, hook: Option<ServeHook<'a>>) {
+        self.serve_hook = hook;
     }
 
     pub fn run_app(&mut self, name: Option<&str>) -> Result<(), String> {
@@ -116,6 +123,10 @@ impl<'a> Vm<'a> {
             return Err(self.render_error(err));
         }
         Ok(())
+    }
+
+    pub(crate) fn eval_configs_for_native(&mut self) -> Result<(), String> {
+        self.eval_configs().map_err(|err| self.render_error(err))
     }
 
     pub fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, String> {
@@ -913,7 +924,11 @@ impl<'a> Vm<'a> {
                         ))
                     }
                 };
-                self.eval_serve(port)
+                if let Some(hook) = self.serve_hook.as_mut() {
+                    hook(port).map_err(VmError::Runtime)
+                } else {
+                    self.eval_serve(port)
+                }
             }
             _ => Err(VmError::Runtime(format!("unknown builtin {name}"))),
         }

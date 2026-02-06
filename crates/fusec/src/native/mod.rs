@@ -1,13 +1,21 @@
 mod jit;
 pub mod value;
 
+use std::collections::{BTreeMap, HashMap};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+
 use serde::{Deserialize, Serialize};
 
+use fuse_rt::{error as rt_error, json as rt_json, validate as rt_validate};
+
+use crate::ast::{BinaryOp, Expr, ExprKind, HttpVerb, Ident, Literal, TypeRef, TypeRefKind, UnaryOp};
 use crate::interp::{format_error_value, Value};
-use crate::ir::Program as IrProgram;
+use crate::ir::{Function, Program as IrProgram, Service, ServiceRoute};
 use crate::loader::ModuleRegistry;
-use crate::vm::Vm;
 use crate::native::value::NativeHeap;
+use crate::span::Span;
+use crate::vm::Vm;
 use jit::{JitCallError, JitRuntime};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -32,6 +40,14 @@ pub fn compile_registry(registry: &ModuleRegistry) -> Result<NativeProgram, Vec<
     Ok(NativeProgram::from_ir(ir))
 }
 
+#[derive(Debug)]
+enum NativeError {
+    Runtime(String),
+    Error(Value),
+}
+
+type NativeResult<T> = Result<T, NativeError>;
+
 pub struct NativeVm<'a> {
     program: &'a NativeProgram,
     vm: Vm<'a>,
@@ -50,7 +66,13 @@ impl<'a> NativeVm<'a> {
     }
 
     pub fn run_app(&mut self, name: Option<&str>) -> Result<(), String> {
-        self.vm.run_app(name)
+        let self_ptr: *mut NativeVm<'a> = self;
+        self.vm.set_serve_hook(Some(Box::new(move |port| unsafe {
+            (*self_ptr).eval_serve_native(port)
+        })));
+        let result = self.vm.run_app(name);
+        self.vm.set_serve_hook(None);
+        result
     }
 
     pub fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, String> {
@@ -83,7 +105,1285 @@ impl<'a> NativeVm<'a> {
         self.jit.has_function(name)
     }
 
-    fn wrap_function_result(&self, func: &crate::ir::Function, value: Value) -> Value {
+    fn eval_serve_native(&mut self, port: i64) -> Result<Value, String> {
+        self.eval_serve_native_inner(port)
+            .map_err(|err| self.render_native_error(err))
+    }
+
+    fn eval_serve_native_inner(&mut self, port: i64) -> NativeResult<Value> {
+        let service = self.select_service()?.clone();
+        let host = std::env::var("FUSE_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let port: u16 = port
+            .try_into()
+            .map_err(|_| NativeError::Runtime("invalid port".to_string()))?;
+        let addr = format!("{host}:{port}");
+        let listener = TcpListener::bind(&addr)
+            .map_err(|err| NativeError::Runtime(format!("failed to bind {addr}: {err}")))?;
+        let max_requests = std::env::var("FUSE_MAX_REQUESTS")
+            .ok()
+            .and_then(|val| val.parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut handled = 0usize;
+        let mut fallback_vm = Vm::new(&self.program.ir);
+        if let Err(err) = fallback_vm.eval_configs_for_native() {
+            return Err(NativeError::Runtime(err));
+        }
+        for stream in listener.incoming() {
+            let mut stream = match stream {
+                Ok(stream) => stream,
+                Err(err) => {
+                    return Err(NativeError::Runtime(format!(
+                        "failed to accept connection: {err}"
+                    )))
+                }
+            };
+            let response = match self.handle_http_request(&service, &mut stream, &mut fallback_vm) {
+                Ok(resp) => resp,
+                Err(err) => self.http_error_response(err),
+            };
+            let _ = stream.write_all(response.as_bytes());
+            handled += 1;
+            if max_requests > 0 && handled >= max_requests {
+                break;
+            }
+        }
+        Ok(Value::Unit)
+    }
+
+    fn render_native_error(&self, err: NativeError) -> String {
+        match err {
+            NativeError::Runtime(message) => message,
+            NativeError::Error(value) => format_error_value(&value),
+        }
+    }
+
+    fn call_function_with_fallback(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        fallback_vm: &mut Vm,
+    ) -> Result<Value, String> {
+        let func = self
+            .program
+            .ir
+            .functions
+            .get(name)
+            .ok_or_else(|| format!("unknown function {name}"))?;
+        if let Some(result) = self.jit.try_call(&self.program.ir, name, &args, &mut self.heap) {
+            let out = match result {
+                Ok(value) => Ok(self.wrap_function_result(func, value)),
+                Err(JitCallError::Error(err_val)) => {
+                    if self.is_result_type(func.ret.as_ref()) {
+                        Ok(Value::ResultErr(Box::new(err_val)))
+                    } else {
+                        Err(format_error_value(&err_val))
+                    }
+                }
+                Err(JitCallError::Runtime(message)) => Err(message),
+            };
+            self.heap.collect_garbage();
+            return out;
+        }
+        self.heap.collect_garbage();
+        fallback_vm.call_function(name, args)
+    }
+
+    fn select_service(&self) -> NativeResult<&Service> {
+        if self.program.ir.services.is_empty() {
+            return Err(NativeError::Runtime("no service declared".to_string()));
+        }
+        if let Ok(name) = std::env::var("FUSE_SERVICE") {
+            return self
+                .program
+                .ir
+                .services
+                .get(&name)
+                .ok_or_else(|| NativeError::Runtime(format!("service not found: {name}")));
+        }
+        if self.program.ir.services.len() == 1 {
+            return Ok(self.program.ir.services.values().next().unwrap());
+        }
+        Err(NativeError::Runtime(
+            "multiple services declared; set FUSE_SERVICE".to_string(),
+        ))
+    }
+
+    fn handle_http_request(
+        &mut self,
+        service: &Service,
+        stream: &mut TcpStream,
+        fallback_vm: &mut Vm,
+    ) -> NativeResult<String> {
+        let request = self.read_http_request(stream)?;
+        let verb = match request.method.as_str() {
+            "GET" => HttpVerb::Get,
+            "POST" => HttpVerb::Post,
+            "PUT" => HttpVerb::Put,
+            "PATCH" => HttpVerb::Patch,
+            "DELETE" => HttpVerb::Delete,
+            _ => {
+                return Ok(self.http_response(
+                    405,
+                    self.internal_error_json("method not allowed"),
+                ))
+            }
+        };
+        let path = request
+            .path
+            .split('?')
+            .next()
+            .unwrap_or(&request.path)
+            .to_string();
+        let (route, params) = match self.match_route(service, &verb, &path)? {
+            Some(result) => result,
+            None => {
+                let body = self.error_json_from_code("not_found", "not found");
+                return Ok(self.http_response(404, body));
+            }
+        };
+        let body_value = if let Some(body_ty) = &route.body_type {
+            let body_text = String::from_utf8_lossy(&request.body);
+            if body_text.trim().is_empty() {
+                return Err(NativeError::Error(self.validation_error_value(
+                    "body",
+                    "missing_field",
+                    "missing JSON body",
+                )));
+            }
+            let json = rt_json::decode(&body_text).map_err(|msg| {
+                NativeError::Error(self.validation_error_value("body", "invalid_json", msg))
+            })?;
+            Some(self.decode_json_value(&json, body_ty, "body", fallback_vm)?)
+        } else {
+            None
+        };
+        let value = match self.eval_route(route, params, body_value, fallback_vm) {
+            Ok(value) => value,
+            Err(err) => return Err(err),
+        };
+        match value {
+            Value::ResultErr(err) => {
+                let status = self.http_status_for_error_value(&err);
+                let json = self.error_json_from_value(&err);
+                Ok(self.http_response(status, json))
+            }
+            Value::ResultOk(ok) => {
+                let json = self.value_to_json(&ok);
+                Ok(self.http_response(200, rt_json::encode(&json)))
+            }
+            other => {
+                let json = self.value_to_json(&other);
+                Ok(self.http_response(200, rt_json::encode(&json)))
+            }
+        }
+    }
+
+    fn eval_route(
+        &mut self,
+        route: &ServiceRoute,
+        mut params: Vec<Value>,
+        body_value: Option<Value>,
+        fallback_vm: &mut Vm,
+    ) -> NativeResult<Value> {
+        if let Some(body) = body_value {
+            params.push(body);
+        }
+        self.call_function_with_fallback(&route.handler, params, fallback_vm)
+            .map_err(NativeError::Runtime)
+    }
+
+    fn match_route<'r>(
+        &mut self,
+        service: &'r Service,
+        verb: &HttpVerb,
+        path: &str,
+    ) -> NativeResult<Option<(&'r ServiceRoute, Vec<Value>)>> {
+        let base_segments = split_path(&service.base_path);
+        let req_segments = split_path(path);
+        if req_segments.len() < base_segments.len()
+            || req_segments[..base_segments.len()] != base_segments[..]
+        {
+            return Ok(None);
+        }
+        let req_segments = &req_segments[base_segments.len()..];
+        for route in &service.routes {
+            if &route.verb != verb {
+                continue;
+            }
+            let route_segments = split_path(&route.path);
+            if route_segments.len() != req_segments.len() {
+                continue;
+            }
+            let mut params = Vec::new();
+            let mut matched = true;
+            for (seg, req) in route_segments.iter().zip(req_segments.iter()) {
+                if let Some((name, ty_name)) = parse_route_param(seg) {
+                    let ty = TypeRef {
+                        kind: TypeRefKind::Simple(Ident {
+                            name: ty_name.to_string(),
+                            span: Span::default(),
+                        }),
+                        span: Span::default(),
+                    };
+                    let value = self
+                        .parse_env_value(&ty, req)
+                        .map_err(|err| self.map_parse_error(err, &name))?;
+                    self.validate_value(&value, &ty, &name)?;
+                    params.push(value);
+                } else if seg != req {
+                    matched = false;
+                    break;
+                }
+            }
+            if matched {
+                return Ok(Some((route, params)));
+            }
+        }
+        Ok(None)
+    }
+
+    fn read_http_request(&self, stream: &mut TcpStream) -> NativeResult<HttpRequest> {
+        let mut buffer = Vec::new();
+        let mut temp = [0u8; 1024];
+        let mut header_end = None;
+        loop {
+            let read = stream
+                .read(&mut temp)
+                .map_err(|err| NativeError::Runtime(format!("failed to read request: {err}")))?;
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&temp[..read]);
+            if let Some(pos) = find_header_end(&buffer) {
+                header_end = Some(pos);
+                break;
+            }
+            if buffer.len() > 1024 * 1024 {
+                return Err(NativeError::Runtime("request header too large".to_string()));
+            }
+        }
+        let header_end = header_end.ok_or_else(|| {
+            NativeError::Runtime("invalid HTTP request: missing headers".to_string())
+        })?;
+        let header_bytes = &buffer[..header_end];
+        let header_text = String::from_utf8_lossy(header_bytes);
+        let mut lines = header_text.split("\r\n");
+        let request_line = lines
+            .next()
+            .ok_or_else(|| NativeError::Runtime("invalid HTTP request line".to_string()))?;
+        let mut parts = request_line.split_whitespace();
+        let method = parts
+            .next()
+            .ok_or_else(|| NativeError::Runtime("invalid HTTP request line".to_string()))?
+            .to_string();
+        let path = parts
+            .next()
+            .ok_or_else(|| NativeError::Runtime("invalid HTTP request line".to_string()))?
+            .to_string();
+        let mut headers = HashMap::new();
+        for line in lines {
+            if line.is_empty() {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once(':') {
+                headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
+            }
+        }
+        let content_length = headers
+            .get("content-length")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut body = buffer[header_end + 4..].to_vec();
+        while body.len() < content_length {
+            let read = stream
+                .read(&mut temp)
+                .map_err(|err| NativeError::Runtime(format!("failed to read body: {err}")))?;
+            if read == 0 {
+                break;
+            }
+            body.extend_from_slice(&temp[..read]);
+        }
+        if body.len() > content_length {
+            body.truncate(content_length);
+        }
+        Ok(HttpRequest { method, path, body })
+    }
+
+    fn http_response(&self, status: u16, body: String) -> String {
+        let reason = match status {
+            200 => "OK",
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            404 => "Not Found",
+            409 => "Conflict",
+            500 => "Internal Server Error",
+            _ => "OK",
+        };
+        format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn http_error_response(&self, err: NativeError) -> String {
+        match err {
+            NativeError::Error(value) => {
+                let status = self.http_status_for_error_value(&value);
+                let body = self.error_json_from_value(&value);
+                self.http_response(status, body)
+            }
+            NativeError::Runtime(message) => {
+                let body = self.internal_error_json(&message);
+                self.http_response(500, body)
+            }
+        }
+    }
+
+    fn http_status_for_error_value(&self, value: &Value) -> u16 {
+        match value {
+            Value::Struct { name, fields } => match name.as_str() {
+                "std.Error.Validation" => 400,
+                "std.Error.BadRequest" => 400,
+                "std.Error.Unauthorized" => 401,
+                "std.Error.Forbidden" => 403,
+                "std.Error.NotFound" => 404,
+                "std.Error.Conflict" => 409,
+                "std.Error" => fields
+                    .get("status")
+                    .and_then(|v| match v {
+                        Value::Int(n) => (*n).try_into().ok(),
+                        _ => None,
+                    })
+                    .unwrap_or(500),
+                _ => 500,
+            },
+            _ => 500,
+        }
+    }
+
+    fn error_json_from_value(&self, value: &Value) -> String {
+        if let Some(json) = error_json_for_value(value) {
+            return rt_json::encode(&json);
+        }
+        self.internal_error_json("internal error")
+    }
+
+    fn error_json_from_code(&self, code: &str, message: &str) -> String {
+        rt_json::encode(&rt_error::error_json(code, message, None))
+    }
+
+    fn internal_error_json(&self, message: &str) -> String {
+        self.error_json_from_code("internal_error", message)
+    }
+
+    fn parse_env_value(&self, ty: &TypeRef, raw: &str) -> NativeResult<Value> {
+        let raw = raw.trim();
+        match &ty.kind {
+            TypeRefKind::Optional(inner) => {
+                if raw.eq_ignore_ascii_case("null") || raw.is_empty() {
+                    Ok(Value::Null)
+                } else {
+                    self.parse_env_value(inner, raw)
+                }
+            }
+            TypeRefKind::Refined { base, .. } => self.parse_simple_env(&base.name, raw),
+            TypeRefKind::Simple(ident) => self.parse_simple_env(&ident.name, raw),
+            TypeRefKind::Result { .. } => Err(NativeError::Runtime(
+                "Result is not supported for config env overrides".to_string(),
+            )),
+            TypeRefKind::Generic { base, args } => match base.name.as_str() {
+                "Option" => {
+                    if args.len() != 1 {
+                        return Err(NativeError::Runtime(
+                            "Option expects 1 type argument".to_string(),
+                        ));
+                    }
+                    if raw.eq_ignore_ascii_case("null") || raw.is_empty() {
+                        Ok(Value::Null)
+                    } else {
+                        self.parse_env_value(&args[0], raw)
+                    }
+                }
+                "Result" => Err(NativeError::Runtime(
+                    "Result is not supported for config env overrides".to_string(),
+                )),
+                _ => Err(NativeError::Runtime(
+                    "config env overrides only support simple types".to_string(),
+                )),
+            },
+        }
+    }
+
+    fn parse_simple_env(&self, name: &str, raw: &str) -> NativeResult<Value> {
+        match name {
+            "Int" => raw
+                .parse::<i64>()
+                .map(Value::Int)
+                .map_err(|_| NativeError::Runtime(format!("invalid Int: {raw}"))),
+            "Float" => raw
+                .parse::<f64>()
+                .map(Value::Float)
+                .map_err(|_| NativeError::Runtime(format!("invalid Float: {raw}"))),
+            "Bool" => match raw.to_ascii_lowercase().as_str() {
+                "true" => Ok(Value::Bool(true)),
+                "false" => Ok(Value::Bool(false)),
+                _ => Err(NativeError::Runtime(format!("invalid Bool: {raw}"))),
+            },
+            "String" | "Id" | "Email" | "Bytes" => Ok(Value::String(raw.to_string())),
+            _ => Err(NativeError::Runtime(format!(
+                "env override not supported for type {name}"
+            ))),
+        }
+    }
+
+    fn map_parse_error(&self, err: NativeError, path: &str) -> NativeError {
+        match err {
+            NativeError::Runtime(message) => {
+                NativeError::Error(self.validation_error_value(path, "invalid_value", message))
+            }
+            other => other,
+        }
+    }
+
+    fn validate_value(&self, value: &Value, ty: &TypeRef, path: &str) -> NativeResult<()> {
+        let value = value.unboxed();
+        match &ty.kind {
+            TypeRefKind::Optional(inner) => {
+                if matches!(value, Value::Null) {
+                    Ok(())
+                } else {
+                    self.validate_value(&value, inner, path)
+                }
+            }
+            TypeRefKind::Result { ok, err } => match value {
+                Value::ResultOk(inner) => self.validate_value(&inner, ok, path),
+                Value::ResultErr(inner) => {
+                    if let Some(err_ty) = err {
+                        self.validate_value(&inner, err_ty, path)
+                    } else {
+                        Ok(())
+                    }
+                }
+                _ => Err(NativeError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    format!(
+                        "expected Result, got {}",
+                        self.value_type_name(&value)
+                    ),
+                ))),
+            },
+            TypeRefKind::Refined { base, args } => {
+                self.validate_simple(&value, &base.name, path)?;
+                self.check_refined(&value, &base.name, args, path)
+            }
+            TypeRefKind::Simple(ident) => self.validate_simple(&value, &ident.name, path),
+            TypeRefKind::Generic { base, args } => match base.name.as_str() {
+                "Option" => {
+                    if args.len() != 1 {
+                        return Err(NativeError::Runtime(
+                            "Option expects 1 type argument".to_string(),
+                        ));
+                    }
+                    if matches!(value, Value::Null) {
+                        Ok(())
+                    } else {
+                        self.validate_value(&value, &args[0], path)
+                    }
+                }
+                "Result" => {
+                    if args.len() != 2 {
+                        return Err(NativeError::Runtime(
+                            "Result expects 2 type arguments".to_string(),
+                        ));
+                    }
+                    match value {
+                        Value::ResultOk(inner) => self.validate_value(&inner, &args[0], path),
+                        Value::ResultErr(inner) => self.validate_value(&inner, &args[1], path),
+                        _ => Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!(
+                                "expected Result, got {}",
+                                self.value_type_name(&value)
+                            ),
+                        ))),
+                    }
+                }
+                "List" => {
+                    if args.len() != 1 {
+                        return Err(NativeError::Runtime(
+                            "List expects 1 type argument".to_string(),
+                        ));
+                    }
+                    match value {
+                        Value::List(items) => {
+                            for (idx, item) in items.iter().enumerate() {
+                                let item_path = format!("{path}[{idx}]");
+                                self.validate_value(item, &args[0], &item_path)?;
+                            }
+                            Ok(())
+                        }
+                        _ => Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!(
+                                "expected List, got {}",
+                                self.value_type_name(&value)
+                            ),
+                        ))),
+                    }
+                }
+                "Map" => {
+                    if args.len() != 2 {
+                        return Err(NativeError::Runtime(
+                            "Map expects 2 type arguments".to_string(),
+                        ));
+                    }
+                    match value {
+                        Value::Map(items) => {
+                            for (key, val) in items.iter() {
+                                let key_value = Value::String(key.clone());
+                                let key_path = format!("{path}.{key}");
+                                self.validate_value(&key_value, &args[0], &key_path)?;
+                                self.validate_value(val, &args[1], &key_path)?;
+                            }
+                            Ok(())
+                        }
+                        _ => Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!(
+                                "expected Map, got {}",
+                                self.value_type_name(&value)
+                            ),
+                        ))),
+                    }
+                }
+                _ => Err(NativeError::Runtime(format!(
+                    "validation not supported for {}",
+                    base.name
+                ))),
+            },
+        }
+    }
+
+    fn validate_simple(&self, value: &Value, name: &str, path: &str) -> NativeResult<()> {
+        let value = value.unboxed();
+        let type_name = self.value_type_name(&value);
+        let (module, simple_name) = split_type_name(name);
+        if module.is_none() {
+            match simple_name {
+                "Int" => {
+                    if matches!(value, Value::Int(_)) {
+                        return Ok(());
+                    }
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Int, got {type_name}"),
+                    )));
+                }
+                "Float" => {
+                    if matches!(value, Value::Float(_)) {
+                        return Ok(());
+                    }
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Float, got {type_name}"),
+                    )));
+                }
+                "Bool" => {
+                    if matches!(value, Value::Bool(_)) {
+                        return Ok(());
+                    }
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Bool, got {type_name}"),
+                    )));
+                }
+                "String" => {
+                    if matches!(value, Value::String(_)) {
+                        return Ok(());
+                    }
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected String, got {type_name}"),
+                    )));
+                }
+                "Id" => match value {
+                    Value::String(s) if !s.is_empty() => return Ok(()),
+                    Value::String(_) => {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            "expected non-empty Id".to_string(),
+                        )))
+                    }
+                    _ => {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("expected Id, got {type_name}"),
+                        )))
+                    }
+                },
+                "Email" => match value {
+                    Value::String(s) if rt_validate::is_email(&s) => return Ok(()),
+                    Value::String(_) => {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            "invalid email address".to_string(),
+                        )))
+                    }
+                    _ => {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("expected Email, got {type_name}"),
+                        )))
+                    }
+                },
+                "Bytes" => {
+                    if matches!(value, Value::String(_)) {
+                        return Ok(());
+                    }
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Bytes, got {type_name}"),
+                    )));
+                }
+                _ => {}
+            }
+        }
+        match value {
+            Value::Struct { name: struct_name, .. } if struct_name == simple_name => Ok(()),
+            Value::Enum { name: enum_name, .. } if enum_name == simple_name => Ok(()),
+            _ => Err(NativeError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                format!("expected {name}, got {type_name}"),
+            ))),
+        }
+    }
+
+    fn value_type_name(&self, value: &Value) -> String {
+        match value.unboxed() {
+            Value::Unit => "Unit".to_string(),
+            Value::Int(_) => "Int".to_string(),
+            Value::Float(_) => "Float".to_string(),
+            Value::Bool(_) => "Bool".to_string(),
+            Value::String(_) => "String".to_string(),
+            Value::Null => "Null".to_string(),
+            Value::List(_) => "List".to_string(),
+            Value::Map(_) => "Map".to_string(),
+            Value::Task(_) => "Task".to_string(),
+            Value::Iterator(_) => "Iterator".to_string(),
+            Value::Struct { name, .. } => name.clone(),
+            Value::Enum { name, .. } => name.clone(),
+            Value::EnumCtor { name, .. } => name.clone(),
+            Value::ResultOk(_) | Value::ResultErr(_) => "Result".to_string(),
+            Value::Config(_) => "Config".to_string(),
+            Value::Function(_) => "Function".to_string(),
+            Value::Builtin(_) => "Builtin".to_string(),
+            Value::Boxed(_) => "Box".to_string(),
+        }
+    }
+
+    fn is_optional_type(&self, ty: &TypeRef) -> bool {
+        match &ty.kind {
+            TypeRefKind::Optional(_) => true,
+            TypeRefKind::Generic { base, .. } => base.name == "Option",
+            _ => false,
+        }
+    }
+
+    fn validation_error_value(&self, path: &str, code: &str, message: impl Into<String>) -> Value {
+        let field = self.validation_field_value(path, code, message);
+        let mut fields = HashMap::new();
+        fields.insert(
+            "message".to_string(),
+            Value::String("validation failed".to_string()),
+        );
+        fields.insert("fields".to_string(), Value::List(vec![field]));
+        Value::Struct {
+            name: "std.Error.Validation".to_string(),
+            fields,
+        }
+    }
+
+    fn validation_field_value(&self, path: &str, code: &str, message: impl Into<String>) -> Value {
+        let mut fields = HashMap::new();
+        fields.insert("path".to_string(), Value::String(path.to_string()));
+        fields.insert("code".to_string(), Value::String(code.to_string()));
+        fields.insert("message".to_string(), Value::String(message.into()));
+        Value::Struct {
+            name: "ValidationField".to_string(),
+            fields,
+        }
+    }
+
+    fn check_refined(
+        &self,
+        value: &Value,
+        base: &str,
+        args: &[Expr],
+        path: &str,
+    ) -> NativeResult<()> {
+        let value = value.unboxed();
+        match base {
+            "String" => {
+                let (min, max) = self.parse_length_range(args)?;
+                let len = match value {
+                    Value::String(s) => s.chars().count() as i64,
+                    _ => {
+                        return Err(NativeError::Runtime(
+                            "refined String expects a String".to_string(),
+                        ))
+                    }
+                };
+                if rt_validate::check_len(len, min, max) {
+                    Ok(())
+                } else {
+                    Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("length {len} out of range {min}..{max}"),
+                    )))
+                }
+            }
+            "Int" => {
+                let (min, max) = self.parse_int_range(args)?;
+                let val = match value {
+                    Value::Int(v) => v,
+                    _ => {
+                        return Err(NativeError::Runtime(
+                            "refined Int expects an Int".to_string(),
+                        ))
+                    }
+                };
+                if rt_validate::check_int_range(val, min, max) {
+                    Ok(())
+                } else {
+                    Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("value {val} out of range {min}..{max}"),
+                    )))
+                }
+            }
+            "Float" => {
+                let (min, max) = self.parse_float_range(args)?;
+                let val = match value {
+                    Value::Float(v) => v,
+                    _ => {
+                        return Err(NativeError::Runtime(
+                            "refined Float expects a Float".to_string(),
+                        ))
+                    }
+                };
+                if rt_validate::check_float_range(val, min, max) {
+                    Ok(())
+                } else {
+                    Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("value {val} out of range {min}..{max}"),
+                    )))
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn parse_length_range(&self, args: &[Expr]) -> NativeResult<(i64, i64)> {
+        let (left, right) = self.extract_range_args(args)?;
+        let min = self
+            .literal_to_i64(left)
+            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+        let max = self
+            .literal_to_i64(right)
+            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+        Ok((min, max))
+    }
+
+    fn parse_int_range(&self, args: &[Expr]) -> NativeResult<(i64, i64)> {
+        let (left, right) = self.extract_range_args(args)?;
+        let min = self
+            .literal_to_i64(left)
+            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+        let max = self
+            .literal_to_i64(right)
+            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+        Ok((min, max))
+    }
+
+    fn parse_float_range(&self, args: &[Expr]) -> NativeResult<(f64, f64)> {
+        let (left, right) = self.extract_range_args(args)?;
+        let min = self
+            .literal_to_f64(left)
+            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+        let max = self
+            .literal_to_f64(right)
+            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+        Ok((min, max))
+    }
+
+    fn extract_range_args<'b>(&self, args: &'b [Expr]) -> NativeResult<(&'b Expr, &'b Expr)> {
+        if args.len() == 1 {
+            if let ExprKind::Binary {
+                op: BinaryOp::Range,
+                left,
+                right,
+            } = &args[0].kind
+            {
+                return Ok((left, right));
+            }
+        }
+        if args.len() == 2 {
+            return Ok((&args[0], &args[1]));
+        }
+        Err(NativeError::Runtime(
+            "refined types expect a range like 1..10".to_string(),
+        ))
+    }
+
+    fn literal_to_i64(&self, expr: &Expr) -> Option<i64> {
+        match &expr.kind {
+            ExprKind::Literal(Literal::Int(v)) => Some(*v),
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr,
+            } => match &expr.kind {
+                ExprKind::Literal(Literal::Int(v)) => Some(-v),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn literal_to_f64(&self, expr: &Expr) -> Option<f64> {
+        match &expr.kind {
+            ExprKind::Literal(Literal::Int(v)) => Some(*v as f64),
+            ExprKind::Literal(Literal::Float(v)) => Some(*v),
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr,
+            } => match &expr.kind {
+                ExprKind::Literal(Literal::Int(v)) => Some(-(*v as f64)),
+                ExprKind::Literal(Literal::Float(v)) => Some(-*v),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn value_to_json(&self, value: &Value) -> rt_json::JsonValue {
+        match value.unboxed() {
+            Value::Unit => rt_json::JsonValue::Null,
+            Value::Int(v) => rt_json::JsonValue::Number(v as f64),
+            Value::Float(v) => rt_json::JsonValue::Number(v),
+            Value::Bool(v) => rt_json::JsonValue::Bool(v),
+            Value::String(v) => rt_json::JsonValue::String(v.clone()),
+            Value::Null => rt_json::JsonValue::Null,
+            Value::List(items) => {
+                rt_json::JsonValue::Array(items.iter().map(|v| self.value_to_json(v)).collect())
+            }
+            Value::Map(items) => {
+                let mut out = BTreeMap::new();
+                for (key, value) in items {
+                    out.insert(key.clone(), self.value_to_json(&value));
+                }
+                rt_json::JsonValue::Object(out)
+            }
+            Value::Boxed(_) => rt_json::JsonValue::String("<box>".to_string()),
+            Value::Task(_) => rt_json::JsonValue::String("<task>".to_string()),
+            Value::Iterator(_) => rt_json::JsonValue::String("<iterator>".to_string()),
+            Value::Struct { fields, .. } => {
+                let mut out = BTreeMap::new();
+                for (key, value) in fields {
+                    out.insert(key.clone(), self.value_to_json(&value));
+                }
+                rt_json::JsonValue::Object(out)
+            }
+            Value::Enum {
+                variant, payload, ..
+            } => {
+                let mut out = BTreeMap::new();
+                out.insert(
+                    "type".to_string(),
+                    rt_json::JsonValue::String(variant.clone()),
+                );
+                match payload.len() {
+                    0 => {}
+                    1 => {
+                        out.insert("data".to_string(), self.value_to_json(&payload[0]));
+                    }
+                    _ => {
+                        let items = payload.iter().map(|v| self.value_to_json(v)).collect();
+                        out.insert("data".to_string(), rt_json::JsonValue::Array(items));
+                    }
+                }
+                rt_json::JsonValue::Object(out)
+            }
+            Value::ResultOk(value) => self.value_to_json(value.as_ref()),
+            Value::ResultErr(value) => self.value_to_json(value.as_ref()),
+            Value::Config(name) => rt_json::JsonValue::String(name.clone()),
+            Value::Function(name) => rt_json::JsonValue::String(name.clone()),
+            Value::Builtin(name) => rt_json::JsonValue::String(name.clone()),
+            Value::EnumCtor { name, variant } => {
+                rt_json::JsonValue::String(format!("{name}.{variant}"))
+            }
+        }
+    }
+
+    fn decode_json_value(
+        &mut self,
+        json: &rt_json::JsonValue,
+        ty: &TypeRef,
+        path: &str,
+        fallback_vm: &mut Vm,
+    ) -> NativeResult<Value> {
+        let value = match &ty.kind {
+            TypeRefKind::Optional(inner) => {
+                if matches!(json, rt_json::JsonValue::Null) {
+                    Value::Null
+                } else {
+                    self.decode_json_value(json, inner, path, fallback_vm)?
+                }
+            }
+            TypeRefKind::Refined { base, .. } => {
+                let base_ty = TypeRef {
+                    kind: TypeRefKind::Simple(base.clone()),
+                    span: ty.span,
+                };
+                let value = self.decode_json_value(json, &base_ty, path, fallback_vm)?;
+                self.validate_value(&value, ty, path)?;
+                return Ok(value);
+            }
+            TypeRefKind::Simple(ident) => {
+                let (module, simple_name) = split_type_name(&ident.name);
+                if module.is_none() {
+                    if let Some(value) = self.decode_simple_json(json, simple_name, path)? {
+                        value
+                    } else if self.program.ir.types.contains_key(simple_name) {
+                        self.decode_struct_json(json, simple_name, path, fallback_vm)?
+                    } else if self.program.ir.enums.contains_key(simple_name) {
+                        self.decode_enum_json(json, simple_name, path, fallback_vm)?
+                    } else {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("unknown type {}", ident.name),
+                        )));
+                    }
+                } else if self.program.ir.types.contains_key(simple_name) {
+                    self.decode_struct_json(json, simple_name, path, fallback_vm)?
+                } else if self.program.ir.enums.contains_key(simple_name) {
+                    self.decode_enum_json(json, simple_name, path, fallback_vm)?
+                } else {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("unknown type {}", ident.name),
+                    )));
+                }
+            }
+            TypeRefKind::Result { .. } => {
+                return Err(NativeError::Error(self.validation_error_value(
+                    path,
+                    "invalid_value",
+                    "Result is not supported for JSON body",
+                )))
+            }
+            TypeRefKind::Generic { base, args } => match base.name.as_str() {
+                "Option" => {
+                    if args.len() != 1 {
+                        return Err(NativeError::Runtime(
+                            "Option expects 1 type argument".to_string(),
+                        ));
+                    }
+                    if matches!(json, rt_json::JsonValue::Null) {
+                        Value::Null
+                    } else {
+                        self.decode_json_value(json, &args[0], path, fallback_vm)?
+                    }
+                }
+                "Result" => {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        "Result is not supported for JSON body",
+                    )))
+                }
+                "List" => {
+                    if args.len() != 1 {
+                        return Err(NativeError::Runtime(
+                            "List expects 1 type argument".to_string(),
+                        ));
+                    }
+                    let rt_json::JsonValue::Array(items) = json else {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            "expected List",
+                        )));
+                    };
+                    let mut values = Vec::with_capacity(items.len());
+                    for (idx, item) in items.iter().enumerate() {
+                        let item_path = format!("{path}[{idx}]");
+                        values.push(self.decode_json_value(item, &args[0], &item_path, fallback_vm)?);
+                    }
+                    Value::List(values)
+                }
+                "Map" => {
+                    if args.len() != 2 {
+                        return Err(NativeError::Runtime(
+                            "Map expects 2 type arguments".to_string(),
+                        ));
+                    }
+                    let rt_json::JsonValue::Object(items) = json else {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            "expected Map",
+                        )));
+                    };
+                    let mut values = HashMap::new();
+                    for (key, item) in items.iter() {
+                        let key_value = Value::String(key.clone());
+                        let key_path = format!("{path}.{key}");
+                        self.validate_value(&key_value, &args[0], &key_path)?;
+                        let value = self.decode_json_value(item, &args[1], &key_path, fallback_vm)?;
+                        values.insert(key.clone(), value);
+                    }
+                    Value::Map(values)
+                }
+                _ => {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("unsupported type {}", base.name),
+                    )))
+                }
+            },
+        };
+        self.validate_value(&value, ty, path)?;
+        Ok(value)
+    }
+
+    fn decode_simple_json(
+        &self,
+        json: &rt_json::JsonValue,
+        name: &str,
+        path: &str,
+    ) -> NativeResult<Option<Value>> {
+        let value = match name {
+            "Int" => match json {
+                rt_json::JsonValue::Number(n) if n.fract() == 0.0 => Value::Int(*n as i64),
+                _ => {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        "expected Int",
+                    )))
+                }
+            },
+            "Float" => match json {
+                rt_json::JsonValue::Number(n) => Value::Float(*n),
+                _ => {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        "expected Float",
+                    )))
+                }
+            },
+            "Bool" => match json {
+                rt_json::JsonValue::Bool(v) => Value::Bool(*v),
+                _ => {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        "expected Bool",
+                    )))
+                }
+            },
+            "String" | "Id" | "Email" | "Bytes" => match json {
+                rt_json::JsonValue::String(v) => Value::String(v.clone()),
+                _ => {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        "expected String",
+                    )))
+                }
+            },
+            _ => return Ok(None),
+        };
+        Ok(Some(value))
+    }
+
+    fn decode_struct_json(
+        &mut self,
+        json: &rt_json::JsonValue,
+        name: &str,
+        path: &str,
+        fallback_vm: &mut Vm,
+    ) -> NativeResult<Value> {
+        let rt_json::JsonValue::Object(map) = json else {
+            return Err(NativeError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                format!("expected {name}"),
+            )));
+        };
+        let decl = self.program.ir.types.get(name).ok_or_else(|| {
+            NativeError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                format!("unknown type {name}"),
+            ))
+        })?;
+        let fields = decl.fields.clone();
+        let mut values = HashMap::new();
+        for (key, value) in map {
+            let field = fields.iter().find(|f| f.name == *key);
+            let Some(field_decl) = field else {
+                return Err(NativeError::Error(self.validation_error_value(
+                    &format!("{path}.{key}"),
+                    "unknown_field",
+                    "unknown field",
+                )));
+            };
+            let field_path = format!("{path}.{key}");
+            let decoded = self.decode_json_value(value, &field_decl.ty, &field_path, fallback_vm)?;
+            values.insert(key.clone(), decoded);
+        }
+        for field_decl in &fields {
+            if values.contains_key(&field_decl.name) {
+                continue;
+            }
+            let field_path = format!("{path}.{}", field_decl.name);
+            if let Some(default_fn) = &field_decl.default_fn {
+                let value = self
+                    .call_function_with_fallback(default_fn, Vec::new(), fallback_vm)
+                    .map_err(NativeError::Runtime)?;
+                self.validate_value(&value, &field_decl.ty, &field_path)?;
+                values.insert(field_decl.name.clone(), value);
+            } else if self.is_optional_type(&field_decl.ty) {
+                values.insert(field_decl.name.clone(), Value::Null);
+            } else {
+                return Err(NativeError::Error(self.validation_error_value(
+                    &field_path,
+                    "missing_field",
+                    "missing field",
+                )));
+            }
+        }
+        Ok(Value::Struct {
+            name: name.to_string(),
+            fields: values,
+        })
+    }
+
+    fn decode_enum_json(
+        &mut self,
+        json: &rt_json::JsonValue,
+        name: &str,
+        path: &str,
+        fallback_vm: &mut Vm,
+    ) -> NativeResult<Value> {
+        let rt_json::JsonValue::Object(map) = json else {
+            return Err(NativeError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                format!("expected {name}"),
+            )));
+        };
+        let Some(rt_json::JsonValue::String(variant_name)) = map.get("type") else {
+            return Err(NativeError::Error(self.validation_error_value(
+                path,
+                "missing_field",
+                "missing enum type",
+            )));
+        };
+        let decl = self.program.ir.enums.get(name).ok_or_else(|| {
+            NativeError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                format!("unknown enum {name}"),
+            ))
+        })?;
+        let variants = decl.variants.clone();
+        let variant = variants
+            .iter()
+            .find(|v| v.name == *variant_name)
+            .ok_or_else(|| {
+                NativeError::Error(self.validation_error_value(
+                    path,
+                    "invalid_value",
+                    format!("unknown variant {variant_name}"),
+                ))
+            })?;
+        let payload = if variant.payload.is_empty() {
+            Vec::new()
+        } else {
+            let data = map.get("data").ok_or_else(|| {
+                NativeError::Error(self.validation_error_value(
+                    path,
+                    "missing_field",
+                    "missing enum data",
+                ))
+            })?;
+            if variant.payload.len() == 1 {
+                vec![self.decode_json_value(
+                    data,
+                    &variant.payload[0],
+                    &format!("{path}.data"),
+                    fallback_vm,
+                )?]
+            } else {
+                let rt_json::JsonValue::Array(items) = data else {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        &format!("{path}.data"),
+                        "type_mismatch",
+                        "expected enum payload array",
+                    )));
+                };
+                if items.len() != variant.payload.len() {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        &format!("{path}.data"),
+                        "invalid_value",
+                        "enum payload length mismatch",
+                    )));
+                }
+                let mut out = Vec::new();
+                for (idx, (item, ty)) in items.iter().zip(variant.payload.iter()).enumerate() {
+                    out.push(self.decode_json_value(
+                        item,
+                        ty,
+                        &format!("{path}.data[{idx}]"),
+                        fallback_vm,
+                    )?);
+                }
+                out
+            }
+        };
+        Ok(Value::Enum {
+            name: name.to_string(),
+            variant: variant_name.clone(),
+            payload,
+        })
+    }
+
+    fn wrap_function_result(&self, func: &Function, value: Value) -> Value {
         if self.is_result_type(func.ret.as_ref()) {
             match value {
                 Value::ResultOk(_) | Value::ResultErr(_) => value,
@@ -104,4 +1404,129 @@ impl<'a> NativeVm<'a> {
             None => false,
         }
     }
+}
+
+struct HttpRequest {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+}
+
+fn split_type_name(name: &str) -> (Option<&str>, &str) {
+    if name.starts_with("std.") {
+        return (None, name);
+    }
+    match name.split_once('.') {
+        Some((module, rest)) if !module.is_empty() && !rest.is_empty() => (Some(module), rest),
+        _ => (None, name),
+    }
+}
+
+fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
+    let value = value.unboxed();
+    let Value::Struct { name, fields } = value else {
+        return None;
+    };
+    let name = name.as_str();
+    match name {
+        "std.Error.Validation" => {
+            let message = match fields.get("message") {
+                Some(Value::String(msg)) => msg.as_str(),
+                _ => "validation failed",
+            };
+            let field_items = extract_validation_fields(fields.get("fields"));
+            Some(rt_error::validation_error_json(message, &field_items))
+        }
+        "std.Error" => {
+            let code = match fields.get("code") {
+                Some(Value::String(code)) => code.as_str(),
+                _ => "error",
+            };
+            let message = match fields.get("message") {
+                Some(Value::String(msg)) => msg.as_str(),
+                _ => "error",
+            };
+            Some(rt_error::error_json(code, message, None))
+        }
+        other => {
+            let (code, default_message) = builtin_error_defaults(other)?;
+            let message = match fields.get("message") {
+                Some(Value::String(msg)) => msg.as_str(),
+                _ => default_message,
+            };
+            Some(rt_error::error_json(code, message, None))
+        }
+    }
+}
+
+fn builtin_error_defaults(name: &str) -> Option<(&'static str, &'static str)> {
+    match name {
+        "std.Error.BadRequest" => Some(("bad_request", "bad request")),
+        "std.Error.Unauthorized" => Some(("unauthorized", "unauthorized")),
+        "std.Error.Forbidden" => Some(("forbidden", "forbidden")),
+        "std.Error.NotFound" => Some(("not_found", "not found")),
+        "std.Error.Conflict" => Some(("conflict", "conflict")),
+        _ => None,
+    }
+}
+
+fn extract_validation_fields(value: Option<&Value>) -> Vec<rt_error::ValidationField> {
+    let mut out = Vec::new();
+    let Some(value) = value else {
+        return out;
+    };
+    let value = value.unboxed();
+    let Value::List(items) = value else {
+        return out;
+    };
+    for item in items {
+        let item = item.unboxed();
+        let Value::Struct { fields, .. } = item else {
+            continue;
+        };
+        let Some(Value::String(path)) = fields.get("path") else {
+            continue;
+        };
+        let Some(Value::String(code)) = fields.get("code") else {
+            continue;
+        };
+        let Some(Value::String(message)) = fields.get("message") else {
+            continue;
+        };
+        out.push(rt_error::ValidationField {
+            path: path.clone(),
+            code: code.clone(),
+            message: message.clone(),
+        });
+    }
+    out
+}
+
+fn split_path(path: &str) -> Vec<String> {
+    let trimmed = path.trim_matches('/');
+    if trimmed.is_empty() {
+        Vec::new()
+    } else {
+        trimmed.split('/').map(|s| s.to_string()).collect()
+    }
+}
+
+fn parse_route_param(segment: &str) -> Option<(String, String)> {
+    if !segment.starts_with('{') || !segment.ends_with('}') {
+        return None;
+    }
+    let inner = &segment[1..segment.len() - 1];
+    let mut parts = inner.splitn(2, ':');
+    let name = parts.next().unwrap_or("").trim();
+    let ty = parts.next().unwrap_or("").trim();
+    if name.is_empty() || ty.is_empty() {
+        return None;
+    }
+    Some((name.to_string(), ty.to_string()))
+}
+
+fn find_header_end(buffer: &[u8]) -> Option<usize> {
+    buffer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
 }
