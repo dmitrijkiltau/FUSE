@@ -76,6 +76,8 @@ struct HostCalls {
     db_exec: FuncId,
     db_query: FuncId,
     db_one: FuncId,
+    json_encode: FuncId,
+    json_decode: FuncId,
 }
 
 pub(crate) struct JitRuntime {
@@ -119,6 +121,8 @@ impl JitRuntime {
             "fuse_native_builtin_assert",
             fuse_native_builtin_assert as *const u8,
         );
+        builder.symbol("fuse_native_json_encode", fuse_native_json_encode as *const u8);
+        builder.symbol("fuse_native_json_decode", fuse_native_json_decode as *const u8);
         builder.symbol("fuse_native_db_exec", fuse_native_db_exec as *const u8);
         builder.symbol("fuse_native_db_query", fuse_native_db_query as *const u8);
         builder.symbol("fuse_native_db_one", fuse_native_db_one as *const u8);
@@ -306,6 +310,12 @@ impl HostCalls {
         let db_one = module
             .declare_function("fuse_native_db_one", Linkage::Import, &builtin_sig)
             .expect("declare db one hostcall");
+        let json_encode = module
+            .declare_function("fuse_native_json_encode", Linkage::Import, &builtin_sig)
+            .expect("declare json encode hostcall");
+        let json_decode = module
+            .declare_function("fuse_native_json_decode", Linkage::Import, &builtin_sig)
+            .expect("declare json decode hostcall");
 
         Self {
             make_list,
@@ -322,6 +332,8 @@ impl HostCalls {
             db_exec,
             db_query,
             db_one,
+            json_encode,
+            json_decode,
         }
     }
 }
@@ -430,6 +442,31 @@ fn value_to_json(value: &Value) -> rt_json::JsonValue {
         Value::Builtin(name) => rt_json::JsonValue::String(name.clone()),
         Value::EnumCtor { name, variant } => {
             rt_json::JsonValue::String(format!("{name}.{variant}"))
+        }
+    }
+}
+
+fn json_to_value(json: &rt_json::JsonValue) -> Value {
+    match json {
+        rt_json::JsonValue::Null => Value::Null,
+        rt_json::JsonValue::Bool(v) => Value::Bool(*v),
+        rt_json::JsonValue::Number(n) => {
+            if n.fract() == 0.0 {
+                Value::Int(*n as i64)
+            } else {
+                Value::Float(*n)
+            }
+        }
+        rt_json::JsonValue::String(v) => Value::String(v.clone()),
+        rt_json::JsonValue::Array(items) => {
+            Value::List(items.iter().map(|item| json_to_value(item)).collect())
+        }
+        rt_json::JsonValue::Object(items) => {
+            let mut out = HashMap::new();
+            for (key, value) in items {
+                out.insert(key.clone(), json_to_value(value));
+            }
+            Value::Map(out)
         }
     }
 }
@@ -878,6 +915,80 @@ extern "C" fn fuse_native_builtin_assert(
         .map(|val| val.to_string_value())
         .unwrap_or_else(|| "assertion failed".to_string());
     builtin_runtime_error(out, heap, format!("assert failed: {message}"))
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_json_encode(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+
+    if len == 0 {
+        return builtin_runtime_error(out, heap, "json.encode expects a value");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "json.encode expects a value");
+    };
+    let Some(value) = value.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "json.encode expects a value");
+    };
+    let json = value_to_json(&value);
+    let encoded = rt_json::encode(&json);
+    *out = NativeValue::string(encoded, heap);
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_json_decode(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+
+    if len == 0 {
+        return builtin_runtime_error(out, heap, "json.decode expects a string argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "json.decode expects a string argument");
+    };
+    let Some(value) = value.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "json.decode expects a string argument");
+    };
+    let text = match value {
+        Value::String(text) => text,
+        _ => return builtin_runtime_error(out, heap, "json.decode expects a string argument"),
+    };
+    let json = match rt_json::decode(&text) {
+        Ok(json) => json,
+        Err(msg) => return builtin_runtime_error(out, heap, format!("invalid json: {msg}")),
+    };
+    let value = json_to_value(&json);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "json.decode result unsupported");
+    };
+    *out = native;
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -1421,6 +1532,8 @@ fn compile_function(
                         "db.exec" => hostcalls.db_exec,
                         "db.query" => hostcalls.db_query,
                         "db.one" => hostcalls.db_one,
+                        "json.encode" => hostcalls.json_encode,
+                        "json.decode" => hostcalls.json_decode,
                         _ => return None,
                     };
                     let mut args = Vec::with_capacity(*argc);
@@ -1849,7 +1962,14 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                 ..
             } if matches!(
                 name.as_str(),
-                "log" | "env" | "assert" | "db.exec" | "db.query" | "db.one"
+                "log"
+                    | "env"
+                    | "assert"
+                    | "db.exec"
+                    | "db.query"
+                    | "db.one"
+                    | "json.encode"
+                    | "json.decode"
             ) => {
                 if ip + 1 < code.len() {
                     starts.insert(ip + 1);
@@ -2171,7 +2291,14 @@ fn analyze_types(
                         return None;
                     }
                     match name.as_str() {
-                        "log" | "env" | "assert" | "db.exec" | "db.query" | "db.one" => {}
+                        "log"
+                        | "env"
+                        | "assert"
+                        | "db.exec"
+                        | "db.query"
+                        | "db.one"
+                        | "json.encode"
+                        | "json.decode" => {}
                         _ => return None,
                     }
                     for _ in 0..*argc {
