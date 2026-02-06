@@ -1,0 +1,14 @@
+fn env_present() -> String?:
+  return env("FUSE_NATIVE_TEST")
+
+fn assert_ok() -> String:
+  assert(true, "nope")
+  return "ok"
+
+fn assert_fail() -> String:
+  assert(false, "boom")
+  return "no"
+
+fn log_demo() -> String:
+  log("info", "native log", 1)
+  return "ok"

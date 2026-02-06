@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use cranelift_codegen::ir::{
     AbiParam,
@@ -17,7 +17,9 @@ use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 use crate::ast::{TypeRef, TypeRefKind};
 use crate::interp::Value;
 use crate::native::value::{HeapValue, NativeHeap, NativeTag, NativeValue};
-use crate::ir::{Const, Function, Instr, Program as IrProgram};
+use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram};
+
+use fuse_rt::json as rt_json;
 
 type EntryFn = unsafe extern "C" fn(*const NativeValue, *mut NativeValue, *mut NativeHeap) -> u8;
 
@@ -68,6 +70,9 @@ struct HostCalls {
     make_box: FuncId,
     interp_string: FuncId,
     bang: FuncId,
+    builtin_log: FuncId,
+    builtin_env: FuncId,
+    builtin_assert: FuncId,
 }
 
 pub(crate) struct JitRuntime {
@@ -105,6 +110,12 @@ impl JitRuntime {
         builder.symbol("fuse_native_make_box", fuse_native_make_box as *const u8);
         builder.symbol("fuse_native_interp_string", fuse_native_interp_string as *const u8);
         builder.symbol("fuse_native_bang", fuse_native_bang as *const u8);
+        builder.symbol("fuse_native_builtin_log", fuse_native_builtin_log as *const u8);
+        builder.symbol("fuse_native_builtin_env", fuse_native_builtin_env as *const u8);
+        builder.symbol(
+            "fuse_native_builtin_assert",
+            fuse_native_builtin_assert as *const u8,
+        );
         let mut module = JITModule::new(builder);
         let hostcalls = HostCalls::declare(&mut module);
         Self {
@@ -265,6 +276,22 @@ impl HostCalls {
             .declare_function("fuse_native_bang", Linkage::Import, &bang_sig)
             .expect("declare bang hostcall");
 
+        let mut builtin_sig = module.make_signature();
+        builtin_sig.params.push(AbiParam::new(pointer_ty));
+        builtin_sig.params.push(AbiParam::new(pointer_ty));
+        builtin_sig.params.push(AbiParam::new(types::I64));
+        builtin_sig.params.push(AbiParam::new(pointer_ty));
+        builtin_sig.returns.push(AbiParam::new(types::I8));
+        let builtin_log = module
+            .declare_function("fuse_native_builtin_log", Linkage::Import, &builtin_sig)
+            .expect("declare builtin log hostcall");
+        let builtin_env = module
+            .declare_function("fuse_native_builtin_env", Linkage::Import, &builtin_sig)
+            .expect("declare builtin env hostcall");
+        let builtin_assert = module
+            .declare_function("fuse_native_builtin_assert", Linkage::Import, &builtin_sig)
+            .expect("declare builtin assert hostcall");
+
         Self {
             make_list,
             make_map,
@@ -274,8 +301,132 @@ impl HostCalls {
             make_box,
             interp_string,
             bang,
+            builtin_log,
+            builtin_env,
+            builtin_assert,
         }
     }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl LogLevel {
+    fn label(self) -> &'static str {
+        match self {
+            LogLevel::Trace => "TRACE",
+            LogLevel::Debug => "DEBUG",
+            LogLevel::Info => "INFO",
+            LogLevel::Warn => "WARN",
+            LogLevel::Error => "ERROR",
+        }
+    }
+
+    fn json_label(self) -> &'static str {
+        match self {
+            LogLevel::Trace => "trace",
+            LogLevel::Debug => "debug",
+            LogLevel::Info => "info",
+            LogLevel::Warn => "warn",
+            LogLevel::Error => "error",
+        }
+    }
+}
+
+fn parse_log_level(raw: &str) -> Option<LogLevel> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "trace" => Some(LogLevel::Trace),
+        "debug" => Some(LogLevel::Debug),
+        "info" => Some(LogLevel::Info),
+        "warn" | "warning" => Some(LogLevel::Warn),
+        "error" => Some(LogLevel::Error),
+        _ => None,
+    }
+}
+
+fn min_log_level() -> LogLevel {
+    std::env::var("FUSE_LOG")
+        .ok()
+        .and_then(|raw| parse_log_level(&raw))
+        .unwrap_or(LogLevel::Info)
+}
+
+fn value_to_json(value: &Value) -> rt_json::JsonValue {
+    match value.unboxed() {
+        Value::Unit => rt_json::JsonValue::Null,
+        Value::Int(v) => rt_json::JsonValue::Number(v as f64),
+        Value::Float(v) => rt_json::JsonValue::Number(v),
+        Value::Bool(v) => rt_json::JsonValue::Bool(v),
+        Value::String(v) => rt_json::JsonValue::String(v.clone()),
+        Value::Null => rt_json::JsonValue::Null,
+        Value::List(items) => {
+            rt_json::JsonValue::Array(items.iter().map(|v| value_to_json(v)).collect())
+        }
+        Value::Map(items) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in items {
+                out.insert(key.clone(), value_to_json(&value));
+            }
+            rt_json::JsonValue::Object(out)
+        }
+        Value::Boxed(_) => rt_json::JsonValue::String("<box>".to_string()),
+        Value::Task(_) => rt_json::JsonValue::String("<task>".to_string()),
+        Value::Iterator(_) => rt_json::JsonValue::String("<iterator>".to_string()),
+        Value::Struct { fields, .. } => {
+            let mut out = BTreeMap::new();
+            for (key, value) in fields {
+                out.insert(key.clone(), value_to_json(&value));
+            }
+            rt_json::JsonValue::Object(out)
+        }
+        Value::Enum {
+            variant, payload, ..
+        } => {
+            let mut out = BTreeMap::new();
+            out.insert(
+                "type".to_string(),
+                rt_json::JsonValue::String(variant.clone()),
+            );
+            match payload.len() {
+                0 => {}
+                1 => {
+                    out.insert("data".to_string(), value_to_json(&payload[0]));
+                }
+                _ => {
+                    let items = payload.iter().map(|v| value_to_json(v)).collect();
+                    out.insert("data".to_string(), rt_json::JsonValue::Array(items));
+                }
+            }
+            rt_json::JsonValue::Object(out)
+        }
+        Value::ResultOk(value) => value_to_json(value.as_ref()),
+        Value::ResultErr(value) => value_to_json(value.as_ref()),
+        Value::Config(name) => rt_json::JsonValue::String(name.clone()),
+        Value::Function(name) => rt_json::JsonValue::String(name.clone()),
+        Value::Builtin(name) => rt_json::JsonValue::String(name.clone()),
+        Value::EnumCtor { name, variant } => {
+            rt_json::JsonValue::String(format!("{name}.{variant}"))
+        }
+    }
+}
+
+fn builtin_runtime_error(
+    out: &mut NativeValue,
+    heap: &mut NativeHeap,
+    message: impl Into<String>,
+) -> u8 {
+    let handle = heap.intern_string(message.into());
+    *out = NativeValue {
+        tag: NativeTag::Heap,
+        payload: handle,
+    };
+    2
 }
 
 #[unsafe(no_mangle)]
@@ -528,6 +679,165 @@ extern "C" fn fuse_native_bang(
             0
         }
     }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_log(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+
+    let mut values = Vec::new();
+    if len > 0 {
+        let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+        let heap_ref: &NativeHeap = heap;
+        for arg in args {
+            let value = arg.to_value(heap_ref).unwrap_or(Value::Null);
+            values.push(value);
+        }
+    }
+
+    let mut level = LogLevel::Info;
+    let mut start_idx = 0usize;
+    if values.len() >= 2 {
+        if let Value::String(raw_level) = &values[0] {
+            if let Some(parsed) = parse_log_level(raw_level) {
+                level = parsed;
+                start_idx = 1;
+            }
+        }
+    }
+
+    if level >= min_log_level() {
+        let message = values
+            .get(start_idx)
+            .map(|val| val.to_string_value())
+            .unwrap_or_default();
+        let data_args = values
+            .get(start_idx.saturating_add(1)..)
+            .unwrap_or(&[]);
+        if !data_args.is_empty() {
+            let data_json = if data_args.len() == 1 {
+                value_to_json(&data_args[0])
+            } else {
+                rt_json::JsonValue::Array(data_args.iter().map(value_to_json).collect())
+            };
+            let mut obj = BTreeMap::new();
+            obj.insert(
+                "level".to_string(),
+                rt_json::JsonValue::String(level.json_label().to_string()),
+            );
+            obj.insert(
+                "message".to_string(),
+                rt_json::JsonValue::String(message),
+            );
+            obj.insert("data".to_string(), data_json);
+            eprintln!("{}", rt_json::encode(&rt_json::JsonValue::Object(obj)));
+        } else {
+            let message = values[start_idx..]
+                .iter()
+                .map(|val| val.to_string_value())
+                .collect::<Vec<_>>()
+                .join(" ");
+            eprintln!("[{}] {}", level.label(), message);
+        }
+    }
+
+    *out = NativeValue::int(0);
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_env(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+
+    if len == 0 {
+        return builtin_runtime_error(out, heap, "env expects a string argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "env expects a string argument");
+    };
+    let Some(value) = value.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "env expects a string argument");
+    };
+    let key = match value {
+        Value::String(text) => text,
+        _ => return builtin_runtime_error(out, heap, "env expects a string argument"),
+    };
+    match std::env::var(key) {
+        Ok(value) => {
+            *out = NativeValue::string(value, heap);
+            0
+        }
+        Err(_) => {
+            *out = NativeValue::null();
+            0
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_assert(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+
+    if len == 0 {
+        return builtin_runtime_error(out, heap, "assert expects a Bool as the first argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "assert expects a Bool as the first argument");
+    };
+    let Some(value) = value.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "assert expects a Bool as the first argument");
+    };
+    let cond = match value {
+        Value::Bool(value) => value,
+        _ => return builtin_runtime_error(out, heap, "assert expects a Bool as the first argument"),
+    };
+    if cond {
+        *out = NativeValue::int(0);
+        return 0;
+    }
+    let message = args
+        .get(1)
+        .and_then(|value| value.to_value(heap_ref))
+        .map(|val| val.to_string_value())
+        .unwrap_or_else(|| "assertion failed".to_string());
+    builtin_runtime_error(out, heap, format!("assert failed: {message}"))
 }
 
 fn compile_function(
@@ -909,6 +1219,78 @@ fn compile_function(
                         kind: JitType::Heap,
                     });
                 }
+                Instr::Call { name, argc, kind } => {
+                    if !matches!(kind, CallKind::Builtin) {
+                        return None;
+                    }
+                    let builtin = match name.as_str() {
+                        "log" => hostcalls.builtin_log,
+                        "env" => hostcalls.builtin_env,
+                        "assert" => hostcalls.builtin_assert,
+                        _ => return None,
+                    };
+                    let mut args = Vec::with_capacity(*argc);
+                    for _ in 0..*argc {
+                        args.push(stack.pop()?);
+                    }
+                    args.reverse();
+                    let count = u32::try_from(args.len()).ok()?;
+                    let base = if count == 0 {
+                        builder.ins().iconst(pointer_ty, 0)
+                    } else {
+                        let slot_size = count.checked_mul(NATIVE_VALUE_SIZE as u32)?;
+                        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            slot_size,
+                        ));
+                        let base = builder.ins().stack_addr(pointer_ty, slot, 0);
+                        for (idx, arg) in args.into_iter().enumerate() {
+                            let offset = i32::try_from(idx).ok()?.checked_mul(NATIVE_VALUE_SIZE)?;
+                            store_native_value(&mut builder, base, offset, arg)?;
+                        }
+                        base
+                    };
+                    let len_val = builder.ins().iconst(types::I64, count as i64);
+                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        NATIVE_VALUE_SIZE as u32,
+                    ));
+                    let builtin_out_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
+                    let func_ref = module.declare_func_in_func(builtin, builder.func);
+                    let call =
+                        builder.ins().call(func_ref, &[heap_ptr, base, len_val, builtin_out_ptr]);
+                    let status = builder.inst_results(call)[0];
+                    let ok_idx = *block_for_start.get(&(ip + 1))?;
+                    let mut ok_stack = stack.clone();
+                    ok_stack.push(StackValue {
+                        value: builtin_out_ptr,
+                        kind: JitType::Value,
+                    });
+                    let ok_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &ok_stack,
+                        entry_stacks.get(ok_idx)?,
+                    )?;
+                    let err_block = builder.create_block();
+                    builder.append_block_param(err_block, types::I8);
+                    builder.append_block_param(err_block, pointer_ty);
+                    let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    builder.ins().brif(
+                        is_ok,
+                        blocks[ok_idx],
+                        &ok_args,
+                        err_block,
+                        &[status, builtin_out_ptr],
+                    );
+                    builder.switch_to_block(err_block);
+                    let status_val = builder.block_params(err_block)[0];
+                    let err_out_ptr = builder.block_params(err_block)[1];
+                    copy_native_value(&mut builder, err_out_ptr, out_ptr);
+                    builder.ins().return_(&[status_val]);
+                    terminated = true;
+                    break;
+                }
                 Instr::LoadLocal(slot) => {
                     let var = *locals.get(*slot)?;
                     let kind = *local_types.get(*slot)?;
@@ -1267,6 +1649,15 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     starts.insert(ip + 1);
                 }
             }
+            Instr::Call {
+                kind: CallKind::Builtin,
+                name,
+                ..
+            } if matches!(name.as_str(), "log" | "env" | "assert") => {
+                if ip + 1 < code.len() {
+                    starts.insert(ip + 1);
+                }
+            }
             _ => {}
         }
     }
@@ -1574,6 +1965,29 @@ fn analyze_types(
                         &stack,
                         &mut worklist,
                         target_idx,
+                    )?;
+                    terminated = true;
+                    break;
+                }
+                Instr::Call { name, argc, kind } => {
+                    if !matches!(kind, CallKind::Builtin) {
+                        return None;
+                    }
+                    match name.as_str() {
+                        "log" | "env" | "assert" => {}
+                        _ => return None,
+                    }
+                    for _ in 0..*argc {
+                        let _ = stack.pop()?;
+                    }
+                    stack.push(JitType::Value);
+                    let ok_ip = ip + 1;
+                    let ok_idx = *block_for_start.get(&ok_ip)?;
+                    merge_block_stack(
+                        &mut entry_stacks[ok_idx],
+                        &stack,
+                        &mut worklist,
+                        ok_idx,
                     )?;
                     terminated = true;
                     break;
