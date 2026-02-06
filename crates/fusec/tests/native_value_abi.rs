@@ -99,6 +99,20 @@ fn native_value_roundtrip_boxed() {
     assert_value_eq(&value, &round);
 }
 
+#[test]
+fn native_value_roundtrip_result() {
+    let mut heap = NativeHeap::new();
+    let ok = Value::ResultOk(Box::new(Value::String("ok".to_string())));
+    let native_ok = NativeValue::from_value(&ok, &mut heap).expect("encode failed");
+    let round_ok = native_ok.to_value(&heap).expect("decode failed");
+    assert_value_eq(&ok, &round_ok);
+
+    let err = Value::ResultErr(Box::new(Value::Int(5)));
+    let native_err = NativeValue::from_value(&err, &mut heap).expect("encode failed");
+    let round_err = native_err.to_value(&heap).expect("decode failed");
+    assert_value_eq(&err, &round_err);
+}
+
 fn assert_value_eq(expected: &Value, actual: &Value) {
     match (expected, actual) {
         (Value::Int(a), Value::Int(b)) => assert_eq!(a, b),
@@ -148,6 +162,12 @@ fn assert_value_eq(expected: &Value, actual: &Value) {
         }
         (Value::Boxed(a), Value::Boxed(b)) => {
             assert_value_eq(&a.borrow(), &b.borrow());
+        }
+        (Value::ResultOk(a), Value::ResultOk(b)) => {
+            assert_value_eq(a.as_ref(), b.as_ref());
+        }
+        (Value::ResultErr(a), Value::ResultErr(b)) => {
+            assert_value_eq(a.as_ref(), b.as_ref());
         }
         other => panic!("unexpected value pair: {other:?}"),
     }

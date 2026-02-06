@@ -3,12 +3,12 @@ pub mod value;
 
 use serde::{Deserialize, Serialize};
 
-use crate::interp::Value;
+use crate::interp::{format_error_value, Value};
 use crate::ir::Program as IrProgram;
 use crate::loader::ModuleRegistry;
 use crate::vm::Vm;
 use crate::native::value::NativeHeap;
-use jit::JitRuntime;
+use jit::{JitCallError, JitRuntime};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NativeProgram {
@@ -54,11 +54,26 @@ impl<'a> NativeVm<'a> {
     }
 
     pub fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, String> {
-        if let Some(value) =
-            self.jit.try_call(&self.program.ir, name, &args, &mut self.heap)
-        {
+        let func = self
+            .program
+            .ir
+            .functions
+            .get(name)
+            .ok_or_else(|| format!("unknown function {name}"))?;
+        if let Some(result) = self.jit.try_call(&self.program.ir, name, &args, &mut self.heap) {
+            let out = match result {
+                Ok(value) => Ok(self.wrap_function_result(func, value)),
+                Err(JitCallError::Error(err_val)) => {
+                    if self.is_result_type(func.ret.as_ref()) {
+                        Ok(Value::ResultErr(Box::new(err_val)))
+                    } else {
+                        Err(format_error_value(&err_val))
+                    }
+                }
+                Err(JitCallError::Runtime(message)) => Err(message),
+            };
             self.heap.collect_garbage();
-            return Ok(value);
+            return out;
         }
         self.heap.collect_garbage();
         self.vm.call_function(name, args)
@@ -66,5 +81,27 @@ impl<'a> NativeVm<'a> {
 
     pub fn has_jit_function(&self, name: &str) -> bool {
         self.jit.has_function(name)
+    }
+
+    fn wrap_function_result(&self, func: &crate::ir::Function, value: Value) -> Value {
+        if self.is_result_type(func.ret.as_ref()) {
+            match value {
+                Value::ResultOk(_) | Value::ResultErr(_) => value,
+                _ => Value::ResultOk(Box::new(value)),
+            }
+        } else {
+            value
+        }
+    }
+
+    fn is_result_type(&self, ty: Option<&crate::ast::TypeRef>) -> bool {
+        match ty {
+            Some(ty) => match &ty.kind {
+                crate::ast::TypeRefKind::Result { .. } => true,
+                crate::ast::TypeRefKind::Generic { base, .. } => base.name == "Result",
+                _ => false,
+            },
+            None => false,
+        }
     }
 }

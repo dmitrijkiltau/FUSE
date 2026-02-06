@@ -27,6 +27,8 @@ pub enum HeapValue {
         variant: String,
         payload: Vec<NativeValue>,
     },
+    ResultOk(NativeValue),
+    ResultErr(NativeValue),
     Boxed(NativeValue),
     Task(TaskValue),
 }
@@ -131,6 +133,9 @@ impl NativeHeap {
                 for value in payload {
                     self.mark_native_value(value, marks, stack);
                 }
+            }
+            HeapValue::ResultOk(value) | HeapValue::ResultErr(value) => {
+                self.mark_native_value(value, marks, stack);
             }
             HeapValue::Boxed(value) => {
                 self.mark_native_value(value, marks, stack);
@@ -263,6 +268,22 @@ impl NativeValue {
         }
     }
 
+    pub fn result_ok(value: NativeValue, heap: &mut NativeHeap) -> Self {
+        let handle = heap.insert(HeapValue::ResultOk(value));
+        Self {
+            tag: NativeTag::Heap,
+            payload: handle,
+        }
+    }
+
+    pub fn result_err(value: NativeValue, heap: &mut NativeHeap) -> Self {
+        let handle = heap.insert(HeapValue::ResultErr(value));
+        Self {
+            tag: NativeTag::Heap,
+            payload: handle,
+        }
+    }
+
     pub fn task(result: TaskResultValue, heap: &mut NativeHeap) -> Self {
         let handle = heap.insert(HeapValue::Task(TaskValue { result }));
         Self {
@@ -314,6 +335,14 @@ impl NativeValue {
                     out,
                     heap,
                 ))
+            }
+            Value::ResultOk(value) => {
+                let inner = Self::from_value(value, heap)?;
+                Some(Self::result_ok(inner, heap))
+            }
+            Value::ResultErr(value) => {
+                let inner = Self::from_value(value, heap)?;
+                Some(Self::result_err(inner, heap))
             }
             Value::Boxed(value) => {
                 let inner = value.borrow();
@@ -382,6 +411,14 @@ impl NativeValue {
                         variant: variant.clone(),
                         payload: out,
                     })
+                }
+                HeapValue::ResultOk(value) => {
+                    let inner = value.to_value(heap)?;
+                    Some(Value::ResultOk(Box::new(inner)))
+                }
+                HeapValue::ResultErr(value) => {
+                    let inner = value.to_value(heap)?;
+                    Some(Value::ResultErr(Box::new(inner)))
                 }
                 HeapValue::Boxed(value) => {
                     let inner = value.to_value(heap)?;

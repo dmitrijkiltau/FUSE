@@ -34,12 +34,12 @@ Status legend: [x] done, [ ] pending, [~] partial
 - [x] Boxed/shared values (heap representation + JIT MakeBox)
 - [x] Task values (heap representation + ABI round-trip)
 
-## Stage 3 — Option/Result + error model
+## Stage 3 — Option/Result + error model (done)
 
-- [ ] Option representation + `null` handling
-- [ ] Result representation (`T!E`, `?!`)
-- [ ] Error propagation + runtime error mapping
-- [ ] Golden error output parity under native
+- [x] Option representation + `null` handling (native ABI + JIT null constants/JumpIfNull)
+- [x] Result representation (`T!E`, `?!`) (native ABI + `?!` in JIT)
+- [x] Error propagation + runtime error mapping (JIT runtime errors + `?!` errors)
+- [x] Golden error output parity under native
 
 ## Stage 4 — Builtins + runtime interop
 

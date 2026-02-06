@@ -21,15 +21,17 @@ use crate::ir::{Const, Function, Instr, Program as IrProgram};
 
 type EntryFn = unsafe extern "C" fn(*const NativeValue, *mut NativeValue, *mut NativeHeap) -> u8;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 enum JitType {
     Int,
     Bool,
     Float,
+    Null,
     Heap,
     Struct,
     Enum,
     Boxed,
+    Value,
 }
 
 #[derive(Copy, Clone)]
@@ -44,6 +46,7 @@ enum ReturnKind {
     Bool,
     Float,
     Heap,
+    Value,
 }
 
 struct CompiledEntry {
@@ -64,12 +67,19 @@ struct HostCalls {
     make_enum: FuncId,
     make_box: FuncId,
     interp_string: FuncId,
+    bang: FuncId,
 }
 
 pub(crate) struct JitRuntime {
     _module: JITModule,
-    functions: HashMap<String, CompiledEntry>,
+    functions: HashMap<(String, Vec<JitType>), CompiledEntry>,
     hostcalls: HostCalls,
+}
+
+#[derive(Debug)]
+pub(crate) enum JitCallError {
+    Error(Value),
+    Runtime(String),
 }
 
 const NATIVE_VALUE_SIZE: i32 = std::mem::size_of::<NativeValue>() as i32;
@@ -94,6 +104,7 @@ impl JitRuntime {
         builder.symbol("fuse_native_make_enum", fuse_native_make_enum as *const u8);
         builder.symbol("fuse_native_make_box", fuse_native_make_box as *const u8);
         builder.symbol("fuse_native_interp_string", fuse_native_interp_string as *const u8);
+        builder.symbol("fuse_native_bang", fuse_native_bang as *const u8);
         let mut module = JITModule::new(builder);
         let hostcalls = HostCalls::declare(&mut module);
         Self {
@@ -109,13 +120,14 @@ impl JitRuntime {
         name: &str,
         args: &[Value],
         heap: &mut NativeHeap,
-    ) -> Option<Value> {
-        if !self.functions.contains_key(name) {
+    ) -> Option<Result<Value, JitCallError>> {
+        let mut param_types = Vec::with_capacity(args.len());
+        for arg in args {
+            param_types.push(value_kind(arg)?);
+        }
+        let key = (name.to_string(), param_types.clone());
+        if !self.functions.contains_key(&key) {
             let func = program.functions.get(name)?;
-            let mut param_types = Vec::with_capacity(args.len());
-            for arg in args {
-                param_types.push(value_kind(arg)?);
-            }
             if let Some(compiled) = compile_function(
                 &mut self._module,
                 &self.hostcalls,
@@ -133,7 +145,7 @@ impl JitRuntime {
                 // SAFETY: The JIT function is declared with `fn(*const i64) -> i64`.
                 let entry = unsafe { std::mem::transmute::<*const u8, EntryFn>(raw) };
                 self.functions.insert(
-                    name.to_string(),
+                    key.clone(),
                     CompiledEntry {
                         entry,
                         arity: compiled.arity,
@@ -141,7 +153,7 @@ impl JitRuntime {
                 );
             }
         }
-        let compiled = self.functions.get(name)?;
+        let compiled = self.functions.get(&key)?;
         if args.len() != compiled.arity {
             return None;
         }
@@ -152,14 +164,20 @@ impl JitRuntime {
         let mut out = NativeValue::null();
         // SAFETY: Function pointer is JIT-compiled with matching signature and argument layout.
         let status = unsafe { (compiled.entry)(native_args.as_ptr(), &mut out, heap) };
-        if status != 0 {
-            return None;
+        match status {
+            0 => out.to_value(heap).map(Ok),
+            1 => out.to_value(heap).map(|value| Err(JitCallError::Error(value))),
+            2 => {
+                let value = out.to_value(heap)?;
+                let message = value.to_string_value();
+                Some(Err(JitCallError::Runtime(message)))
+            }
+            _ => None,
         }
-        out.to_value(heap)
     }
 
     pub(crate) fn has_function(&self, name: &str) -> bool {
-        self.functions.contains_key(name)
+        self.functions.keys().any(|(func_name, _)| func_name == name)
     }
 
 }
@@ -236,6 +254,17 @@ impl HostCalls {
             .declare_function("fuse_native_interp_string", Linkage::Import, &interp_sig)
             .expect("declare interp_string hostcall");
 
+        let mut bang_sig = module.make_signature();
+        bang_sig.params.push(AbiParam::new(pointer_ty));
+        bang_sig.params.push(AbiParam::new(pointer_ty));
+        bang_sig.params.push(AbiParam::new(pointer_ty));
+        bang_sig.params.push(AbiParam::new(types::I64));
+        bang_sig.params.push(AbiParam::new(pointer_ty));
+        bang_sig.returns.push(AbiParam::new(types::I8));
+        let bang = module
+            .declare_function("fuse_native_bang", Linkage::Import, &bang_sig)
+            .expect("declare bang hostcall");
+
         Self {
             make_list,
             make_map,
@@ -244,6 +273,7 @@ impl HostCalls {
             make_enum,
             make_box,
             interp_string,
+            bang,
         }
     }
 }
@@ -434,6 +464,72 @@ extern "C" fn fuse_native_interp_string(
     heap.insert(HeapValue::String(out))
 }
 
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_bang(
+    heap: *mut NativeHeap,
+    value: *const NativeValue,
+    err_value: *const NativeValue,
+    has_error: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(value) = (unsafe { value.as_ref() }) else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+
+    let err_override = if has_error != 0 {
+        unsafe { err_value.as_ref() }.copied()
+    } else {
+        None
+    };
+
+    let default_error = || {
+        let mut fields = HashMap::new();
+        fields.insert("message".to_string(), Value::String("missing value".to_string()));
+        let value = Value::Struct {
+            name: "std.Error".to_string(),
+            fields,
+        };
+        NativeValue::from_value(&value, heap).unwrap_or_else(NativeValue::null)
+    };
+
+    match value.tag {
+        NativeTag::Null => {
+            *out = err_override.unwrap_or_else(default_error);
+            1
+        }
+        NativeTag::Heap => {
+            let Some(heap_value) = heap.get(value.payload) else {
+                return 2;
+            };
+            match heap_value {
+                HeapValue::ResultOk(inner) => {
+                    *out = *inner;
+                    0
+                }
+                HeapValue::ResultErr(inner) => {
+                    *out = err_override.unwrap_or(*inner);
+                    1
+                }
+                _ => {
+                    *out = *value;
+                    0
+                }
+            }
+        }
+        _ => {
+            *out = *value;
+            0
+        }
+    }
+}
+
 fn compile_function(
     module: &mut JITModule,
     hostcalls: &HostCalls,
@@ -449,7 +545,7 @@ fn compile_function(
     }
 
     let starts = block_starts(&func.code)?;
-    let local_types = infer_local_types(func, param_types, &starts, program)?;
+    let (local_types, entry_stacks) = analyze_types(func, param_types, &starts, program)?;
     let mut ctx = module.make_context();
     let pointer_ty = module.target_config().pointer_type();
     ctx.func.signature.params.push(AbiParam::new(pointer_ty));
@@ -465,6 +561,17 @@ fn compile_function(
         block_for_start.insert(*start, idx);
     }
 
+    for (idx, block) in blocks.iter().enumerate() {
+        if idx == 0 {
+            continue;
+        }
+        if let Some(stack_types) = entry_stacks.get(idx) {
+            for kind in stack_types {
+                builder.append_block_param(*block, clif_type(kind, pointer_ty));
+            }
+        }
+    }
+
     builder.switch_to_block(blocks[0]);
     builder.append_block_params_for_function_params(blocks[0]);
     let args_ptr = builder.block_params(blocks[0])[0];
@@ -472,24 +579,59 @@ fn compile_function(
     let heap_ptr = builder.block_params(blocks[0])[2];
 
     let mut locals = Vec::with_capacity(func.locals);
+    let mut local_value_slots: Vec<Option<cranelift_codegen::ir::StackSlot>> =
+        vec![None; func.locals];
     for slot in 0..func.locals {
         let var = Variable::from_u32(u32::try_from(slot).ok()?);
-        let local_ty = clif_type(local_types.get(slot)?);
+        let kind = *local_types.get(slot)?;
+        let local_ty = clif_type(&kind, pointer_ty);
         builder.declare_var(var, local_ty);
-        let init = if slot < func.params.len() {
-            let slot = i32::try_from(slot).ok()?;
-            let offset = slot
-                .checked_mul(NATIVE_VALUE_SIZE)?
-                .checked_add(NATIVE_VALUE_PAYLOAD_OFFSET)?;
-            builder
-                .ins()
-                .load(local_ty, MemFlags::new(), args_ptr, offset)
-        } else if local_ty == types::F64 {
-            builder.ins().f64const(0.0)
+        if kind == JitType::Value {
+            let slot_id = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                NATIVE_VALUE_SIZE as u32,
+            ));
+            local_value_slots[slot] = Some(slot_id);
+            let ptr = builder.ins().stack_addr(pointer_ty, slot_id, 0);
+            if slot < func.params.len() {
+                let slot_idx = i32::try_from(slot).ok()?;
+                let base = slot_idx.checked_mul(NATIVE_VALUE_SIZE)?;
+                let tag = builder.ins().load(types::I64, MemFlags::new(), args_ptr, base);
+                let payload = builder.ins().load(
+                    types::I64,
+                    MemFlags::new(),
+                    args_ptr,
+                    base + NATIVE_VALUE_PAYLOAD_OFFSET,
+                );
+                builder.ins().store(MemFlags::new(), tag, ptr, 0);
+                builder
+                    .ins()
+                    .store(MemFlags::new(), payload, ptr, NATIVE_VALUE_PAYLOAD_OFFSET);
+            } else {
+                let tag = builder.ins().iconst(types::I64, NativeTag::Null as i64);
+                let payload = builder.ins().iconst(types::I64, 0);
+                builder.ins().store(MemFlags::new(), tag, ptr, 0);
+                builder
+                    .ins()
+                    .store(MemFlags::new(), payload, ptr, NATIVE_VALUE_PAYLOAD_OFFSET);
+            }
+            builder.def_var(var, ptr);
         } else {
-            builder.ins().iconst(types::I64, 0)
-        };
-        builder.def_var(var, init);
+            let init = if slot < func.params.len() {
+                let slot = i32::try_from(slot).ok()?;
+                let offset = slot
+                    .checked_mul(NATIVE_VALUE_SIZE)?
+                    .checked_add(NATIVE_VALUE_PAYLOAD_OFFSET)?;
+                builder
+                    .ins()
+                    .load(local_ty, MemFlags::new(), args_ptr, offset)
+            } else if local_ty == types::F64 {
+                builder.ins().f64const(0.0)
+            } else {
+                builder.ins().iconst(types::I64, 0)
+            };
+            builder.def_var(var, init);
+        }
         locals.push(var);
     }
 
@@ -504,6 +646,16 @@ fn compile_function(
             func.code.len()
         };
         let mut stack: Vec<StackValue> = Vec::new();
+        if let Some(stack_types) = entry_stacks.get(block_idx) {
+            if !stack_types.is_empty() {
+                let params = builder.block_params(block);
+                let offset = if block_idx == 0 { 3 } else { 0 };
+                for (idx, kind) in stack_types.iter().enumerate() {
+                    let value = params.get(offset + idx).copied()?;
+                    stack.push(StackValue { value, kind: *kind });
+                }
+            }
+        }
         let mut terminated = false;
         for ip in *start..end {
             match &func.code[ip] {
@@ -529,6 +681,12 @@ fn compile_function(
                     stack.push(StackValue {
                         value: builder.ins().f64const(*v),
                         kind: JitType::Float,
+                    });
+                }
+                Instr::Push(Const::Null) => {
+                    stack.push(StackValue {
+                        value: builder.ins().iconst(types::I64, 0),
+                        kind: JitType::Null,
                     });
                 }
                 Instr::Push(Const::String(value)) => {
@@ -763,22 +921,36 @@ fn compile_function(
                     let value = stack.pop()?;
                     let var = *locals.get(*slot)?;
                     let kind = *local_types.get(*slot)?;
-                    if value.kind != kind {
-                        return None;
+                    if kind == JitType::Value {
+                        let slot_id = *local_value_slots.get(*slot)?.as_ref()?;
+                        let ptr = builder.ins().stack_addr(pointer_ty, slot_id, 0);
+                        store_native_value(&mut builder, ptr, 0, value)?;
+                        builder.def_var(var, ptr);
+                    } else {
+                        if value.kind != kind {
+                            return None;
+                        }
+                        builder.def_var(var, value.value);
                     }
-                    builder.def_var(var, value.value);
                 }
                 Instr::GetField { field } => {
                     let base = stack.pop()?;
-                    if base.kind != JitType::Struct {
-                        return None;
-                    }
+                    let base_handle = match base.kind {
+                        JitType::Struct => base.value,
+                        JitType::Value => builder.ins().load(
+                            types::I64,
+                            MemFlags::new(),
+                            base.value,
+                            NATIVE_VALUE_PAYLOAD_OFFSET,
+                        ),
+                        _ => return None,
+                    };
                     let field_handle = NativeValue::intern_string(field.clone(), heap).payload;
                     let field_val = builder.ins().iconst(types::I64, field_handle as i64);
                     let func_ref =
                         module.declare_func_in_func(hostcalls.get_struct_field, builder.func);
                     let call =
-                        builder.ins().call(func_ref, &[heap_ptr, base.value, field_val]);
+                        builder.ins().call(func_ref, &[heap_ptr, base_handle, field_val]);
                     let handle = builder.inst_results(call)[0];
                     stack.push(StackValue {
                         value: handle,
@@ -858,19 +1030,19 @@ fn compile_function(
                     });
                 }
                 Instr::Jump(target) => {
-                    if !stack.is_empty() {
-                        return None;
-                    }
                     let idx = *block_for_start.get(target)?;
-                    builder.ins().jump(blocks[idx], &[]);
+                    let args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &stack,
+                        entry_stacks.get(idx)?,
+                    )?;
+                    builder.ins().jump(blocks[idx], &args);
                     terminated = true;
                     break;
                 }
                 Instr::JumpIfFalse(target) => {
                     let cond = stack.pop()?;
-                    if !stack.is_empty() {
-                        return None;
-                    }
                     if cond.kind != JitType::Bool {
                         return None;
                     }
@@ -878,9 +1050,62 @@ fn compile_function(
                     let then_idx = *block_for_start.get(target)?;
                     let else_ip = ip + 1;
                     let else_idx = *block_for_start.get(&else_ip)?;
+                    let then_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &stack,
+                        entry_stacks.get(then_idx)?,
+                    )?;
+                    let else_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &stack,
+                        entry_stacks.get(else_idx)?,
+                    )?;
                     builder
                         .ins()
-                        .brif(is_false, blocks[then_idx], &[], blocks[else_idx], &[]);
+                        .brif(is_false, blocks[then_idx], &then_args, blocks[else_idx], &else_args);
+                    terminated = true;
+                    break;
+                }
+                Instr::JumpIfNull(target) => {
+                    let value = stack.pop()?;
+                    let is_null = match value.kind {
+                        JitType::Null => {
+                            let one = builder.ins().iconst(types::I64, 1);
+                            builder.ins().icmp_imm(IntCC::Equal, one, 1)
+                        }
+                        JitType::Value => {
+                            let tag =
+                                builder.ins().load(types::I64, MemFlags::new(), value.value, 0);
+                            builder
+                                .ins()
+                                .icmp_imm(IntCC::Equal, tag, NativeTag::Null as i64)
+                        }
+                        _ => {
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            builder.ins().icmp_imm(IntCC::Equal, zero, 1)
+                        }
+                    };
+                    let then_idx = *block_for_start.get(target)?;
+                    let else_ip = ip + 1;
+                    let else_idx = *block_for_start.get(&else_ip)?;
+                    let cond = is_null;
+                    let then_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &stack,
+                        entry_stacks.get(then_idx)?,
+                    )?;
+                    let else_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &stack,
+                        entry_stacks.get(else_idx)?,
+                    )?;
+                    builder
+                        .ins()
+                        .brif(cond, blocks[then_idx], &then_args, blocks[else_idx], &else_args);
                     terminated = true;
                     break;
                 }
@@ -895,16 +1120,104 @@ fn compile_function(
                     terminated = true;
                     break;
                 }
+                Instr::Bang { has_error } => {
+                    let err_value = if *has_error {
+                        Some(stack.pop()?)
+                    } else {
+                        None
+                    };
+                    let value = stack.pop()?;
+                    let value_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        NATIVE_VALUE_SIZE as u32,
+                    ));
+                    let value_ptr = builder.ins().stack_addr(pointer_ty, value_slot, 0);
+                    store_native_value(&mut builder, value_ptr, 0, value)?;
+
+                    let err_ptr = if let Some(err_value) = err_value {
+                        let err_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            NATIVE_VALUE_SIZE as u32,
+                        ));
+                        let err_ptr = builder.ins().stack_addr(pointer_ty, err_slot, 0);
+                        store_native_value(&mut builder, err_ptr, 0, err_value)?;
+                        err_ptr
+                    } else {
+                        builder.ins().iconst(pointer_ty, 0)
+                    };
+                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        NATIVE_VALUE_SIZE as u32,
+                    ));
+                    let out_slot_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
+                    let has_err_flag =
+                        builder
+                            .ins()
+                            .iconst(types::I64, if *has_error { 1 } else { 0 });
+                    let func_ref = module.declare_func_in_func(hostcalls.bang, builder.func);
+                    let call = builder.ins().call(
+                        func_ref,
+                        &[heap_ptr, value_ptr, err_ptr, has_err_flag, out_slot_ptr],
+                    );
+                    let status = builder.inst_results(call)[0];
+                    let ok_idx = *block_for_start.get(&(ip + 1))?;
+                    let mut ok_stack = stack.clone();
+                    ok_stack.push(StackValue {
+                        value: out_slot_ptr,
+                        kind: JitType::Value,
+                    });
+                    let ok_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &ok_stack,
+                        entry_stacks.get(ok_idx)?,
+                    )?;
+                    let err_block = builder.create_block();
+                    builder.append_block_param(err_block, types::I8);
+                    builder.append_block_param(err_block, pointer_ty);
+                    let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    builder.ins().brif(
+                        is_ok,
+                        blocks[ok_idx],
+                        &ok_args,
+                        err_block,
+                        &[status, out_slot_ptr],
+                    );
+                    builder.switch_to_block(err_block);
+                    let status_val = builder.block_params(err_block)[0];
+                    let err_out_ptr = builder.block_params(err_block)[1];
+                    copy_native_value(&mut builder, err_out_ptr, out_ptr);
+                    builder.ins().return_(&[status_val]);
+                    terminated = true;
+                    break;
+                }
+                Instr::RuntimeError(message) => {
+                    let handle = NativeValue::intern_string(message.clone(), heap).payload;
+                    let tag = builder.ins().iconst(types::I64, NativeTag::Heap as i64);
+                    let payload = builder.ins().iconst(types::I64, handle as i64);
+                    builder.ins().store(MemFlags::new(), tag, out_ptr, 0);
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), payload, out_ptr, NATIVE_VALUE_PAYLOAD_OFFSET);
+                    let status = builder.ins().iconst(types::I8, 2);
+                    builder.ins().return_(&[status]);
+                    terminated = true;
+                    break;
+                }
                 _ => return None,
             }
         }
 
         if !terminated {
             if block_idx + 1 < blocks.len() {
-                if !stack.is_empty() {
-                    return None;
-                }
-                builder.ins().jump(blocks[block_idx + 1], &[]);
+                let next_idx = block_idx + 1;
+                let args = coerce_stack_args(
+                    &mut builder,
+                    pointer_ty,
+                    &stack,
+                    entry_stacks.get(next_idx)?,
+                )?;
+                builder.ins().jump(blocks[next_idx], &args);
             } else if stack.len() == 1 {
                 let value = stack.pop()?;
                 write_native_return(&mut builder, out_ptr, ret, value)?;
@@ -938,11 +1251,18 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
     starts.insert(0usize);
     for (ip, instr) in code.iter().enumerate() {
         match instr {
-            Instr::Jump(target) | Instr::JumpIfFalse(target) => {
+            Instr::Jump(target)
+            | Instr::JumpIfFalse(target)
+            | Instr::JumpIfNull(target) => {
                 if *target >= code.len() {
                     return None;
                 }
                 starts.insert(*target);
+                if ip + 1 < code.len() {
+                    starts.insert(ip + 1);
+                }
+            }
+            Instr::Bang { .. } => {
                 if ip + 1 < code.len() {
                     starts.insert(ip + 1);
                 }
@@ -965,50 +1285,71 @@ fn write_native_return(
     ret: ReturnKind,
     value: StackValue,
 ) -> Option<()> {
-    let (tag, payload) = match (ret, value.kind) {
-        (ReturnKind::Int, JitType::Int) => (NativeTag::Int, value.value),
-        (ReturnKind::Bool, JitType::Bool) => (NativeTag::Bool, value.value),
-        (ReturnKind::Float, JitType::Float) => (
-            NativeTag::Float,
-            builder
-                .ins()
-                .bitcast(types::I64, MemFlags::new(), value.value),
-        ),
-        (ReturnKind::Heap, JitType::Heap | JitType::Struct | JitType::Enum | JitType::Boxed) => {
-            (NativeTag::Heap, value.value)
+    let (tag_value, payload) = match ret {
+        _ if value.kind == JitType::Value => stack_tag_payload(builder, value)?,
+        ReturnKind::Int if value.kind == JitType::Int => stack_tag_payload(builder, value)?,
+        ReturnKind::Bool if value.kind == JitType::Bool => stack_tag_payload(builder, value)?,
+        ReturnKind::Float if value.kind == JitType::Float => stack_tag_payload(builder, value)?,
+        ReturnKind::Heap
+            if matches!(
+                value.kind,
+                JitType::Heap | JitType::Struct | JitType::Enum | JitType::Boxed | JitType::Null
+            ) =>
+        {
+            stack_tag_payload(builder, value)?
         }
+        ReturnKind::Value => stack_tag_payload(builder, value)?,
         _ => return None,
     };
-    let tag_value = builder.ins().iconst(types::I64, tag as i64);
-    builder.ins().store(MemFlags::new(), tag_value, out_ptr, 0);
     builder
         .ins()
-        .store(MemFlags::new(), payload, out_ptr, NATIVE_VALUE_PAYLOAD_OFFSET);
+        .store(MemFlags::new(), tag_value, out_ptr, 0);
+    builder.ins().store(
+        MemFlags::new(),
+        payload,
+        out_ptr,
+        NATIVE_VALUE_PAYLOAD_OFFSET,
+    );
     Some(())
 }
 
-fn stack_tag(kind: JitType) -> Option<NativeTag> {
-    match kind {
-        JitType::Int => Some(NativeTag::Int),
-        JitType::Bool => Some(NativeTag::Bool),
-        JitType::Float => Some(NativeTag::Float),
-        JitType::Heap | JitType::Struct | JitType::Enum | JitType::Boxed => Some(NativeTag::Heap),
-    }
-}
-
-fn stack_payload(builder: &mut FunctionBuilder<'_>, value: StackValue) -> Option<ClifValue> {
+fn stack_tag_payload(
+    builder: &mut FunctionBuilder<'_>,
+    value: StackValue,
+) -> Option<(ClifValue, ClifValue)> {
     match value.kind {
-        JitType::Float => Some(builder.ins().bitcast(
-            types::I64,
-            MemFlags::new(),
+        JitType::Int => Some((
+            builder.ins().iconst(types::I64, NativeTag::Int as i64),
             value.value,
         )),
-        JitType::Int
-        | JitType::Bool
-        | JitType::Heap
-        | JitType::Struct
-        | JitType::Enum
-        | JitType::Boxed => Some(value.value),
+        JitType::Bool => Some((
+            builder.ins().iconst(types::I64, NativeTag::Bool as i64),
+            value.value,
+        )),
+        JitType::Float => Some((
+            builder.ins().iconst(types::I64, NativeTag::Float as i64),
+            builder
+                .ins()
+                .bitcast(types::I64, MemFlags::new(), value.value),
+        )),
+        JitType::Null => Some((
+            builder.ins().iconst(types::I64, NativeTag::Null as i64),
+            builder.ins().iconst(types::I64, 0),
+        )),
+        JitType::Heap | JitType::Struct | JitType::Enum | JitType::Boxed => Some((
+            builder.ins().iconst(types::I64, NativeTag::Heap as i64),
+            value.value,
+        )),
+        JitType::Value => {
+            let tag = builder.ins().load(types::I64, MemFlags::new(), value.value, 0);
+            let payload = builder.ins().load(
+                types::I64,
+                MemFlags::new(),
+                value.value,
+                NATIVE_VALUE_PAYLOAD_OFFSET,
+            );
+            Some((tag, payload))
+        }
     }
 }
 
@@ -1018,9 +1359,7 @@ fn store_native_value(
     offset: i32,
     value: StackValue,
 ) -> Option<()> {
-    let tag = stack_tag(value.kind)?;
-    let payload = stack_payload(builder, value)?;
-    let tag_value = builder.ins().iconst(types::I64, tag as i64);
+    let (tag_value, payload) = stack_tag_payload(builder, value)?;
     builder
         .ins()
         .store(MemFlags::new(), tag_value, base_ptr, offset);
@@ -1045,6 +1384,8 @@ fn return_kind(ty: &TypeRef, program: &IrProgram) -> Option<ReturnKind> {
         TypeRefKind::Simple(name) if program.enums.contains_key(&name.name) => {
             Some(ReturnKind::Heap)
         }
+        TypeRefKind::Optional(_) => Some(ReturnKind::Value),
+        TypeRefKind::Result { ok, .. } => return_kind(ok, program),
         TypeRefKind::Refined { base, .. } if base.name == "Int" => Some(ReturnKind::Int),
         TypeRefKind::Refined { base, .. } if base.name == "Float" => Some(ReturnKind::Float),
         TypeRefKind::Refined { base, .. } if base.name == "String" => Some(ReturnKind::Heap),
@@ -1056,6 +1397,14 @@ fn return_kind(ty: &TypeRef, program: &IrProgram) -> Option<ReturnKind> {
         {
             Some(ReturnKind::Heap)
         }
+        TypeRefKind::Generic { base, args } if base.name == "Option" => {
+            let _ = args;
+            Some(ReturnKind::Value)
+        }
+        TypeRefKind::Generic { base, args } if base.name == "Result" => {
+            let ok = args.get(0)?;
+            return_kind(ok, program)
+        }
         _ => None,
     }
 }
@@ -1065,48 +1414,62 @@ fn value_kind(value: &Value) -> Option<JitType> {
         Value::Int(_) => Some(JitType::Int),
         Value::Bool(_) => Some(JitType::Bool),
         Value::Float(_) => Some(JitType::Float),
+        Value::Null => Some(JitType::Null),
         Value::String(_) | Value::List(_) | Value::Map(_) => Some(JitType::Heap),
         Value::Struct { .. } => Some(JitType::Struct),
         Value::Enum { .. } => Some(JitType::Enum),
+        Value::ResultOk(_) | Value::ResultErr(_) => Some(JitType::Heap),
         Value::Boxed(_) => Some(JitType::Boxed),
         Value::Task(_) => Some(JitType::Heap),
         _ => None,
     }
 }
 
-fn clif_type(kind: &JitType) -> types::Type {
+fn clif_type(kind: &JitType, pointer_ty: types::Type) -> types::Type {
     match kind {
         JitType::Float => types::F64,
+        JitType::Value => pointer_ty,
         _ => types::I64,
     }
 }
 
-fn infer_local_types(
+fn analyze_types(
     func: &Function,
     param_types: &[JitType],
     starts: &[usize],
     _program: &IrProgram,
-) -> Option<Vec<JitType>> {
+) -> Option<(Vec<JitType>, Vec<Vec<JitType>>)> {
     let mut locals: Vec<Option<JitType>> = vec![None; func.locals];
     for (idx, kind) in param_types.iter().enumerate() {
         if idx < locals.len() {
             locals[idx] = Some(*kind);
         }
     }
-    for (block_idx, start) in starts.iter().enumerate() {
+    let mut block_for_start = HashMap::new();
+    for (idx, start) in starts.iter().enumerate() {
+        block_for_start.insert(*start, idx);
+    }
+    let mut entry_stacks: Vec<Option<Vec<JitType>>> = vec![None; starts.len()];
+    entry_stacks[0] = Some(Vec::new());
+    let mut worklist: Vec<usize> = vec![0];
+    while let Some(block_idx) = worklist.pop() {
+        let start = *starts.get(block_idx)?;
         let end = if block_idx + 1 < starts.len() {
             starts[block_idx + 1]
         } else {
             func.code.len()
         };
-        let mut stack: Vec<JitType> = Vec::new();
-        for ip in *start..end {
+        let mut stack = entry_stacks.get(block_idx)?.as_ref()?.clone();
+        let mut terminated = false;
+        let mut ip = start;
+        while ip < end {
             match &func.code[ip] {
                 Instr::Push(Const::Unit) => stack.push(JitType::Int),
                 Instr::Push(Const::Int(_)) => stack.push(JitType::Int),
                 Instr::Push(Const::Bool(_)) => stack.push(JitType::Bool),
                 Instr::Push(Const::Float(_)) => stack.push(JitType::Float),
                 Instr::Push(Const::String(_)) => stack.push(JitType::Heap),
+                Instr::Push(Const::Null) => stack.push(JitType::Null),
                 Instr::MakeList { len } => {
                     for _ in 0..*len {
                         stack.pop()?;
@@ -1133,11 +1496,8 @@ fn infer_local_types(
                     stack.push(JitType::Enum);
                 }
                 Instr::MakeBox => {
-                    let value = stack.pop()?;
-                    match value {
-                        JitType::Boxed => stack.push(JitType::Boxed),
-                        _ => stack.push(JitType::Boxed),
-                    }
+                    let _value = stack.pop()?;
+                    stack.push(JitType::Boxed);
                 }
                 Instr::InterpString { parts } => {
                     for _ in 0..*parts {
@@ -1152,8 +1512,15 @@ fn infer_local_types(
                 Instr::StoreLocal(slot) => {
                     let kind = stack.pop()?;
                     match locals.get_mut(*slot)? {
-                        Some(existing) if *existing != kind => return None,
-                        Some(_) => {}
+                        Some(existing) => {
+                            let merged = merge_kind(*existing, kind)?;
+                            if merged != *existing {
+                                *existing = merged;
+                                if !worklist.contains(&block_idx) {
+                                    worklist.push(block_idx);
+                                }
+                            }
+                        }
                         slot_entry @ None => {
                             *slot_entry = Some(kind);
                         }
@@ -1200,43 +1567,218 @@ fn infer_local_types(
                     }
                     stack.push(JitType::Bool);
                 }
-                Instr::Jump(_) => {
-                    if !stack.is_empty() {
-                        return None;
-                    }
+                Instr::Jump(target) => {
+                    let target_idx = *block_for_start.get(target)?;
+                    merge_block_stack(
+                        &mut entry_stacks[target_idx],
+                        &stack,
+                        &mut worklist,
+                        target_idx,
+                    )?;
+                    terminated = true;
+                    break;
                 }
-                Instr::JumpIfFalse(_) => {
+                Instr::JumpIfFalse(target) => {
                     let cond = stack.pop()?;
-                    if cond != JitType::Bool || !stack.is_empty() {
+                    if cond != JitType::Bool {
                         return None;
                     }
+                    let target_idx = *block_for_start.get(target)?;
+                    merge_block_stack(
+                        &mut entry_stacks[target_idx],
+                        &stack,
+                        &mut worklist,
+                        target_idx,
+                    )?;
+                    let else_ip = ip + 1;
+                    let else_idx = *block_for_start.get(&else_ip)?;
+                    merge_block_stack(
+                        &mut entry_stacks[else_idx],
+                        &stack,
+                        &mut worklist,
+                        else_idx,
+                    )?;
+                    terminated = true;
+                    break;
+                }
+                Instr::JumpIfNull(target) => {
+                    let _value = stack.pop()?;
+                    let target_idx = *block_for_start.get(target)?;
+                    merge_block_stack(
+                        &mut entry_stacks[target_idx],
+                        &stack,
+                        &mut worklist,
+                        target_idx,
+                    )?;
+                    let else_ip = ip + 1;
+                    let else_idx = *block_for_start.get(&else_ip)?;
+                    merge_block_stack(
+                        &mut entry_stacks[else_idx],
+                        &stack,
+                        &mut worklist,
+                        else_idx,
+                    )?;
+                    terminated = true;
+                    break;
+                }
+                Instr::Bang { has_error } => {
+                    if *has_error {
+                        let _ = stack.pop()?;
+                    }
+                    let _ = stack.pop()?;
+                    stack.push(JitType::Value);
+                    let ok_ip = ip + 1;
+                    let ok_idx = *block_for_start.get(&ok_ip)?;
+                    merge_block_stack(
+                        &mut entry_stacks[ok_idx],
+                        &stack,
+                        &mut worklist,
+                        ok_idx,
+                    )?;
+                    terminated = true;
+                    break;
                 }
                 Instr::Return => {
                     let _ = stack.pop()?;
-                    if !stack.is_empty() {
-                        return None;
-                    }
+                    terminated = true;
+                    break;
+                }
+                Instr::RuntimeError(_) => {
+                    terminated = true;
+                    break;
                 }
                 Instr::GetField { .. } => {
                     let base = stack.pop()?;
-                    if base != JitType::Struct {
-                        return None;
+                    match base {
+                        JitType::Struct | JitType::Value => stack.push(JitType::Heap),
+                        _ => return None,
                     }
-                    stack.push(JitType::Heap);
                 }
                 _ => return None,
             }
+            ip += 1;
         }
-        if !stack.is_empty() {
+        if !terminated && block_idx + 1 < starts.len() {
+            let next_idx = block_idx + 1;
+            merge_block_stack(
+                &mut entry_stacks[next_idx],
+                &stack,
+                &mut worklist,
+                next_idx,
+            )?;
+        }
+    }
+
+    let locals = locals
+        .into_iter()
+        .map(|kind| kind.unwrap_or(JitType::Int))
+        .collect();
+    let entry_stacks = entry_stacks
+        .into_iter()
+        .map(|stack| stack.unwrap_or_default())
+        .collect();
+    Some((locals, entry_stacks))
+}
+
+fn merge_block_stack(
+    existing: &mut Option<Vec<JitType>>,
+    incoming: &[JitType],
+    worklist: &mut Vec<usize>,
+    block_idx: usize,
+) -> Option<()> {
+    match existing {
+        Some(stack) => {
+            if stack.len() != incoming.len() {
+                return None;
+            }
+            let mut changed = false;
+            for (slot, next) in stack.iter_mut().zip(incoming.iter()) {
+                let merged = merge_kind(*slot, *next)?;
+                if merged != *slot {
+                    *slot = merged;
+                    changed = true;
+                }
+            }
+            if changed && !worklist.contains(&block_idx) {
+                worklist.push(block_idx);
+            }
+        }
+        slot @ None => {
+            *slot = Some(incoming.to_vec());
+            if !worklist.contains(&block_idx) {
+                worklist.push(block_idx);
+            }
+        }
+    }
+    Some(())
+}
+
+fn merge_kind(lhs: JitType, rhs: JitType) -> Option<JitType> {
+    if lhs == rhs {
+        return Some(lhs);
+    }
+    if lhs == JitType::Value || rhs == JitType::Value {
+        return Some(JitType::Value);
+    }
+    if lhs == JitType::Null || rhs == JitType::Null {
+        return Some(JitType::Value);
+    }
+    None
+}
+
+fn coerce_stack_args(
+    builder: &mut FunctionBuilder<'_>,
+    pointer_ty: types::Type,
+    stack: &[StackValue],
+    target: &[JitType],
+) -> Option<Vec<ClifValue>> {
+    if stack.len() != target.len() {
+        return None;
+    }
+    let mut args = Vec::with_capacity(stack.len());
+    for (value, target_kind) in stack.iter().zip(target.iter()) {
+        if value.kind == *target_kind {
+            args.push(value.value);
+        } else if *target_kind == JitType::Value {
+            let ptr = ensure_value_ptr(builder, pointer_ty, *value)?;
+            args.push(ptr);
+        } else {
             return None;
         }
     }
-    Some(
-        locals
-            .into_iter()
-            .map(|kind| kind.unwrap_or(JitType::Int))
-            .collect(),
-    )
+    Some(args)
+}
+
+fn ensure_value_ptr(
+    builder: &mut FunctionBuilder<'_>,
+    pointer_ty: types::Type,
+    value: StackValue,
+) -> Option<ClifValue> {
+    if value.kind == JitType::Value {
+        return Some(value.value);
+    }
+    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        NATIVE_VALUE_SIZE as u32,
+    ));
+    let ptr = builder.ins().stack_addr(pointer_ty, slot, 0);
+    store_native_value(builder, ptr, 0, value)?;
+    Some(ptr)
+}
+
+fn copy_native_value(
+    builder: &mut FunctionBuilder<'_>,
+    src: ClifValue,
+    dst: ClifValue,
+) {
+    let tag = builder.ins().load(types::I64, MemFlags::new(), src, 0);
+    let payload = builder
+        .ins()
+        .load(types::I64, MemFlags::new(), src, NATIVE_VALUE_PAYLOAD_OFFSET);
+    builder.ins().store(MemFlags::new(), tag, dst, 0);
+    builder
+        .ins()
+        .store(MemFlags::new(), payload, dst, NATIVE_VALUE_PAYLOAD_OFFSET);
 }
 
 fn numeric_kind(lhs: JitType, rhs: JitType, op: &Instr) -> Option<JitType> {

@@ -102,6 +102,30 @@ fn golden_project_demo_error_json() {
 }
 
 #[test]
+fn golden_project_demo_error_json_native() {
+    let exe = env!("CARGO_BIN_EXE_fusec");
+    let output = Command::new(exe)
+        .arg("--run")
+        .arg("--backend")
+        .arg("native")
+        .arg(example_path("project_demo.fuse"))
+        .env("DEMO_FAIL", "1")
+        .output()
+        .expect("failed to run fusec");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let json_text = stderr
+        .trim()
+        .strip_prefix("run error: ")
+        .unwrap_or(stderr.trim());
+    let json_value = json::decode(json_text).expect("expected JSON error");
+    let rendered = json::encode(&json_value);
+    let expected = r#"{"error":{"code":"validation_error","fields":[{"code":"invalid_value","message":"length 0 out of range 1..80","path":"User.name"}],"message":"validation failed"}}"#;
+    assert_eq!(rendered, expected);
+}
+
+#[test]
 fn golden_http_users_post_ok() {
     let port = find_free_port();
     let exe = env!("CARGO_BIN_EXE_fusec");
