@@ -30,6 +30,25 @@ fn runs_cli_hello_vm() {
 }
 
 #[test]
+fn runs_cli_hello_native() {
+    let exe = env!("CARGO_BIN_EXE_fusec");
+    let output = Command::new(exe)
+        .arg("--run")
+        .arg("--backend")
+        .arg("native")
+        .arg(example_path("cli_hello.fuse"))
+        .env("APP_GREETING", "Hi")
+        .env("APP_DEFAULT_NAME", "Codex")
+        .env("GREETING", "ShouldNotUse")
+        .output()
+        .expect("failed to run fusec");
+
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "Hi, Codex!");
+}
+
+#[test]
 fn runs_enum_match_vm() {
     let exe = env!("CARGO_BIN_EXE_fusec");
     let output = Command::new(exe)

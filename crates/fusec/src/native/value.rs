@@ -107,6 +107,19 @@ impl NativeHeap {
         self.configs = configs;
     }
 
+    pub fn ensure_config(&mut self, name: &str) {
+        self.configs
+            .entry(name.to_string())
+            .or_insert_with(std::collections::HashMap::new);
+    }
+
+    pub fn set_config_field(&mut self, config: &str, field: &str, value: Value) {
+        self.ensure_config(config);
+        if let Some(map) = self.configs.get_mut(config) {
+            map.insert(field.to_string(), value);
+        }
+    }
+
     pub fn config_field(&self, config: &str, field: &str) -> Option<Value> {
         self.configs
             .get(config)

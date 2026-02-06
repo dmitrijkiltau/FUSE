@@ -70,7 +70,9 @@ struct HostCalls {
     make_box: FuncId,
     interp_string: FuncId,
     bang: FuncId,
+    add: FuncId,
     builtin_log: FuncId,
+    builtin_print: FuncId,
     builtin_env: FuncId,
     builtin_assert: FuncId,
     config_get: FuncId,
@@ -120,7 +122,9 @@ impl JitRuntime {
         builder.symbol("fuse_native_make_box", fuse_native_make_box as *const u8);
         builder.symbol("fuse_native_interp_string", fuse_native_interp_string as *const u8);
         builder.symbol("fuse_native_bang", fuse_native_bang as *const u8);
+        builder.symbol("fuse_native_add", fuse_native_add as *const u8);
         builder.symbol("fuse_native_builtin_log", fuse_native_builtin_log as *const u8);
+        builder.symbol("fuse_native_builtin_print", fuse_native_builtin_print as *const u8);
         builder.symbol("fuse_native_builtin_env", fuse_native_builtin_env as *const u8);
         builder.symbol(
             "fuse_native_builtin_assert",
@@ -161,7 +165,11 @@ impl JitRuntime {
         }
         let key = (name.to_string(), param_types.clone());
         if !self.functions.contains_key(&key) {
-            let func = program.functions.get(name)?;
+            let func = program
+                .functions
+                .get(name)
+                .or_else(|| program.apps.get(name))
+                .or_else(|| program.apps.values().find(|func| func.name == name))?;
             if let Some(compiled) = compile_function(
                 &mut self._module,
                 &self.hostcalls,
@@ -305,9 +313,15 @@ impl HostCalls {
         builtin_sig.params.push(AbiParam::new(types::I64));
         builtin_sig.params.push(AbiParam::new(pointer_ty));
         builtin_sig.returns.push(AbiParam::new(types::I8));
+        let add = module
+            .declare_function("fuse_native_add", Linkage::Import, &builtin_sig)
+            .expect("declare add hostcall");
         let builtin_log = module
             .declare_function("fuse_native_builtin_log", Linkage::Import, &builtin_sig)
             .expect("declare builtin log hostcall");
+        let builtin_print = module
+            .declare_function("fuse_native_builtin_print", Linkage::Import, &builtin_sig)
+            .expect("declare builtin print hostcall");
         let builtin_env = module
             .declare_function("fuse_native_builtin_env", Linkage::Import, &builtin_sig)
             .expect("declare builtin env hostcall");
@@ -361,7 +375,9 @@ impl HostCalls {
             make_box,
             interp_string,
             bang,
+            add,
             builtin_log,
+            builtin_print,
             builtin_env,
             builtin_assert,
             config_get,
@@ -1223,6 +1239,56 @@ extern "C" fn fuse_native_bang(
 }
 
 #[unsafe(no_mangle)]
+extern "C" fn fuse_native_add(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "add expects 2 values");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(left) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "add expects 2 values");
+    };
+    let Some(right) = args.get(1) else {
+        return builtin_runtime_error(out, heap, "add expects 2 values");
+    };
+    let Some(left) = left.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "add expects 2 values");
+    };
+    let Some(right) = right.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "add expects 2 values");
+    };
+    let left = left.unboxed();
+    let right = right.unboxed();
+    let value = match (left, right) {
+        (Value::String(a), Value::String(b)) => Value::String(format!("{a}{b}")),
+        (Value::String(a), b) => Value::String(format!("{a}{}", b.to_string_value())),
+        (a, Value::String(b)) => Value::String(format!("{}{}", a.to_string_value(), b)),
+        (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+        (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
+        (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 + b),
+        (Value::Float(a), Value::Int(b)) => Value::Float(a + b as f64),
+        _ => return builtin_runtime_error(out, heap, "unsupported + operands"),
+    };
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "add result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn fuse_native_builtin_log(
     heap: *mut NativeHeap,
     args: *const NativeValue,
@@ -1293,6 +1359,38 @@ extern "C" fn fuse_native_builtin_log(
         }
     }
 
+    *out = NativeValue::int(0);
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_print(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    let text = if len == 0 {
+        String::new()
+    } else {
+        let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+        let heap_ref: &NativeHeap = heap;
+        let Some(value) = args.get(0) else {
+            return builtin_runtime_error(out, heap, "print expects a value");
+        };
+        let Some(value) = value.to_value(heap_ref) else {
+            return builtin_runtime_error(out, heap, "print expects a value");
+        };
+        value.to_string_value()
+    };
+    println!("{text}");
     *out = NativeValue::int(0);
     0
 }
@@ -1859,7 +1957,11 @@ fn compile_function(
     param_types: &[JitType],
     heap: &mut NativeHeap,
 ) -> Option<PendingCompiled> {
-    let ret = return_kind(func.ret.as_ref()?, program)?;
+    let ret = if let Some(ret) = func.ret.as_ref() {
+        return_kind(ret, program)?
+    } else {
+        ReturnKind::Value
+    };
     if func.code.is_empty() || func.params.len() != param_types.len() {
         return None;
     }
@@ -2338,6 +2440,7 @@ fn compile_function(
                         return None;
                     }
                     let builtin = match name.as_str() {
+                        "print" => hostcalls.builtin_print,
                         "log" => hostcalls.builtin_log,
                         "env" => hostcalls.builtin_env,
                         "assert" => hostcalls.builtin_assert,
@@ -2493,7 +2596,62 @@ fn compile_function(
                         kind: JitType::Bool,
                     });
                 }
-                Instr::Add | Instr::Sub | Instr::Mul | Instr::Div | Instr::Mod => {
+                Instr::Add => {
+                    let rhs = stack.pop()?;
+                    let lhs = stack.pop()?;
+                    if let Some(out) = numeric_binop(&mut builder, &lhs, &rhs, &func.code[ip]) {
+                        stack.push(out);
+                        continue;
+                    }
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        (NATIVE_VALUE_SIZE * 2) as u32,
+                    ));
+                    let base = builder.ins().stack_addr(pointer_ty, slot, 0);
+                    store_native_value(&mut builder, base, 0, lhs)?;
+                    store_native_value(&mut builder, base, NATIVE_VALUE_SIZE, rhs)?;
+                    let len_val = builder.ins().iconst(types::I64, 2);
+                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        NATIVE_VALUE_SIZE as u32,
+                    ));
+                    let add_out_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
+                    let func_ref = module.declare_func_in_func(hostcalls.add, builder.func);
+                    let call =
+                        builder.ins().call(func_ref, &[heap_ptr, base, len_val, add_out_ptr]);
+                    let status = builder.inst_results(call)[0];
+                    let ok_idx = *block_for_start.get(&(ip + 1))?;
+                    let mut ok_stack = stack.clone();
+                    ok_stack.push(StackValue {
+                        value: add_out_ptr,
+                        kind: JitType::Value,
+                    });
+                    let ok_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &ok_stack,
+                        entry_stacks.get(ok_idx)?,
+                    )?;
+                    let err_block = builder.create_block();
+                    builder.append_block_param(err_block, types::I8);
+                    builder.append_block_param(err_block, pointer_ty);
+                    let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    builder.ins().brif(
+                        is_ok,
+                        blocks[ok_idx],
+                        &ok_args,
+                        err_block,
+                        &[status, add_out_ptr],
+                    );
+                    builder.switch_to_block(err_block);
+                    let status_val = builder.block_params(err_block)[0];
+                    let err_out_ptr = builder.block_params(err_block)[1];
+                    copy_native_value(&mut builder, err_out_ptr, out_ptr);
+                    builder.ins().return_(&[status_val]);
+                    terminated = true;
+                    break;
+                }
+                Instr::Sub | Instr::Mul | Instr::Div | Instr::Mod => {
                     let rhs = stack.pop()?;
                     let lhs = stack.pop()?;
                     let out = numeric_binop(&mut builder, &lhs, &rhs, &func.code[ip])?;
@@ -2615,9 +2773,7 @@ fn compile_function(
                 }
                 Instr::Return => {
                     let value = stack.pop()?;
-                    if !stack.is_empty() {
-                        return None;
-                    }
+                    stack.clear();
                     write_native_return(&mut builder, out_ptr, ret, value)?;
                     let status = builder.ins().iconst(types::I8, 0);
                     builder.ins().return_(&[status]);
@@ -2776,13 +2932,19 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     starts.insert(ip + 1);
                 }
             }
+            Instr::Add => {
+                if ip + 1 < code.len() {
+                    starts.insert(ip + 1);
+                }
+            }
             Instr::Call {
                 kind: CallKind::Builtin,
                 name,
                 ..
             } if matches!(
                 name.as_str(),
-                "log"
+                "print"
+                    | "log"
                     | "env"
                     | "assert"
                     | "task.id"
@@ -3106,7 +3268,26 @@ fn analyze_types(
                     }
                     stack.push(JitType::Bool);
                 }
-                Instr::Add | Instr::Sub | Instr::Mul | Instr::Div | Instr::Mod => {
+                Instr::Add => {
+                    let rhs = stack.pop()?;
+                    let lhs = stack.pop()?;
+                    if let Some(out) = numeric_kind(lhs, rhs, &func.code[ip]) {
+                        stack.push(out);
+                    } else {
+                        stack.push(JitType::Value);
+                        let ok_ip = ip + 1;
+                        let ok_idx = *block_for_start.get(&ok_ip)?;
+                        merge_block_stack(
+                            &mut entry_stacks[ok_idx],
+                            &stack,
+                            &mut worklist,
+                            ok_idx,
+                        )?;
+                        terminated = true;
+                        break;
+                    }
+                }
+                Instr::Sub | Instr::Mul | Instr::Div | Instr::Mod => {
                     let rhs = stack.pop()?;
                     let lhs = stack.pop()?;
                     let out = numeric_kind(lhs, rhs, &func.code[ip])?;
@@ -3142,7 +3323,8 @@ fn analyze_types(
                         return None;
                     }
                     match name.as_str() {
-                        "log"
+                        "print"
+                        | "log"
                         | "env"
                         | "assert"
                         | "task.id"

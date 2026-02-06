@@ -7,7 +7,7 @@ use std::net::{TcpListener, TcpStream};
 
 use serde::{Deserialize, Serialize};
 
-use fuse_rt::{error as rt_error, json as rt_json, validate as rt_validate};
+use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate as rt_validate};
 
 use crate::ast::{BinaryOp, Expr, ExprKind, HttpVerb, Ident, Literal, TypeRef, TypeRefKind, UnaryOp};
 use crate::interp::{format_error_value, Value};
@@ -15,7 +15,6 @@ use crate::ir::{Function, Program as IrProgram, Service, ServiceRoute};
 use crate::loader::ModuleRegistry;
 use crate::native::value::NativeHeap;
 use crate::span::Span;
-use crate::vm::Vm;
 use jit::{JitCallError, JitRuntime};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -50,7 +49,6 @@ type NativeResult<T> = Result<T, NativeError>;
 
 pub struct NativeVm<'a> {
     program: &'a NativeProgram,
-    vm: Vm<'a>,
     jit: JitRuntime,
     heap: NativeHeap,
     configs_loaded: bool,
@@ -60,7 +58,6 @@ impl<'a> NativeVm<'a> {
     pub fn new(program: &'a NativeProgram) -> Self {
         Self {
             program,
-            vm: Vm::new(&program.ir),
             jit: JitRuntime::build(),
             heap: NativeHeap::new(),
             configs_loaded: false,
@@ -69,23 +66,59 @@ impl<'a> NativeVm<'a> {
 
     pub fn run_app(&mut self, name: Option<&str>) -> Result<(), String> {
         self.ensure_configs_loaded()?;
-        let self_ptr: *mut NativeVm<'a> = self;
-        self.vm.set_serve_hook(Some(Box::new(move |port| unsafe {
-            (*self_ptr).eval_serve_native(port)
-        })));
-        let result = self.vm.run_app(name);
-        self.vm.set_serve_hook(None);
-        result
+        let app = if let Some(name) = name {
+            self.program
+                .ir
+                .apps
+                .get(name)
+                .ok_or_else(|| format!("app not found: {name}"))?
+        } else {
+            self.program
+                .ir
+                .apps
+                .values()
+                .next()
+                .ok_or_else(|| "no app found".to_string())?
+        };
+        if self.app_contains_serve(app) {
+            return self.eval_app_interpreter(app);
+        }
+        if self.app_needs_interpreter(app) {
+            return self.eval_app_interpreter(app);
+        }
+        self.call_function_native_only_inner(&app.name, Vec::new())?;
+        Ok(())
     }
 
     pub fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, String> {
         self.ensure_configs_loaded()?;
+        self.call_function_native_only_inner(name, args)
+    }
+
+    pub fn has_jit_function(&self, name: &str) -> bool {
+        self.jit.has_function(name)
+    }
+
+    fn call_function_native_only_inner(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, String> {
         let func = self
             .program
             .ir
             .functions
             .get(name)
+            .or_else(|| self.program.ir.apps.get(name))
+            .or_else(|| self.program.ir.apps.values().find(|func| func.name == name))
             .ok_or_else(|| format!("unknown function {name}"))?;
+        if args.len() != func.params.len() {
+            return Err(format!(
+                "invalid call to {name}: expected {} args, got {}",
+                func.params.len(),
+                args.len()
+            ));
+        }
         if let Some(result) = self.jit.try_call(&self.program.ir, name, &args, &mut self.heap) {
             let out = match result {
                 Ok(value) => Ok(self.wrap_function_result(func, value)),
@@ -102,27 +135,273 @@ impl<'a> NativeVm<'a> {
             return out;
         }
         self.heap.collect_garbage();
-        self.vm.call_function(name, args)
-    }
-
-    pub fn has_jit_function(&self, name: &str) -> bool {
-        self.jit.has_function(name)
+        let reason = self
+            .unsupported_reason(func)
+            .unwrap_or_else(|| "native backend could not compile function".to_string());
+        Err(format!("native backend unsupported: {reason}"))
     }
 
     fn ensure_configs_loaded(&mut self) -> Result<(), String> {
         if self.configs_loaded {
             return Ok(());
         }
-        self.vm.eval_configs_for_native()?;
-        let configs = self.vm.configs_snapshot();
-        self.heap.set_configs(configs);
+        self.eval_configs_native()
+            .map_err(|err| self.render_native_error(err))?;
         self.configs_loaded = true;
+        Ok(())
+    }
+
+    fn eval_configs_native(&mut self) -> NativeResult<()> {
+        let config_path =
+            std::env::var("FUSE_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
+        let file_values =
+            rt_config::load_config_file(&config_path).map_err(NativeError::Runtime)?;
+        for config in self.program.ir.configs.values() {
+            self.heap.ensure_config(&config.name);
+            let section = file_values.get(&config.name);
+            for field in &config.fields {
+                let key = rt_config::env_key(&config.name, &field.name);
+                let path = format!("{}.{}", config.name, field.name);
+                let value = match std::env::var(&key) {
+                    Ok(raw) => {
+                        let value = self
+                            .parse_env_value(&field.ty, &raw)
+                            .map_err(|err| self.map_parse_error(err, &path))?;
+                        self.validate_value(&value, &field.ty, &path)?;
+                        value
+                    }
+                    Err(_) => {
+                        let value = if let Some(section) = section {
+                            if let Some(raw) = section.get(&field.name) {
+                                self.parse_env_value(&field.ty, raw)
+                                    .map_err(|err| self.map_parse_error(err, &path))?
+                            } else if let Some(fn_name) = &field.default_fn {
+                                self.call_function_native_only_inner(fn_name, Vec::new())
+                                    .map_err(NativeError::Runtime)?
+                            } else {
+                                Value::Null
+                            }
+                        } else if let Some(fn_name) = &field.default_fn {
+                            self.call_function_native_only_inner(fn_name, Vec::new())
+                                .map_err(NativeError::Runtime)?
+                        } else {
+                            Value::Null
+                        };
+                        self.validate_value(&value, &field.ty, &path)?;
+                        value
+                    }
+                };
+                self.heap
+                    .set_config_field(&config.name, &field.name, value);
+            }
+        }
         Ok(())
     }
 
     fn eval_serve_native(&mut self, port: i64) -> Result<Value, String> {
         self.eval_serve_native_inner(port)
             .map_err(|err| self.render_native_error(err))
+    }
+
+    fn app_contains_serve(&self, func: &Function) -> bool {
+        func.code.iter().any(|instr| {
+            matches!(
+                instr,
+                crate::ir::Instr::Call {
+                    name,
+                    kind: crate::ir::CallKind::Builtin,
+                    ..
+                } if name == "serve"
+            )
+        })
+    }
+
+    fn app_needs_interpreter(&self, func: &Function) -> bool {
+        func.code.iter().any(|instr| match instr {
+            crate::ir::Instr::Call {
+                kind: crate::ir::CallKind::Function,
+                ..
+            } => true,
+            crate::ir::Instr::Call {
+                name,
+                kind: crate::ir::CallKind::Builtin,
+                ..
+            } if name == "serve" => true,
+            _ => false,
+        })
+    }
+
+    fn eval_app_interpreter(&mut self, func: &Function) -> Result<(), String> {
+        let mut locals = vec![Value::Unit; func.locals];
+        let mut stack: Vec<Value> = Vec::new();
+        let mut ip = 0usize;
+        while ip < func.code.len() {
+            match &func.code[ip] {
+                crate::ir::Instr::Push(constant) => {
+                    let value = match constant {
+                        crate::ir::Const::Unit => Value::Unit,
+                        crate::ir::Const::Int(v) => Value::Int(*v),
+                        crate::ir::Const::Float(v) => Value::Float(*v),
+                        crate::ir::Const::Bool(v) => Value::Bool(*v),
+                        crate::ir::Const::String(v) => Value::String(v.clone()),
+                        crate::ir::Const::Null => Value::Null,
+                    };
+                    stack.push(value);
+                }
+                crate::ir::Instr::LoadLocal(slot) => {
+                    let value = locals
+                        .get(*slot)
+                        .cloned()
+                        .ok_or_else(|| format!("invalid local {slot}"))?;
+                    stack.push(value);
+                }
+                crate::ir::Instr::StoreLocal(slot) => {
+                    let value = stack.pop().ok_or_else(|| "stack underflow".to_string())?;
+                    if *slot >= locals.len() {
+                        return Err(format!("invalid local {slot}"));
+                    }
+                    locals[*slot] = value;
+                }
+                crate::ir::Instr::Pop => {
+                    stack.pop().ok_or_else(|| "stack underflow".to_string())?;
+                }
+                crate::ir::Instr::Dup => {
+                    let value = stack.last().cloned().ok_or_else(|| "stack underflow".to_string())?;
+                    stack.push(value);
+                }
+                crate::ir::Instr::InterpString { parts } => {
+                    let mut items = Vec::with_capacity(*parts);
+                    for _ in 0..*parts {
+                        items.push(stack.pop().ok_or_else(|| "stack underflow".to_string())?);
+                    }
+                    items.reverse();
+                    let mut out = String::new();
+                    for part in items {
+                        out.push_str(&part.to_string_value());
+                    }
+                    stack.push(Value::String(out));
+                }
+                crate::ir::Instr::LoadConfigField { config, field } => {
+                    let value = self
+                        .heap
+                        .config_field(config, field)
+                        .ok_or_else(|| format!("unknown config field {config}.{field}"))?;
+                    stack.push(value);
+                }
+                crate::ir::Instr::Call { name, argc, kind } => {
+                    let mut args = Vec::new();
+                    for _ in 0..*argc {
+                        args.push(stack.pop().ok_or_else(|| "stack underflow".to_string())?);
+                    }
+                    args.reverse();
+                    match kind {
+                        crate::ir::CallKind::Builtin => match name.as_str() {
+                            "serve" => {
+                                let port_value = args.get(0).cloned().unwrap_or(Value::Null);
+                                let port = self.port_from_value(&port_value)?;
+                                let _ = self.eval_serve_native_inner(port)
+                                    .map_err(|err| self.render_native_error(err))?;
+                                return Ok(());
+                            }
+                            "print" => {
+                                let text = args.get(0).map(|v| v.to_string_value()).unwrap_or_default();
+                                println!("{text}");
+                                stack.push(Value::Unit);
+                            }
+                            other => {
+                                return Err(format!(
+                                    "native backend unsupported: builtin {other}"
+                                ))
+                            }
+                        },
+                        crate::ir::CallKind::Function => {
+                            let value = self.call_function_native_only_inner(name, args)?;
+                            stack.push(value);
+                        }
+                    }
+                }
+                crate::ir::Instr::Return => {
+                    return Ok(());
+                }
+                other => {
+                    return Err(format!(
+                        "native backend unsupported: app instruction {other:?}"
+                    ));
+                }
+            }
+            ip += 1;
+        }
+        Ok(())
+    }
+
+    fn port_from_value(&self, value: &Value) -> Result<i64, String> {
+        match value.unboxed() {
+            Value::Int(v) => Ok(v),
+            Value::Float(v) => Ok(v as i64),
+            Value::String(s) => s.parse::<i64>().map_err(|_| "serve expects a port number".to_string()),
+            _ => Err("serve expects a port number".to_string()),
+        }
+    }
+
+    fn unsupported_reason(&self, func: &Function) -> Option<String> {
+        for instr in &func.code {
+            match instr {
+                crate::ir::Instr::Spawn { .. } | crate::ir::Instr::Await => {
+                    return Some("spawn/await".to_string());
+                }
+                crate::ir::Instr::SetField { .. } => {
+                    return Some("field assignment".to_string());
+                }
+                crate::ir::Instr::SetIndex => {
+                    return Some("index assignment".to_string());
+                }
+                crate::ir::Instr::GetIndex => {
+                    return Some("index access".to_string());
+                }
+                crate::ir::Instr::IterInit | crate::ir::Instr::IterNext { .. } => {
+                    return Some("iteration".to_string());
+                }
+                crate::ir::Instr::MatchLocal { .. } => {
+                    return Some("pattern matching".to_string());
+                }
+                crate::ir::Instr::Call {
+                    kind: crate::ir::CallKind::Function,
+                    name,
+                    ..
+                } => {
+                    return Some(format!("function calls (call to {name})"));
+                }
+                crate::ir::Instr::Call {
+                    kind: crate::ir::CallKind::Builtin,
+                    name,
+                    ..
+                } => {
+                    if !self.is_supported_builtin(name) {
+                        return Some(format!("builtin {name}"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn is_supported_builtin(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "print"
+                | "log"
+                | "env"
+                | "assert"
+                | "task.id"
+                | "task.done"
+                | "task.cancel"
+                | "db.exec"
+                | "db.query"
+                | "db.one"
+                | "json.encode"
+                | "json.decode"
+        )
     }
 
     fn eval_serve_native_inner(&mut self, port: i64) -> NativeResult<Value> {
@@ -141,10 +420,6 @@ impl<'a> NativeVm<'a> {
             .and_then(|val| val.parse::<usize>().ok())
             .unwrap_or(0);
         let mut handled = 0usize;
-        let mut fallback_vm = Vm::new(&self.program.ir);
-        if let Err(err) = fallback_vm.eval_configs_for_native() {
-            return Err(NativeError::Runtime(err));
-        }
         for stream in listener.incoming() {
             let mut stream = match stream {
                 Ok(stream) => stream,
@@ -154,7 +429,7 @@ impl<'a> NativeVm<'a> {
                     )))
                 }
             };
-            let response = match self.handle_http_request(&service, &mut stream, &mut fallback_vm) {
+            let response = match self.handle_http_request(&service, &mut stream) {
                 Ok(resp) => resp,
                 Err(err) => self.http_error_response(err),
             };
@@ -172,37 +447,6 @@ impl<'a> NativeVm<'a> {
             NativeError::Runtime(message) => message,
             NativeError::Error(value) => format_error_value(&value),
         }
-    }
-
-    fn call_function_with_fallback(
-        &mut self,
-        name: &str,
-        args: Vec<Value>,
-        fallback_vm: &mut Vm,
-    ) -> Result<Value, String> {
-        let func = self
-            .program
-            .ir
-            .functions
-            .get(name)
-            .ok_or_else(|| format!("unknown function {name}"))?;
-        if let Some(result) = self.jit.try_call(&self.program.ir, name, &args, &mut self.heap) {
-            let out = match result {
-                Ok(value) => Ok(self.wrap_function_result(func, value)),
-                Err(JitCallError::Error(err_val)) => {
-                    if self.is_result_type(func.ret.as_ref()) {
-                        Ok(Value::ResultErr(Box::new(err_val)))
-                    } else {
-                        Err(format_error_value(&err_val))
-                    }
-                }
-                Err(JitCallError::Runtime(message)) => Err(message),
-            };
-            self.heap.collect_garbage();
-            return out;
-        }
-        self.heap.collect_garbage();
-        fallback_vm.call_function(name, args)
     }
 
     fn select_service(&self) -> NativeResult<&Service> {
@@ -229,7 +473,6 @@ impl<'a> NativeVm<'a> {
         &mut self,
         service: &Service,
         stream: &mut TcpStream,
-        fallback_vm: &mut Vm,
     ) -> NativeResult<String> {
         let request = self.read_http_request(stream)?;
         let verb = match request.method.as_str() {
@@ -270,11 +513,11 @@ impl<'a> NativeVm<'a> {
             let json = rt_json::decode(&body_text).map_err(|msg| {
                 NativeError::Error(self.validation_error_value("body", "invalid_json", msg))
             })?;
-            Some(self.decode_json_value(&json, body_ty, "body", fallback_vm)?)
+            Some(self.decode_json_value(&json, body_ty, "body")?)
         } else {
             None
         };
-        let value = match self.eval_route(route, params, body_value, fallback_vm) {
+        let value = match self.eval_route(route, params, body_value) {
             Ok(value) => value,
             Err(err) => return Err(err),
         };
@@ -300,12 +543,11 @@ impl<'a> NativeVm<'a> {
         route: &ServiceRoute,
         mut params: Vec<Value>,
         body_value: Option<Value>,
-        fallback_vm: &mut Vm,
     ) -> NativeResult<Value> {
         if let Some(body) = body_value {
             params.push(body);
         }
-        self.call_function_with_fallback(&route.handler, params, fallback_vm)
+        self.call_function_native_only_inner(&route.handler, params)
             .map_err(NativeError::Runtime)
     }
 
@@ -1065,14 +1307,13 @@ impl<'a> NativeVm<'a> {
         json: &rt_json::JsonValue,
         ty: &TypeRef,
         path: &str,
-        fallback_vm: &mut Vm,
     ) -> NativeResult<Value> {
         let value = match &ty.kind {
             TypeRefKind::Optional(inner) => {
                 if matches!(json, rt_json::JsonValue::Null) {
                     Value::Null
                 } else {
-                    self.decode_json_value(json, inner, path, fallback_vm)?
+                    self.decode_json_value(json, inner, path)?
                 }
             }
             TypeRefKind::Refined { base, .. } => {
@@ -1080,7 +1321,7 @@ impl<'a> NativeVm<'a> {
                     kind: TypeRefKind::Simple(base.clone()),
                     span: ty.span,
                 };
-                let value = self.decode_json_value(json, &base_ty, path, fallback_vm)?;
+                let value = self.decode_json_value(json, &base_ty, path)?;
                 self.validate_value(&value, ty, path)?;
                 return Ok(value);
             }
@@ -1090,9 +1331,9 @@ impl<'a> NativeVm<'a> {
                     if let Some(value) = self.decode_simple_json(json, simple_name, path)? {
                         value
                     } else if self.program.ir.types.contains_key(simple_name) {
-                        self.decode_struct_json(json, simple_name, path, fallback_vm)?
+                        self.decode_struct_json(json, simple_name, path)?
                     } else if self.program.ir.enums.contains_key(simple_name) {
-                        self.decode_enum_json(json, simple_name, path, fallback_vm)?
+                        self.decode_enum_json(json, simple_name, path)?
                     } else {
                         return Err(NativeError::Error(self.validation_error_value(
                             path,
@@ -1101,9 +1342,9 @@ impl<'a> NativeVm<'a> {
                         )));
                     }
                 } else if self.program.ir.types.contains_key(simple_name) {
-                    self.decode_struct_json(json, simple_name, path, fallback_vm)?
+                    self.decode_struct_json(json, simple_name, path)?
                 } else if self.program.ir.enums.contains_key(simple_name) {
-                    self.decode_enum_json(json, simple_name, path, fallback_vm)?
+                    self.decode_enum_json(json, simple_name, path)?
                 } else {
                     return Err(NativeError::Error(self.validation_error_value(
                         path,
@@ -1129,7 +1370,7 @@ impl<'a> NativeVm<'a> {
                     if matches!(json, rt_json::JsonValue::Null) {
                         Value::Null
                     } else {
-                        self.decode_json_value(json, &args[0], path, fallback_vm)?
+                        self.decode_json_value(json, &args[0], path)?
                     }
                 }
                 "Result" => {
@@ -1155,7 +1396,7 @@ impl<'a> NativeVm<'a> {
                     let mut values = Vec::with_capacity(items.len());
                     for (idx, item) in items.iter().enumerate() {
                         let item_path = format!("{path}[{idx}]");
-                        values.push(self.decode_json_value(item, &args[0], &item_path, fallback_vm)?);
+                        values.push(self.decode_json_value(item, &args[0], &item_path)?);
                     }
                     Value::List(values)
                 }
@@ -1177,7 +1418,7 @@ impl<'a> NativeVm<'a> {
                         let key_value = Value::String(key.clone());
                         let key_path = format!("{path}.{key}");
                         self.validate_value(&key_value, &args[0], &key_path)?;
-                        let value = self.decode_json_value(item, &args[1], &key_path, fallback_vm)?;
+                        let value = self.decode_json_value(item, &args[1], &key_path)?;
                         values.insert(key.clone(), value);
                     }
                     Value::Map(values)
@@ -1252,7 +1493,6 @@ impl<'a> NativeVm<'a> {
         json: &rt_json::JsonValue,
         name: &str,
         path: &str,
-        fallback_vm: &mut Vm,
     ) -> NativeResult<Value> {
         let rt_json::JsonValue::Object(map) = json else {
             return Err(NativeError::Error(self.validation_error_value(
@@ -1280,7 +1520,7 @@ impl<'a> NativeVm<'a> {
                 )));
             };
             let field_path = format!("{path}.{key}");
-            let decoded = self.decode_json_value(value, &field_decl.ty, &field_path, fallback_vm)?;
+            let decoded = self.decode_json_value(value, &field_decl.ty, &field_path)?;
             values.insert(key.clone(), decoded);
         }
         for field_decl in &fields {
@@ -1290,7 +1530,7 @@ impl<'a> NativeVm<'a> {
             let field_path = format!("{path}.{}", field_decl.name);
             if let Some(default_fn) = &field_decl.default_fn {
                 let value = self
-                    .call_function_with_fallback(default_fn, Vec::new(), fallback_vm)
+                    .call_function_native_only_inner(default_fn, Vec::new())
                     .map_err(NativeError::Runtime)?;
                 self.validate_value(&value, &field_decl.ty, &field_path)?;
                 values.insert(field_decl.name.clone(), value);
@@ -1315,7 +1555,6 @@ impl<'a> NativeVm<'a> {
         json: &rt_json::JsonValue,
         name: &str,
         path: &str,
-        fallback_vm: &mut Vm,
     ) -> NativeResult<Value> {
         let rt_json::JsonValue::Object(map) = json else {
             return Err(NativeError::Error(self.validation_error_value(
@@ -1364,7 +1603,6 @@ impl<'a> NativeVm<'a> {
                     data,
                     &variant.payload[0],
                     &format!("{path}.data"),
-                    fallback_vm,
                 )?]
             } else {
                 let rt_json::JsonValue::Array(items) = data else {
@@ -1387,7 +1625,6 @@ impl<'a> NativeVm<'a> {
                         item,
                         ty,
                         &format!("{path}.data[{idx}]"),
-                        fallback_vm,
                     )?);
                 }
                 out

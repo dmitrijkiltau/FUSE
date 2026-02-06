@@ -53,9 +53,9 @@ Status legend: [x] done, [ ] pending, [~] partial
 
 ## Stage 5 — De‑VM
 
-- [ ] Native-only execution for supported feature set (no VM fallback)
-- [ ] Explicit unsupported-feature errors for native
-- [ ] Full example parity suite on native
+- [x] Native-only execution for supported feature set (no VM fallback)
+- [x] Explicit unsupported-feature errors for native
+- [x] Full example parity suite on native
 
 ## Stage 6 — AOT artifacts (optional)
 
