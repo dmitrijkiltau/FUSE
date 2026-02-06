@@ -1,0 +1,16 @@
+type User:
+  id: Id
+  email: Email
+  age: Int(0..10)
+
+fn ok_user() -> User!std.Error:
+  return User(id="user-1", email="a@b.com", age=5)
+
+fn bad_id() -> User!std.Error:
+  return User(id="", email="a@b.com", age=5)
+
+fn bad_email() -> User!std.Error:
+  return User(id="user-1", email="bad", age=5)
+
+fn bad_age() -> User!std.Error:
+  return User(id="user-1", email="a@b.com", age=20)

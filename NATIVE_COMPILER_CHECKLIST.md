@@ -46,7 +46,7 @@ Status legend: [x] done, [ ] pending, [~] partial
 - [x] `log`, `env`, `assert`
 - [x] `db.exec/query/one`
 - [x] JSON encode/decode
-- [ ] Validation hooks (refinements, Email/Id)
+- [x] Validation hooks (refinements, Email/Id)
 - [ ] HTTP routing + handler calls
 - [ ] Config loading
 - [ ] Task APIs (`task.*`)

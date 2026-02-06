@@ -14,12 +14,12 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 
-use crate::ast::{TypeRef, TypeRefKind};
+use crate::ast::{BinaryOp, Expr, ExprKind, Literal, TypeRef, TypeRefKind, UnaryOp};
 use crate::interp::Value;
 use crate::native::value::{HeapValue, NativeHeap, NativeTag, NativeValue};
-use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram};
+use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram, TypeInfo};
 
-use fuse_rt::{config as rt_config, json as rt_json};
+use fuse_rt::{config as rt_config, json as rt_json, validate as rt_validate};
 
 type EntryFn = unsafe extern "C" fn(*const NativeValue, *mut NativeValue, *mut NativeHeap) -> u8;
 
@@ -78,6 +78,7 @@ struct HostCalls {
     db_one: FuncId,
     json_encode: FuncId,
     json_decode: FuncId,
+    validate_struct: FuncId,
 }
 
 pub(crate) struct JitRuntime {
@@ -123,6 +124,10 @@ impl JitRuntime {
         );
         builder.symbol("fuse_native_json_encode", fuse_native_json_encode as *const u8);
         builder.symbol("fuse_native_json_decode", fuse_native_json_decode as *const u8);
+        builder.symbol(
+            "fuse_native_validate_struct",
+            fuse_native_validate_struct as *const u8,
+        );
         builder.symbol("fuse_native_db_exec", fuse_native_db_exec as *const u8);
         builder.symbol("fuse_native_db_query", fuse_native_db_query as *const u8);
         builder.symbol("fuse_native_db_one", fuse_native_db_one as *const u8);
@@ -316,6 +321,16 @@ impl HostCalls {
         let json_decode = module
             .declare_function("fuse_native_json_decode", Linkage::Import, &builtin_sig)
             .expect("declare json decode hostcall");
+        let mut validate_sig = module.make_signature();
+        validate_sig.params.push(AbiParam::new(pointer_ty));
+        validate_sig.params.push(AbiParam::new(pointer_ty));
+        validate_sig.params.push(AbiParam::new(pointer_ty));
+        validate_sig.params.push(AbiParam::new(types::I64));
+        validate_sig.params.push(AbiParam::new(pointer_ty));
+        validate_sig.returns.push(AbiParam::new(types::I8));
+        let validate_struct = module
+            .declare_function("fuse_native_validate_struct", Linkage::Import, &validate_sig)
+            .expect("declare validate struct hostcall");
 
         Self {
             make_list,
@@ -334,6 +349,7 @@ impl HostCalls {
             db_one,
             json_encode,
             json_decode,
+            validate_struct,
         }
     }
 }
@@ -468,6 +484,430 @@ fn json_to_value(json: &rt_json::JsonValue) -> Value {
             }
             Value::Map(out)
         }
+    }
+}
+
+fn split_type_name(name: &str) -> (Option<&str>, &str) {
+    if name.starts_with("std.") {
+        return (None, name);
+    }
+    match name.split_once('.') {
+        Some((module, rest)) if !module.is_empty() && !rest.is_empty() => (Some(module), rest),
+        _ => (None, name),
+    }
+}
+
+fn value_type_name(value: &Value) -> String {
+    match value.unboxed() {
+        Value::Unit => "Unit".to_string(),
+        Value::Int(_) => "Int".to_string(),
+        Value::Float(_) => "Float".to_string(),
+        Value::Bool(_) => "Bool".to_string(),
+        Value::String(_) => "String".to_string(),
+        Value::Null => "Null".to_string(),
+        Value::List(_) => "List".to_string(),
+        Value::Map(_) => "Map".to_string(),
+        Value::Task(_) => "Task".to_string(),
+        Value::Iterator(_) => "Iterator".to_string(),
+        Value::Struct { name, .. } => name.clone(),
+        Value::Enum { name, .. } => name.clone(),
+        Value::EnumCtor { name, .. } => name.clone(),
+        Value::ResultOk(_) | Value::ResultErr(_) => "Result".to_string(),
+        Value::Config(_) => "Config".to_string(),
+        Value::Function(_) => "Function".to_string(),
+        Value::Builtin(_) => "Builtin".to_string(),
+        Value::Boxed(_) => "Box".to_string(),
+    }
+}
+
+fn validation_field_value(path: &str, code: &str, message: impl Into<String>) -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("path".to_string(), Value::String(path.to_string()));
+    fields.insert("code".to_string(), Value::String(code.to_string()));
+    fields.insert("message".to_string(), Value::String(message.into()));
+    Value::Struct {
+        name: "ValidationField".to_string(),
+        fields,
+    }
+}
+
+fn validation_error_value(path: &str, code: &str, message: impl Into<String>) -> Value {
+    let field = validation_field_value(path, code, message);
+    let mut fields = HashMap::new();
+    fields.insert(
+        "message".to_string(),
+        Value::String("validation failed".to_string()),
+    );
+    fields.insert("fields".to_string(), Value::List(vec![field]));
+    Value::Struct {
+        name: "std.Error.Validation".to_string(),
+        fields,
+    }
+}
+
+enum ValidateResult {
+    Ok,
+    Error(Value),
+    Runtime(String),
+}
+
+fn validate_value(value: &Value, ty: &TypeRef, path: &str) -> ValidateResult {
+    let value = value.unboxed();
+    match &ty.kind {
+        TypeRefKind::Optional(inner) => {
+            if matches!(value, Value::Null) {
+                ValidateResult::Ok
+            } else {
+                validate_value(&value, inner, path)
+            }
+        }
+        TypeRefKind::Result { ok, err } => match value {
+            Value::ResultOk(inner) => validate_value(&inner, ok, path),
+            Value::ResultErr(inner) => {
+                if let Some(err_ty) = err {
+                    validate_value(&inner, err_ty, path)
+                } else {
+                    ValidateResult::Ok
+                }
+            }
+            _ => ValidateResult::Error(validation_error_value(
+                path,
+                "type_mismatch",
+                format!("expected Result, got {}", value_type_name(&value)),
+            )),
+        },
+        TypeRefKind::Refined { base, args } => {
+            match validate_simple(&value, &base.name, path) {
+                ValidateResult::Ok => check_refined(&value, &base.name, args, path),
+                other => other,
+            }
+        }
+        TypeRefKind::Simple(ident) => validate_simple(&value, &ident.name, path),
+        TypeRefKind::Generic { base, args } => match base.name.as_str() {
+            "Option" => {
+                if args.len() != 1 {
+                    return ValidateResult::Runtime("Option expects 1 type argument".to_string());
+                }
+                if matches!(value, Value::Null) {
+                    ValidateResult::Ok
+                } else {
+                    validate_value(&value, &args[0], path)
+                }
+            }
+            "Result" => {
+                if args.len() != 2 {
+                    return ValidateResult::Runtime("Result expects 2 type arguments".to_string());
+                }
+                match value {
+                    Value::ResultOk(inner) => validate_value(&inner, &args[0], path),
+                    Value::ResultErr(inner) => validate_value(&inner, &args[1], path),
+                    _ => ValidateResult::Error(validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Result, got {}", value_type_name(&value)),
+                    )),
+                }
+            }
+            "List" => {
+                if args.len() != 1 {
+                    return ValidateResult::Runtime("List expects 1 type argument".to_string());
+                }
+                match value {
+                    Value::List(items) => {
+                        for (idx, item) in items.iter().enumerate() {
+                            let item_path = format!("{path}[{idx}]");
+                            match validate_value(item, &args[0], &item_path) {
+                                ValidateResult::Ok => {}
+                                other => return other,
+                            }
+                        }
+                        ValidateResult::Ok
+                    }
+                    _ => ValidateResult::Error(validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected List, got {}", value_type_name(&value)),
+                    )),
+                }
+            }
+            "Map" => {
+                if args.len() != 2 {
+                    return ValidateResult::Runtime("Map expects 2 type arguments".to_string());
+                }
+                match value {
+                    Value::Map(items) => {
+                        for (key, val) in items.iter() {
+                            let key_value = Value::String(key.clone());
+                            let key_path = format!("{path}.{key}");
+                            match validate_value(&key_value, &args[0], &key_path) {
+                                ValidateResult::Ok => {}
+                                other => return other,
+                            }
+                            match validate_value(val, &args[1], &key_path) {
+                                ValidateResult::Ok => {}
+                                other => return other,
+                            }
+                        }
+                        ValidateResult::Ok
+                    }
+                    _ => ValidateResult::Error(validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Map, got {}", value_type_name(&value)),
+                    )),
+                }
+            }
+            _ => ValidateResult::Runtime(format!(
+                "validation not supported for {}",
+                base.name
+            )),
+        },
+    }
+}
+
+fn validate_simple(value: &Value, name: &str, path: &str) -> ValidateResult {
+    let value = value.unboxed();
+    let type_name = value_type_name(&value);
+    let (module, simple_name) = split_type_name(name);
+    if module.is_none() {
+        match simple_name {
+            "Int" => {
+                if matches!(value, Value::Int(_)) {
+                    return ValidateResult::Ok;
+                }
+                return ValidateResult::Error(validation_error_value(
+                    path,
+                    "type_mismatch",
+                    format!("expected Int, got {type_name}"),
+                ));
+            }
+            "Float" => {
+                if matches!(value, Value::Float(_)) {
+                    return ValidateResult::Ok;
+                }
+                return ValidateResult::Error(validation_error_value(
+                    path,
+                    "type_mismatch",
+                    format!("expected Float, got {type_name}"),
+                ));
+            }
+            "Bool" => {
+                if matches!(value, Value::Bool(_)) {
+                    return ValidateResult::Ok;
+                }
+                return ValidateResult::Error(validation_error_value(
+                    path,
+                    "type_mismatch",
+                    format!("expected Bool, got {type_name}"),
+                ));
+            }
+            "String" => {
+                if matches!(value, Value::String(_)) {
+                    return ValidateResult::Ok;
+                }
+                return ValidateResult::Error(validation_error_value(
+                    path,
+                    "type_mismatch",
+                    format!("expected String, got {type_name}"),
+                ));
+            }
+            "Id" => match value {
+                Value::String(s) if !s.is_empty() => return ValidateResult::Ok,
+                Value::String(_) => {
+                    return ValidateResult::Error(validation_error_value(
+                        path,
+                        "invalid_value",
+                        "expected non-empty Id".to_string(),
+                    ))
+                }
+                _ => {
+                    return ValidateResult::Error(validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Id, got {type_name}"),
+                    ))
+                }
+            },
+            "Email" => match value {
+                Value::String(s) if rt_validate::is_email(&s) => return ValidateResult::Ok,
+                Value::String(_) => {
+                    return ValidateResult::Error(validation_error_value(
+                        path,
+                        "invalid_value",
+                        "invalid email address".to_string(),
+                    ))
+                }
+                _ => {
+                    return ValidateResult::Error(validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Email, got {type_name}"),
+                    ))
+                }
+            },
+            "Bytes" => {
+                if matches!(value, Value::String(_)) {
+                    return ValidateResult::Ok;
+                }
+                return ValidateResult::Error(validation_error_value(
+                    path,
+                    "type_mismatch",
+                    format!("expected Bytes, got {type_name}"),
+                ));
+            }
+            _ => {}
+        }
+    }
+    match value {
+        Value::Struct { name: struct_name, .. } if struct_name == simple_name => {
+            ValidateResult::Ok
+        }
+        Value::Enum { name: enum_name, .. } if enum_name == simple_name => ValidateResult::Ok,
+        _ => ValidateResult::Error(validation_error_value(
+            path,
+            "type_mismatch",
+            format!("expected {name}, got {type_name}"),
+        )),
+    }
+}
+
+fn check_refined(value: &Value, base: &str, args: &[Expr], path: &str) -> ValidateResult {
+    let value = value.unboxed();
+    match base {
+        "String" => {
+            let (min, max) = match parse_length_range(args) {
+                Ok(range) => range,
+                Err(msg) => return ValidateResult::Runtime(msg),
+            };
+            let len = match value {
+                Value::String(s) => s.chars().count() as i64,
+                _ => {
+                    return ValidateResult::Runtime(
+                        "refined String expects a String".to_string(),
+                    )
+                }
+            };
+            if rt_validate::check_len(len, min, max) {
+                ValidateResult::Ok
+            } else {
+                ValidateResult::Error(validation_error_value(
+                    path,
+                    "invalid_value",
+                    format!("length {len} out of range {min}..{max}"),
+                ))
+            }
+        }
+        "Int" => {
+            let (min, max) = match parse_int_range(args) {
+                Ok(range) => range,
+                Err(msg) => return ValidateResult::Runtime(msg),
+            };
+            let val = match value {
+                Value::Int(v) => v,
+                _ => {
+                    return ValidateResult::Runtime("refined Int expects an Int".to_string())
+                }
+            };
+            if rt_validate::check_int_range(val, min, max) {
+                ValidateResult::Ok
+            } else {
+                ValidateResult::Error(validation_error_value(
+                    path,
+                    "invalid_value",
+                    format!("value {val} out of range {min}..{max}"),
+                ))
+            }
+        }
+        "Float" => {
+            let (min, max) = match parse_float_range(args) {
+                Ok(range) => range,
+                Err(msg) => return ValidateResult::Runtime(msg),
+            };
+            let val = match value {
+                Value::Float(v) => v,
+                _ => {
+                    return ValidateResult::Runtime("refined Float expects a Float".to_string())
+                }
+            };
+            if rt_validate::check_float_range(val, min, max) {
+                ValidateResult::Ok
+            } else {
+                ValidateResult::Error(validation_error_value(
+                    path,
+                    "invalid_value",
+                    format!("value {val} out of range {min}..{max}"),
+                ))
+            }
+        }
+        _ => ValidateResult::Ok,
+    }
+}
+
+fn parse_length_range(args: &[Expr]) -> Result<(i64, i64), String> {
+    let (left, right) = extract_range_args(args)?;
+    let min = literal_to_i64(left).ok_or_else(|| "invalid refined range".to_string())?;
+    let max = literal_to_i64(right).ok_or_else(|| "invalid refined range".to_string())?;
+    Ok((min, max))
+}
+
+fn parse_int_range(args: &[Expr]) -> Result<(i64, i64), String> {
+    let (left, right) = extract_range_args(args)?;
+    let min = literal_to_i64(left).ok_or_else(|| "invalid refined range".to_string())?;
+    let max = literal_to_i64(right).ok_or_else(|| "invalid refined range".to_string())?;
+    Ok((min, max))
+}
+
+fn parse_float_range(args: &[Expr]) -> Result<(f64, f64), String> {
+    let (left, right) = extract_range_args(args)?;
+    let min = literal_to_f64(left).ok_or_else(|| "invalid refined range".to_string())?;
+    let max = literal_to_f64(right).ok_or_else(|| "invalid refined range".to_string())?;
+    Ok((min, max))
+}
+
+fn extract_range_args<'a>(args: &'a [Expr]) -> Result<(&'a Expr, &'a Expr), String> {
+    if args.len() == 1 {
+        if let ExprKind::Binary {
+            op: BinaryOp::Range,
+            left,
+            right,
+        } = &args[0].kind
+        {
+            return Ok((left, right));
+        }
+    }
+    if args.len() == 2 {
+        return Ok((&args[0], &args[1]));
+    }
+    Err("refined types expect a range like 1..10".to_string())
+}
+
+fn literal_to_i64(expr: &Expr) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Literal(Literal::Int(v)) => Some(*v),
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => match &expr.kind {
+            ExprKind::Literal(Literal::Int(v)) => Some(-v),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn literal_to_f64(expr: &Expr) -> Option<f64> {
+    match &expr.kind {
+        ExprKind::Literal(Literal::Int(v)) => Some(*v as f64),
+        ExprKind::Literal(Literal::Float(v)) => Some(*v),
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => match &expr.kind {
+            ExprKind::Literal(Literal::Int(v)) => Some(-(*v as f64)),
+            ExprKind::Literal(Literal::Float(v)) => Some(-*v),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -992,6 +1432,74 @@ extern "C" fn fuse_native_json_decode(
 }
 
 #[unsafe(no_mangle)]
+extern "C" fn fuse_native_validate_struct(
+    heap: *mut NativeHeap,
+    type_info: *const TypeInfo,
+    pairs: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    let Some(type_info) = (unsafe { type_info.as_ref() }) else {
+        return builtin_runtime_error(out, heap, "invalid struct info");
+    };
+
+    if len == 0 {
+        *out = NativeValue::int(0);
+        return 0;
+    }
+    let pairs = unsafe { std::slice::from_raw_parts(pairs, len as usize * 2) };
+    let heap_ref: &NativeHeap = heap;
+    for idx in 0..len as usize {
+        let key_val = pairs[idx * 2];
+        let value_val = pairs[idx * 2 + 1];
+        let key_value = match key_val.to_value(heap_ref) {
+            Some(Value::String(text)) => text,
+            _ => {
+                return builtin_runtime_error(out, heap, "struct field names must be strings");
+            }
+        };
+        let Some(field_info) = type_info
+            .fields
+            .iter()
+            .find(|field| field.name == key_value)
+        else {
+            return builtin_runtime_error(
+                out,
+                heap,
+                format!("unknown field {}.{}", type_info.name, key_value),
+            );
+        };
+        let Some(value) = value_val.to_value(heap_ref) else {
+            return builtin_runtime_error(out, heap, "invalid field value");
+        };
+        let path = format!("{}.{}", type_info.name, key_value);
+        match validate_value(&value, &field_info.ty, &path) {
+            ValidateResult::Ok => {}
+            ValidateResult::Error(err_value) => {
+                let Some(native) = NativeValue::from_value(&err_value, heap) else {
+                    return builtin_runtime_error(out, heap, "validation error");
+                };
+                *out = native;
+                return 1;
+            }
+            ValidateResult::Runtime(message) => {
+                return builtin_runtime_error(out, heap, message);
+            }
+        }
+    }
+
+    *out = NativeValue::int(0);
+    0
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn fuse_native_db_exec(
     heap: *mut NativeHeap,
     args: *const NativeValue,
@@ -1383,6 +1891,7 @@ fn compile_function(
                         values.push(stack.pop()?);
                     }
                     values.reverse();
+                    let type_info = program.types.get(name)?;
                     let name_handle = NativeValue::intern_string(name.clone(), heap).payload;
                     let field_handles: Vec<u64> = fields
                         .iter()
@@ -1417,17 +1926,61 @@ fn compile_function(
                         }
                         base
                     };
-                    let name_val = builder.ins().iconst(types::I64, name_handle as i64);
+                    let validate_out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        NATIVE_VALUE_SIZE as u32,
+                    ));
+                    let validate_out_ptr =
+                        builder.ins().stack_addr(pointer_ty, validate_out_slot, 0);
+                    let type_ptr =
+                        builder.ins().iconst(pointer_ty, type_info as *const TypeInfo as i64);
+                    let validate_func =
+                        module.declare_func_in_func(hostcalls.validate_struct, builder.func);
                     let len_val = builder.ins().iconst(types::I64, count as i64);
+                    let validate_call = builder.ins().call(
+                        validate_func,
+                        &[heap_ptr, type_ptr, base, len_val, validate_out_ptr],
+                    );
+                    let status = builder.inst_results(validate_call)[0];
+                    let ok_block = builder.create_block();
+                    let err_block = builder.create_block();
+                    builder.append_block_param(err_block, types::I8);
+                    builder.append_block_param(err_block, pointer_ty);
+                    let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    builder.ins().brif(
+                        is_ok,
+                        ok_block,
+                        &[],
+                        err_block,
+                        &[status, validate_out_ptr],
+                    );
+                    builder.switch_to_block(err_block);
+                    let status_val = builder.block_params(err_block)[0];
+                    let err_out_ptr = builder.block_params(err_block)[1];
+                    copy_native_value(&mut builder, err_out_ptr, out_ptr);
+                    builder.ins().return_(&[status_val]);
+                    builder.switch_to_block(ok_block);
+                    let name_val = builder.ins().iconst(types::I64, name_handle as i64);
                     let func_ref =
                         module.declare_func_in_func(hostcalls.make_struct, builder.func);
                     let call =
                         builder.ins().call(func_ref, &[heap_ptr, name_val, base, len_val]);
                     let handle = builder.inst_results(call)[0];
-                    stack.push(StackValue {
+                    let ok_idx = *block_for_start.get(&(ip + 1))?;
+                    let mut ok_stack = stack.clone();
+                    ok_stack.push(StackValue {
                         value: handle,
                         kind: JitType::Struct,
                     });
+                    let ok_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &ok_stack,
+                        entry_stacks.get(ok_idx)?,
+                    )?;
+                    builder.ins().jump(blocks[ok_idx], &ok_args);
+                    terminated = true;
+                    break;
                 }
                 Instr::MakeEnum { name, variant, argc } => {
                     let mut payload = Vec::with_capacity(*argc);
@@ -1956,6 +2509,11 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     starts.insert(ip + 1);
                 }
             }
+            Instr::MakeStruct { .. } => {
+                if ip + 1 < code.len() {
+                    starts.insert(ip + 1);
+                }
+            }
             Instr::Call {
                 kind: CallKind::Builtin,
                 name,
@@ -2193,9 +2751,19 @@ fn analyze_types(
                 }
                 Instr::MakeStruct { fields, .. } => {
                     for _ in 0..fields.len() {
-                        stack.pop()?;
+                        let _ = stack.pop()?;
                     }
                     stack.push(JitType::Struct);
+                    let ok_ip = ip + 1;
+                    let ok_idx = *block_for_start.get(&ok_ip)?;
+                    merge_block_stack(
+                        &mut entry_stacks[ok_idx],
+                        &stack,
+                        &mut worklist,
+                        ok_idx,
+                    )?;
+                    terminated = true;
+                    break;
                 }
                 Instr::MakeEnum { argc, .. } => {
                     for _ in 0..*argc {
