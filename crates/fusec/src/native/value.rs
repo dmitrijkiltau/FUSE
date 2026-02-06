@@ -36,6 +36,9 @@ pub enum HeapValue {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TaskValue {
+    pub id: u64,
+    pub done: bool,
+    pub cancelled: bool,
     pub result: TaskResultValue,
 }
 
@@ -73,6 +76,10 @@ impl NativeHeap {
 
     pub fn get(&self, handle: u64) -> Option<&HeapValue> {
         self.values.get(handle as usize)?.as_ref()
+    }
+
+    pub fn get_mut(&mut self, handle: u64) -> Option<&mut HeapValue> {
+        self.values.get_mut(handle as usize)?.as_mut()
     }
 
     pub fn intern_string(&mut self, value: String) -> u64 {
@@ -313,8 +320,8 @@ impl NativeValue {
         }
     }
 
-    pub fn task(result: TaskResultValue, heap: &mut NativeHeap) -> Self {
-        let handle = heap.insert(HeapValue::Task(TaskValue { result }));
+    pub fn task(task: TaskValue, heap: &mut NativeHeap) -> Self {
+        let handle = heap.insert(HeapValue::Task(task));
         Self {
             tag: NativeTag::Heap,
             payload: handle,
@@ -388,7 +395,13 @@ impl NativeValue {
                     }
                     TaskResult::Runtime(message) => TaskResultValue::Runtime(message),
                 };
-                Some(Self::task(result, heap))
+                let task = TaskValue {
+                    id: task.id(),
+                    done: task.is_done(),
+                    cancelled: task.is_cancelled(),
+                    result,
+                };
+                Some(Self::task(task, heap))
             }
             _ => None,
         }
@@ -455,9 +468,7 @@ impl NativeValue {
                 }
                 HeapValue::Task(task) => {
                     let result = match &task.result {
-                        TaskResultValue::Ok(value) => {
-                            TaskResult::Ok(value.to_value(heap)?)
-                        }
+                        TaskResultValue::Ok(value) => TaskResult::Ok(value.to_value(heap)?),
                         TaskResultValue::Error(value) => {
                             TaskResult::Error(value.to_value(heap)?)
                         }
@@ -465,7 +476,12 @@ impl NativeValue {
                             TaskResult::Runtime(message.clone())
                         }
                     };
-                    Some(Value::Task(Task::from_task_result(result)))
+                    Some(Value::Task(Task::from_state(
+                        task.id,
+                        task.done,
+                        task.cancelled,
+                        result,
+                    )))
                 }
             },
         }

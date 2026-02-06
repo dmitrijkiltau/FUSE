@@ -16,7 +16,7 @@ use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 
 use crate::ast::{BinaryOp, Expr, ExprKind, Literal, TypeRef, TypeRefKind, UnaryOp};
 use crate::interp::Value;
-use crate::native::value::{HeapValue, NativeHeap, NativeTag, NativeValue};
+use crate::native::value::{HeapValue, NativeHeap, NativeTag, NativeValue, TaskValue};
 use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram, TypeInfo};
 
 use fuse_rt::{config as rt_config, json as rt_json, validate as rt_validate};
@@ -74,6 +74,9 @@ struct HostCalls {
     builtin_env: FuncId,
     builtin_assert: FuncId,
     config_get: FuncId,
+    task_id: FuncId,
+    task_done: FuncId,
+    task_cancel: FuncId,
     db_exec: FuncId,
     db_query: FuncId,
     db_one: FuncId,
@@ -124,6 +127,9 @@ impl JitRuntime {
             fuse_native_builtin_assert as *const u8,
         );
         builder.symbol("fuse_native_config_get", fuse_native_config_get as *const u8);
+        builder.symbol("fuse_native_task_id", fuse_native_task_id as *const u8);
+        builder.symbol("fuse_native_task_done", fuse_native_task_done as *const u8);
+        builder.symbol("fuse_native_task_cancel", fuse_native_task_cancel as *const u8);
         builder.symbol("fuse_native_json_encode", fuse_native_json_encode as *const u8);
         builder.symbol("fuse_native_json_decode", fuse_native_json_decode as *const u8);
         builder.symbol(
@@ -311,6 +317,15 @@ impl HostCalls {
         let config_get = module
             .declare_function("fuse_native_config_get", Linkage::Import, &builtin_sig)
             .expect("declare config get hostcall");
+        let task_id = module
+            .declare_function("fuse_native_task_id", Linkage::Import, &builtin_sig)
+            .expect("declare task id hostcall");
+        let task_done = module
+            .declare_function("fuse_native_task_done", Linkage::Import, &builtin_sig)
+            .expect("declare task done hostcall");
+        let task_cancel = module
+            .declare_function("fuse_native_task_cancel", Linkage::Import, &builtin_sig)
+            .expect("declare task cancel hostcall");
         let db_exec = module
             .declare_function("fuse_native_db_exec", Linkage::Import, &builtin_sig)
             .expect("declare db exec hostcall");
@@ -350,6 +365,9 @@ impl HostCalls {
             builtin_env,
             builtin_assert,
             config_get,
+            task_id,
+            task_done,
+            task_cancel,
             db_exec,
             db_query,
             db_one,
@@ -1420,6 +1438,125 @@ extern "C" fn fuse_native_config_get(
     0
 }
 
+fn task_arg_from_native<'a>(
+    heap: &'a NativeHeap,
+    value: &NativeValue,
+) -> Option<(&'a TaskValue, u64)> {
+    if value.tag != NativeTag::Heap {
+        return None;
+    }
+    let handle = value.payload;
+    match heap.get(handle)? {
+        HeapValue::Task(task) => Some((task, handle)),
+        _ => None,
+    }
+}
+
+fn task_arg_from_native_mut<'a>(
+    heap: &'a mut NativeHeap,
+    value: &NativeValue,
+) -> Option<(&'a mut TaskValue, u64)> {
+    if value.tag != NativeTag::Heap {
+        return None;
+    }
+    let handle = value.payload;
+    match heap.get_mut(handle)? {
+        HeapValue::Task(task) => Some((task, handle)),
+        _ => None,
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_task_id(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len == 0 {
+        return builtin_runtime_error(out, heap, "task.id expects a Task argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let Some(value) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "task.id expects a Task argument");
+    };
+    let Some((task, handle)) = task_arg_from_native(heap, value) else {
+        return builtin_runtime_error(out, heap, "task.id expects a Task argument");
+    };
+    let id = if task.id == 0 { handle } else { task.id };
+    *out = NativeValue::string(format!("task-{id}"), heap);
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_task_done(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len == 0 {
+        return builtin_runtime_error(out, heap, "task.done expects a Task argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let Some(value) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "task.done expects a Task argument");
+    };
+    let Some((task, _handle)) = task_arg_from_native(heap, value) else {
+        return builtin_runtime_error(out, heap, "task.done expects a Task argument");
+    };
+    *out = NativeValue::bool(task.done);
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_task_cancel(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len == 0 {
+        return builtin_runtime_error(out, heap, "task.cancel expects a Task argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let Some(value) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "task.cancel expects a Task argument");
+    };
+    let Some((task, _handle)) = task_arg_from_native_mut(heap, value) else {
+        return builtin_runtime_error(out, heap, "task.cancel expects a Task argument");
+    };
+    let cancelled = if task.done || task.cancelled {
+        false
+    } else {
+        task.cancelled = true;
+        true
+    };
+    *out = NativeValue::bool(cancelled);
+    0
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn fuse_native_json_encode(
     heap: *mut NativeHeap,
@@ -2204,6 +2341,9 @@ fn compile_function(
                         "log" => hostcalls.builtin_log,
                         "env" => hostcalls.builtin_env,
                         "assert" => hostcalls.builtin_assert,
+                        "task.id" => hostcalls.task_id,
+                        "task.done" => hostcalls.task_done,
+                        "task.cancel" => hostcalls.task_cancel,
                         "db.exec" => hostcalls.db_exec,
                         "db.query" => hostcalls.db_query,
                         "db.one" => hostcalls.db_one,
@@ -2645,6 +2785,9 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                 "log"
                     | "env"
                     | "assert"
+                    | "task.id"
+                    | "task.done"
+                    | "task.cancel"
                     | "db.exec"
                     | "db.query"
                     | "db.one"
@@ -3002,6 +3145,9 @@ fn analyze_types(
                         "log"
                         | "env"
                         | "assert"
+                        | "task.id"
+                        | "task.done"
+                        | "task.cancel"
                         | "db.exec"
                         | "db.query"
                         | "db.one"

@@ -99,11 +99,20 @@ pub(crate) enum TaskResult {
 
 impl Task {
     pub(crate) fn from_task_result(result: TaskResult) -> Self {
+        Task::from_state(
+            NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
+            true,
+            false,
+            result,
+        )
+    }
+
+    pub(crate) fn from_state(id: u64, done: bool, cancelled: bool, result: TaskResult) -> Self {
         Task {
             state: Rc::new(RefCell::new(TaskState {
-                id: NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
-                done: true,
-                cancelled: false,
+                id,
+                done,
+                cancelled,
                 result,
             })),
         }
@@ -131,6 +140,10 @@ impl Task {
 
     pub fn is_done(&self) -> bool {
         self.state.borrow().done
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.state.borrow().cancelled
     }
 
     pub fn cancel(&self) -> bool {
