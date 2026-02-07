@@ -1324,6 +1324,7 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
+            self.expect_punct(Punct::Gt);
             TypeRefKind::Generic { base, args }
         } else if self.eat_punct(Punct::LParen).is_some() {
             let mut args = Vec::new();

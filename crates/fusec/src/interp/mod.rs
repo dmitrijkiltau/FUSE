@@ -99,11 +99,20 @@ pub(crate) enum TaskResult {
 
 impl Task {
     pub(crate) fn from_task_result(result: TaskResult) -> Self {
+        Task::from_state(
+            NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
+            true,
+            false,
+            result,
+        )
+    }
+
+    pub(crate) fn from_state(id: u64, done: bool, cancelled: bool, result: TaskResult) -> Self {
         Task {
             state: Rc::new(RefCell::new(TaskState {
-                id: NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
-                done: true,
-                cancelled: false,
+                id,
+                done,
+                cancelled,
                 result,
             })),
         }
@@ -131,6 +140,10 @@ impl Task {
 
     pub fn is_done(&self) -> bool {
         self.state.borrow().done
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.state.borrow().cancelled
     }
 
     pub fn cancel(&self) -> bool {
@@ -1219,7 +1232,7 @@ impl<'a> Interpreter<'a> {
             return Ok(Value::Config(name.to_string()));
         }
         match name {
-            "print" | "env" | "serve" | "log" | "db" | "assert" | "task" => {
+            "print" | "env" | "serve" | "log" | "db" | "assert" | "task" | "json" => {
                 Ok(Value::Builtin(name.to_string()))
             }
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),
@@ -1310,6 +1323,26 @@ impl<'a> Interpreter<'a> {
                     }
                 }
                 Ok(Value::Unit)
+            }
+            "json.encode" => {
+                let value = args.get(0).cloned().ok_or_else(|| {
+                    ExecError::Runtime("json.encode expects a value".to_string())
+                })?;
+                let json = self.value_to_json(&value);
+                Ok(Value::String(rt_json::encode(&json)))
+            }
+            "json.decode" => {
+                let text = match args.get(0) {
+                    Some(Value::String(text)) => text.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "json.decode expects a string argument".to_string(),
+                        ))
+                    }
+                };
+                let json = rt_json::decode(&text)
+                    .map_err(|msg| ExecError::Runtime(format!("invalid json: {msg}")))?;
+                Ok(self.json_to_value(&json))
             }
             "db.exec" => {
                 let sql = match args.get(0) {
@@ -1837,6 +1870,10 @@ impl<'a> Interpreter<'a> {
             Value::Builtin(name) if name == "db" => match field {
                 "exec" | "query" | "one" => Ok(Value::Builtin(format!("db.{field}"))),
                 _ => Err(ExecError::Runtime(format!("unknown db method {field}"))),
+            },
+            Value::Builtin(name) if name == "json" => match field {
+                "encode" | "decode" => Ok(Value::Builtin(format!("json.{field}"))),
+                _ => Err(ExecError::Runtime(format!("unknown json method {field}"))),
             },
             Value::Builtin(name) if name == "task" => match field {
                 "id" | "done" | "cancel" => Ok(Value::Builtin(format!("task.{field}"))),
@@ -2894,6 +2931,31 @@ impl<'a> Interpreter<'a> {
             Value::Builtin(name) => rt_json::JsonValue::String(name.clone()),
             Value::EnumCtor { name, variant } => {
                 rt_json::JsonValue::String(format!("{name}.{variant}"))
+            }
+        }
+    }
+
+    fn json_to_value(&self, json: &rt_json::JsonValue) -> Value {
+        match json {
+            rt_json::JsonValue::Null => Value::Null,
+            rt_json::JsonValue::Bool(v) => Value::Bool(*v),
+            rt_json::JsonValue::Number(n) => {
+                if n.fract() == 0.0 {
+                    Value::Int(*n as i64)
+                } else {
+                    Value::Float(*n)
+                }
+            }
+            rt_json::JsonValue::String(v) => Value::String(v.clone()),
+            rt_json::JsonValue::Array(items) => {
+                Value::List(items.iter().map(|item| self.json_to_value(item)).collect())
+            }
+            rt_json::JsonValue::Object(items) => {
+                let mut out = HashMap::new();
+                for (key, value) in items {
+                    out.insert(key.clone(), self.json_to_value(value));
+                }
+                Value::Map(out)
             }
         }
     }

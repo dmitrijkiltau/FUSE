@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
@@ -46,6 +47,7 @@ struct PackageConfig {
 #[derive(Debug, Deserialize)]
 struct BuildConfig {
     openapi: Option<String>,
+    native_bin: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -88,6 +90,8 @@ struct LockedDependency {
 struct IrMeta {
     #[serde(default)]
     version: u32,
+    #[serde(default)]
+    native_cache_version: u32,
     #[serde(default)]
     files: Vec<IrFileMeta>,
 }
@@ -286,6 +290,7 @@ fn run(args: Vec<String>) -> i32 {
             manifest.as_ref(),
             manifest_dir.as_deref(),
             &deps,
+            app.as_deref(),
             common.clean,
         ),
         Command::Check => {
@@ -465,6 +470,7 @@ fn run_build(
     manifest: Option<&Manifest>,
     manifest_dir: Option<&Path>,
     deps: &HashMap<String, PathBuf>,
+    app: Option<&str>,
     clean: bool,
 ) -> i32 {
     if clean {
@@ -491,6 +497,12 @@ fn run_build(
     if let Err(err) = write_compiled_artifacts(manifest_dir, &artifacts) {
         eprintln!("{err}");
         return 1;
+    }
+    if let Some(native_bin) = manifest.and_then(|m| m.build.as_ref().and_then(|b| b.native_bin.clone())) {
+        if let Err(err) = write_native_binary(manifest_dir, &artifacts.native, app, &native_bin) {
+            eprintln!("{err}");
+            return 1;
+        }
     }
     let openapi_out = manifest.and_then(|m| m.build.as_ref().and_then(|b| b.openapi.clone()));
     let Some(out_path) = openapi_out else {
@@ -551,6 +563,290 @@ fn write_openapi(
     fs::write(out_path, json)
         .map_err(|err| format!("failed to write {}: {err}", out_path.display()))?;
     Ok(())
+}
+
+fn write_native_binary(
+    manifest_dir: Option<&Path>,
+    program: &fusec::native::NativeProgram,
+    app: Option<&str>,
+    out_path: &str,
+) -> Result<(), String> {
+    let build_dir = build_dir(manifest_dir)?;
+    if !build_dir.exists() {
+        fs::create_dir_all(&build_dir)
+            .map_err(|err| format!("failed to create {}: {err}", build_dir.display()))?;
+    }
+    let artifact = fusec::native::emit_object_for_app(program, app)?;
+    let object_path = build_dir.join("program.o");
+    fs::write(&object_path, &artifact.object)
+        .map_err(|err| format!("failed to write {}: {err}", object_path.display()))?;
+    let mut configs: Vec<fusec::ir::Config> =
+        program.ir.configs.values().cloned().collect();
+    configs.sort_by(|a, b| a.name.cmp(&b.name));
+    let config_bytes =
+        bincode::serialize(&configs).map_err(|err| format!("config encode failed: {err}"))?;
+    let mut types: Vec<fusec::ir::TypeInfo> =
+        program.ir.types.values().cloned().collect();
+    types.sort_by(|a, b| a.name.cmp(&b.name));
+    let type_bytes =
+        bincode::serialize(&types).map_err(|err| format!("type encode failed: {err}"))?;
+    let runner_path = build_dir.join("native_main.rs");
+    write_native_runner(
+        &runner_path,
+        &artifact.entry_symbol,
+        &artifact.interned_strings,
+        &config_bytes,
+        &type_bytes,
+        &artifact.config_defaults,
+    )?;
+    let out_path = resolve_output_path(manifest_dir, out_path)?;
+    if let Some(parent) = out_path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+        }
+    }
+    link_native_binary(&runner_path, &object_path, &out_path)?;
+    Ok(())
+}
+
+fn resolve_output_path(manifest_dir: Option<&Path>, path: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    if let Some(dir) = manifest_dir {
+        return Ok(dir.join(path));
+    }
+    let cwd = env::current_dir().map_err(|err| format!("cwd error: {err}"))?;
+    Ok(cwd.join(path))
+}
+
+fn write_native_runner(
+    path: &Path,
+    entry_symbol: &str,
+    interned_strings: &[String],
+    config_bytes: &[u8],
+    type_bytes: &[u8],
+    config_defaults: &[fusec::native::ConfigDefaultSymbol],
+) -> Result<(), String> {
+    let interned = if interned_strings.is_empty() {
+        "&[]".to_string()
+    } else {
+        let items: Vec<String> = interned_strings
+            .iter()
+            .map(|value| format!("{value:?}"))
+            .collect();
+        format!("&[{}]", items.join(", "))
+    };
+    let config_blob = if config_bytes.is_empty() {
+        "&[]".to_string()
+    } else {
+        let bytes: Vec<String> = config_bytes.iter().map(|b| b.to_string()).collect();
+        format!("&[{}]", bytes.join(", "))
+    };
+    let type_blob = if type_bytes.is_empty() {
+        "&[]".to_string()
+    } else {
+        let bytes: Vec<String> = type_bytes.iter().map(|b| b.to_string()).collect();
+        format!("&[{}]", bytes.join(", "))
+    };
+    let mut default_decls = String::new();
+    let mut default_matches = String::new();
+    for (idx, def) in config_defaults.iter().enumerate() {
+        let fn_name = format!("fuse_default_{idx}");
+        default_decls.push_str(&format!(
+            "unsafe extern \"C\" {{\n    #[link_name = \"{}\"]\n    fn {fn_name}(args: *const NativeValue, out: *mut NativeValue, heap: *mut std::ffi::c_void) -> u8;\n}}\n\n",
+            def.symbol
+        ));
+        default_matches.push_str(&format!(
+            "        \"{}\" => call_native({fn_name}, heap),\n",
+            def.name
+        ));
+    }
+    if default_matches.is_empty() {
+        default_matches.push_str("        _ => Err(format!(\"unknown config default {name}\")),\n");
+    } else {
+        default_matches.push_str("        _ => Err(format!(\"unknown config default {name}\")),\n");
+    }
+    let source = format!(
+        r#"use fusec::interp::format_error_value;
+use fusec::native::value::{{NativeHeap, NativeValue}};
+use fusec::native::{{load_configs_for_binary, load_types_for_binary}};
+
+type EntryFn = unsafe extern "C" fn(*const NativeValue, *mut NativeValue, *mut std::ffi::c_void) -> u8;
+
+unsafe extern "C" {{
+    #[link_name = "{entry_symbol}"]
+    fn fuse_entry(
+        args: *const NativeValue,
+        out: *mut NativeValue,
+        heap: *mut std::ffi::c_void,
+    ) -> u8;
+}}
+
+{default_decls}
+
+const INTERNED_STRINGS: &[&str] = {interned};
+const CONFIG_BYTES: &[u8] = {config_blob};
+const TYPE_BYTES: &[u8] = {type_blob};
+
+fn call_native(entry: EntryFn, heap: &mut NativeHeap) -> Result<fusec::interp::Value, String> {{
+    let mut out = NativeValue::null();
+    let status = unsafe {{ entry(std::ptr::null(), &mut out, heap as *mut _ as *mut std::ffi::c_void) }};
+    match status {{
+        0 => out
+            .to_value(heap)
+            .ok_or_else(|| "native error".to_string()),
+        1 => {{
+            if let Some(value) = out.to_value(heap) {{
+                Err(format_error_value(&value))
+            }} else {{
+                Err("native error".to_string())
+            }}
+        }}
+        2 => {{
+            if let Some(value) = out.to_value(heap) {{
+                Err(value.to_string_value())
+            }} else {{
+                Err("native runtime error".to_string())
+            }}
+        }}
+        _ => Err(format!("native runtime error (status {{status}})")),
+    }}
+}}
+
+fn call_default(name: &str, heap: &mut NativeHeap) -> Result<fusec::interp::Value, String> {{
+    match name {{
+{default_matches}    }}
+}}
+
+fn load_configs(heap: &mut NativeHeap) -> Result<(), String> {{
+    if CONFIG_BYTES.is_empty() {{
+        return Ok(());
+    }}
+    let configs: Vec<fusec::ir::Config> =
+        bincode::deserialize(CONFIG_BYTES).map_err(|err| format!("config decode failed: {{err}}"))?;
+    load_configs_for_binary(configs.iter(), heap, |name, heap| call_default(name, heap))
+}}
+
+fn load_types(heap: &mut NativeHeap) -> Result<(), String> {{
+    if TYPE_BYTES.is_empty() {{
+        return Ok(());
+    }}
+    let types: Vec<fusec::ir::TypeInfo> =
+        bincode::deserialize(TYPE_BYTES).map_err(|err| format!("type decode failed: {{err}}"))?;
+    load_types_for_binary(types.iter(), heap)
+}}
+
+fn main() {{
+    let mut heap = NativeHeap::new();
+    for value in INTERNED_STRINGS {{
+        heap.intern_string((*value).to_string());
+    }}
+    if let Err(err) = load_types(&mut heap) {{
+        eprintln!("run error: {{err}}");
+        std::process::exit(1);
+    }}
+    if let Err(err) = load_configs(&mut heap) {{
+        eprintln!("run error: {{err}}");
+        std::process::exit(1);
+    }}
+    if let Err(err) = call_native(fuse_entry, &mut heap) {{
+        eprintln!("run error: {{err}}");
+        std::process::exit(1);
+    }}
+}}
+"#
+    );
+    fs::write(path, source)
+        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    Ok(())
+}
+
+fn link_native_binary(runner: &Path, object: &Path, out_path: &Path) -> Result<(), String> {
+    let repo_root = find_repo_root(
+        runner
+            .parent()
+            .ok_or_else(|| "runner path missing parent".to_string())?,
+    )?;
+    let script = repo_root.join("scripts").join("cargo_env.sh");
+    let status = ProcessCommand::new(&script)
+        .arg("cargo")
+        .arg("build")
+        .arg("-p")
+        .arg("fusec")
+        .status()
+        .map_err(|err| format!("failed to run {}: {err}", script.display()))?;
+    if !status.success() {
+        return Err("native link: failed to build fusec".to_string());
+    }
+    let target_dir = match env::var("CARGO_TARGET_DIR") {
+        Ok(value) if !value.is_empty() => PathBuf::from(value),
+        _ => repo_root.join("tmp").join("fuse-target"),
+    };
+    let deps_dir = target_dir.join("debug").join("deps");
+    let fusec_rlib = find_latest_rlib(&deps_dir, "libfusec")?;
+    let bincode_rlib = find_latest_rlib(&deps_dir, "libbincode")?;
+    let status = ProcessCommand::new(&script)
+        .arg("rustc")
+        .arg("--edition=2024")
+        .arg(runner)
+        .arg("-o")
+        .arg(out_path)
+        .arg("-L")
+        .arg(format!("dependency={}", deps_dir.display()))
+        .arg("--extern")
+        .arg(format!("fusec={}", fusec_rlib.display()))
+        .arg("--extern")
+        .arg(format!("bincode={}", bincode_rlib.display()))
+        .arg("-C")
+        .arg(format!("link-arg={}", object.display()))
+        .status()
+        .map_err(|err| format!("failed to run rustc via {}: {err}", script.display()))?;
+    if !status.success() {
+        return Err("native link: rustc failed".to_string());
+    }
+    Ok(())
+}
+
+fn find_repo_root(start: &Path) -> Result<PathBuf, String> {
+    let mut current = Some(start);
+    while let Some(path) = current {
+        let candidate = path.join("scripts").join("cargo_env.sh");
+        if candidate.exists() {
+            return Ok(path.to_path_buf());
+        }
+        current = path.parent();
+    }
+    Err("failed to locate repo root".to_string())
+}
+
+fn find_latest_rlib(dir: &Path, prefix: &str) -> Result<PathBuf, String> {
+    let mut best: Option<(SystemTime, PathBuf)> = None;
+    let entries = fs::read_dir(dir)
+        .map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rlib") {
+            continue;
+        }
+        let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        if !file_name.starts_with(prefix) {
+            continue;
+        }
+        let meta = entry
+            .metadata()
+            .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+        let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        match best {
+            Some((best_time, _)) if modified <= best_time => {}
+            _ => best = Some((modified, path)),
+        }
+    }
+    best.map(|(_, path)| path)
+        .ok_or_else(|| format!("failed to find {prefix}*.rlib in {}", dir.display()))
 }
 
 fn compile_artifacts(
@@ -697,7 +993,11 @@ fn build_ir_meta(registry: &fusec::ModuleRegistry) -> Result<IrMeta, String> {
         });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(IrMeta { version: 1, files })
+    Ok(IrMeta {
+        version: 2,
+        native_cache_version: fusec::native::CACHE_VERSION,
+        files,
+    })
 }
 
 fn load_ir_meta(path: &Path) -> Option<IrMeta> {
@@ -706,7 +1006,10 @@ fn load_ir_meta(path: &Path) -> Option<IrMeta> {
 }
 
 fn ir_meta_is_valid(meta: &IrMeta) -> bool {
-    if meta.version != 1 || meta.files.is_empty() {
+    if meta.version != 2 || meta.files.is_empty() {
+        return false;
+    }
+    if meta.native_cache_version != fusec::native::CACHE_VERSION {
         return false;
     }
     for file in &meta.files {

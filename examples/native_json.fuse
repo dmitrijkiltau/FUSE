@@ -1,0 +1,9 @@
+fn encode_demo() -> String:
+  let data = {"a": 1, "b": true}
+  return json.encode(data)
+
+fn decode_demo() -> Map<String, Int>:
+  return json.decode("{\"a\":1,\"b\":2}")
+
+fn roundtrip_demo() -> String:
+  return json.encode(json.decode("{\"b\":2,\"a\":1}"))

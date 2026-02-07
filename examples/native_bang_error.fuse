@@ -1,0 +1,23 @@
+# native bang error demo
+
+type std.Error:
+  message: String
+
+fn bang_error() -> String!std.Error:
+  return null ?! std.Error(message="boom")
+
+fn bang_ok() -> String!std.Error:
+  return "ok"
+
+type User:
+  name: String
+
+fn bang_passthrough(name: String?) -> String!std.Error:
+  let value = name ?! std.Error(message="missing")
+  return value
+
+fn coalesce_name(name: String?) -> String:
+  return name ?? "fallback"
+
+fn opt_name(user: User?) -> String:
+  return user?.name ?? "none"

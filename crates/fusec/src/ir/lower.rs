@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::ast::{
     AppDecl, BinaryOp, Block, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item, Literal, Pattern,
@@ -62,6 +64,7 @@ pub fn lower_registry(registry: &ModuleRegistry) -> Result<IrProgram, Vec<String
 struct Lowerer<'a> {
     program: &'a Program,
     modules: &'a ModuleMap,
+    fn_decls: Rc<HashMap<String, FnDecl>>,
     functions: HashMap<String, Function>,
     apps: HashMap<String, Function>,
     configs: HashMap<String, Config>,
@@ -73,6 +76,7 @@ struct Lowerer<'a> {
     enum_names: HashSet<String>,
     enum_variant_names: HashSet<String>,
     builtin_names: HashSet<String>,
+    default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
 }
 
 struct LoopContext {
@@ -95,6 +99,7 @@ impl<'a> Lowerer<'a> {
         let mut config_names = HashSet::new();
         let mut enum_names = HashSet::new();
         let mut enum_variant_names = HashSet::new();
+        let mut fn_decls = HashMap::new();
         for item in &program.items {
             if let Item::Config(cfg) = item {
                 config_names.insert(cfg.name.name.clone());
@@ -103,6 +108,8 @@ impl<'a> Lowerer<'a> {
                 for variant in &decl.variants {
                     enum_variant_names.insert(variant.name.name.clone());
                 }
+            } else if let Item::Fn(decl) = item {
+                fn_decls.insert(decl.name.name.clone(), decl.clone());
             }
         }
         let builtin_names = ["print", "env", "serve", "log", "assert"]
@@ -112,6 +119,7 @@ impl<'a> Lowerer<'a> {
         Self {
             program,
             modules,
+            fn_decls: Rc::new(fn_decls),
             functions: HashMap::new(),
             apps: HashMap::new(),
             configs: HashMap::new(),
@@ -123,6 +131,7 @@ impl<'a> Lowerer<'a> {
             enum_names,
             enum_variant_names,
             builtin_names,
+            default_helpers: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -160,6 +169,8 @@ impl<'a> Lowerer<'a> {
             &self.enum_variant_names,
             &self.builtin_names,
             self.modules,
+            self.fn_decls.clone(),
+            self.default_helpers.clone(),
         );
         for param in &decl.params {
             builder.declare_param(&param.name);
@@ -183,6 +194,8 @@ impl<'a> Lowerer<'a> {
             &self.enum_variant_names,
             &self.builtin_names,
             self.modules,
+            self.fn_decls.clone(),
+            self.default_helpers.clone(),
         );
         builder.lower_block(&app.body);
         builder.ensure_return();
@@ -206,6 +219,8 @@ impl<'a> Lowerer<'a> {
                 &self.enum_variant_names,
                 &self.builtin_names,
                 self.modules,
+                self.fn_decls.clone(),
+                self.default_helpers.clone(),
             );
             builder.lower_expr(&field.value);
             builder.emit(Instr::Return);
@@ -243,6 +258,8 @@ impl<'a> Lowerer<'a> {
                     &self.enum_variant_names,
                     &self.builtin_names,
                     self.modules,
+                    self.fn_decls.clone(),
+                    self.default_helpers.clone(),
                 );
                 builder.lower_expr(expr);
                 builder.emit(Instr::Return);
@@ -302,6 +319,8 @@ impl<'a> Lowerer<'a> {
                 &self.enum_variant_names,
                 &self.builtin_names,
                 self.modules,
+                self.fn_decls.clone(),
+                self.default_helpers.clone(),
             );
             for name in &params {
                 let ident = Ident {
@@ -409,6 +428,8 @@ struct FuncBuilder {
     builtin_names: HashSet<String>,
     modules: ModuleMap,
     loop_stack: Vec<LoopContext>,
+    fn_decls: Rc<HashMap<String, FnDecl>>,
+    default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
 }
 
 impl FuncBuilder {
@@ -420,6 +441,8 @@ impl FuncBuilder {
         enum_variant_names: &HashSet<String>,
         builtin_names: &HashSet<String>,
         modules: &ModuleMap,
+        fn_decls: Rc<HashMap<String, FnDecl>>,
+        default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
     ) -> Self {
         Self {
             name,
@@ -437,6 +460,8 @@ impl FuncBuilder {
             builtin_names: builtin_names.clone(),
             modules: modules.clone(),
             loop_stack: Vec::new(),
+            fn_decls,
+            default_helpers,
         }
     }
 
@@ -1044,23 +1069,31 @@ impl FuncBuilder {
             ExprKind::Call { callee, args } => {
                 match &callee.kind {
                     ExprKind::Ident(ident) => {
-                        for arg in args {
-                            self.lower_expr(&arg.value);
-                        }
-                        let kind = if self.builtin_names.contains(&ident.name) {
-                            CallKind::Builtin
+                        if self.builtin_names.contains(&ident.name) {
+                            for arg in args {
+                                self.lower_expr(&arg.value);
+                            }
+                            self.emit(Instr::Call {
+                                name: ident.name.clone(),
+                                argc: args.len(),
+                                kind: CallKind::Builtin,
+                            });
+                        } else if let Some(decl) = self.fn_decls.get(&ident.name).cloned() {
+                            self.lower_call_with_defaults(&ident.name, &decl, args);
                         } else {
-                            CallKind::Function
-                        };
-                        self.emit(Instr::Call {
-                            name: ident.name.clone(),
-                            argc: args.len(),
-                            kind,
-                        });
+                            for arg in args {
+                                self.lower_expr(&arg.value);
+                            }
+                            self.emit(Instr::Call {
+                                name: ident.name.clone(),
+                                argc: args.len(),
+                                kind: CallKind::Function,
+                            });
+                        }
                     }
                     ExprKind::Member { base, name } => {
                         if let ExprKind::Ident(ident) = &base.kind {
-                            if ident.name == "db" || ident.name == "task" {
+                            if ident.name == "db" || ident.name == "task" || ident.name == "json" {
                                 for arg in args {
                                     self.lower_expr(&arg.value);
                                 }
@@ -1288,6 +1321,8 @@ impl FuncBuilder {
                     &self.enum_variant_names,
                     &self.builtin_names,
                     &self.modules,
+                    self.fn_decls.clone(),
+                    self.default_helpers.clone(),
                 );
                 for (name, _) in &captured {
                     let ident = Ident {
@@ -1318,6 +1353,165 @@ impl FuncBuilder {
                 self.emit(Instr::Await);
             }
         }
+    }
+
+    fn lower_call_with_defaults(&mut self, name: &str, decl: &FnDecl, args: &[crate::ast::CallArg]) {
+        let param_count = decl.params.len();
+        if args.is_empty() && param_count == 0 {
+            self.emit(Instr::Call {
+                name: name.to_string(),
+                argc: 0,
+                kind: CallKind::Function,
+            });
+            return;
+        }
+
+        let uses_named = args.iter().any(|arg| arg.name.is_some());
+        let has_defaults = decl.params.iter().any(|param| param.default.is_some());
+        if !uses_named && !has_defaults && args.len() == param_count {
+            for arg in args {
+                self.lower_expr(&arg.value);
+            }
+            self.emit(Instr::Call {
+                name: name.to_string(),
+                argc: args.len(),
+                kind: CallKind::Function,
+            });
+            return;
+        }
+
+        let mut param_for_arg: Vec<Option<usize>> = Vec::with_capacity(args.len());
+        let mut assigned = vec![false; param_count];
+        let mut next_pos = 0usize;
+        for arg in args {
+            let idx = if let Some(arg_name) = &arg.name {
+                decl.params
+                    .iter()
+                    .position(|param| param.name.name == arg_name.name)
+            } else {
+                while next_pos < param_count && assigned[next_pos] {
+                    next_pos += 1;
+                }
+                if next_pos < param_count {
+                    let idx = next_pos;
+                    next_pos += 1;
+                    Some(idx)
+                } else {
+                    None
+                }
+            };
+            match idx {
+                Some(idx) if idx < param_count && !assigned[idx] => {
+                    assigned[idx] = true;
+                    param_for_arg.push(Some(idx));
+                }
+                Some(idx) if idx < param_count => {
+                    self.errors.push(format!(
+                        "duplicate argument {} for {}",
+                        decl.params[idx].name.name, name
+                    ));
+                    param_for_arg.push(None);
+                }
+                _ => {
+                    self.errors
+                        .push(format!("too many arguments for {}", name));
+                    param_for_arg.push(None);
+                }
+            }
+        }
+
+        let mut param_slots = Vec::with_capacity(param_count);
+        for _ in 0..param_count {
+            param_slots.push(self.declare_temp());
+        }
+
+        for (arg, slot_idx) in args.iter().zip(param_for_arg.iter()) {
+            self.lower_expr(&arg.value);
+            if let Some(idx) = slot_idx {
+                self.emit(Instr::StoreLocal(param_slots[*idx]));
+            } else {
+                self.emit(Instr::Pop);
+            }
+        }
+
+        for (idx, param) in decl.params.iter().enumerate() {
+            if !assigned[idx] {
+                if let Some(_default) = &param.default {
+                    let helper = self.ensure_default_helper(name, idx, decl, param);
+                    for prev in 0..idx {
+                        self.emit(Instr::LoadLocal(param_slots[prev]));
+                    }
+                    self.emit(Instr::Call {
+                        name: helper,
+                        argc: idx,
+                        kind: CallKind::Function,
+                    });
+                    self.emit(Instr::StoreLocal(param_slots[idx]));
+                    assigned[idx] = true;
+                } else {
+                    self.errors.push(format!(
+                        "missing argument {} for {}",
+                        param.name.name, name
+                    ));
+                    self.emit(Instr::Push(Const::Null));
+                    self.emit(Instr::StoreLocal(param_slots[idx]));
+                }
+            }
+        }
+
+        for slot in &param_slots {
+            self.emit(Instr::LoadLocal(*slot));
+        }
+        self.emit(Instr::Call {
+            name: name.to_string(),
+            argc: param_count,
+            kind: CallKind::Function,
+        });
+    }
+
+    fn ensure_default_helper(
+        &mut self,
+        func_name: &str,
+        param_index: usize,
+        decl: &FnDecl,
+        param: &crate::ast::Param,
+    ) -> String {
+        let key = (func_name.to_string(), param.name.name.clone());
+        if let Some(existing) = self.default_helpers.borrow().get(&key) {
+            return existing.clone();
+        }
+        let helper_name = format!("__default::{}::{}", func_name, param.name.name);
+        self.default_helpers
+            .borrow_mut()
+            .insert(key, helper_name.clone());
+        let mut builder = FuncBuilder::new(
+            helper_name.clone(),
+            Some(param.ty.clone()),
+            &self.config_names,
+            &self.enum_names,
+            &self.enum_variant_names,
+            &self.builtin_names,
+            &self.modules,
+            self.fn_decls.clone(),
+            self.default_helpers.clone(),
+        );
+        for param in decl.params.iter().take(param_index) {
+            builder.declare_param(&param.name);
+        }
+        if let Some(default) = &param.default {
+            builder.lower_expr(default);
+        } else {
+            builder.emit(Instr::Push(Const::Null));
+        }
+        builder.emit(Instr::Return);
+        builder.ensure_return();
+        let (func, errors, extra) = builder.finish();
+        if let Some(func) = func {
+            self.extra_functions.push(func);
+        }
+        self.errors.extend(errors);
+        self.extra_functions.extend(extra);
+        helper_name
     }
 
     fn const_from_lit(&self, lit: &Literal) -> Const {

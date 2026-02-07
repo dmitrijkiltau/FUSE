@@ -2,3 +2,6 @@
 entry = "examples/project_demo.fuse"
 app = "demo"
 backend = "ast"
+
+[build]
+native_bin = "build/app"

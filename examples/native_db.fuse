@@ -1,0 +1,20 @@
+config App:
+  dbUrl: String = env("FUSE_DB_URL") ?? "sqlite::memory:"
+
+fn db_init() -> Int:
+  db.exec("create table if not exists users (id int, name text)")
+  db.exec("delete from users")
+  db.exec("insert into users (id, name) values (1, 'Ada')")
+  db.exec("insert into users (id, name) values (2, 'Bob')")
+  return 1
+
+fn db_one_name() -> Map<String, String>?:
+  return db.one("select name from users where id = 1")
+
+fn db_query_names() -> List<Map<String, String>>:
+  return db.query("select name from users order by id")
+
+app "demo":
+  db_init()
+  print(db_one_name())
+  print(db_query_names())

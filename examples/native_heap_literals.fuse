@@ -1,0 +1,38 @@
+# native heap literals demo
+
+fn make_list() -> List<String>:
+  return ["alpha", "beta"]
+
+fn make_map() -> Map<String, String>:
+  return {"greeting": "hi", "target": "world"}
+
+type User:
+  name: String
+  role: String
+
+fn make_user() -> User:
+  return User(name="Ada", role="dev")
+
+fn user_role(user: User) -> String:
+  return user.role
+
+enum Color:
+  Red
+  Rgb(Int, Int, Int)
+
+fn make_color() -> Color:
+  return Color.Rgb(1, 2, 3)
+
+fn make_boxed() -> String:
+  return box "boxed"
+
+fn greet(name: String) -> String:
+  return "hello ${name}"
+
+app "native-heap":
+  print(make_list())
+  print(make_map())
+  print(user_role(make_user()))
+  print(make_color())
+  print(make_boxed())
+  print(greet("native"))

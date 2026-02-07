@@ -146,6 +146,7 @@ backend = "native"
 
 [build]
 openapi = "build/openapi.json"
+native_bin = "build/app"
 
 [dependencies]
 Auth = { git = "https://github.com/org/auth.fuse", tag = "v0.3.1" }
@@ -153,7 +154,8 @@ Utils = { path = "../utils" }
 ```
 
 `fuse run` and `fuse test` use `package.entry`. `fuse build` runs checks and emits OpenAPI
-if `build.openapi` is set.
+if `build.openapi` is set. If `build.native_bin` is set, it links a standalone native binary
+at that path (native backend; config loading uses `FUSE_CONFIG` + env overrides).
 
 Dependencies are fetched into `.fuse/deps` and locked in `fuse.lock`. Use `dep:` import
 paths to reference dependency modules:
@@ -168,6 +170,10 @@ Git dependencies support `tag`, `branch`, `rev`, or `version` (resolved as a tag
 `fuse build` emits a compiled IR cache at `.fuse/build/program.ir` and a native image cache at
 `.fuse/build/program.native`. When present, `fuse run` uses the cached artifact for faster startup
 (unless you pass CLI args, which currently bypass the cache).
+The native cache is versioned; a native cache version bump invalidates `.fuse/build/program.native`
+even if source files are unchanged.
+For native cold-start regression checks, run `scripts/native_perf_check.sh` and optionally set
+`FUSE_NATIVE_COLD_MS` and `FUSE_NATIVE_WARM_MS` budgets.
 
 Use `fuse build --clean` to remove `.fuse/build` and force a fresh compile on the next run.
 

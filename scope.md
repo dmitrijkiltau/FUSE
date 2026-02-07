@@ -93,6 +93,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * dependency fetching + `fuse.lock`
 * IR cache for fast `fuse run` (`.fuse/build/program.ir`)
 * native image cache (`.fuse/build/program.native`) for `--backend native`
+* native perf smoke check (`scripts/native_perf_check.sh`, optional budgets)
 * LSP (single-file): diagnostics, formatting, go-to-definition, hover, rename, workspace symbols
 
 **Tooling (planned)**

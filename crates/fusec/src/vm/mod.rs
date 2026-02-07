@@ -21,6 +21,7 @@ enum VmError {
 }
 
 type VmResult<T> = Result<T, VmError>;
+type ServeHook<'a> = Box<dyn FnMut(i64) -> Result<Value, String> + 'a>;
 
 fn split_type_name(name: &str) -> (Option<&str>, &str) {
     if name.starts_with("std.") {
@@ -85,6 +86,7 @@ pub struct Vm<'a> {
     program: &'a IrProgram,
     configs: HashMap<String, HashMap<String, Value>>,
     db: Option<Db>,
+    serve_hook: Option<ServeHook<'a>>,
 }
 
 impl<'a> Vm<'a> {
@@ -93,7 +95,12 @@ impl<'a> Vm<'a> {
             program,
             configs: HashMap::new(),
             db: None,
+            serve_hook: None,
         }
+    }
+
+    pub fn set_serve_hook(&mut self, hook: Option<ServeHook<'a>>) {
+        self.serve_hook = hook;
     }
 
     pub fn run_app(&mut self, name: Option<&str>) -> Result<(), String> {
@@ -784,6 +791,26 @@ impl<'a> Vm<'a> {
                 }
                 Ok(Value::Unit)
             }
+            "json.encode" => {
+                let value = args.get(0).cloned().ok_or_else(|| {
+                    VmError::Runtime("json.encode expects a value".to_string())
+                })?;
+                let json = self.value_to_json(&value);
+                Ok(Value::String(rt_json::encode(&json)))
+            }
+            "json.decode" => {
+                let text = match args.get(0) {
+                    Some(Value::String(text)) => text.clone(),
+                    _ => {
+                        return Err(VmError::Runtime(
+                            "json.decode expects a string argument".to_string(),
+                        ))
+                    }
+                };
+                let json = rt_json::decode(&text)
+                    .map_err(|msg| VmError::Runtime(format!("invalid json: {msg}")))?;
+                Ok(self.json_to_value(&json))
+            }
             "db.exec" => {
                 let sql = match args.get(0) {
                     Some(Value::String(s)) => s,
@@ -893,7 +920,11 @@ impl<'a> Vm<'a> {
                         ))
                     }
                 };
-                self.eval_serve(port)
+                if let Some(hook) = self.serve_hook.as_mut() {
+                    hook(port).map_err(VmError::Runtime)
+                } else {
+                    self.eval_serve(port)
+                }
             }
             _ => Err(VmError::Runtime(format!("unknown builtin {name}"))),
         }
@@ -1653,6 +1684,31 @@ impl<'a> Vm<'a> {
             Value::Builtin(name) => rt_json::JsonValue::String(name.clone()),
             Value::EnumCtor { name, variant } => {
                 rt_json::JsonValue::String(format!("{name}.{variant}"))
+            }
+        }
+    }
+
+    fn json_to_value(&self, json: &rt_json::JsonValue) -> Value {
+        match json {
+            rt_json::JsonValue::Null => Value::Null,
+            rt_json::JsonValue::Bool(v) => Value::Bool(*v),
+            rt_json::JsonValue::Number(n) => {
+                if n.fract() == 0.0 {
+                    Value::Int(*n as i64)
+                } else {
+                    Value::Float(*n)
+                }
+            }
+            rt_json::JsonValue::String(v) => Value::String(v.clone()),
+            rt_json::JsonValue::Array(items) => {
+                Value::List(items.iter().map(|item| self.json_to_value(item)).collect())
+            }
+            rt_json::JsonValue::Object(items) => {
+                let mut out = HashMap::new();
+                for (key, value) in items {
+                    out.insert(key.clone(), self.json_to_value(value));
+                }
+                Value::Map(out)
             }
         }
     }
