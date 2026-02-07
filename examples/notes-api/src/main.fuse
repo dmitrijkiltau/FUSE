@@ -6,4 +6,6 @@ config App:
   dbUrl: String = env("FUSE_DB_URL") ?? "sqlite://notes.db"
 
 app "Api":
+  log("info", "starting notes api on port ${App.port} with db ${App.dbUrl}")
+  log("info", "get http://localhost:${App.port}/api/notes to list notes")
   serve(App.port)

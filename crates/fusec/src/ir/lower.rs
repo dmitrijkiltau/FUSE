@@ -14,6 +14,13 @@ use super::{
     Program as IrProgram, Service, ServiceRoute, TypeField, TypeInfo,
 };
 
+fn is_query_method(name: &str) -> bool {
+    matches!(
+        name,
+        "select" | "where" | "order_by" | "limit" | "one" | "all" | "exec" | "sql" | "params"
+    )
+}
+
 pub fn lower_program(program: &Program, modules: &ModuleMap) -> Result<IrProgram, Vec<String>> {
     let mut lowerer = Lowerer::new(program, modules);
     lowerer.lower();
@@ -1104,6 +1111,18 @@ impl FuncBuilder {
                                 });
                                 return;
                             }
+                        }
+                        if is_query_method(&name.name) {
+                            self.lower_expr(base);
+                            for arg in args {
+                                self.lower_expr(&arg.value);
+                            }
+                            self.emit(Instr::Call {
+                                name: format!("query.{}", name.name),
+                                argc: args.len() + 1,
+                                kind: CallKind::Builtin,
+                            });
+                            return;
                         }
                         if let ExprKind::Ident(module_ident) = &base.kind {
                             if let Some(module) = self.modules.get(&module_ident.name) {

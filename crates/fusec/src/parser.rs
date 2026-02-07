@@ -1511,6 +1511,10 @@ impl<'a> Parser<'a> {
                 name: "body".to_string(),
                 span: self.prev_span(),
             },
+            TokenKind::Keyword(Keyword::From) => Ident {
+                name: "from".to_string(),
+                span: self.prev_span(),
+            },
             _ => {
                 self.error_here("expected identifier");
                 Ident {

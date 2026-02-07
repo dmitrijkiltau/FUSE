@@ -376,4 +376,5 @@ Runtime binding + error mapping are described in `runtime.md`.
 * Assignment targets include identifiers, struct fields, and list/map indexing; optional access in assignments errors on null.
 * Enum variants only support tuple payloads (no named payload fields).
 * `a..b` yields a numeric list (inclusive) when evaluated; descending ranges error.
+* DB builtins support parameter binding and a minimal query builder (`db.from` / `query.*`).
 * `native` currently reuses VM runtime semantics while compiler/codegen work is still in progress, with a Cranelift JIT fast-path for direct Int/Bool arithmetic/control-flow function calls.

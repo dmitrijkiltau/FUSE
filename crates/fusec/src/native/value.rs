@@ -17,7 +17,7 @@ pub enum NativeTag {
     Unit,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum HeapValue {
     String(String),
     List(Vec<NativeValue>),
@@ -31,13 +31,14 @@ pub enum HeapValue {
         variant: String,
         payload: Vec<NativeValue>,
     },
+    Query(crate::db::Query),
     ResultOk(NativeValue),
     ResultErr(NativeValue),
     Boxed(NativeValue),
     Task(TaskValue),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct TaskValue {
     pub id: u64,
     pub done: bool,
@@ -45,7 +46,7 @@ pub struct TaskValue {
     pub result: TaskResultValue,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum TaskResultValue {
     Ok(NativeValue),
     Error(NativeValue),
@@ -213,6 +214,7 @@ impl NativeHeap {
                     self.mark_native_value(value, marks, stack);
                 }
             }
+            HeapValue::Query(_) => {}
             HeapValue::ResultOk(value) | HeapValue::ResultErr(value) => {
                 self.mark_native_value(value, marks, stack);
             }
@@ -454,6 +456,13 @@ impl NativeValue {
                 };
                 Some(Self::task(task, heap))
             }
+            Value::Query(query) => {
+                let handle = heap.insert(HeapValue::Query(query.clone()));
+                Some(Self {
+                    tag: NativeTag::Heap,
+                    payload: handle,
+                })
+            }
             _ => None,
         }
     }
@@ -506,6 +515,7 @@ impl NativeValue {
                         payload: out,
                     })
                 }
+                HeapValue::Query(query) => Some(Value::Query(query.clone())),
                 HeapValue::ResultOk(value) => {
                     let inner = value.to_value(heap)?;
                     Some(Value::ResultOk(Box::new(inner)))

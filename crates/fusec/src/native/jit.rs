@@ -166,6 +166,16 @@ pub(crate) struct HostCalls {
     db_exec: FuncId,
     db_query: FuncId,
     db_one: FuncId,
+    db_from: FuncId,
+    query_select: FuncId,
+    query_where: FuncId,
+    query_order_by: FuncId,
+    query_limit: FuncId,
+    query_one: FuncId,
+    query_all: FuncId,
+    query_exec: FuncId,
+    query_sql: FuncId,
+    query_params: FuncId,
     json_encode: FuncId,
     json_decode: FuncId,
     validate_struct: FuncId,
@@ -242,6 +252,16 @@ impl JitRuntime {
         builder.symbol("fuse_native_db_exec", fuse_native_db_exec as *const u8);
         builder.symbol("fuse_native_db_query", fuse_native_db_query as *const u8);
         builder.symbol("fuse_native_db_one", fuse_native_db_one as *const u8);
+        builder.symbol("fuse_native_db_from", fuse_native_db_from as *const u8);
+        builder.symbol("fuse_native_query_select", fuse_native_query_select as *const u8);
+        builder.symbol("fuse_native_query_where", fuse_native_query_where as *const u8);
+        builder.symbol("fuse_native_query_order_by", fuse_native_query_order_by as *const u8);
+        builder.symbol("fuse_native_query_limit", fuse_native_query_limit as *const u8);
+        builder.symbol("fuse_native_query_one", fuse_native_query_one as *const u8);
+        builder.symbol("fuse_native_query_all", fuse_native_query_all as *const u8);
+        builder.symbol("fuse_native_query_exec", fuse_native_query_exec as *const u8);
+        builder.symbol("fuse_native_query_sql", fuse_native_query_sql as *const u8);
+        builder.symbol("fuse_native_query_params", fuse_native_query_params as *const u8);
         let mut module = JITModule::new(builder);
         let hostcalls = HostCalls::declare(&mut module);
         Self {
@@ -590,6 +610,36 @@ impl HostCalls {
         let db_one = module
             .declare_function("fuse_native_db_one", Linkage::Import, &builtin_sig)
             .expect("declare db one hostcall");
+        let db_from = module
+            .declare_function("fuse_native_db_from", Linkage::Import, &builtin_sig)
+            .expect("declare db from hostcall");
+        let query_select = module
+            .declare_function("fuse_native_query_select", Linkage::Import, &builtin_sig)
+            .expect("declare query select hostcall");
+        let query_where = module
+            .declare_function("fuse_native_query_where", Linkage::Import, &builtin_sig)
+            .expect("declare query where hostcall");
+        let query_order_by = module
+            .declare_function("fuse_native_query_order_by", Linkage::Import, &builtin_sig)
+            .expect("declare query order_by hostcall");
+        let query_limit = module
+            .declare_function("fuse_native_query_limit", Linkage::Import, &builtin_sig)
+            .expect("declare query limit hostcall");
+        let query_one = module
+            .declare_function("fuse_native_query_one", Linkage::Import, &builtin_sig)
+            .expect("declare query one hostcall");
+        let query_all = module
+            .declare_function("fuse_native_query_all", Linkage::Import, &builtin_sig)
+            .expect("declare query all hostcall");
+        let query_exec = module
+            .declare_function("fuse_native_query_exec", Linkage::Import, &builtin_sig)
+            .expect("declare query exec hostcall");
+        let query_sql = module
+            .declare_function("fuse_native_query_sql", Linkage::Import, &builtin_sig)
+            .expect("declare query sql hostcall");
+        let query_params = module
+            .declare_function("fuse_native_query_params", Linkage::Import, &builtin_sig)
+            .expect("declare query params hostcall");
         let json_encode = module
             .declare_function("fuse_native_json_encode", Linkage::Import, &builtin_sig)
             .expect("declare json encode hostcall");
@@ -631,6 +681,16 @@ impl HostCalls {
             db_exec,
             db_query,
             db_one,
+            db_from,
+            query_select,
+            query_where,
+            query_order_by,
+            query_limit,
+            query_one,
+            query_all,
+            query_exec,
+            query_sql,
+            query_params,
             json_encode,
             json_decode,
             validate_struct,
@@ -706,6 +766,7 @@ fn value_to_json(value: &Value) -> rt_json::JsonValue {
             rt_json::JsonValue::Object(out)
         }
         Value::Boxed(_) => rt_json::JsonValue::String("<box>".to_string()),
+        Value::Query(_) => rt_json::JsonValue::String("<query>".to_string()),
         Value::Task(_) => rt_json::JsonValue::String("<task>".to_string()),
         Value::Iterator(_) => rt_json::JsonValue::String("<iterator>".to_string()),
         Value::Struct { fields, .. } => {
@@ -801,6 +862,7 @@ fn value_type_name(value: &Value) -> String {
         Value::Function(_) => "Function".to_string(),
         Value::Builtin(_) => "Builtin".to_string(),
         Value::Boxed(_) => "Box".to_string(),
+        Value::Query(_) => "Query".to_string(),
     }
 }
 
@@ -2184,8 +2246,8 @@ extern "C" fn fuse_native_db_exec(
         return 2;
     };
 
-    if len == 0 {
-        return builtin_runtime_error(out, heap, "db.exec expects a SQL string");
+    if len == 0 || len > 2 {
+        return builtin_runtime_error(out, heap, "db.exec expects 1 or 2 arguments");
     }
     let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
     let heap_ref: &NativeHeap = heap;
@@ -2199,6 +2261,17 @@ extern "C" fn fuse_native_db_exec(
         Value::String(text) => text,
         _ => return builtin_runtime_error(out, heap, "db.exec expects a SQL string"),
     };
+    let params = if len > 1 {
+        let Some(params_value) = args.get(1).and_then(|v| v.to_value(heap_ref)) else {
+            return builtin_runtime_error(out, heap, "db.exec params must be a list");
+        };
+        match params_value {
+            Value::List(items) => items,
+            _ => return builtin_runtime_error(out, heap, "db.exec params must be a list"),
+        }
+    } else {
+        Vec::new()
+    };
     let url = match db_url() {
         Ok(url) => url,
         Err(err) => return builtin_runtime_error(out, heap, err),
@@ -2207,7 +2280,7 @@ extern "C" fn fuse_native_db_exec(
         Ok(db) => db,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
-    if let Err(err) = db.exec(&sql) {
+    if let Err(err) = db.exec_params(&sql, &params) {
         return builtin_runtime_error(out, heap, err);
     }
     *out = NativeValue::int(0);
@@ -2229,8 +2302,8 @@ extern "C" fn fuse_native_db_query(
         return 2;
     };
 
-    if len == 0 {
-        return builtin_runtime_error(out, heap, "db.query expects a SQL string");
+    if len == 0 || len > 2 {
+        return builtin_runtime_error(out, heap, "db.query expects 1 or 2 arguments");
     }
     let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
     let heap_ref: &NativeHeap = heap;
@@ -2244,6 +2317,17 @@ extern "C" fn fuse_native_db_query(
         Value::String(text) => text,
         _ => return builtin_runtime_error(out, heap, "db.query expects a SQL string"),
     };
+    let params = if len > 1 {
+        let Some(params_value) = args.get(1).and_then(|v| v.to_value(heap_ref)) else {
+            return builtin_runtime_error(out, heap, "db.query params must be a list");
+        };
+        match params_value {
+            Value::List(items) => items,
+            _ => return builtin_runtime_error(out, heap, "db.query params must be a list"),
+        }
+    } else {
+        Vec::new()
+    };
     let url = match db_url() {
         Ok(url) => url,
         Err(err) => return builtin_runtime_error(out, heap, err),
@@ -2252,7 +2336,7 @@ extern "C" fn fuse_native_db_query(
         Ok(db) => db,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
-    let rows = match db.query(&sql) {
+    let rows = match db.query_params(&sql, &params) {
         Ok(rows) => rows,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
@@ -2280,8 +2364,8 @@ extern "C" fn fuse_native_db_one(
         return 2;
     };
 
-    if len == 0 {
-        return builtin_runtime_error(out, heap, "db.one expects a SQL string");
+    if len == 0 || len > 2 {
+        return builtin_runtime_error(out, heap, "db.one expects 1 or 2 arguments");
     }
     let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
     let heap_ref: &NativeHeap = heap;
@@ -2295,6 +2379,17 @@ extern "C" fn fuse_native_db_one(
         Value::String(text) => text,
         _ => return builtin_runtime_error(out, heap, "db.one expects a SQL string"),
     };
+    let params = if len > 1 {
+        let Some(params_value) = args.get(1).and_then(|v| v.to_value(heap_ref)) else {
+            return builtin_runtime_error(out, heap, "db.one params must be a list");
+        };
+        match params_value {
+            Value::List(items) => items,
+            _ => return builtin_runtime_error(out, heap, "db.one params must be a list"),
+        }
+    } else {
+        Vec::new()
+    };
     let url = match db_url() {
         Ok(url) => url,
         Err(err) => return builtin_runtime_error(out, heap, err),
@@ -2303,7 +2398,7 @@ extern "C" fn fuse_native_db_one(
         Ok(db) => db,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
-    let rows = match db.query(&sql) {
+    let rows = match db.query_params(&sql, &params) {
         Ok(rows) => rows,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
@@ -2318,6 +2413,462 @@ extern "C" fn fuse_native_db_one(
         *out = NativeValue::null();
         0
     }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_db_from(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "db.from expects a table name");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "db.from expects a table name");
+    };
+    let Some(value) = value.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "db.from expects a table name");
+    };
+    let table = match value {
+        Value::String(text) => text,
+        _ => return builtin_runtime_error(out, heap, "db.from expects a table name"),
+    };
+    let query = match crate::db::Query::new(table) {
+        Ok(query) => query,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let value = Value::Query(query);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "db.from result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_select(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "query.select expects 2 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.select expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.select expects a Query");
+    };
+    let Some(cols_val) = args.get(1).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.select expects a list of strings");
+    };
+    let Value::List(items) = cols_val else {
+        return builtin_runtime_error(out, heap, "query.select expects a list of strings");
+    };
+    let mut columns = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            Value::String(text) => columns.push(text),
+            _ => {
+                return builtin_runtime_error(out, heap, "query.select expects a list of strings");
+            }
+        }
+    }
+    let next = match query.select(columns) {
+        Ok(next) => next,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let value = Value::Query(next);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "query.select result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_where(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 4 {
+        return builtin_runtime_error(out, heap, "query.where expects 4 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.where expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.where expects a Query");
+    };
+    let Some(column_val) = args.get(1).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.where expects a column string");
+    };
+    let Value::String(column) = column_val else {
+        return builtin_runtime_error(out, heap, "query.where expects a column string");
+    };
+    let Some(op_val) = args.get(2).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.where expects an operator string");
+    };
+    let Value::String(op) = op_val else {
+        return builtin_runtime_error(out, heap, "query.where expects an operator string");
+    };
+    let Some(value) = args.get(3).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.where expects a value");
+    };
+    let next = match query.where_clause(column, op, value) {
+        Ok(next) => next,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let value = Value::Query(next);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "query.where result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_order_by(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 3 {
+        return builtin_runtime_error(out, heap, "query.order_by expects 3 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.order_by expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.order_by expects a Query");
+    };
+    let Some(column_val) = args.get(1).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.order_by expects a column string");
+    };
+    let Value::String(column) = column_val else {
+        return builtin_runtime_error(out, heap, "query.order_by expects a column string");
+    };
+    let Some(dir_val) = args.get(2).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.order_by expects a direction string");
+    };
+    let Value::String(dir) = dir_val else {
+        return builtin_runtime_error(out, heap, "query.order_by expects a direction string");
+    };
+    let next = match query.order_by(column, dir) {
+        Ok(next) => next,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let value = Value::Query(next);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "query.order_by result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_limit(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "query.limit expects 2 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.limit expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.limit expects a Query");
+    };
+    let Some(limit_val) = args.get(1).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.limit expects an Int");
+    };
+    let limit = match limit_val {
+        Value::Int(v) => v,
+        Value::Float(v) => v as i64,
+        _ => return builtin_runtime_error(out, heap, "query.limit expects an Int"),
+    };
+    let next = match query.limit(limit) {
+        Ok(next) => next,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let value = Value::Query(next);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "query.limit result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_one(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "query.one expects 1 argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.one expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.one expects a Query");
+    };
+    let (sql, params) = match query.build_sql(Some(1)) {
+        Ok(result) => result,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let url = match db_url() {
+        Ok(url) => url,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let db = match heap.db_mut(url) {
+        Ok(db) => db,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let rows = match db.query_params(&sql, &params) {
+        Ok(rows) => rows,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    if let Some(row) = rows.into_iter().next() {
+        let value = Value::Map(row);
+        let Some(native) = NativeValue::from_value(&value, heap) else {
+            return builtin_runtime_error(out, heap, "query.one result unsupported");
+        };
+        *out = native;
+    } else {
+        *out = NativeValue::null();
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_all(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "query.all expects 1 argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.all expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.all expects a Query");
+    };
+    let (sql, params) = match query.build_sql(None) {
+        Ok(result) => result,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let url = match db_url() {
+        Ok(url) => url,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let db = match heap.db_mut(url) {
+        Ok(db) => db,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let rows = match db.query_params(&sql, &params) {
+        Ok(rows) => rows,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let list: Vec<Value> = rows.into_iter().map(Value::Map).collect();
+    let value = Value::List(list);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "query.all result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_exec(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "query.exec expects 1 argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.exec expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.exec expects a Query");
+    };
+    let (sql, params) = match query.build_sql(None) {
+        Ok(result) => result,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let url = match db_url() {
+        Ok(url) => url,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let db = match heap.db_mut(url) {
+        Ok(db) => db,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    if let Err(err) = db.exec_params(&sql, &params) {
+        return builtin_runtime_error(out, heap, err);
+    }
+    *out = NativeValue::int(0);
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_sql(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "query.sql expects 1 argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.sql expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.sql expects a Query");
+    };
+    let sql = match query.sql() {
+        Ok(sql) => sql,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    *out = NativeValue::string(sql, heap);
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_params(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "query.params expects 1 argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.params expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.params expects a Query");
+    };
+    let params = match query.params() {
+        Ok(params) => params,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let value = Value::List(params);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "query.params result unsupported");
+    };
+    *out = native;
+    0
 }
 
 fn entry_signature<M: Module>(module: &mut M) -> cranelift_codegen::ir::Signature {
@@ -3118,6 +3669,16 @@ fn compile_function<M: Module>(
                                 "db.exec" => hostcalls.db_exec,
                                 "db.query" => hostcalls.db_query,
                                 "db.one" => hostcalls.db_one,
+                                "db.from" => hostcalls.db_from,
+                                "query.select" => hostcalls.query_select,
+                                "query.where" => hostcalls.query_where,
+                                "query.order_by" => hostcalls.query_order_by,
+                                "query.limit" => hostcalls.query_limit,
+                                "query.one" => hostcalls.query_one,
+                                "query.all" => hostcalls.query_all,
+                                "query.exec" => hostcalls.query_exec,
+                                "query.sql" => hostcalls.query_sql,
+                                "query.params" => hostcalls.query_params,
                                 "json.encode" => hostcalls.json_encode,
                                 "json.decode" => hostcalls.json_decode,
                                 _ => jit_fail!(func, Some(ip), Some(&func.code[ip]), "unknown builtin"),
@@ -3742,6 +4303,16 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     | "db.exec"
                     | "db.query"
                     | "db.one"
+                    | "db.from"
+                    | "query.select"
+                    | "query.where"
+                    | "query.order_by"
+                    | "query.limit"
+                    | "query.one"
+                    | "query.all"
+                    | "query.exec"
+                    | "query.sql"
+                    | "query.params"
                     | "json.encode"
                     | "json.decode"
             ) => {
@@ -4223,6 +4794,16 @@ fn analyze_types(
                             | "db.exec"
                             | "db.query"
                             | "db.one"
+                            | "db.from"
+                            | "query.select"
+                            | "query.where"
+                            | "query.order_by"
+                            | "query.limit"
+                            | "query.one"
+                            | "query.all"
+                            | "query.exec"
+                            | "query.sql"
+                            | "query.params"
                             | "json.encode"
                             | "json.decode" => {}
                             _ => return None,

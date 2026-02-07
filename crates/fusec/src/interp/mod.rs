@@ -15,7 +15,7 @@ use crate::ast::{
     RouteDecl, ServiceDecl, Stmt, StmtKind, StructField, TestDecl, TypeDecl, TypeRef, TypeRefKind,
     UnaryOp,
 };
-use crate::db::Db;
+use crate::db::{Db, Query};
 use crate::loader::{ModuleId, ModuleMap, ModuleRegistry};
 
 #[derive(Clone, Debug)]
@@ -29,6 +29,7 @@ pub enum Value {
     List(Vec<Value>),
     Map(HashMap<String, Value>),
     Boxed(Rc<RefCell<Value>>),
+    Query(Query),
     Task(Task),
     Iterator(IteratorValue),
     Struct {
@@ -192,6 +193,7 @@ impl Value {
                 format!("{{{text}}}")
             }
             Value::Boxed(_) => "<box>".to_string(),
+            Value::Query(_) => "<query>".to_string(),
             Value::Task(_) => "<task>".to_string(),
             Value::Iterator(_) => "<iterator>".to_string(),
             Value::Struct { name, fields } => match fields.get("message") {
@@ -325,6 +327,13 @@ fn parse_log_level(raw: &str) -> Option<LogLevel> {
         "error" => Some(LogLevel::Error),
         _ => None,
     }
+}
+
+fn is_query_method(name: &str) -> bool {
+    matches!(
+        name,
+        "select" | "where" | "order_by" | "limit" | "one" | "all" | "exec" | "sql" | "params"
+    )
 }
 
 fn min_log_level() -> LogLevel {
@@ -1088,6 +1097,17 @@ impl<'a> Interpreter<'a> {
                 }
             }
             ExprKind::Call { callee, args } => {
+                if let ExprKind::Member { base, name } = &callee.kind {
+                    if is_query_method(&name.name) {
+                        let base_val = self.eval_expr(base)?.unboxed();
+                        let mut arg_vals = Vec::with_capacity(args.len() + 1);
+                        arg_vals.push(base_val);
+                        for arg in args {
+                            arg_vals.push(self.eval_expr(&arg.value)?);
+                        }
+                        return self.eval_builtin(&format!("query.{}", name.name), arg_vals);
+                    }
+                }
                 let callee_val = self.eval_expr(callee)?.unboxed();
                 let mut arg_vals = Vec::new();
                 for arg in args {
@@ -1352,48 +1372,352 @@ impl<'a> Interpreter<'a> {
                 Ok(self.json_to_value(&json))
             }
             "db.exec" => {
+                if args.len() > 2 {
+                    return Err(ExecError::Runtime(
+                        "db.exec expects 1 or 2 arguments".to_string(),
+                    ));
+                }
                 let sql = match args.get(0) {
-                    Some(Value::String(s)) => s,
+                    Some(Value::String(s)) => s.clone(),
                     _ => {
                         return Err(ExecError::Runtime(
                             "db.exec expects a SQL string".to_string(),
                         ))
                     }
                 };
+                let params = if args.len() > 1 {
+                    match args.get(1) {
+                        Some(Value::List(items)) => items.clone(),
+                        _ => {
+                            return Err(ExecError::Runtime(
+                                "db.exec params must be a list".to_string(),
+                            ))
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
                 let db = self.db_mut()?;
-                db.exec(sql).map_err(ExecError::Runtime)?;
+                db.exec_params(&sql, &params)
+                    .map_err(ExecError::Runtime)?;
                 Ok(Value::Unit)
             }
             "db.query" => {
+                if args.len() > 2 {
+                    return Err(ExecError::Runtime(
+                        "db.query expects 1 or 2 arguments".to_string(),
+                    ));
+                }
                 let sql = match args.get(0) {
-                    Some(Value::String(s)) => s,
+                    Some(Value::String(s)) => s.clone(),
                     _ => {
                         return Err(ExecError::Runtime(
                             "db.query expects a SQL string".to_string(),
                         ))
                     }
                 };
+                let params = if args.len() > 1 {
+                    match args.get(1) {
+                        Some(Value::List(items)) => items.clone(),
+                        _ => {
+                            return Err(ExecError::Runtime(
+                                "db.query params must be a list".to_string(),
+                            ))
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
                 let db = self.db_mut()?;
-                let rows = db.query(sql).map_err(ExecError::Runtime)?;
+                let rows = db
+                    .query_params(&sql, &params)
+                    .map_err(ExecError::Runtime)?;
                 let list = rows.into_iter().map(Value::Map).collect();
                 Ok(Value::List(list))
             }
             "db.one" => {
+                if args.len() > 2 {
+                    return Err(ExecError::Runtime(
+                        "db.one expects 1 or 2 arguments".to_string(),
+                    ));
+                }
                 let sql = match args.get(0) {
-                    Some(Value::String(s)) => s,
+                    Some(Value::String(s)) => s.clone(),
                     _ => {
                         return Err(ExecError::Runtime(
                             "db.one expects a SQL string".to_string(),
                         ))
                     }
                 };
+                let params = if args.len() > 1 {
+                    match args.get(1) {
+                        Some(Value::List(items)) => items.clone(),
+                        _ => {
+                            return Err(ExecError::Runtime(
+                                "db.one params must be a list".to_string(),
+                            ))
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
                 let db = self.db_mut()?;
-                let rows = db.query(sql).map_err(ExecError::Runtime)?;
+                let rows = db
+                    .query_params(&sql, &params)
+                    .map_err(ExecError::Runtime)?;
                 if let Some(row) = rows.into_iter().next() {
                     Ok(Value::Map(row))
                 } else {
                     Ok(Value::Null)
                 }
+            }
+            "db.from" => {
+                let table = match args.get(0) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "db.from expects a table name string".to_string(),
+                        ))
+                    }
+                };
+                let query = Query::new(table).map_err(ExecError::Runtime)?;
+                Ok(Value::Query(query))
+            }
+            "query.select" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "query.select expects 2 arguments".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.select expects a Query".to_string(),
+                        ))
+                    }
+                };
+                let columns = match args.get(1) {
+                    Some(Value::List(items)) => {
+                        let mut out = Vec::with_capacity(items.len());
+                        for item in items {
+                            match item {
+                                Value::String(text) => out.push(text.clone()),
+                                _ => {
+                                    return Err(ExecError::Runtime(
+                                        "query.select expects a list of strings".to_string(),
+                                    ))
+                                }
+                            }
+                        }
+                        out
+                    }
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.select expects a list of strings".to_string(),
+                        ))
+                    }
+                };
+                let next = query.select(columns).map_err(ExecError::Runtime)?;
+                Ok(Value::Query(next))
+            }
+            "query.where" => {
+                if args.len() != 4 {
+                    return Err(ExecError::Runtime(
+                        "query.where expects 4 arguments".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.where expects a Query".to_string(),
+                        ))
+                    }
+                };
+                let column = match args.get(1) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.where expects a column string".to_string(),
+                        ))
+                    }
+                };
+                let op = match args.get(2) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.where expects an operator string".to_string(),
+                        ))
+                    }
+                };
+                let value = args.get(3).cloned().ok_or_else(|| {
+                    ExecError::Runtime("query.where expects a value".to_string())
+                })?;
+                let next = query
+                    .where_clause(column, op, value)
+                    .map_err(ExecError::Runtime)?;
+                Ok(Value::Query(next))
+            }
+            "query.order_by" => {
+                if args.len() != 3 {
+                    return Err(ExecError::Runtime(
+                        "query.order_by expects 3 arguments".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.order_by expects a Query".to_string(),
+                        ))
+                    }
+                };
+                let column = match args.get(1) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.order_by expects a column string".to_string(),
+                        ))
+                    }
+                };
+                let dir = match args.get(2) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.order_by expects a direction string".to_string(),
+                        ))
+                    }
+                };
+                let next = query.order_by(column, dir).map_err(ExecError::Runtime)?;
+                Ok(Value::Query(next))
+            }
+            "query.limit" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "query.limit expects 2 arguments".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.limit expects a Query".to_string(),
+                        ))
+                    }
+                };
+                let limit = match args.get(1) {
+                    Some(Value::Int(v)) => *v,
+                    Some(Value::Float(v)) => *v as i64,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.limit expects an Int".to_string(),
+                        ))
+                    }
+                };
+                let next = query.limit(limit).map_err(ExecError::Runtime)?;
+                Ok(Value::Query(next))
+            }
+            "query.one" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "query.one expects 1 argument".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.one expects a Query".to_string(),
+                        ))
+                    }
+                };
+                let (sql, params) = query.build_sql(Some(1)).map_err(ExecError::Runtime)?;
+                let db = self.db_mut()?;
+                let rows = db
+                    .query_params(&sql, &params)
+                    .map_err(ExecError::Runtime)?;
+                if let Some(row) = rows.into_iter().next() {
+                    Ok(Value::Map(row))
+                } else {
+                    Ok(Value::Null)
+                }
+            }
+            "query.all" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "query.all expects 1 argument".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.all expects a Query".to_string(),
+                        ))
+                    }
+                };
+                let (sql, params) = query.build_sql(None).map_err(ExecError::Runtime)?;
+                let db = self.db_mut()?;
+                let rows = db
+                    .query_params(&sql, &params)
+                    .map_err(ExecError::Runtime)?;
+                let list = rows.into_iter().map(Value::Map).collect();
+                Ok(Value::List(list))
+            }
+            "query.exec" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "query.exec expects 1 argument".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.exec expects a Query".to_string(),
+                        ))
+                    }
+                };
+                let (sql, params) = query.build_sql(None).map_err(ExecError::Runtime)?;
+                let db = self.db_mut()?;
+                db.exec_params(&sql, &params)
+                    .map_err(ExecError::Runtime)?;
+                Ok(Value::Unit)
+            }
+            "query.sql" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "query.sql expects 1 argument".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.sql expects a Query".to_string(),
+                        ))
+                    }
+                };
+                let sql = query.sql().map_err(ExecError::Runtime)?;
+                Ok(Value::String(sql))
+            }
+            "query.params" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "query.params expects 1 argument".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.params expects a Query".to_string(),
+                        ))
+                    }
+                };
+                let params = query.params().map_err(ExecError::Runtime)?;
+                Ok(Value::List(params))
             }
             "task.id" => match args.get(0) {
                 Some(Value::Task(task)) => Ok(Value::String(format!("task-{}", task.id()))),
@@ -1914,7 +2238,7 @@ impl<'a> Interpreter<'a> {
     fn eval_member(&mut self, base: Value, field: &str) -> ExecResult<Value> {
         match base.unboxed() {
             Value::Builtin(name) if name == "db" => match field {
-                "exec" | "query" | "one" => Ok(Value::Builtin(format!("db.{field}"))),
+                "exec" | "query" | "one" | "from" => Ok(Value::Builtin(format!("db.{field}"))),
                 _ => Err(ExecError::Runtime(format!("unknown db method {field}"))),
             },
             Value::Builtin(name) if name == "json" => match field {
@@ -2903,6 +3227,7 @@ impl<'a> Interpreter<'a> {
             Value::Null => "Null".to_string(),
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
+            Value::Query(_) => "Query".to_string(),
             Value::Task(_) => "Task".to_string(),
             Value::Iterator(_) => "Iterator".to_string(),
             Value::Struct { name, .. } => name.clone(),
@@ -2935,6 +3260,7 @@ impl<'a> Interpreter<'a> {
                 rt_json::JsonValue::Object(out)
             }
             Value::Boxed(_) => rt_json::JsonValue::String("<box>".to_string()),
+            Value::Query(_) => rt_json::JsonValue::String("<query>".to_string()),
             Value::Task(_) => {
                 rt_json::JsonValue::String("<task>".to_string())
             }

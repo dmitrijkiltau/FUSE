@@ -178,6 +178,55 @@ enum NativeError {
 
 type NativeResult<T> = Result<T, NativeError>;
 
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl LogLevel {
+    fn label(self) -> &'static str {
+        match self {
+            LogLevel::Trace => "TRACE",
+            LogLevel::Debug => "DEBUG",
+            LogLevel::Info => "INFO",
+            LogLevel::Warn => "WARN",
+            LogLevel::Error => "ERROR",
+        }
+    }
+
+    fn json_label(self) -> &'static str {
+        match self {
+            LogLevel::Trace => "trace",
+            LogLevel::Debug => "debug",
+            LogLevel::Info => "info",
+            LogLevel::Warn => "warn",
+            LogLevel::Error => "error",
+        }
+    }
+}
+
+fn parse_log_level(raw: &str) -> Option<LogLevel> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "trace" => Some(LogLevel::Trace),
+        "debug" => Some(LogLevel::Debug),
+        "info" => Some(LogLevel::Info),
+        "warn" | "warning" => Some(LogLevel::Warn),
+        "error" => Some(LogLevel::Error),
+        _ => None,
+    }
+}
+
+fn min_log_level() -> LogLevel {
+    std::env::var("FUSE_LOG")
+        .ok()
+        .and_then(|raw| parse_log_level(&raw))
+        .unwrap_or(LogLevel::Info)
+}
+
 fn render_native_error(err: NativeError) -> String {
     match err {
         NativeError::Runtime(message) => message,
@@ -363,7 +412,10 @@ impl<'a> NativeVm<'a> {
                     }
                     args.reverse();
                     match kind {
-                        crate::ir::CallKind::Builtin => match name.as_str() {
+                        crate::ir::CallKind::Builtin => {
+                            let args: Vec<Value> =
+                                args.into_iter().map(|val| val.unboxed()).collect();
+                            match name.as_str() {
                             "serve" => {
                                 let port_value = args.get(0).cloned().unwrap_or(Value::Null);
                                 let port = self.port_from_value(&port_value)?;
@@ -376,12 +428,68 @@ impl<'a> NativeVm<'a> {
                                 println!("{text}");
                                 stack.push(Value::Unit);
                             }
+                            "log" => {
+                                let mut level = LogLevel::Info;
+                                let mut start_idx = 0usize;
+                                if args.len() >= 2 {
+                                    if let Some(Value::String(raw_level)) = args.get(0) {
+                                        if let Some(parsed) = parse_log_level(raw_level) {
+                                            level = parsed;
+                                            start_idx = 1;
+                                        }
+                                    }
+                                }
+                                if level >= min_log_level() {
+                                    let message = args
+                                        .get(start_idx)
+                                        .map(|val| val.to_string_value())
+                                        .unwrap_or_default();
+                                    let data_args = &args[start_idx.saturating_add(1)..];
+                                    if !data_args.is_empty() {
+                                        let data_json = if data_args.len() == 1 {
+                                            self.value_to_json(&data_args[0])
+                                        } else {
+                                            rt_json::JsonValue::Array(
+                                                data_args
+                                                    .iter()
+                                                    .map(|val| self.value_to_json(val))
+                                                    .collect(),
+                                            )
+                                        };
+                                        let mut obj = BTreeMap::new();
+                                        obj.insert(
+                                            "level".to_string(),
+                                            rt_json::JsonValue::String(
+                                                level.json_label().to_string(),
+                                            ),
+                                        );
+                                        obj.insert(
+                                            "message".to_string(),
+                                            rt_json::JsonValue::String(message),
+                                        );
+                                        obj.insert("data".to_string(), data_json);
+                                        eprintln!(
+                                            "{}",
+                                            rt_json::encode(&rt_json::JsonValue::Object(obj))
+                                        );
+                                    } else {
+                                        let message = args[start_idx..]
+                                            .iter()
+                                            .map(|val| val.to_string_value())
+                                            .collect::<Vec<_>>()
+                                            .join(" ");
+                                        eprintln!("[{}] {}", level.label(), message);
+                                    }
+                                }
+                                stack.push(Value::Unit);
+                            }
                             other => {
                                 return Err(format!(
                                     "native backend unsupported: builtin {other}"
                                 ))
                             }
-                        },
+                        }
+                        }
                         crate::ir::CallKind::Function => {
                             let value = self.call_function_native_only_inner(name, args)?;
                             stack.push(value);
@@ -1085,6 +1193,7 @@ impl<'a> NativeVm<'a> {
             Value::Null => "Null".to_string(),
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
+            Value::Query(_) => "Query".to_string(),
             Value::Task(_) => "Task".to_string(),
             Value::Iterator(_) => "Iterator".to_string(),
             Value::Struct { name, .. } => name.clone(),
@@ -1305,6 +1414,7 @@ impl<'a> NativeVm<'a> {
                 rt_json::JsonValue::Object(out)
             }
             Value::Boxed(_) => rt_json::JsonValue::String("<box>".to_string()),
+            Value::Query(_) => rt_json::JsonValue::String("<query>".to_string()),
             Value::Task(_) => rt_json::JsonValue::String("<task>".to_string()),
             Value::Iterator(_) => rt_json::JsonValue::String("<iterator>".to_string()),
             Value::Struct { fields, .. } => {
@@ -1824,6 +1934,16 @@ fn is_supported_builtin(name: &str) -> bool {
             | "db.exec"
             | "db.query"
             | "db.one"
+            | "db.from"
+            | "query.select"
+            | "query.where"
+            | "query.order_by"
+            | "query.limit"
+            | "query.one"
+            | "query.all"
+            | "query.exec"
+            | "query.sql"
+            | "query.params"
             | "json.encode"
             | "json.decode"
     )
@@ -2190,6 +2310,7 @@ impl ConfigEvaluator {
             Value::Null => "Null".to_string(),
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
+            Value::Query(_) => "Query".to_string(),
             Value::Task(_) => "Task".to_string(),
             Value::Iterator(_) => "Iterator".to_string(),
             Value::Struct { name, .. } => name.clone(),

@@ -341,6 +341,50 @@ impl<'a> Checker<'a> {
                 self.check_binary(expr.span, op, left_ty, right_ty)
             }
             ExprKind::Call { callee, args } => {
+                if let ExprKind::Member { base, name } = &callee.kind {
+                    if let ExprKind::Ident(ident) = &base.kind {
+                        if ident.name == "db"
+                            && matches!(name.name.as_str(), "exec" | "query" | "one")
+                        {
+                            if args.len() < 1 || args.len() > 2 {
+                                self.diags.error(
+                                    expr.span,
+                                    "db.* expects 1 or 2 arguments",
+                                );
+                            }
+                            if let Some(first) = args.get(0) {
+                                let arg_ty = self.check_expr(&first.value);
+                                if !self.is_assignable(&arg_ty, &Ty::String) {
+                                    self.type_mismatch(first.span, &Ty::String, &arg_ty);
+                                }
+                            }
+                            if let Some(second) = args.get(1) {
+                                let arg_ty = self.check_expr(&second.value);
+                                match arg_ty {
+                                    Ty::List(_) | Ty::Unknown => {}
+                                    other => {
+                                        self.diags.error(
+                                            second.span,
+                                            format!("expected List for params, got {other}"),
+                                        );
+                                    }
+                                }
+                            }
+                            return match name.name.as_str() {
+                                "exec" => Ty::Unit,
+                                "query" => Ty::List(Box::new(Ty::Map(
+                                    Box::new(Ty::String),
+                                    Box::new(Ty::Unknown),
+                                ))),
+                                "one" => Ty::Option(Box::new(Ty::Map(
+                                    Box::new(Ty::String),
+                                    Box::new(Ty::Unknown),
+                                ))),
+                                _ => Ty::Unknown,
+                            };
+                        }
+                    }
+                }
                 let callee_ty = self.check_expr(callee);
                 match callee_ty {
                     Ty::Fn(sig) => {
@@ -654,6 +698,7 @@ impl<'a> Checker<'a> {
     fn lookup_external_member(&mut self, external: &str, name: &crate::ast::Ident) -> Ty {
         match external {
             "db" => self.lookup_db_member(name),
+            "query" => self.lookup_query_member(name),
             "task" => self.lookup_task_member(name),
             _ => {
                 self.diags.error(
@@ -684,9 +729,93 @@ impl<'a> Checker<'a> {
                 params: vec![sql_arg],
                 ret: Box::new(Ty::Option(Box::new(row_ty))),
             }),
+            "from" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "table".to_string(),
+                    ty: Ty::String,
+                }],
+                ret: Box::new(Ty::External("query".to_string())),
+            }),
             _ => {
                 self.diags
                     .error(name.span, format!("unknown db method {}", name.name));
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn lookup_query_member(&mut self, name: &crate::ast::Ident) -> Ty {
+        let row_ty = Ty::Map(Box::new(Ty::String), Box::new(Ty::Unknown));
+        match name.name.as_str() {
+            "select" => Ty::Fn(FnSig {
+                params: vec![
+                    ParamSig {
+                        name: "columns".to_string(),
+                        ty: Ty::List(Box::new(Ty::String)),
+                    },
+                ],
+                ret: Box::new(Ty::External("query".to_string())),
+            }),
+            "where" => Ty::Fn(FnSig {
+                params: vec![
+                    ParamSig {
+                        name: "column".to_string(),
+                        ty: Ty::String,
+                    },
+                    ParamSig {
+                        name: "op".to_string(),
+                        ty: Ty::String,
+                    },
+                    ParamSig {
+                        name: "value".to_string(),
+                        ty: Ty::Unknown,
+                    },
+                ],
+                ret: Box::new(Ty::External("query".to_string())),
+            }),
+            "order_by" => Ty::Fn(FnSig {
+                params: vec![
+                    ParamSig {
+                        name: "column".to_string(),
+                        ty: Ty::String,
+                    },
+                    ParamSig {
+                        name: "dir".to_string(),
+                        ty: Ty::String,
+                    },
+                ],
+                ret: Box::new(Ty::External("query".to_string())),
+            }),
+            "limit" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "n".to_string(),
+                    ty: Ty::Int,
+                }],
+                ret: Box::new(Ty::External("query".to_string())),
+            }),
+            "one" => Ty::Fn(FnSig {
+                params: vec![],
+                ret: Box::new(Ty::Option(Box::new(row_ty.clone()))),
+            }),
+            "all" => Ty::Fn(FnSig {
+                params: vec![],
+                ret: Box::new(Ty::List(Box::new(row_ty.clone()))),
+            }),
+            "exec" => Ty::Fn(FnSig {
+                params: vec![],
+                ret: Box::new(Ty::Unit),
+            }),
+            "sql" => Ty::Fn(FnSig {
+                params: vec![],
+                ret: Box::new(Ty::String),
+            }),
+            "params" => Ty::Fn(FnSig {
+                params: vec![],
+                ret: Box::new(Ty::List(Box::new(Ty::Unknown))),
+            }),
+            _ => {
+                self.diags
+                    .error(name.span, format!("unknown query method {}", name.name));
                 Ty::Unknown
             }
         }

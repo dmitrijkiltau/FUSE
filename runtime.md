@@ -232,6 +232,7 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * `print(value)` prints a stringified value to stdout.
 * `log(...)` writes a log line to stderr (see Logging below).
 * `db.exec/query/one` execute SQL against the configured database (see Database below).
+* `db.from(table)` builds a parameterized query (see Database below).
 * `assert(cond, message?)` throws a runtime error when `cond` is false.
 * `env(name: String) -> String?` returns an env var or `null`.
 * `serve(port)` starts the HTTP server on `FUSE_HOST:port`.
@@ -251,9 +252,33 @@ URL format:
 
 Builtins:
 
-* `db.exec(sql)` executes a SQL batch (no return value).
-* `db.query(sql)` returns `List<Map<String, Value>>` (column names -> values).
-* `db.one(sql)` returns the first row as a map, or `null`.
+* `db.exec(sql, params?)` executes a SQL batch (no return value).
+* `db.query(sql, params?)` returns `List<Map<String, Value>>` (column names -> values).
+* `db.one(sql, params?)` returns the first row as a map, or `null`.
+* `db.from(table)` returns a `Query` builder.
+
+Query builder (all methods return a new `Query`):
+
+* `Query.select(columns)` sets the column projection (default is `*`).
+* `Query.where(column, op, value)` adds a filter.
+* `Query.order_by(column, dir)` sets ordering (`asc`/`desc`).
+* `Query.limit(n)` sets a limit (must be `>= 0`).
+* `Query.one()` returns the first row or `null`.
+* `Query.all()` returns all rows.
+* `Query.exec()` executes the query (no return value).
+* `Query.sql()` and `Query.params()` expose the generated SQL/params for debugging.
+
+Parameter binding:
+
+* SQL uses positional `?` placeholders and a `List` of params.
+* Supported param types: `null`, `Int`, `Float`, `Bool`, `String` (boxed/results are unwrapped).
+* `in` expects a non-empty list and expands to `IN (?, ?, ...)`.
+
+Identifier constraints:
+
+* Table/column names must be identifiers (`col` or `table.col`).
+* `where` operators: `=`, `!=`, `<`, `<=`, `>`, `>=`, `like`, `in` (case-insensitive).
+* `order_by` direction: `asc` or `desc`.
 
 Value mapping:
 
@@ -263,7 +288,7 @@ Value mapping:
 * text -> `String`
 * blobs -> hex string
 
-No parameter binding or connection pooling is implemented yet.
+Connection pooling is not implemented.
 
 ## Migrations
 

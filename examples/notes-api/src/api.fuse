@@ -8,15 +8,14 @@ service Notes at "/api":
     let auth = require_auth() ?!
     require_scope(auth, "notes:read") ?!
 
-    return db.query("select id, title, content from notes")
+    return db.from("notes").select(["id", "title", "content"]).all()
 
   # Get a single note by id
   get "/notes/{id: String}" -> Map<String, String>!NotFound!Unauthorized!Forbidden:
     let auth = require_auth() ?!
     require_scope(auth, "notes:read") ?!
 
-    let row = db.one("select id, title, content from notes where id = '${id}'") ?! NotFound(message="not found")
-    return row
+    return db.from("notes").select(["id", "title", "content"]).where("id", "=", id).one() ?! NotFound(message="not found")
 
   # Update a note by id
   put "/notes/{id: String}" body NoteCreate -> Note!NotFound!Unauthorized!Forbidden!BadRequest:
@@ -28,9 +27,9 @@ service Notes at "/api":
     if body.content == "":
       null ?! BadRequest(message="content required")
 
-    db.one("select id from notes where id = '${id}'") ?! NotFound(message="not found")
+    db.from("notes").select(["id"]).where("id", "=", id).one() ?! NotFound(message="not found")
+    db.exec("update notes set title = ?, content = ? where id = ?", [body.title, body.content, id])
 
-    db.exec("update notes set title = '${body.title}', content = '${body.content}' where id = '${id}'")
     return Note(id=NoteId(value=id), title=body.title, content=body.content)
 
   # Create a new note
@@ -44,7 +43,7 @@ service Notes at "/api":
       null ?! BadRequest(message="content required")
 
     let id = NoteId(value="note-${body.title}")
-    db.exec("insert into notes (id, title, content) values ('${id.value}', '${body.title}', '${body.content}')")
+    db.exec("insert into notes (id, title, content) values (?, ?, ?)", [id.value, body.title, body.content])
 
     return Note(id=id, title=body.title, content=body.content)
 
@@ -53,4 +52,4 @@ service Notes at "/api":
     let auth = require_auth() ?!
     require_scope(auth, "notes:write") ?!
 
-    db.exec("delete from notes where id = '${id}'")
+    db.exec("delete from notes where id = ?", [id])

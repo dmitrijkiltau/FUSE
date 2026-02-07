@@ -208,6 +208,8 @@ fn run(args: Vec<String>) -> i32 {
             return 1;
         }
     };
+    apply_dotenv(manifest_dir.as_deref());
+    apply_default_config_path(manifest_dir.as_deref());
 
     let entry = resolve_entry(&common, manifest.as_ref(), manifest_dir.as_deref());
     let entry = match entry {
@@ -349,6 +351,71 @@ fn apply_serve_env(manifest: Option<&Manifest>, manifest_dir: Option<&Path>) {
         if let Some(index) = serve.static_index.as_ref() {
             env::set_var("FUSE_STATIC_INDEX", index);
         }
+    }
+}
+
+fn apply_dotenv(manifest_dir: Option<&Path>) {
+    let mut path = PathBuf::from(".env");
+    if let Some(dir) = manifest_dir {
+        path = dir.join(".env");
+    }
+    let contents = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => {
+            eprintln!("failed to read {}: {err}", path.display());
+            return;
+        }
+    };
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let mut parts = line.splitn(2, '=');
+        let key = match parts.next() {
+            Some(key) => key.trim(),
+            None => continue,
+        };
+        if key.is_empty() {
+            continue;
+        }
+        let value = parts.next().unwrap_or("").trim();
+        let value = if value.len() >= 2 {
+            let bytes = value.as_bytes();
+            if (bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
+                || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\'')
+            {
+                &value[1..value.len() - 1]
+            } else {
+                value
+            }
+        } else {
+            value
+        };
+        if env::var_os(key).is_some() {
+            continue;
+        }
+        unsafe {
+            env::set_var(key, value);
+        }
+    }
+}
+
+fn apply_default_config_path(manifest_dir: Option<&Path>) {
+    if env::var_os("FUSE_CONFIG").is_some() {
+        return;
+    }
+    let Some(dir) = manifest_dir else {
+        return;
+    };
+    let path = dir.join("config.toml");
+    if !path.exists() {
+        return;
+    }
+    unsafe {
+        env::set_var("FUSE_CONFIG", path.to_string_lossy().to_string());
     }
 }
 
