@@ -34,6 +34,8 @@ impl NativeProgram {
     }
 }
 
+pub const CACHE_VERSION: u32 = 1;
+
 pub fn compile_registry(registry: &ModuleRegistry) -> Result<NativeProgram, Vec<String>> {
     let ir = crate::ir::lower::lower_registry(registry)?;
     Ok(NativeProgram::from_ir(ir))

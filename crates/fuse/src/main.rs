@@ -91,6 +91,8 @@ struct IrMeta {
     #[serde(default)]
     version: u32,
     #[serde(default)]
+    native_cache_version: u32,
+    #[serde(default)]
     files: Vec<IrFileMeta>,
 }
 
@@ -991,7 +993,11 @@ fn build_ir_meta(registry: &fusec::ModuleRegistry) -> Result<IrMeta, String> {
         });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(IrMeta { version: 1, files })
+    Ok(IrMeta {
+        version: 2,
+        native_cache_version: fusec::native::CACHE_VERSION,
+        files,
+    })
 }
 
 fn load_ir_meta(path: &Path) -> Option<IrMeta> {
@@ -1000,7 +1006,10 @@ fn load_ir_meta(path: &Path) -> Option<IrMeta> {
 }
 
 fn ir_meta_is_valid(meta: &IrMeta) -> bool {
-    if meta.version != 1 || meta.files.is_empty() {
+    if meta.version != 2 || meta.files.is_empty() {
+        return false;
+    }
+    if meta.native_cache_version != fusec::native::CACHE_VERSION {
         return false;
     }
     for file in &meta.files {

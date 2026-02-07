@@ -170,6 +170,8 @@ Git dependencies support `tag`, `branch`, `rev`, or `version` (resolved as a tag
 `fuse build` emits a compiled IR cache at `.fuse/build/program.ir` and a native image cache at
 `.fuse/build/program.native`. When present, `fuse run` uses the cached artifact for faster startup
 (unless you pass CLI args, which currently bypass the cache).
+The native cache is versioned; a native cache version bump invalidates `.fuse/build/program.native`
+even if source files are unchanged.
 
 Use `fuse build --clean` to remove `.fuse/build` and force a fresh compile on the next run.
 
