@@ -1,0 +1,9 @@
+import Api from "./api"
+import Db from "./db"
+
+config App:
+  port: Int = env("PORT") ?? 3000
+  dbUrl: String = env("FUSE_DB_URL") ?? "sqlite://notes.db"
+
+app "Api":
+  serve(App.port)

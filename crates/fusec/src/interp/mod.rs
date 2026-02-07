@@ -1,7 +1,9 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::{Component, Path};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1590,6 +1592,9 @@ impl<'a> Interpreter<'a> {
             .next()
             .unwrap_or(&request.path)
             .to_string();
+        if let Some(response) = self.try_static_response(request.method.as_str(), &path) {
+            return Ok(response);
+        }
         let (route, params) = match self.match_route(service, &verb, &path)? {
             Some(result) => result,
             None => {
@@ -1632,6 +1637,38 @@ impl<'a> Interpreter<'a> {
                 Ok(self.http_response(200, rt_json::encode(&json)))
             }
         }
+    }
+
+    fn try_static_response(&self, method: &str, path: &str) -> Option<String> {
+        if method != "GET" {
+            return None;
+        }
+        let static_dir = std::env::var("FUSE_STATIC_DIR").ok()?;
+        let index = std::env::var("FUSE_STATIC_INDEX").unwrap_or_else(|_| "index.html".to_string());
+        let rel_path = if path.is_empty() || path == "/" {
+            index
+        } else if path.ends_with('/') {
+            format!("{}{}", path.trim_start_matches('/'), index)
+        } else {
+            path.trim_start_matches('/').to_string()
+        };
+        let rel = Path::new(&rel_path);
+        if rel.components().any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_))) {
+            return None;
+        }
+        let full = Path::new(&static_dir).join(rel);
+        if !full.is_file() {
+            return None;
+        }
+        let body = fs::read_to_string(&full).ok()?;
+        let content_type = match full.extension().and_then(|ext| ext.to_str()) {
+            Some("html") => "text/html; charset=utf-8",
+            Some("css") => "text/css; charset=utf-8",
+            Some("js") => "application/javascript; charset=utf-8",
+            Some("json") => "application/json; charset=utf-8",
+            _ => "text/plain; charset=utf-8",
+        };
+        Some(self.http_response_with_type(200, body, content_type))
     }
 
     fn eval_route(
@@ -1774,6 +1811,10 @@ impl<'a> Interpreter<'a> {
     }
 
     fn http_response(&self, status: u16, body: String) -> String {
+        self.http_response_with_type(status, body, "application/json")
+    }
+
+    fn http_response_with_type(&self, status: u16, body: String, content_type: &str) -> String {
         let reason = match status {
             200 => "OK",
             400 => "Bad Request",
@@ -1785,7 +1826,7 @@ impl<'a> Interpreter<'a> {
             _ => "OK",
         };
         format!(
-            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         )
     }

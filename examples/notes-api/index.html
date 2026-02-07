@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Notes API - htmx</title>
+  <script src="/lib/htmx_1.9.10.min.js"></script>
+  <script src="/lib/htmx_1.9.10_json-enc.js"></script>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>📝 Notes</h1>
+
+    <div class="form-section">
+      <h2>Create New Note</h2>
+      <form hx-post="/api/notes"
+            hx-ext="json-enc"
+            hx-target="#notes-list" 
+            hx-swap="afterbegin"
+            hx-on::after-request="if(event.detail.successful) this.reset()">
+        <div class="form-group">
+          <label for="title">Title</label>
+          <input type="text" id="title" name="title" required>
+        </div>
+        <div class="form-group">
+          <label for="content">Content</label>
+          <textarea id="content" name="content" required></textarea>
+        </div>
+        <button type="submit">Create Note</button>
+      </form>
+    </div>
+
+    <div class="notes-section">
+      <h2>All Notes</h2>
+      <div id="notes-list"
+           hx-get="/api/notes"
+           hx-trigger="load, every 5s"
+           hx-swap="innerHTML">
+        <div class="loading">Loading notes...</div>
+      </div>
+    </div>
+  </div>
+
+  <dialog id="edit-dialog">
+    <h3>Edit note</h3>
+    <form id="edit-form" method="dialog">
+      <div class="form-group">
+        <label for="edit-title">Title</label>
+        <input type="text" id="edit-title" name="title" required>
+      </div>
+      <div class="form-group">
+        <label for="edit-content">Content</label>
+        <textarea id="edit-content" name="content" required></textarea>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" id="edit-cancel">Cancel</button>
+        <button type="submit" id="edit-save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirm-dialog">
+    <h3>Delete note?</h3>
+    <p>This cannot be undone.</p>
+    <div class="dialog-actions">
+      <button type="button" id="confirm-cancel">Cancel</button>
+      <button type="button" id="confirm-ok" class="delete-btn">Delete</button>
+    </div>
+  </dialog>
+
+  <dialog id="error-dialog">
+    <h3>Request failed</h3>
+    <p id="error-message"></p>
+    <div class="dialog-actions">
+      <button type="button" id="error-ok">OK</button>
+    </div>
+  </dialog>
+
+  <script>
+    // Transform JSON array response to HTML
+    document.body.addEventListener('htmx:beforeSwap', function(evt) {
+      if (evt.detail.target.id === 'notes-list') {
+        try {
+          const notes = JSON.parse(evt.detail.xhr.response);
+          
+          if (!Array.isArray(notes)) {
+            const message = notes && notes.error && notes.error.message
+              ? notes.error.message
+              : 'Unexpected response from server';
+            evt.detail.target.innerHTML = `<div class="error">Error: ${escapeHtml(message)}</div>`;
+            evt.detail.shouldSwap = false;
+            return;
+          }
+
+          if (notes.length === 0) {
+            evt.detail.target.innerHTML = '<div class="empty-state">No notes yet. Create your first note above!</div>';
+            evt.detail.shouldSwap = false;
+            return;
+          }
+
+          const html = notes.map(note => `
+            <div class="note-card" data-id="${escapeAttr(note.id)}" data-title="${escapeAttr(note.title)}" data-content="${escapeAttr(note.content)}">
+              <h3>${escapeHtml(note.title)}</h3>
+              <p>${escapeHtml(note.content)}</p>
+              <div class="note-id">ID: ${escapeHtml(note.id)}</div>
+              <div class="note-actions">
+                <button type="button" class="edit-btn">Edit</button>
+                <button type="button" class="delete-btn">Delete</button>
+              </div>
+            </div>
+          `).join('');
+          
+          evt.detail.target.innerHTML = html;
+          evt.detail.shouldSwap = false;
+        } catch (e) {
+          console.error('Parse error:', e);
+        }
+      }
+    });
+
+    // Handle successful note creation
+    document.body.addEventListener('htmx:afterRequest', function(evt) {
+      if (evt.detail.requestConfig.verb === 'post' && evt.detail.successful) {
+        // Trigger refresh of notes list
+        htmx.trigger('#notes-list', 'load');
+      }
+    });
+
+    const editDialog = document.getElementById('edit-dialog');
+    const editForm = document.getElementById('edit-form');
+    const editTitle = document.getElementById('edit-title');
+    const editContent = document.getElementById('edit-content');
+    const editCancel = document.getElementById('edit-cancel');
+    const confirmDialog = document.getElementById('confirm-dialog');
+    const confirmCancel = document.getElementById('confirm-cancel');
+    const confirmOk = document.getElementById('confirm-ok');
+    const errorDialog = document.getElementById('error-dialog');
+    const errorMessage = document.getElementById('error-message');
+    const errorOk = document.getElementById('error-ok');
+
+    let pendingEditId = null;
+    let pendingDeleteId = null;
+
+    function showDialog(dialog) {
+      if (dialog && typeof dialog.showModal === 'function') {
+        dialog.showModal();
+      }
+    }
+
+    function closeDialog(dialog) {
+      if (dialog && dialog.open) {
+        dialog.close();
+      }
+    }
+
+    function showError(message) {
+      errorMessage.textContent = message;
+      showDialog(errorDialog);
+    }
+
+    editCancel.addEventListener('click', function() {
+      closeDialog(editDialog);
+    });
+
+    confirmCancel.addEventListener('click', function() {
+      closeDialog(confirmDialog);
+    });
+
+    errorOk.addEventListener('click', function() {
+      closeDialog(errorDialog);
+    });
+
+    editForm.addEventListener('submit', async function(evt) {
+      evt.preventDefault();
+      if (!pendingEditId) {
+        closeDialog(editDialog);
+        return;
+      }
+      const title = editTitle.value.trim();
+      const content = editContent.value.trim();
+      const resp = await fetch(`/api/notes/${encodeURIComponent(pendingEditId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, content })
+      });
+      if (!resp.ok) {
+        const msg = await safeErrorMessage(resp);
+        showError(msg);
+        return;
+      }
+      closeDialog(editDialog);
+      pendingEditId = null;
+      htmx.trigger('#notes-list', 'load');
+    });
+
+    confirmOk.addEventListener('click', async function() {
+      if (!pendingDeleteId) {
+        closeDialog(confirmDialog);
+        return;
+      }
+      const resp = await fetch(`/api/notes/${encodeURIComponent(pendingDeleteId)}`, {
+        method: 'DELETE'
+      });
+      if (!resp.ok) {
+        const msg = await safeErrorMessage(resp);
+        showError(msg);
+        return;
+      }
+      const card = document.querySelector(`.note-card[data-id="${cssEscape(pendingDeleteId)}"]`);
+      if (card) {
+        card.remove();
+      }
+      closeDialog(confirmDialog);
+      pendingDeleteId = null;
+    });
+
+    document.body.addEventListener('click', async function(evt) {
+      const button = evt.target.closest('button');
+      if (!button) return;
+      const card = button.closest('.note-card');
+      if (!card) return;
+      const id = card.dataset.id;
+      if (!id) return;
+
+      if (button.classList.contains('edit-btn')) {
+        pendingEditId = id;
+        editTitle.value = card.dataset.title || '';
+        editContent.value = card.dataset.content || '';
+        showDialog(editDialog);
+        return;
+      }
+
+      if (button.classList.contains('delete-btn')) {
+        pendingDeleteId = id;
+        showDialog(confirmDialog);
+      }
+    });
+
+    async function safeErrorMessage(resp) {
+      try {
+        const data = await resp.json();
+        if (data && data.error && data.error.message) {
+          return data.error.message;
+        }
+      } catch (e) {
+        // ignore parse error
+      }
+      return `Request failed (${resp.status})`;
+    }
+
+    function escapeHtml(text) {
+      const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+      };
+      return text.replace(/[&<>"']/g, m => map[m]);
+    }
+
+    function escapeAttr(text) {
+      return escapeHtml(String(text));
+    }
+
+    function cssEscape(text) {
+      if (window.CSS && typeof window.CSS.escape === 'function') {
+        return window.CSS.escape(text);
+      }
+      return String(text).replace(/"/g, '\\"');
+    }
+  </script>
+</body>
+</html>

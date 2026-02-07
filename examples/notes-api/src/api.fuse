@@ -1,0 +1,56 @@
+import { NotFound, Unauthorized, BadRequest, Forbidden } from std.Error
+import { Note, NoteId, NoteCreate } from "./domain"
+import { require_auth, require_scope } from "./auth"
+
+service Notes at "/api":
+  # List all notes 
+  get "/notes" -> List<Map<String, String>>!Unauthorized!Forbidden:
+    let auth = require_auth() ?!
+    require_scope(auth, "notes:read") ?!
+
+    return db.query("select id, title, content from notes")
+
+  # Get a single note by id
+  get "/notes/{id: String}" -> Map<String, String>!NotFound!Unauthorized!Forbidden:
+    let auth = require_auth() ?!
+    require_scope(auth, "notes:read") ?!
+
+    let row = db.one("select id, title, content from notes where id = '${id}'") ?! NotFound(message="not found")
+    return row
+
+  # Update a note by id
+  put "/notes/{id: String}" body NoteCreate -> Note!NotFound!Unauthorized!Forbidden!BadRequest:
+    let auth = require_auth() ?!
+    require_scope(auth, "notes:write") ?!
+
+    if body.title == "":
+      null ?! BadRequest(message="title required")
+    if body.content == "":
+      null ?! BadRequest(message="content required")
+
+    db.one("select id from notes where id = '${id}'") ?! NotFound(message="not found")
+
+    db.exec("update notes set title = '${body.title}', content = '${body.content}' where id = '${id}'")
+    return Note(id=NoteId(value=id), title=body.title, content=body.content)
+
+  # Create a new note
+  post "/notes" body NoteCreate -> Note!Unauthorized!Forbidden!BadRequest:
+    let auth = require_auth() ?!
+    require_scope(auth, "notes:write") ?!
+
+    if body.title == "":
+      null ?! BadRequest(message="title required")
+    if body.content == "":
+      null ?! BadRequest(message="content required")
+
+    let id = NoteId(value="note-${body.title}")
+    db.exec("insert into notes (id, title, content) values ('${id.value}', '${body.title}', '${body.content}')")
+
+    return Note(id=id, title=body.title, content=body.content)
+
+  # Delete a note by id
+  delete "/notes/{id: String}" -> Unit!Unauthorized!Forbidden:
+    let auth = require_auth() ?!
+    require_scope(auth, "notes:write") ?!
+
+    db.exec("delete from notes where id = '${id}'")

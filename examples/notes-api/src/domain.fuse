@@ -1,0 +1,9 @@
+type NoteId:
+  value: String
+
+type Note:
+  id: NoteId
+  title: String(1..100)
+  content: String(1..5000)
+
+type NoteCreate = Note without id

@@ -33,6 +33,8 @@ struct Manifest {
     #[serde(default)]
     build: Option<BuildConfig>,
     #[serde(default)]
+    serve: Option<ServeConfig>,
+    #[serde(default)]
     dependencies: BTreeMap<String, DependencySpec>,
 }
 
@@ -48,6 +50,12 @@ struct PackageConfig {
 struct BuildConfig {
     openapi: Option<String>,
     native_bin: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServeConfig {
+    static_dir: Option<String>,
+    static_index: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -238,11 +246,13 @@ fn run(args: Vec<String>) -> i32 {
             Some(RunBackend::Ast) => {}
             Some(RunBackend::Native) => {
                 if let Some(native) = try_load_native(manifest_dir.as_deref()) {
+                    apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
                     return run_native_program(native, app.as_deref());
                 }
             }
             _ => {
                 if let Some(ir) = try_load_ir(manifest_dir.as_deref()) {
+                    apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
                     return run_vm_ir(ir, app.as_deref());
                 }
             }
@@ -262,6 +272,7 @@ fn run(args: Vec<String>) -> i32 {
 
     match command {
         Command::Run => {
+            apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
             let mut args = Vec::new();
             args.push("--run".to_string());
             if let Some(backend) = backend_flag {
@@ -316,6 +327,27 @@ fn run(args: Vec<String>) -> i32 {
             args.push("--migrate".to_string());
             args.push(entry.to_string_lossy().to_string());
             fusec::cli::run_with_deps(args, Some(&deps))
+        }
+    }
+}
+
+fn apply_serve_env(manifest: Option<&Manifest>, manifest_dir: Option<&Path>) {
+    let Some(serve) = manifest.and_then(|m| m.serve.as_ref()) else {
+        return;
+    };
+    let Some(static_dir) = serve.static_dir.as_ref() else {
+        return;
+    };
+    let mut resolved = PathBuf::from(static_dir);
+    if resolved.is_relative() {
+        if let Some(base) = manifest_dir {
+            resolved = base.join(resolved);
+        }
+    }
+    unsafe {
+        env::set_var("FUSE_STATIC_DIR", resolved.to_string_lossy().to_string());
+        if let Some(index) = serve.static_index.as_ref() {
+            env::set_var("FUSE_STATIC_INDEX", index);
         }
     }
 }
