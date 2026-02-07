@@ -1,3 +1,6 @@
+config App:
+  dbUrl: String = env("FUSE_DB_URL") ?? "sqlite::memory:"
+
 fn db_init() -> Int:
   db.exec("create table if not exists users (id int, name text)")
   db.exec("delete from users")
@@ -10,3 +13,8 @@ fn db_one_name() -> Map<String, String>?:
 
 fn db_query_names() -> List<Map<String, String>>:
   return db.query("select name from users order by id")
+
+app "demo":
+  db_init()
+  print(db_one_name())
+  print(db_query_names())

@@ -1232,7 +1232,7 @@ impl<'a> Interpreter<'a> {
             return Ok(Value::Config(name.to_string()));
         }
         match name {
-            "print" | "env" | "serve" | "log" | "db" | "assert" | "task" => {
+            "print" | "env" | "serve" | "log" | "db" | "assert" | "task" | "json" => {
                 Ok(Value::Builtin(name.to_string()))
             }
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),

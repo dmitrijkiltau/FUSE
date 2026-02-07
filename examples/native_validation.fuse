@@ -1,3 +1,6 @@
+type std.Error:
+  message: String
+
 type User:
   id: Id
   email: Email
@@ -14,3 +17,17 @@ fn bad_email() -> User!std.Error:
 
 fn bad_age() -> User!std.Error:
   return User(id="user-1", email="a@b.com", age=20)
+
+fn show(label: String, result: User!std.Error):
+  match result:
+    case Ok(u):
+      print("${label}: ok ${u}")
+    case Err(e):
+      print("${label}: ${e.message}")
+      print(json.encode(e.fields))
+
+app "demo":
+  show("ok_user", ok_user())
+  show("bad_id", bad_id())
+  show("bad_email", bad_email())
+  show("bad_age", bad_age())
