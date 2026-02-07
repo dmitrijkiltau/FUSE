@@ -172,6 +172,8 @@ Git dependencies support `tag`, `branch`, `rev`, or `version` (resolved as a tag
 (unless you pass CLI args, which currently bypass the cache).
 The native cache is versioned; a native cache version bump invalidates `.fuse/build/program.native`
 even if source files are unchanged.
+For native cold-start regression checks, run `scripts/native_perf_check.sh` and optionally set
+`FUSE_NATIVE_COLD_MS` and `FUSE_NATIVE_WARM_MS` budgets.
 
 Use `fuse build --clean` to remove `.fuse/build` and force a fresh compile on the next run.
 

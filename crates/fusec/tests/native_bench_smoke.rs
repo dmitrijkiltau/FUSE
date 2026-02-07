@@ -58,6 +58,22 @@ fn call_once_native(native: &NativeProgram, n: i64) -> Duration {
     start.elapsed()
 }
 
+fn env_budget_ms(name: &str) -> Option<u64> {
+    std::env::var(name).ok().and_then(|raw| raw.parse::<u64>().ok())
+}
+
+fn check_budget(label: &str, duration: Duration, env: &str) {
+    if let Some(limit_ms) = env_budget_ms(env) {
+        let limit = Duration::from_millis(limit_ms);
+        assert!(
+            duration <= limit,
+            "{label} exceeded budget: {:?} > {:?} (env {env}={limit_ms})",
+            duration,
+            limit
+        );
+    }
+}
+
 #[test]
 fn native_bench_smoke() {
     let (ir, native) = load_bench_artifacts();
@@ -71,9 +87,13 @@ fn native_bench_smoke() {
         warm_vm += call_once_vm(&ir, 120_000);
         warm_native += call_once_native(&native, 120_000);
     }
+    let warm_native_avg = Duration::from_secs_f64(warm_native.as_secs_f64() / 8.0);
 
     eprintln!(
         "native bench smoke: cold vm={:?} native={:?}; warm vm={:?} native={:?}",
         cold_vm, cold_native, warm_vm, warm_native
     );
+
+    check_budget("native cold-start", cold_native, "FUSE_NATIVE_COLD_MS");
+    check_budget("native warm avg", warm_native_avg, "FUSE_NATIVE_WARM_MS");
 }
