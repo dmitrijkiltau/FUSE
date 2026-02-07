@@ -90,17 +90,17 @@ impl<'a> Parser<'a> {
             }
             self.expect_punct(Punct::RBrace);
             self.expect_keyword(Keyword::From);
-            let path = self.expect_string_lit();
+            let path = self.parse_import_path();
             ImportSpec::NamedFrom { names, path }
         } else {
             let name = self.expect_ident();
             if self.eat_keyword(Keyword::As).is_some() {
                 let alias = self.expect_ident();
                 self.expect_keyword(Keyword::From);
-                let path = self.expect_string_lit();
+                let path = self.parse_import_path();
                 ImportSpec::AliasFrom { name, alias, path }
             } else if self.eat_keyword(Keyword::From).is_some() {
-                let path = self.expect_string_lit();
+                let path = self.parse_import_path();
                 ImportSpec::ModuleFrom { name, path }
             } else {
                 ImportSpec::Module { name }
@@ -1309,6 +1309,29 @@ impl<'a> Parser<'a> {
         base.name = full_name;
         base.span = span;
         base
+    }
+
+    fn parse_import_path(&mut self) -> StringLit {
+        if matches!(self.peek_kind(), TokenKind::String(_)) {
+            return self.expect_string_lit();
+        }
+        let mut base = self.expect_ident();
+        let mut full_name = base.name.clone();
+        let mut span = base.span;
+        while self.eat_punct(Punct::Dot).is_some() {
+            let part = self.expect_ident();
+            if !full_name.is_empty() {
+                full_name.push('.');
+            }
+            full_name.push_str(&part.name);
+            span = span.merge(part.span);
+        }
+        base.name = full_name;
+        base.span = span;
+        StringLit {
+            value: base.name,
+            span: base.span,
+        }
     }
 
     fn parse_type_ref(&mut self) -> TypeRef {

@@ -9,6 +9,36 @@ use crate::span::Span;
 
 pub type ModuleId = usize;
 
+const STD_ERROR_MODULE: &str = r#"
+type Error:
+  code: String
+  message: String
+
+type ValidationField:
+  path: String
+  code: String
+  message: String
+
+type Validation:
+  message: String
+  fields: List<ValidationField>
+
+type BadRequest:
+  message: String
+
+type Unauthorized:
+  message: String
+
+type Forbidden:
+  message: String
+
+type NotFound:
+  message: String
+
+type Conflict:
+  message: String
+"#;
+
 #[derive(Clone, Debug)]
 pub struct ModuleLink {
     pub id: ModuleId,
@@ -189,7 +219,10 @@ impl ModuleLoader {
                 }
             },
         };
-        let (program, diags) = parse_source(&src);
+        let (program, mut diags) = parse_source(&src);
+        for diag in &mut diags {
+            diag.path = Some(key.clone());
+        }
         self.diags.extend(diags);
 
         let id = self.next_id;
@@ -247,20 +280,35 @@ impl ModuleLoader {
                     }
                 }
                 ImportSpec::ModuleFrom { name, path } => {
-                    let path = self.resolve_path(&base_dir, &path.value, path.span);
-                    if let Some(module_id) = self.load_module(&path, None, span) {
+                    let module_id = self
+                        .load_std_module(&path.value, span)
+                        .or_else(|| {
+                            let path = self.resolve_path(&base_dir, &path.value, path.span);
+                            self.load_module(&path, None, span)
+                        });
+                    if let Some(module_id) = module_id {
                         self.insert_module_alias(&mut module_map, &name.name, module_id);
                     }
                 }
                 ImportSpec::AliasFrom { alias, path, .. } => {
-                    let path = self.resolve_path(&base_dir, &path.value, path.span);
-                    if let Some(module_id) = self.load_module(&path, None, span) {
+                    let module_id = self
+                        .load_std_module(&path.value, span)
+                        .or_else(|| {
+                            let path = self.resolve_path(&base_dir, &path.value, path.span);
+                            self.load_module(&path, None, span)
+                        });
+                    if let Some(module_id) = module_id {
                         self.insert_module_alias(&mut module_map, &alias.name, module_id);
                     }
                 }
                 ImportSpec::NamedFrom { names, path } => {
-                    let path = self.resolve_path(&base_dir, &path.value, path.span);
-                    let Some(module_id) = self.load_module(&path, None, span) else {
+                    let module_id = self
+                        .load_std_module(&path.value, span)
+                        .or_else(|| {
+                            let path = self.resolve_path(&base_dir, &path.value, path.span);
+                            self.load_module(&path, None, span)
+                        });
+                    let Some(module_id) = module_id else {
                         continue;
                     };
                     let exports = self.modules.get(&module_id).map(|unit| &unit.exports);
@@ -272,7 +320,7 @@ impl ModuleLoader {
                         if !exports.contains(&name.name) {
                             self.diags.error(
                                 name.span,
-                                format!("unknown import {} in {}", name.name, path.display()),
+                                format!("unknown import {} in {}", name.name, path.value),
                             );
                             continue;
                         }
@@ -448,6 +496,9 @@ impl ModuleLoader {
         let Some(unit) = self.modules.get(&module_id) else {
             return;
         };
+        if unit.path.to_string_lossy() == "<std.Error>" {
+            return;
+        }
         for item in &unit.program.items {
             let (name, span) = match item {
                 Item::Type(decl) => (decl.name.name.as_str(), decl.name.span),
@@ -460,9 +511,18 @@ impl ModuleLoader {
             };
             if let Some((prev_id, prev_span)) = self.global_names.get(name) {
                 if *prev_id != module_id {
-                    self.diags.error(span, format!("duplicate symbol: {name}"));
+                    let path = unit.path.clone();
                     self.diags
-                        .error(*prev_span, format!("previous definition of {name} here"));
+                        .error_at_path(path.clone(), span, format!("duplicate symbol: {name}"));
+                    if let Some(prev_unit) = self.modules.get(prev_id) {
+                        self.diags.error_at_path(
+                            prev_unit.path.clone(),
+                            *prev_span,
+                            format!("previous definition of {name} here"),
+                        );
+                    } else {
+                        self.diags.error(span, format!("previous definition of {name} here"));
+                    }
                 }
                 continue;
             }
@@ -500,6 +560,17 @@ impl ModuleLoader {
             path = base_dir.join(path);
         }
         path
+    }
+
+    fn load_std_module(&mut self, name: &str, span: Span) -> Option<ModuleId> {
+        if name != "std.Error" {
+            return None;
+        }
+        let path = PathBuf::from("<std.Error>");
+        if let Some(id) = self.by_path.get(&path) {
+            return Some(*id);
+        }
+        self.load_module(&path, Some(STD_ERROR_MODULE), span)
     }
 
     fn normalize_path(&self, path: &Path) -> PathBuf {

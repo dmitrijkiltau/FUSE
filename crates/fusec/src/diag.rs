@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::span::Span;
 
 #[derive(Clone, Debug)]
@@ -11,6 +13,7 @@ pub struct Diag {
     pub level: Level,
     pub message: String,
     pub span: Span,
+    pub path: Option<PathBuf>,
 }
 
 #[derive(Default, Debug)]
@@ -24,6 +27,20 @@ impl Diagnostics {
             level: Level::Error,
             message: message.into(),
             span,
+            path: None,
+        });
+    }
+
+    pub fn error_at_path<P, S>(&mut self, path: P, span: Span, message: S)
+    where
+        P: Into<PathBuf>,
+        S: Into<String>,
+    {
+        self.diags.push(Diag {
+            level: Level::Error,
+            message: message.into(),
+            span,
+            path: Some(path.into()),
         });
     }
 
@@ -32,6 +49,20 @@ impl Diagnostics {
             level: Level::Warning,
             message: message.into(),
             span,
+            path: None,
+        });
+    }
+
+    pub fn warning_at_path<P, S>(&mut self, path: P, span: Span, message: S)
+    where
+        P: Into<PathBuf>,
+        S: Into<String>,
+    {
+        self.diags.push(Diag {
+            level: Level::Warning,
+            message: message.into(),
+            span,
+            path: Some(path.into()),
         });
     }
 

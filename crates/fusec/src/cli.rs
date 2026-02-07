@@ -6,7 +6,7 @@ use fuse_rt::error::{ValidationError, ValidationField};
 use fuse_rt::json;
 
 use crate::ast::{Item, TypeRefKind};
-use crate::diag::Level;
+use crate::diag::{Diag, Level};
 use crate::interp::{Interpreter, MigrationJob, TestJob, TestOutcome};
 use crate::{load_program_with_modules, load_program_with_modules_and_deps};
 
@@ -146,16 +146,7 @@ where
         None => load_program_with_modules(Path::new(&path), &src),
     };
     if !diags.is_empty() {
-        for diag in diags {
-            let level = match diag.level {
-                Level::Error => "error",
-                Level::Warning => "warning",
-            };
-            eprintln!(
-                "{level}: {} ({}..{})",
-                diag.message, diag.span.start, diag.span.end
-            );
-        }
+        emit_diags(&diags, Some(&src));
         return 1;
     }
     let root = match registry.root() {
@@ -183,16 +174,7 @@ where
     if check {
         let (_analysis, diags) = crate::sema::analyze_registry(&registry);
         if !diags.is_empty() {
-            for diag in diags {
-                let level = match diag.level {
-                    Level::Error => "error",
-                    Level::Warning => "warning",
-                };
-                eprintln!(
-                    "{level}: {} ({}..{})",
-                    diag.message, diag.span.start, diag.span.end
-                );
-            }
+            emit_diags(&diags, Some(&src));
             return 1;
         }
     }
@@ -200,16 +182,7 @@ where
     if migrate {
         let (_analysis, diags) = crate::sema::analyze_registry(&registry);
         if !diags.is_empty() {
-            for diag in diags {
-                let level = match diag.level {
-                    Level::Error => "error",
-                    Level::Warning => "warning",
-                };
-                eprintln!(
-                    "{level}: {} ({}..{})",
-                    diag.message, diag.span.start, diag.span.end
-                );
-            }
+            emit_diags(&diags, Some(&src));
             return 1;
         }
         let migrations = match collect_migrations(&registry) {
@@ -234,16 +207,7 @@ where
     if test {
         let (_analysis, diags) = crate::sema::analyze_registry(&registry);
         if !diags.is_empty() {
-            for diag in diags {
-                let level = match diag.level {
-                    Level::Error => "error",
-                    Level::Warning => "warning",
-                };
-                eprintln!(
-                    "{level}: {} ({}..{})",
-                    diag.message, diag.span.start, diag.span.end
-                );
-            }
+            emit_diags(&diags, Some(&src));
             return 1;
         }
         let tests = match collect_tests(&registry) {
@@ -663,4 +627,61 @@ fn emit_error_json(message: &str) {
         return;
     }
     emit_validation_error("$", "runtime_error", message);
+}
+
+fn emit_diags(diags: &[Diag], fallback_src: Option<&str>) {
+    for diag in diags {
+        emit_diag(diag, fallback_src);
+    }
+}
+
+fn emit_diag(diag: &Diag, fallback_src: Option<&str>) {
+    let level = match diag.level {
+        Level::Error => "error",
+        Level::Warning => "warning",
+    };
+    if let Some(path) = &diag.path {
+        if let Ok(src) = fs::read_to_string(path) {
+            let (line, col, line_text) = line_info(&src, diag.span.start);
+            eprintln!("{level}: {} ({}:{}:{})", diag.message, path.display(), line, col);
+            eprintln!("  {line_text}");
+            eprintln!("  {}^", " ".repeat(col.saturating_sub(1)));
+            return;
+        }
+        eprintln!("{level}: {} ({})", diag.message, path.display());
+        return;
+    }
+    if let Some(src) = fallback_src {
+        let (line, col, line_text) = line_info(src, diag.span.start);
+        eprintln!("{level}: {} ({}:{})", diag.message, line, col);
+        eprintln!("  {line_text}");
+        eprintln!("  {}^", " ".repeat(col.saturating_sub(1)));
+        return;
+    }
+    eprintln!(
+        "{level}: {} ({}..{})",
+        diag.message, diag.span.start, diag.span.end
+    );
+}
+
+fn line_info(src: &str, offset: usize) -> (usize, usize, &str) {
+    let offset = offset.min(src.len());
+    let mut line = 1usize;
+    let mut line_start = 0usize;
+    for (idx, byte) in src.bytes().enumerate() {
+        if idx >= offset {
+            break;
+        }
+        if byte == b'\n' {
+            line += 1;
+            line_start = idx + 1;
+        }
+    }
+    let line_end = src[line_start..]
+        .find('\n')
+        .map(|rel| line_start + rel)
+        .unwrap_or(src.len());
+    let col = offset.saturating_sub(line_start) + 1;
+    let line_text = &src[line_start..line_end];
+    (line, col, line_text)
 }

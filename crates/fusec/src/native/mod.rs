@@ -704,13 +704,13 @@ impl<'a> NativeVm<'a> {
     fn http_status_for_error_value(&self, value: &Value) -> u16 {
         match value {
             Value::Struct { name, fields } => match name.as_str() {
-                "std.Error.Validation" => 400,
-                "std.Error.BadRequest" => 400,
-                "std.Error.Unauthorized" => 401,
-                "std.Error.Forbidden" => 403,
-                "std.Error.NotFound" => 404,
-                "std.Error.Conflict" => 409,
-                "std.Error" => fields
+                "std.Error.Validation" | "Validation" => 400,
+                "std.Error.BadRequest" | "BadRequest" => 400,
+                "std.Error.Unauthorized" | "Unauthorized" => 401,
+                "std.Error.Forbidden" | "Forbidden" => 403,
+                "std.Error.NotFound" | "NotFound" => 404,
+                "std.Error.Conflict" | "Conflict" => 409,
+                "std.Error" | "Error" => fields
                     .get("status")
                     .and_then(|v| match v {
                         Value::Int(n) => (*n).try_into().ok(),
@@ -2366,7 +2366,7 @@ fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
     };
     let name = name.as_str();
     match name {
-        "std.Error.Validation" => {
+        "std.Error.Validation" | "Validation" => {
             let message = match fields.get("message") {
                 Some(Value::String(msg)) => msg.as_str(),
                 _ => "validation failed",
@@ -2374,7 +2374,7 @@ fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
             let field_items = extract_validation_fields(fields.get("fields"));
             Some(rt_error::validation_error_json(message, &field_items))
         }
-        "std.Error" => {
+        "std.Error" | "Error" => {
             let code = match fields.get("code") {
                 Some(Value::String(code)) => code.as_str(),
                 _ => "error",
@@ -2403,6 +2403,11 @@ fn builtin_error_defaults(name: &str) -> Option<(&'static str, &'static str)> {
         "std.Error.Forbidden" => Some(("forbidden", "forbidden")),
         "std.Error.NotFound" => Some(("not_found", "not found")),
         "std.Error.Conflict" => Some(("conflict", "conflict")),
+        "BadRequest" => Some(("bad_request", "bad request")),
+        "Unauthorized" => Some(("unauthorized", "unauthorized")),
+        "Forbidden" => Some(("forbidden", "forbidden")),
+        "NotFound" => Some(("not_found", "not found")),
+        "Conflict" => Some(("conflict", "conflict")),
         _ => None,
     }
 }

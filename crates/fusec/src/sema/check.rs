@@ -1385,6 +1385,13 @@ impl<'a> Checker<'a> {
             (Ty::Option(value_inner), Ty::Option(target_inner)) => {
                 self.is_assignable(value_inner, target_inner)
             }
+            (Ty::List(value_inner), Ty::List(target_inner)) => {
+                self.is_assignable(value_inner, target_inner)
+            }
+            (Ty::Map(value_key, value_val), Ty::Map(target_key, target_val)) => {
+                self.is_assignable(value_key, target_key)
+                    && self.is_assignable(value_val, target_val)
+            }
             (Ty::Task(value_inner), Ty::Task(target_inner)) => {
                 self.is_assignable(value_inner, target_inner)
             }
@@ -1413,8 +1420,18 @@ impl<'a> Checker<'a> {
     }
 
     fn check_bang_error(&mut self, span: Span, err_ty: &Ty) {
-        let expected_err = match &self.current_return {
-            Some(Ty::Result(_, err)) => Some(*err.clone()),
+        let expected_errs = match &self.current_return {
+            Some(Ty::Result(_, _)) => {
+                let mut errs = Vec::new();
+                if let Some(current) = &self.current_return {
+                    self.collect_result_errors(current, &mut errs);
+                }
+                if errs.is_empty() {
+                    None
+                } else {
+                    Some(errs)
+                }
+            }
             Some(Ty::Unknown) => None,
             Some(other) => {
                 self.diags.error(
@@ -1428,10 +1445,31 @@ impl<'a> Checker<'a> {
                 return;
             }
         };
-        if let Some(expected_err) = expected_err {
-            if !self.is_assignable(err_ty, &expected_err) {
-                self.type_mismatch(span, &expected_err, err_ty);
+        if let Some(expected_errs) = expected_errs {
+            if !expected_errs
+                .iter()
+                .any(|expected| self.is_assignable(err_ty, expected))
+            {
+                if let Some(first) = expected_errs.first() {
+                    self.type_mismatch(span, first, err_ty);
+                }
             }
+        }
+    }
+
+    fn collect_result_errors(&self, ty: &Ty, out: &mut Vec<Ty>) {
+        let mut current = ty;
+        loop {
+            let Ty::Result(_, err) = current else {
+                break;
+            };
+            if let Ty::Result(ok_next, _) = &**err {
+                out.push(*ok_next.clone());
+                current = err;
+                continue;
+            }
+            out.push(*err.clone());
+            break;
         }
     }
 
