@@ -11,11 +11,11 @@ use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate 
 
 use crate::ast::{BinaryOp, Expr, ExprKind, HttpVerb, Ident, Literal, TypeRef, TypeRefKind, UnaryOp};
 use crate::interp::{format_error_value, Value};
-use crate::ir::{Function, Program as IrProgram, Service, ServiceRoute};
+use crate::ir::{Config, Function, Program as IrProgram, Service, ServiceRoute};
 use crate::loader::ModuleRegistry;
 use crate::native::value::NativeHeap;
 use crate::span::Span;
-use jit::{JitCallError, JitRuntime, ObjectArtifact};
+use jit::{JitCallError, JitRuntime, ObjectArtifactSet};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NativeProgram {
@@ -43,16 +43,16 @@ pub struct NativeObject {
     pub object: Vec<u8>,
     pub interned_strings: Vec<String>,
     pub entry_symbol: String,
+    pub config_defaults: Vec<ConfigDefaultSymbol>,
 }
 
-impl From<ObjectArtifact> for NativeObject {
-    fn from(artifact: ObjectArtifact) -> Self {
-        Self {
-            object: artifact.object,
-            interned_strings: artifact.interned_strings,
-            entry_symbol: artifact.entry_symbol,
-        }
-    }
+pub struct ConfigDefaultSymbol {
+    pub name: String,
+    pub symbol: String,
+}
+
+pub fn symbol_for_function(name: &str) -> String {
+    jit::jit_symbol(name)
 }
 
 pub fn emit_object_for_app(
@@ -74,8 +74,50 @@ pub fn emit_object_for_app(
             .next()
             .ok_or_else(|| "no app found".to_string())?
     };
-    let artifact = jit::emit_object_for_function(&program.ir, app)?;
-    Ok(artifact.into())
+    let mut config_defaults = Vec::new();
+    let mut extra_funcs = Vec::new();
+    let mut seen = HashSet::new();
+    seen.insert(app.name.clone());
+    for config in program.ir.configs.values() {
+        for field in &config.fields {
+            let Some(fn_name) = &field.default_fn else {
+                continue;
+            };
+            config_defaults.push(ConfigDefaultSymbol {
+                name: fn_name.clone(),
+                symbol: symbol_for_function(fn_name),
+            });
+            if seen.insert(fn_name.clone()) {
+                let func = program
+                    .ir
+                    .functions
+                    .get(fn_name)
+                    .ok_or_else(|| format!("missing config default {fn_name}"))?;
+                extra_funcs.push(func);
+            }
+        }
+    }
+    let mut funcs = Vec::with_capacity(1 + extra_funcs.len());
+    funcs.push(app);
+    funcs.extend(extra_funcs);
+    let ObjectArtifactSet {
+        object,
+        interned_strings,
+    } = match jit::emit_object_for_functions(&program.ir, &funcs) {
+        Ok(artifact) => artifact,
+        Err(err) => {
+            if let Some(reason) = unsupported_reason(&program.ir, app) {
+                return Err(format!("native backend unsupported: {reason}"));
+            }
+            return Err(err);
+        }
+    };
+    Ok(NativeObject {
+        object,
+        interned_strings,
+        entry_symbol: symbol_for_function(&app.name),
+        config_defaults,
+    })
 }
 
 pub fn emit_object_for_function(
@@ -90,7 +132,38 @@ pub fn emit_object_for_function(
         .or_else(|| program.ir.apps.values().find(|func| func.name == name))
         .ok_or_else(|| format!("unknown function {name}"))?;
     let artifact = jit::emit_object_for_function(&program.ir, func)?;
-    Ok(artifact.into())
+    Ok(NativeObject {
+        object: artifact.object,
+        interned_strings: artifact.interned_strings,
+        entry_symbol: artifact.entry_symbol,
+        config_defaults: Vec::new(),
+    })
+}
+
+pub fn load_configs_for_binary<'a, I>(
+    configs: I,
+    heap: &mut NativeHeap,
+    mut default_fn: impl FnMut(&str, &mut NativeHeap) -> Result<Value, String>,
+) -> Result<(), String>
+where
+    I: IntoIterator<Item = &'a Config>,
+{
+    let evaluator = ConfigEvaluator;
+    evaluator
+        .eval_configs(configs, heap, &mut default_fn)
+        .map_err(render_native_error)
+}
+
+pub fn load_types_for_binary<'a, I>(types: I, heap: &mut NativeHeap) -> Result<(), String>
+where
+    I: IntoIterator<Item = &'a crate::ir::TypeInfo>,
+{
+    let mut map = HashMap::new();
+    for ty in types {
+        map.insert(ty.name.clone(), ty.clone());
+    }
+    heap.set_types(map);
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -101,6 +174,13 @@ enum NativeError {
 
 type NativeResult<T> = Result<T, NativeError>;
 
+fn render_native_error(err: NativeError) -> String {
+    match err {
+        NativeError::Runtime(message) => message,
+        NativeError::Error(value) => format_error_value(&value),
+    }
+}
+
 pub struct NativeVm<'a> {
     program: &'a NativeProgram,
     jit: JitRuntime,
@@ -110,10 +190,12 @@ pub struct NativeVm<'a> {
 
 impl<'a> NativeVm<'a> {
     pub fn new(program: &'a NativeProgram) -> Self {
+        let mut heap = NativeHeap::new();
+        heap.set_types(program.ir.types.clone());
         Self {
             program,
             jit: JitRuntime::build(),
-            heap: NativeHeap::new(),
+            heap,
             configs_loaded: false,
         }
     }
@@ -158,41 +240,13 @@ impl<'a> NativeVm<'a> {
         name: &str,
         args: Vec<Value>,
     ) -> Result<Value, String> {
-        let func = self
-            .program
-            .ir
-            .functions
-            .get(name)
-            .or_else(|| self.program.ir.apps.get(name))
-            .or_else(|| self.program.ir.apps.values().find(|func| func.name == name))
-            .ok_or_else(|| format!("unknown function {name}"))?;
-        if args.len() != func.params.len() {
-            return Err(format!(
-                "invalid call to {name}: expected {} args, got {}",
-                func.params.len(),
-                args.len()
-            ));
-        }
-        if let Some(result) = self.jit.try_call(&self.program.ir, name, &args, &mut self.heap) {
-            let out = match result {
-                Ok(value) => Ok(self.wrap_function_result(func, value)),
-                Err(JitCallError::Error(err_val)) => {
-                    if self.is_result_type(func.ret.as_ref()) {
-                        Ok(Value::ResultErr(Box::new(err_val)))
-                    } else {
-                        Err(format_error_value(&err_val))
-                    }
-                }
-                Err(JitCallError::Runtime(message)) => Err(message),
-            };
-            self.heap.collect_garbage();
-            return out;
-        }
-        self.heap.collect_garbage();
-        let reason = self
-            .unsupported_reason(func)
-            .unwrap_or_else(|| "native backend could not compile function".to_string());
-        Err(format!("native backend unsupported: {reason}"))
+        call_function_native_only_with(
+            self.program,
+            &mut self.jit,
+            &mut self.heap,
+            name,
+            args,
+        )
     }
 
     fn ensure_configs_loaded(&mut self) -> Result<(), String> {
@@ -200,56 +254,21 @@ impl<'a> NativeVm<'a> {
             return Ok(());
         }
         self.eval_configs_native()
-            .map_err(|err| self.render_native_error(err))?;
+            .map_err(render_native_error)?;
         self.configs_loaded = true;
         Ok(())
     }
 
     fn eval_configs_native(&mut self) -> NativeResult<()> {
-        let config_path =
-            std::env::var("FUSE_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
-        let file_values =
-            rt_config::load_config_file(&config_path).map_err(NativeError::Runtime)?;
-        for config in self.program.ir.configs.values() {
-            self.heap.ensure_config(&config.name);
-            let section = file_values.get(&config.name);
-            for field in &config.fields {
-                let key = rt_config::env_key(&config.name, &field.name);
-                let path = format!("{}.{}", config.name, field.name);
-                let value = match std::env::var(&key) {
-                    Ok(raw) => {
-                        let value = self
-                            .parse_env_value(&field.ty, &raw)
-                            .map_err(|err| self.map_parse_error(err, &path))?;
-                        self.validate_value(&value, &field.ty, &path)?;
-                        value
-                    }
-                    Err(_) => {
-                        let value = if let Some(section) = section {
-                            if let Some(raw) = section.get(&field.name) {
-                                self.parse_env_value(&field.ty, raw)
-                                    .map_err(|err| self.map_parse_error(err, &path))?
-                            } else if let Some(fn_name) = &field.default_fn {
-                                self.call_function_native_only_inner(fn_name, Vec::new())
-                                    .map_err(NativeError::Runtime)?
-                            } else {
-                                Value::Null
-                            }
-                        } else if let Some(fn_name) = &field.default_fn {
-                            self.call_function_native_only_inner(fn_name, Vec::new())
-                                .map_err(NativeError::Runtime)?
-                        } else {
-                            Value::Null
-                        };
-                        self.validate_value(&value, &field.ty, &path)?;
-                        value
-                    }
-                };
-                self.heap
-                    .set_config_field(&config.name, &field.name, value);
-            }
-        }
-        Ok(())
+        let evaluator = ConfigEvaluator;
+        let mut configs: Vec<Config> = self.program.ir.configs.values().cloned().collect();
+        configs.sort_by(|a, b| a.name.cmp(&b.name));
+        let program = self.program;
+        let jit = &mut self.jit;
+        let heap = &mut self.heap;
+        evaluator.eval_configs(configs.iter(), heap, &mut |fn_name, heap| {
+            call_function_native_only_with(program, jit, heap, fn_name, Vec::new())
+        })
     }
 
     fn app_contains_serve(&self, func: &Function) -> bool {
@@ -388,97 +407,6 @@ impl<'a> NativeVm<'a> {
         }
     }
 
-    fn unsupported_reason(&self, func: &Function) -> Option<String> {
-        let mut seen = HashSet::new();
-        self.unsupported_reason_inner(func, &mut seen)
-    }
-
-    fn unsupported_reason_inner(
-        &self,
-        func: &Function,
-        seen: &mut HashSet<String>,
-    ) -> Option<String> {
-        if !seen.insert(func.name.clone()) {
-            return None;
-        }
-        let func_name = func.name.as_str();
-        for instr in &func.code {
-            match instr {
-                crate::ir::Instr::Spawn { .. } | crate::ir::Instr::Await => {
-                    return Some(format!("spawn/await in {func_name}"));
-                }
-                crate::ir::Instr::SetField { .. } => {
-                    return Some(format!("field assignment in {func_name}"));
-                }
-                crate::ir::Instr::SetIndex => {
-                    return Some(format!("index assignment in {func_name}"));
-                }
-                crate::ir::Instr::GetIndex => {
-                    return Some(format!("index access in {func_name}"));
-                }
-                crate::ir::Instr::IterInit | crate::ir::Instr::IterNext { .. } => {
-                    return Some(format!("iteration in {func_name}"));
-                }
-                crate::ir::Instr::MatchLocal { .. } => {
-                    return Some(format!("pattern matching in {func_name}"));
-                }
-                crate::ir::Instr::Call {
-                    kind: crate::ir::CallKind::Function,
-                    name,
-                    ..
-                } => {
-                    if let Some(callee) = self
-                        .program
-                        .ir
-                        .functions
-                        .get(name)
-                        .or_else(|| self.program.ir.apps.get(name))
-                        .or_else(|| {
-                            self.program
-                                .ir
-                                .apps
-                                .values()
-                                .find(|func| func.name == name.as_str())
-                        })
-                    {
-                        if let Some(reason) = self.unsupported_reason_inner(callee, seen) {
-                            return Some(reason);
-                        }
-                    }
-                }
-                crate::ir::Instr::Call {
-                    kind: crate::ir::CallKind::Builtin,
-                    name,
-                    ..
-                } => {
-                    if !self.is_supported_builtin(name) {
-                        return Some(format!("builtin {name} in {func_name}"));
-                    }
-                }
-                _ => {}
-            }
-        }
-        None
-    }
-
-    fn is_supported_builtin(&self, name: &str) -> bool {
-        matches!(
-            name,
-            "print"
-                | "log"
-                | "env"
-                | "assert"
-                | "task.id"
-                | "task.done"
-                | "task.cancel"
-                | "db.exec"
-                | "db.query"
-                | "db.one"
-                | "json.encode"
-                | "json.decode"
-        )
-    }
-
     fn eval_serve_native_inner(&mut self, port: i64) -> NativeResult<Value> {
         self.ensure_configs_loaded()
             .map_err(NativeError::Runtime)?;
@@ -518,10 +446,7 @@ impl<'a> NativeVm<'a> {
     }
 
     fn render_native_error(&self, err: NativeError) -> String {
-        match err {
-            NativeError::Runtime(message) => message,
-            NativeError::Error(value) => format_error_value(&value),
-        }
+        render_native_error(err)
     }
 
     fn select_service(&self) -> NativeResult<&Service> {
@@ -1712,25 +1637,706 @@ impl<'a> NativeVm<'a> {
         })
     }
 
-    fn wrap_function_result(&self, func: &Function, value: Value) -> Value {
-        if self.is_result_type(func.ret.as_ref()) {
-            match value {
-                Value::ResultOk(_) | Value::ResultErr(_) => value,
-                _ => Value::ResultOk(Box::new(value)),
+}
+
+fn call_function_native_only_with(
+    program: &NativeProgram,
+    jit: &mut JitRuntime,
+    heap: &mut NativeHeap,
+    name: &str,
+    args: Vec<Value>,
+) -> Result<Value, String> {
+    if !heap.has_types() {
+        heap.set_types(program.ir.types.clone());
+    }
+    let func = program
+        .ir
+        .functions
+        .get(name)
+        .or_else(|| program.ir.apps.get(name))
+        .or_else(|| program.ir.apps.values().find(|func| func.name == name))
+        .ok_or_else(|| format!("unknown function {name}"))?;
+    if args.len() != func.params.len() {
+        return Err(format!(
+            "invalid call to {name}: expected {} args, got {}",
+            func.params.len(),
+            args.len()
+        ));
+    }
+    if let Some(result) = jit.try_call(&program.ir, name, &args, heap) {
+        let out = match result {
+            Ok(value) => Ok(wrap_function_result(func, value)),
+            Err(JitCallError::Error(err_val)) => {
+                if is_result_type(func.ret.as_ref()) {
+                    Ok(Value::ResultErr(Box::new(err_val)))
+                } else {
+                    Err(format_error_value(&err_val))
+                }
             }
-        } else {
-            value
+            Err(JitCallError::Runtime(message)) => Err(message),
+        };
+        heap.collect_garbage();
+        return out;
+    }
+    heap.collect_garbage();
+    let reason = unsupported_reason(&program.ir, func)
+        .unwrap_or_else(|| "native backend could not compile function".to_string());
+    Err(format!("native backend unsupported: {reason}"))
+}
+
+fn wrap_function_result(func: &Function, value: Value) -> Value {
+    if is_result_type(func.ret.as_ref()) {
+        match value {
+            Value::ResultOk(_) | Value::ResultErr(_) => value,
+            _ => Value::ResultOk(Box::new(value)),
+        }
+    } else {
+        value
+    }
+}
+
+fn is_result_type(ty: Option<&crate::ast::TypeRef>) -> bool {
+    match ty {
+        Some(ty) => match &ty.kind {
+            crate::ast::TypeRefKind::Result { .. } => true,
+            crate::ast::TypeRefKind::Generic { base, .. } => base.name == "Result",
+            _ => false,
+        },
+        None => false,
+    }
+}
+
+fn unsupported_reason(program: &IrProgram, func: &Function) -> Option<String> {
+    let mut seen = HashSet::new();
+    unsupported_reason_inner(program, func, &mut seen)
+}
+
+fn unsupported_reason_inner(
+    program: &IrProgram,
+    func: &Function,
+    seen: &mut HashSet<String>,
+) -> Option<String> {
+    if !seen.insert(func.name.clone()) {
+        return None;
+    }
+    let func_name = func.name.as_str();
+    for instr in &func.code {
+        match instr {
+            crate::ir::Instr::Spawn { .. } | crate::ir::Instr::Await => {
+                return Some(format!("spawn/await in {func_name}"));
+            }
+            crate::ir::Instr::SetField { .. } => {
+                return Some(format!("field assignment in {func_name}"));
+            }
+            crate::ir::Instr::SetIndex => {
+                return Some(format!("index assignment in {func_name}"));
+            }
+            crate::ir::Instr::GetIndex => {
+                return Some(format!("index access in {func_name}"));
+            }
+            crate::ir::Instr::IterInit | crate::ir::Instr::IterNext { .. } => {
+                return Some(format!("iteration in {func_name}"));
+            }
+            crate::ir::Instr::Call {
+                kind: crate::ir::CallKind::Function,
+                name,
+                ..
+            } => {
+                if let Some(callee) = program
+                    .functions
+                    .get(name)
+                    .or_else(|| program.apps.get(name))
+                    .or_else(|| program.apps.values().find(|func| func.name == name.as_str()))
+                {
+                    if let Some(reason) = unsupported_reason_inner(program, callee, seen) {
+                        return Some(reason);
+                    }
+                }
+            }
+            crate::ir::Instr::Call {
+                kind: crate::ir::CallKind::Builtin,
+                name,
+                ..
+            } => {
+                if !is_supported_builtin(name) {
+                    return Some(format!("builtin {name} in {func_name}"));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn is_supported_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "print"
+            | "log"
+            | "env"
+            | "assert"
+            | "task.id"
+            | "task.done"
+            | "task.cancel"
+            | "db.exec"
+            | "db.query"
+            | "db.one"
+            | "json.encode"
+            | "json.decode"
+    )
+}
+
+struct ConfigEvaluator;
+
+impl ConfigEvaluator {
+    fn eval_configs<'a, I>(
+        &self,
+        configs: I,
+        heap: &mut NativeHeap,
+        default_fn: &mut dyn FnMut(&str, &mut NativeHeap) -> Result<Value, String>,
+    ) -> NativeResult<()>
+    where
+        I: IntoIterator<Item = &'a Config>,
+    {
+        let config_path =
+            std::env::var("FUSE_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
+        let file_values =
+            rt_config::load_config_file(&config_path).map_err(NativeError::Runtime)?;
+        for config in configs {
+            heap.ensure_config(&config.name);
+            let section = file_values.get(&config.name);
+            for field in &config.fields {
+                let key = rt_config::env_key(&config.name, &field.name);
+                let path = format!("{}.{}", config.name, field.name);
+                let value = match std::env::var(&key) {
+                    Ok(raw) => {
+                        let value = self
+                            .parse_env_value(&field.ty, &raw)
+                            .map_err(|err| self.map_parse_error(err, &path))?;
+                        self.validate_value(&value, &field.ty, &path)?;
+                        value
+                    }
+                    Err(_) => {
+                        let value = if let Some(section) = section {
+                            if let Some(raw) = section.get(&field.name) {
+                                self.parse_env_value(&field.ty, raw)
+                                    .map_err(|err| self.map_parse_error(err, &path))?
+                            } else if let Some(fn_name) = &field.default_fn {
+                                default_fn(fn_name, heap).map_err(NativeError::Runtime)?
+                            } else {
+                                Value::Null
+                            }
+                        } else if let Some(fn_name) = &field.default_fn {
+                            default_fn(fn_name, heap).map_err(NativeError::Runtime)?
+                        } else {
+                            Value::Null
+                        };
+                        self.validate_value(&value, &field.ty, &path)?;
+                        value
+                    }
+                };
+                heap.set_config_field(&config.name, &field.name, value);
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_env_value(&self, ty: &TypeRef, raw: &str) -> NativeResult<Value> {
+        let raw = raw.trim();
+        match &ty.kind {
+            TypeRefKind::Optional(inner) => {
+                if raw.eq_ignore_ascii_case("null") || raw.is_empty() {
+                    Ok(Value::Null)
+                } else {
+                    self.parse_env_value(inner, raw)
+                }
+            }
+            TypeRefKind::Refined { base, .. } => self.parse_simple_env(&base.name, raw),
+            TypeRefKind::Simple(ident) => self.parse_simple_env(&ident.name, raw),
+            TypeRefKind::Result { .. } => Err(NativeError::Runtime(
+                "Result is not supported for config env overrides".to_string(),
+            )),
+            TypeRefKind::Generic { base, args } => match base.name.as_str() {
+                "Option" => {
+                    if args.len() != 1 {
+                        return Err(NativeError::Runtime(
+                            "Option expects 1 type argument".to_string(),
+                        ));
+                    }
+                    if raw.eq_ignore_ascii_case("null") || raw.is_empty() {
+                        Ok(Value::Null)
+                    } else {
+                        self.parse_env_value(&args[0], raw)
+                    }
+                }
+                "Result" => Err(NativeError::Runtime(
+                    "Result is not supported for config env overrides".to_string(),
+                )),
+                _ => Err(NativeError::Runtime(
+                    "config env overrides only support simple types".to_string(),
+                )),
+            },
         }
     }
 
-    fn is_result_type(&self, ty: Option<&crate::ast::TypeRef>) -> bool {
-        match ty {
-            Some(ty) => match &ty.kind {
-                crate::ast::TypeRefKind::Result { .. } => true,
-                crate::ast::TypeRefKind::Generic { base, .. } => base.name == "Result",
-                _ => false,
+    fn parse_simple_env(&self, name: &str, raw: &str) -> NativeResult<Value> {
+        match name {
+            "Int" => raw
+                .parse::<i64>()
+                .map(Value::Int)
+                .map_err(|_| NativeError::Runtime(format!("invalid Int: {raw}"))),
+            "Float" => raw
+                .parse::<f64>()
+                .map(Value::Float)
+                .map_err(|_| NativeError::Runtime(format!("invalid Float: {raw}"))),
+            "Bool" => match raw.to_ascii_lowercase().as_str() {
+                "true" => Ok(Value::Bool(true)),
+                "false" => Ok(Value::Bool(false)),
+                _ => Err(NativeError::Runtime(format!("invalid Bool: {raw}"))),
             },
-            None => false,
+            "String" | "Id" | "Email" | "Bytes" => Ok(Value::String(raw.to_string())),
+            _ => Err(NativeError::Runtime(format!(
+                "env override not supported for type {name}"
+            ))),
+        }
+    }
+
+    fn map_parse_error(&self, err: NativeError, path: &str) -> NativeError {
+        match err {
+            NativeError::Runtime(message) => {
+                NativeError::Error(self.validation_error_value(path, "invalid_value", message))
+            }
+            other => other,
+        }
+    }
+
+    fn validate_value(&self, value: &Value, ty: &TypeRef, path: &str) -> NativeResult<()> {
+        let value = value.unboxed();
+        match &ty.kind {
+            TypeRefKind::Optional(inner) => {
+                if matches!(value, Value::Null) {
+                    Ok(())
+                } else {
+                    self.validate_value(&value, inner, path)
+                }
+            }
+            TypeRefKind::Result { ok, err } => match value {
+                Value::ResultOk(inner) => self.validate_value(&inner, ok, path),
+                Value::ResultErr(inner) => {
+                    if let Some(err_ty) = err {
+                        self.validate_value(&inner, err_ty, path)
+                    } else {
+                        Ok(())
+                    }
+                }
+                _ => Err(NativeError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    format!(
+                        "expected Result, got {}",
+                        self.value_type_name(&value)
+                    ),
+                ))),
+            },
+            TypeRefKind::Refined { base, args } => {
+                self.validate_simple(&value, &base.name, path)?;
+                self.check_refined(&value, &base.name, args, path)
+            }
+            TypeRefKind::Simple(ident) => self.validate_simple(&value, &ident.name, path),
+            TypeRefKind::Generic { base, args } => match base.name.as_str() {
+                "Option" => {
+                    if args.len() != 1 {
+                        return Err(NativeError::Runtime(
+                            "Option expects 1 type argument".to_string(),
+                        ));
+                    }
+                    if matches!(value, Value::Null) {
+                        Ok(())
+                    } else {
+                        self.validate_value(&value, &args[0], path)
+                    }
+                }
+                "Result" => {
+                    if args.len() != 2 {
+                        return Err(NativeError::Runtime(
+                            "Result expects 2 type arguments".to_string(),
+                        ));
+                    }
+                    match value {
+                        Value::ResultOk(inner) => self.validate_value(&inner, &args[0], path),
+                        Value::ResultErr(inner) => self.validate_value(&inner, &args[1], path),
+                        _ => Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!(
+                                "expected Result, got {}",
+                                self.value_type_name(&value)
+                            ),
+                        ))),
+                    }
+                }
+                "List" => {
+                    if args.len() != 1 {
+                        return Err(NativeError::Runtime(
+                            "List expects 1 type argument".to_string(),
+                        ));
+                    }
+                    match value {
+                        Value::List(items) => {
+                            for (idx, item) in items.iter().enumerate() {
+                                let item_path = format!("{path}[{idx}]");
+                                self.validate_value(item, &args[0], &item_path)?;
+                            }
+                            Ok(())
+                        }
+                        _ => Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!(
+                                "expected List, got {}",
+                                self.value_type_name(&value)
+                            ),
+                        ))),
+                    }
+                }
+                "Map" => {
+                    if args.len() != 2 {
+                        return Err(NativeError::Runtime(
+                            "Map expects 2 type arguments".to_string(),
+                        ));
+                    }
+                    match value {
+                        Value::Map(items) => {
+                            for (key, val) in items.iter() {
+                                let key_value = Value::String(key.clone());
+                                let key_path = format!("{path}.{key}");
+                                self.validate_value(&key_value, &args[0], &key_path)?;
+                                self.validate_value(val, &args[1], &key_path)?;
+                            }
+                            Ok(())
+                        }
+                        _ => Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!(
+                                "expected Map, got {}",
+                                self.value_type_name(&value)
+                            ),
+                        ))),
+                    }
+                }
+                _ => Err(NativeError::Runtime(format!(
+                    "validation not supported for {}",
+                    base.name
+                ))),
+            },
+        }
+    }
+
+    fn validate_simple(&self, value: &Value, name: &str, path: &str) -> NativeResult<()> {
+        let value = value.unboxed();
+        let type_name = self.value_type_name(&value);
+        let (module, simple_name) = split_type_name(name);
+        if module.is_none() {
+            match simple_name {
+                "Int" => {
+                    if matches!(value, Value::Int(_)) {
+                        return Ok(());
+                    }
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Int, got {type_name}"),
+                    )));
+                }
+                "Float" => {
+                    if matches!(value, Value::Float(_)) {
+                        return Ok(());
+                    }
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Float, got {type_name}"),
+                    )));
+                }
+                "Bool" => {
+                    if matches!(value, Value::Bool(_)) {
+                        return Ok(());
+                    }
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Bool, got {type_name}"),
+                    )));
+                }
+                "String" => {
+                    if matches!(value, Value::String(_)) {
+                        return Ok(());
+                    }
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected String, got {type_name}"),
+                    )));
+                }
+                "Id" => match value {
+                    Value::String(s) if !s.is_empty() => return Ok(()),
+                    Value::String(_) => {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            "expected non-empty Id".to_string(),
+                        )))
+                    }
+                    _ => {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("expected Id, got {type_name}"),
+                        )))
+                    }
+                },
+                "Email" => match value {
+                    Value::String(s) if rt_validate::is_email(&s) => return Ok(()),
+                    Value::String(_) => {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            "invalid email address".to_string(),
+                        )))
+                    }
+                    _ => {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("expected Email, got {type_name}"),
+                        )))
+                    }
+                },
+                "Bytes" => {
+                    if matches!(value, Value::String(_)) {
+                        return Ok(());
+                    }
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Bytes, got {type_name}"),
+                    )));
+                }
+                _ => {}
+            }
+        }
+        match value {
+            Value::Struct { name: struct_name, .. } if struct_name == simple_name => Ok(()),
+            Value::Enum { name: enum_name, .. } if enum_name == simple_name => Ok(()),
+            _ => Err(NativeError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                format!("expected {name}, got {type_name}"),
+            ))),
+        }
+    }
+
+    fn value_type_name(&self, value: &Value) -> String {
+        match value.unboxed() {
+            Value::Unit => "Unit".to_string(),
+            Value::Int(_) => "Int".to_string(),
+            Value::Float(_) => "Float".to_string(),
+            Value::Bool(_) => "Bool".to_string(),
+            Value::String(_) => "String".to_string(),
+            Value::Null => "Null".to_string(),
+            Value::List(_) => "List".to_string(),
+            Value::Map(_) => "Map".to_string(),
+            Value::Task(_) => "Task".to_string(),
+            Value::Iterator(_) => "Iterator".to_string(),
+            Value::Struct { name, .. } => name.clone(),
+            Value::Enum { name, .. } => name.clone(),
+            Value::EnumCtor { name, .. } => name.clone(),
+            Value::ResultOk(_) | Value::ResultErr(_) => "Result".to_string(),
+            Value::Config(_) => "Config".to_string(),
+            Value::Function(_) => "Function".to_string(),
+            Value::Builtin(_) => "Builtin".to_string(),
+            Value::Boxed(_) => "Box".to_string(),
+        }
+    }
+
+    fn validation_error_value(&self, path: &str, code: &str, message: impl Into<String>) -> Value {
+        let field = self.validation_field_value(path, code, message);
+        let mut fields = HashMap::new();
+        fields.insert(
+            "message".to_string(),
+            Value::String("validation failed".to_string()),
+        );
+        fields.insert("fields".to_string(), Value::List(vec![field]));
+        Value::Struct {
+            name: "std.Error.Validation".to_string(),
+            fields,
+        }
+    }
+
+    fn validation_field_value(&self, path: &str, code: &str, message: impl Into<String>) -> Value {
+        let mut fields = HashMap::new();
+        fields.insert("path".to_string(), Value::String(path.to_string()));
+        fields.insert("code".to_string(), Value::String(code.to_string()));
+        fields.insert("message".to_string(), Value::String(message.into()));
+        Value::Struct {
+            name: "ValidationField".to_string(),
+            fields,
+        }
+    }
+
+    fn check_refined(
+        &self,
+        value: &Value,
+        base: &str,
+        args: &[Expr],
+        path: &str,
+    ) -> NativeResult<()> {
+        let value = value.unboxed();
+        match base {
+            "String" => {
+                let (min, max) = self.parse_length_range(args)?;
+                let len = match value {
+                    Value::String(s) => s.chars().count() as i64,
+                    _ => {
+                        return Err(NativeError::Runtime(
+                            "refined String expects a String".to_string(),
+                        ))
+                    }
+                };
+                if rt_validate::check_len(len, min, max) {
+                    Ok(())
+                } else {
+                    Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("length {len} out of range {min}..{max}"),
+                    )))
+                }
+            }
+            "Int" => {
+                let (min, max) = self.parse_int_range(args)?;
+                let val = match value {
+                    Value::Int(v) => v,
+                    _ => {
+                        return Err(NativeError::Runtime(
+                            "refined Int expects an Int".to_string(),
+                        ))
+                    }
+                };
+                if rt_validate::check_int_range(val, min, max) {
+                    Ok(())
+                } else {
+                    Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("value {val} out of range {min}..{max}"),
+                    )))
+                }
+            }
+            "Float" => {
+                let (min, max) = self.parse_float_range(args)?;
+                let val = match value {
+                    Value::Float(v) => v,
+                    _ => {
+                        return Err(NativeError::Runtime(
+                            "refined Float expects a Float".to_string(),
+                        ))
+                    }
+                };
+                if rt_validate::check_float_range(val, min, max) {
+                    Ok(())
+                } else {
+                    Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("value {val} out of range {min}..{max}"),
+                    )))
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn parse_length_range(&self, args: &[Expr]) -> NativeResult<(i64, i64)> {
+        let (left, right) = self.extract_range_args(args)?;
+        let min = self
+            .literal_to_i64(left)
+            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+        let max = self
+            .literal_to_i64(right)
+            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+        Ok((min, max))
+    }
+
+    fn parse_int_range(&self, args: &[Expr]) -> NativeResult<(i64, i64)> {
+        let (left, right) = self.extract_range_args(args)?;
+        let min = self
+            .literal_to_i64(left)
+            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+        let max = self
+            .literal_to_i64(right)
+            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+        Ok((min, max))
+    }
+
+    fn parse_float_range(&self, args: &[Expr]) -> NativeResult<(f64, f64)> {
+        let (left, right) = self.extract_range_args(args)?;
+        let min = self
+            .literal_to_f64(left)
+            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+        let max = self
+            .literal_to_f64(right)
+            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+        Ok((min, max))
+    }
+
+    fn extract_range_args<'b>(&self, args: &'b [Expr]) -> NativeResult<(&'b Expr, &'b Expr)> {
+        if args.len() == 1 {
+            if let ExprKind::Binary {
+                op: BinaryOp::Range,
+                left,
+                right,
+            } = &args[0].kind
+            {
+                return Ok((left, right));
+            }
+        }
+        if args.len() == 2 {
+            return Ok((&args[0], &args[1]));
+        }
+        Err(NativeError::Runtime(
+            "refined types expect a range like 1..10".to_string(),
+        ))
+    }
+
+    fn literal_to_i64(&self, expr: &Expr) -> Option<i64> {
+        match &expr.kind {
+            ExprKind::Literal(Literal::Int(v)) => Some(*v),
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr,
+            } => match &expr.kind {
+                ExprKind::Literal(Literal::Int(v)) => Some(-v),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn literal_to_f64(&self, expr: &Expr) -> Option<f64> {
+        match &expr.kind {
+            ExprKind::Literal(Literal::Int(v)) => Some(*v as f64),
+            ExprKind::Literal(Literal::Float(v)) => Some(*v),
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr,
+            } => match &expr.kind {
+                ExprKind::Literal(Literal::Int(v)) => Some(-(*v as f64)),
+                ExprKind::Literal(Literal::Float(v)) => Some(-*v),
+                _ => None,
+            },
+            _ => None,
         }
     }
 }

@@ -1,8 +1,10 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::db::Db;
 use crate::interp::{Task, TaskResult, Value};
+use crate::ir::TypeInfo;
 
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -12,6 +14,7 @@ pub enum NativeTag {
     Float,
     Null,
     Heap,
+    Unit,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -49,6 +52,7 @@ pub enum TaskResultValue {
     Runtime(String),
 }
 
+#[repr(C)]
 #[derive(Default)]
 pub struct NativeHeap {
     values: Vec<Option<HeapValue>>,
@@ -57,6 +61,7 @@ pub struct NativeHeap {
     interned: std::collections::HashMap<String, u64>,
     db: Option<Db>,
     configs: std::collections::HashMap<String, std::collections::HashMap<String, Value>>,
+    types: HashMap<String, TypeInfo>,
 }
 
 impl NativeHeap {
@@ -118,6 +123,18 @@ impl NativeHeap {
         configs: std::collections::HashMap<String, std::collections::HashMap<String, Value>>,
     ) {
         self.configs = configs;
+    }
+
+    pub fn set_types(&mut self, types: HashMap<String, TypeInfo>) {
+        self.types = types;
+    }
+
+    pub fn has_types(&self) -> bool {
+        !self.types.is_empty()
+    }
+
+    pub fn type_info(&self, name: &str) -> Option<&TypeInfo> {
+        self.types.get(name)
     }
 
     pub fn ensure_config(&mut self, name: &str) {
@@ -233,6 +250,13 @@ impl NativeValue {
     pub fn null() -> Self {
         Self {
             tag: NativeTag::Null,
+            payload: 0,
+        }
+    }
+
+    pub fn unit() -> Self {
+        Self {
+            tag: NativeTag::Unit,
             payload: 0,
         }
     }
@@ -356,6 +380,7 @@ impl NativeValue {
 
     pub fn from_value(value: &Value, heap: &mut NativeHeap) -> Option<Self> {
         match value {
+            Value::Unit => Some(Self::unit()),
             Value::Int(v) => Some(Self::int(*v)),
             Value::Bool(v) => Some(Self::bool(*v)),
             Value::Float(v) => Some(Self::float(*v)),
@@ -435,6 +460,7 @@ impl NativeValue {
 
     pub fn to_value(self, heap: &NativeHeap) -> Option<Value> {
         match self.tag {
+            NativeTag::Unit => Some(Value::Unit),
             NativeTag::Int => Some(Value::Int(self.payload as i64)),
             NativeTag::Bool => Some(Value::Bool(self.payload != 0)),
             NativeTag::Float => Some(Value::Float(f64::from_bits(self.payload))),

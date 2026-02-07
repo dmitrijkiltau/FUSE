@@ -18,14 +18,29 @@ use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 use cranelift_native::builder as native_builder;
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
-use crate::ast::{BinaryOp, Expr, ExprKind, Literal, TypeRef, TypeRefKind, UnaryOp};
+use crate::ast::{BinaryOp, Expr, ExprKind, Literal, PatternKind, TypeRef, TypeRefKind, UnaryOp};
 use crate::interp::Value;
 use crate::native::value::{HeapValue, NativeHeap, NativeTag, NativeValue, TaskValue};
-use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram, TypeInfo};
+use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram};
 
 use fuse_rt::{config as rt_config, json as rt_json, validate as rt_validate};
 
 type EntryFn = unsafe extern "C" fn(*const NativeValue, *mut NativeValue, *mut NativeHeap) -> u8;
+
+macro_rules! jit_fail {
+    ($func:expr, $ip:expr, $instr:expr, $reason:expr) => {{
+        if std::env::var("FUSE_NATIVE_DEBUG").is_ok() {
+            match ($ip, $instr) {
+                (Some(ip), Some(instr)) => eprintln!(
+                    "native compile failed in {} at {ip}: {instr:?} ({})",
+                    $func.name, $reason
+                ),
+                _ => eprintln!("native compile failed in {} ({})", $func.name, $reason),
+            }
+        }
+        return None;
+    }};
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 enum JitType {
@@ -37,6 +52,7 @@ enum JitType {
     Struct,
     Enum,
     Boxed,
+    Unit,
     Value,
 }
 
@@ -103,6 +119,7 @@ impl CompileState {
         module: &mut M,
         name: &str,
         param_types: &[JitType],
+        linkage: Linkage,
     ) -> Option<(FuncKey, FuncId)> {
         if let Some(existing) = self.name_param_types.get(name) {
             if existing.as_slice() != param_types {
@@ -116,7 +133,7 @@ impl CompileState {
         let signature = entry_signature(module);
         let symbol = jit_symbol(name);
         let id = module
-            .declare_function(&symbol, Linkage::Local, &signature)
+            .declare_function(&symbol, linkage, &signature)
             .ok()?;
         self.func_ids.insert(key.clone(), id);
         self.name_param_types
@@ -131,10 +148,13 @@ pub(crate) struct HostCalls {
     make_struct: FuncId,
     get_struct_field: FuncId,
     make_enum: FuncId,
+    match_enum: FuncId,
     make_box: FuncId,
     interp_string: FuncId,
     bang: FuncId,
     add: FuncId,
+    eq: FuncId,
+    not_eq: FuncId,
     builtin_log: FuncId,
     builtin_print: FuncId,
     builtin_env: FuncId,
@@ -169,6 +189,11 @@ pub(crate) struct ObjectArtifact {
     pub entry_symbol: String,
 }
 
+pub(crate) struct ObjectArtifactSet {
+    pub object: Vec<u8>,
+    pub interned_strings: Vec<String>,
+}
+
 const NATIVE_VALUE_SIZE: i32 = std::mem::size_of::<NativeValue>() as i32;
 const NATIVE_VALUE_PAYLOAD_OFFSET: i32 = std::mem::size_of::<NativeTag>() as i32;
 const NATIVE_VALUE_ALIGN_SHIFT: u8 = 3;
@@ -190,10 +215,13 @@ impl JitRuntime {
             fuse_native_get_struct_field as *const u8,
         );
         builder.symbol("fuse_native_make_enum", fuse_native_make_enum as *const u8);
+        builder.symbol("fuse_native_match_enum", fuse_native_match_enum as *const u8);
         builder.symbol("fuse_native_make_box", fuse_native_make_box as *const u8);
         builder.symbol("fuse_native_interp_string", fuse_native_interp_string as *const u8);
         builder.symbol("fuse_native_bang", fuse_native_bang as *const u8);
         builder.symbol("fuse_native_add", fuse_native_add as *const u8);
+        builder.symbol("fuse_native_eq", fuse_native_eq as *const u8);
+        builder.symbol("fuse_native_not_eq", fuse_native_not_eq as *const u8);
         builder.symbol("fuse_native_builtin_log", fuse_native_builtin_log as *const u8);
         builder.symbol("fuse_native_builtin_print", fuse_native_builtin_print as *const u8);
         builder.symbol("fuse_native_builtin_env", fuse_native_builtin_env as *const u8);
@@ -250,6 +278,7 @@ impl JitRuntime {
                 name,
                 func,
                 &param_types,
+                Linkage::Local,
                 heap,
                 &mut state,
                 &mut pending,
@@ -338,6 +367,7 @@ pub(crate) fn emit_object_for_function(
         &func.name,
         func,
         &param_types,
+        Linkage::Export,
         &mut heap,
         &mut state,
         &mut pending,
@@ -352,6 +382,69 @@ pub(crate) fn emit_object_for_function(
         object,
         interned_strings,
         entry_symbol: jit_symbol(&func.name),
+    })
+}
+
+pub(crate) fn emit_object_for_functions(
+    program: &IrProgram,
+    funcs: &[&Function],
+) -> Result<ObjectArtifactSet, String> {
+    if funcs.is_empty() {
+        return Err("object emission requires at least one function".to_string());
+    }
+    for func in funcs {
+        if !func.params.is_empty() {
+            return Err("object emission requires zero-arg functions".to_string());
+        }
+    }
+    let mut flag_builder = settings::builder();
+    flag_builder
+        .set("is_pic", "true")
+        .map_err(|err| format!("cranelift settings error: {err}"))?;
+    let isa_builder = native_builder().map_err(|err| format!("native isa error: {err}"))?;
+    let isa = isa_builder
+        .finish(settings::Flags::new(flag_builder))
+        .map_err(|err| format!("native isa error: {err}"))?;
+    let builder = ObjectBuilder::new(isa, "fuse_native", default_libcall_names())
+        .map_err(|err| format!("object builder error: {err}"))?;
+    let mut module = ObjectModule::new(builder);
+    let hostcalls = HostCalls::declare(&mut module);
+    let mut heap = NativeHeap::new();
+    let param_types: Vec<JitType> = Vec::new();
+    let mut state = CompileState::new();
+    let mut pending = Vec::new();
+    let mut seen = HashSet::new();
+    for func in funcs {
+        if !seen.insert(func.name.clone()) {
+            continue;
+        }
+        let compiled = compile_function(
+            &mut module,
+            &hostcalls,
+            program,
+            &func.name,
+            func,
+            &param_types,
+            Linkage::Export,
+            &mut heap,
+            &mut state,
+            &mut pending,
+        );
+        if compiled.is_none() {
+            return Err(format!(
+                "native backend could not compile function {}",
+                func.name
+            ));
+        }
+    }
+    let product = module.finish();
+    let object = product
+        .emit()
+        .map_err(|err| format!("object emit error: {err}"))?;
+    let interned_strings = heap.interned_strings_in_order();
+    Ok(ObjectArtifactSet {
+        object,
+        interned_strings,
     })
 }
 
@@ -410,6 +503,17 @@ impl HostCalls {
             .declare_function("fuse_native_make_enum", Linkage::Import, &enum_sig)
             .expect("declare make_enum hostcall");
 
+        let mut match_sig = module.make_signature();
+        match_sig.params.push(AbiParam::new(pointer_ty));
+        match_sig.params.push(AbiParam::new(types::I64));
+        match_sig.params.push(AbiParam::new(types::I64));
+        match_sig.params.push(AbiParam::new(pointer_ty));
+        match_sig.params.push(AbiParam::new(types::I64));
+        match_sig.returns.push(AbiParam::new(types::I64));
+        let match_enum = module
+            .declare_function("fuse_native_match_enum", Linkage::Import, &match_sig)
+            .expect("declare match_enum hostcall");
+
         let mut box_sig = module.make_signature();
         box_sig.params.push(AbiParam::new(pointer_ty));
         box_sig.params.push(AbiParam::new(pointer_ty));
@@ -447,6 +551,12 @@ impl HostCalls {
         let add = module
             .declare_function("fuse_native_add", Linkage::Import, &builtin_sig)
             .expect("declare add hostcall");
+        let eq = module
+            .declare_function("fuse_native_eq", Linkage::Import, &builtin_sig)
+            .expect("declare eq hostcall");
+        let not_eq = module
+            .declare_function("fuse_native_not_eq", Linkage::Import, &builtin_sig)
+            .expect("declare not_eq hostcall");
         let builtin_log = module
             .declare_function("fuse_native_builtin_log", Linkage::Import, &builtin_sig)
             .expect("declare builtin log hostcall");
@@ -488,7 +598,7 @@ impl HostCalls {
             .expect("declare json decode hostcall");
         let mut validate_sig = module.make_signature();
         validate_sig.params.push(AbiParam::new(pointer_ty));
-        validate_sig.params.push(AbiParam::new(pointer_ty));
+        validate_sig.params.push(AbiParam::new(types::I64));
         validate_sig.params.push(AbiParam::new(pointer_ty));
         validate_sig.params.push(AbiParam::new(types::I64));
         validate_sig.params.push(AbiParam::new(pointer_ty));
@@ -503,10 +613,13 @@ impl HostCalls {
             make_struct,
             get_struct_field,
             make_enum,
+            match_enum,
             make_box,
             interp_string,
             bang,
             add,
+            eq,
+            not_eq,
             builtin_log,
             builtin_print,
             builtin_env,
@@ -1269,6 +1382,45 @@ extern "C" fn fuse_native_make_enum(
 }
 
 #[unsafe(no_mangle)]
+extern "C" fn fuse_native_match_enum(
+    heap: *mut NativeHeap,
+    handle: u64,
+    variant_handle: u64,
+    out: *mut NativeValue,
+    len: u64,
+) -> u64 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 0;
+    };
+    let Some(value) = heap.get(handle) else {
+        return 0;
+    };
+    let HeapValue::Enum { variant, payload, .. } = value else {
+        return 0;
+    };
+    let Some(variant_value) = heap.get(variant_handle) else {
+        return 0;
+    };
+    let HeapValue::String(expected_variant) = variant_value else {
+        return 0;
+    };
+    if variant != expected_variant {
+        return 0;
+    }
+    if payload.len() != len as usize {
+        return 0;
+    }
+    if !out.is_null() {
+        let slice = unsafe { std::slice::from_raw_parts_mut(out, len as usize) };
+        for (dst, src) in slice.iter_mut().zip(payload.iter()) {
+            *dst = src.clone();
+        }
+    }
+    1
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn fuse_native_make_box(heap: *mut NativeHeap, value: *const NativeValue) -> u64 {
     let heap = unsafe { heap.as_mut() };
     let Some(heap) = heap else {
@@ -1414,6 +1566,89 @@ extern "C" fn fuse_native_add(
     };
     let Some(native) = NativeValue::from_value(&value, heap) else {
         return builtin_runtime_error(out, heap, "add result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_eq(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    native_compare(BinaryOp::Eq, heap, args, len, out)
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_not_eq(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    native_compare(BinaryOp::NotEq, heap, args, len, out)
+}
+
+fn native_compare(
+    op: BinaryOp,
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "compare expects 2 values");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(left) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "compare expects 2 values");
+    };
+    let Some(right) = args.get(1) else {
+        return builtin_runtime_error(out, heap, "compare expects 2 values");
+    };
+    let Some(left) = left.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "compare expects 2 values");
+    };
+    let Some(right) = right.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "compare expects 2 values");
+    };
+    let left = left.unboxed();
+    let right = right.unboxed();
+    let value = match (left, right) {
+        (Value::Int(a), Value::Int(b)) => match op {
+            BinaryOp::Eq => Value::Bool(a == b),
+            BinaryOp::NotEq => Value::Bool(a != b),
+            _ => return builtin_runtime_error(out, heap, "unsupported comparison"),
+        },
+        (Value::Float(a), Value::Float(b)) => match op {
+            BinaryOp::Eq => Value::Bool(a == b),
+            BinaryOp::NotEq => Value::Bool(a != b),
+            _ => return builtin_runtime_error(out, heap, "unsupported comparison"),
+        },
+        (Value::Bool(a), Value::Bool(b)) => match op {
+            BinaryOp::Eq => Value::Bool(a == b),
+            BinaryOp::NotEq => Value::Bool(a != b),
+            _ => return builtin_runtime_error(out, heap, "unsupported comparison"),
+        },
+        (Value::String(a), Value::String(b)) => match op {
+            BinaryOp::Eq => Value::Bool(a == b),
+            BinaryOp::NotEq => Value::Bool(a != b),
+            _ => return builtin_runtime_error(out, heap, "unsupported comparison"),
+        },
+        _ => return builtin_runtime_error(out, heap, "unsupported comparison operands"),
+    };
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "compare result unsupported");
     };
     *out = native;
     0
@@ -1863,7 +2098,7 @@ extern "C" fn fuse_native_json_decode(
 #[unsafe(no_mangle)]
 extern "C" fn fuse_native_validate_struct(
     heap: *mut NativeHeap,
-    type_info: *const TypeInfo,
+    name_handle: u64,
     pairs: *const NativeValue,
     len: u64,
     out: *mut NativeValue,
@@ -1875,8 +2110,14 @@ extern "C" fn fuse_native_validate_struct(
     let Some(out) = (unsafe { out.as_mut() }) else {
         return 2;
     };
-    let Some(type_info) = (unsafe { type_info.as_ref() }) else {
-        return builtin_runtime_error(out, heap, "invalid struct info");
+    let Some(name_value) = heap.get(name_handle) else {
+        return builtin_runtime_error(out, heap, "invalid struct name");
+    };
+    let HeapValue::String(type_name) = name_value else {
+        return builtin_runtime_error(out, heap, "invalid struct name");
+    };
+    let Some(type_info) = heap.type_info(type_name) else {
+        return builtin_runtime_error(out, heap, "unknown struct type");
     };
 
     if len == 0 {
@@ -2096,20 +2337,49 @@ fn compile_function<M: Module>(
     name: &str,
     func: &Function,
     param_types: &[JitType],
+    linkage: Linkage,
     heap: &mut NativeHeap,
     state: &mut CompileState,
     pending: &mut Vec<PendingCompiled>,
 ) -> Option<FuncId> {
     let ret = if let Some(ret) = func.ret.as_ref() {
-        return_kind(ret, program)?
+        match return_kind(ret, program) {
+            Some(kind) => kind,
+            None => jit_fail!(func, None::<usize>, None::<&Instr>, "unsupported return type"),
+        }
     } else {
         ReturnKind::Value
     };
-    if func.code.is_empty() || func.params.len() != param_types.len() {
-        return None;
+    if func.code.is_empty() {
+        jit_fail!(func, None::<usize>, None::<&Instr>, "empty function body");
+    }
+    if func.params.len() != param_types.len() {
+        jit_fail!(
+            func,
+            None::<usize>,
+            None::<&Instr>,
+            "parameter arity mismatch"
+        );
+    }
+    if std::env::var("FUSE_NATIVE_DEBUG").is_ok() {
+        let debug_func = std::env::var("FUSE_NATIVE_DEBUG_FUNC").ok();
+        if debug_func.as_deref().map_or(true, |name| name == func.name) {
+            eprintln!("native compile {} code:", func.name);
+            for (idx, instr) in func.code.iter().enumerate() {
+                eprintln!("  {idx}: {instr:?}");
+            }
+        }
     }
 
-    let (key, id) = state.ensure_declared(module, name, param_types)?;
+    let (key, id) = match state.ensure_declared(module, name, param_types, linkage) {
+        Some(result) => result,
+        None => jit_fail!(
+            func,
+            None::<usize>,
+            None::<&Instr>,
+            "signature mismatch"
+        ),
+    };
     if state.compiled.contains(&key) {
         return Some(id);
     }
@@ -2118,8 +2388,24 @@ fn compile_function<M: Module>(
     }
     state.in_progress.insert(key.clone());
 
-    let starts = block_starts(&func.code)?;
-    let (local_types, entry_stacks) = analyze_types(func, param_types, &starts, program)?;
+    let starts = match block_starts(&func.code) {
+        Some(starts) => starts,
+        None => jit_fail!(
+            func,
+            None::<usize>,
+            None::<&Instr>,
+            "invalid control flow"
+        ),
+    };
+    let (local_types, entry_stacks) = match analyze_types(func, param_types, &starts, program) {
+        Some(result) => result,
+        None => jit_fail!(
+            func,
+            None::<usize>,
+            None::<&Instr>,
+            "type analysis failed"
+        ),
+    };
     let mut ctx = module.make_context();
     let pointer_ty = module.target_config().pointer_type();
     ctx.func.signature = entry_signature(module);
@@ -2233,7 +2519,7 @@ fn compile_function<M: Module>(
                 Instr::Push(Const::Unit) => {
                     stack.push(StackValue {
                         value: builder.ins().iconst(types::I64, 0),
-                        kind: JitType::Int,
+                        kind: JitType::Unit,
                     });
                 }
                 Instr::Push(Const::Int(v)) => {
@@ -2344,7 +2630,6 @@ fn compile_function<M: Module>(
                         values.push(stack.pop()?);
                     }
                     values.reverse();
-                    let type_info = program.types.get(name)?;
                     let name_handle = NativeValue::intern_string(name.clone(), heap).payload;
                     let field_handles: Vec<u64> = fields
                         .iter()
@@ -2387,14 +2672,13 @@ fn compile_function<M: Module>(
                     ));
                     let validate_out_ptr =
                         builder.ins().stack_addr(pointer_ty, validate_out_slot, 0);
-                    let type_ptr =
-                        builder.ins().iconst(pointer_ty, type_info as *const TypeInfo as i64);
                     let validate_func =
                         module.declare_func_in_func(hostcalls.validate_struct, builder.func);
                     let len_val = builder.ins().iconst(types::I64, count as i64);
+                    let name_val = builder.ins().iconst(types::I64, name_handle as i64);
                     let validate_call = builder.ins().call(
                         validate_func,
-                        &[heap_ptr, type_ptr, base, len_val, validate_out_ptr],
+                        &[heap_ptr, name_val, base, len_val, validate_out_ptr],
                     );
                     let status = builder.inst_results(validate_call)[0];
                     let ok_block = builder.create_block();
@@ -2420,7 +2704,6 @@ fn compile_function<M: Module>(
                     copy_native_value(&mut builder, err_out_ptr, out_ptr);
                     builder.ins().return_(&[status_val]);
                     builder.switch_to_block(ok_block);
-                    let name_val = builder.ins().iconst(types::I64, name_handle as i64);
                     let func_ref =
                         module.declare_func_in_func(hostcalls.make_struct, builder.func);
                     let call =
@@ -2537,6 +2820,198 @@ fn compile_function<M: Module>(
                         kind: JitType::Heap,
                     });
                 }
+                Instr::MatchLocal {
+                    slot,
+                    pat,
+                    bindings,
+                    jump,
+                } => {
+                    let local_kind = *local_types.get(*slot)?;
+                    let local_var = *locals.get(*slot)?;
+                    let binding_map: HashMap<&str, usize> = bindings
+                        .iter()
+                        .map(|(name, slot)| (name.as_str(), *slot))
+                        .collect();
+                    match &pat.kind {
+                        PatternKind::Wildcard => {
+                            // Always matches, no bindings to apply.
+                        }
+                        PatternKind::Ident(ident) => {
+                            if let Some(bind_slot) = binding_map.get(ident.name.as_str()) {
+                                let target_var = *locals.get(*bind_slot)?;
+                                if *local_types.get(*bind_slot)? != JitType::Value {
+                                    jit_fail!(
+                                        func,
+                                        Some(ip),
+                                        Some(&func.code[ip]),
+                                        "match binding type mismatch"
+                                    );
+                                }
+                                let value = StackValue {
+                                    value: builder.use_var(local_var),
+                                    kind: local_kind,
+                                };
+                                let src_ptr = ensure_value_ptr(&mut builder, pointer_ty, value)?;
+                                let dst_ptr = builder.use_var(target_var);
+                                copy_native_value(&mut builder, src_ptr, dst_ptr);
+                            } else {
+                                let ok_idx = *block_for_start.get(&(ip + 1))?;
+                                let fail_idx = *block_for_start.get(jump)?;
+                                if local_kind != JitType::Enum {
+                                    jit_fail!(
+                                        func,
+                                        Some(ip),
+                                        Some(&func.code[ip]),
+                                        "match on non-enum"
+                                    );
+                                }
+                                let enum_handle = builder.use_var(local_var);
+                                let variant_handle =
+                                    NativeValue::intern_string(ident.name.clone(), heap).payload;
+                                let func_ref =
+                                    module.declare_func_in_func(hostcalls.match_enum, builder.func);
+                                let variant_val =
+                                    builder.ins().iconst(types::I64, variant_handle as i64);
+                                let len_val = builder.ins().iconst(types::I64, 0);
+                                let payload_ptr = builder.ins().iconst(pointer_ty, 0);
+                                let call = builder.ins().call(
+                                    func_ref,
+                                    &[heap_ptr, enum_handle, variant_val, payload_ptr, len_val],
+                                );
+                                let matched = builder.inst_results(call)[0];
+                                let is_match =
+                                    builder.ins().icmp_imm(IntCC::NotEqual, matched, 0);
+                                let fail_args = coerce_stack_args(
+                                    &mut builder,
+                                    pointer_ty,
+                                    &stack,
+                                    entry_stacks.get(fail_idx)?,
+                                )?;
+                                let bind_block = builder.create_block();
+                                builder.ins().brif(
+                                    is_match,
+                                    bind_block,
+                                    &[],
+                                    blocks[fail_idx],
+                                    &fail_args,
+                                );
+                                builder.switch_to_block(bind_block);
+                                let ok_args = coerce_stack_args(
+                                    &mut builder,
+                                    pointer_ty,
+                                    &stack,
+                                    entry_stacks.get(ok_idx)?,
+                                )?;
+                                builder.ins().jump(blocks[ok_idx], &ok_args);
+                                terminated = true;
+                                break;
+                            }
+                        }
+                        PatternKind::EnumVariant { name, args } => {
+                            let ok_idx = *block_for_start.get(&(ip + 1))?;
+                            let fail_idx = *block_for_start.get(jump)?;
+                            if local_kind != JitType::Enum {
+                                jit_fail!(
+                                    func,
+                                    Some(ip),
+                                    Some(&func.code[ip]),
+                                    "match on non-enum"
+                                );
+                            }
+                            let enum_handle = builder.use_var(local_var);
+                            let variant_handle =
+                                NativeValue::intern_string(name.name.clone(), heap).payload;
+                            let count = u32::try_from(args.len()).ok()?;
+                            let payload_ptr = if count == 0 {
+                                builder.ins().iconst(pointer_ty, 0)
+                            } else {
+                                let slot_size = count.checked_mul(NATIVE_VALUE_SIZE as u32)?;
+                                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                    StackSlotKind::ExplicitSlot,
+                                    slot_size,
+                                    NATIVE_VALUE_ALIGN_SHIFT,
+                                ));
+                                builder.ins().stack_addr(pointer_ty, slot, 0)
+                            };
+                            let func_ref =
+                                module.declare_func_in_func(hostcalls.match_enum, builder.func);
+                            let variant_val =
+                                builder.ins().iconst(types::I64, variant_handle as i64);
+                            let len_val = builder.ins().iconst(types::I64, count as i64);
+                            let call = builder.ins().call(
+                                func_ref,
+                                &[heap_ptr, enum_handle, variant_val, payload_ptr, len_val],
+                            );
+                            let matched = builder.inst_results(call)[0];
+                            let is_match =
+                                builder.ins().icmp_imm(IntCC::NotEqual, matched, 0);
+                            let fail_args = coerce_stack_args(
+                                &mut builder,
+                                pointer_ty,
+                                &stack,
+                                entry_stacks.get(fail_idx)?,
+                            )?;
+                            let bind_block = builder.create_block();
+                            builder.ins().brif(
+                                is_match,
+                                bind_block,
+                                &[],
+                                blocks[fail_idx],
+                                &fail_args,
+                            );
+                            builder.switch_to_block(bind_block);
+                            for (idx, arg) in args.iter().enumerate() {
+                                match &arg.kind {
+                                    PatternKind::Wildcard => {}
+                                    PatternKind::Ident(ident) => {
+                                        let Some(bind_slot) =
+                                            binding_map.get(ident.name.as_str())
+                                        else {
+                                            continue;
+                                        };
+                                        if *local_types.get(*bind_slot)? != JitType::Value {
+                                            jit_fail!(
+                                                func,
+                                                Some(ip),
+                                                Some(&func.code[ip]),
+                                                "match binding type mismatch"
+                                            );
+                                        }
+                                        let target_var = *locals.get(*bind_slot)?;
+                                        let offset =
+                                            i32::try_from(idx).ok()?.checked_mul(NATIVE_VALUE_SIZE)?;
+                                        let src_ptr = builder
+                                            .ins()
+                                            .iadd_imm(payload_ptr, i64::from(offset));
+                                        let dst_ptr = builder.use_var(target_var);
+                                        copy_native_value(&mut builder, src_ptr, dst_ptr);
+                                    }
+                                    _ => jit_fail!(
+                                        func,
+                                        Some(ip),
+                                        Some(&func.code[ip]),
+                                        "unsupported match arg"
+                                    ),
+                                }
+                            }
+                            let ok_args = coerce_stack_args(
+                                &mut builder,
+                                pointer_ty,
+                                &stack,
+                                entry_stacks.get(ok_idx)?,
+                            )?;
+                            builder.ins().jump(blocks[ok_idx], &ok_args);
+                            terminated = true;
+                            break;
+                        }
+                        _ => jit_fail!(
+                            func,
+                            Some(ip),
+                            Some(&func.code[ip]),
+                            "unsupported match pattern"
+                        ),
+                    }
+                }
                 Instr::LoadConfigField { config, field } => {
                     let config_handle = NativeValue::intern_string(config.clone(), heap).payload;
                     let field_handle = NativeValue::intern_string(field.clone(), heap).payload;
@@ -2645,7 +3120,7 @@ fn compile_function<M: Module>(
                                 "db.one" => hostcalls.db_one,
                                 "json.encode" => hostcalls.json_encode,
                                 "json.decode" => hostcalls.json_decode,
-                                _ => return None,
+                                _ => jit_fail!(func, Some(ip), Some(&func.code[ip]), "unknown builtin"),
                             };
                             let len_val = builder.ins().iconst(types::I64, count as i64);
                             let func_ref = module.declare_func_in_func(builtin, builder.func);
@@ -2659,7 +3134,7 @@ fn compile_function<M: Module>(
                             for arg in &args {
                                 param_kinds.push(arg.kind);
                             }
-                            let callee = program
+                            let callee = match program
                                 .functions
                                 .get(name)
                                 .or_else(|| program.apps.get(name))
@@ -2668,22 +3143,42 @@ fn compile_function<M: Module>(
                                         .apps
                                         .values()
                                         .find(|func| func.name == name.as_str())
-                                })?;
+                                }) {
+                                Some(callee) => callee,
+                                None => jit_fail!(func, Some(ip), Some(&func.code[ip]), "unknown callee"),
+                            };
                             if callee.params.len() != args.len() {
-                                return None;
+                                jit_fail!(func, Some(ip), Some(&func.code[ip]), "callee arity mismatch");
                             }
-                            let result_kind = return_jit_kind(callee.ret.as_ref(), program)?;
-                            let callee_id = compile_function(
+                            let result_kind = match return_jit_kind(callee.ret.as_ref(), program) {
+                                Some(kind) => kind,
+                                None => jit_fail!(
+                                    func,
+                                    Some(ip),
+                                    Some(&func.code[ip]),
+                                    "callee return type unsupported"
+                                ),
+                            };
+                            let callee_id = match compile_function(
                                 module,
                                 hostcalls,
                                 program,
                                 name,
                                 callee,
                                 &param_kinds,
+                                Linkage::Local,
                                 heap,
                                 state,
                                 pending,
-                            )?;
+                            ) {
+                                Some(id) => id,
+                                None => jit_fail!(
+                                    func,
+                                    Some(ip),
+                                    Some(&func.code[ip]),
+                                    "callee compile failed"
+                                ),
+                            };
                             let func_ref = module.declare_func_in_func(callee_id, builder.func);
                             let call = builder
                                 .ins()
@@ -2739,7 +3234,12 @@ fn compile_function<M: Module>(
                         builder.def_var(var, ptr);
                     } else {
                         if value.kind != kind {
-                            return None;
+                            jit_fail!(
+                                func,
+                                Some(ip),
+                                Some(&func.code[ip]),
+                                "store kind mismatch"
+                            );
                         }
                         builder.def_var(var, value.value);
                     }
@@ -2867,8 +3367,72 @@ fn compile_function<M: Module>(
                 Instr::Eq | Instr::NotEq | Instr::Lt | Instr::LtEq | Instr::Gt | Instr::GtEq => {
                     let rhs = stack.pop()?;
                     let lhs = stack.pop()?;
-                    let out = compare_op(&mut builder, &lhs, &rhs, &func.code[ip])?;
-                    stack.push(out);
+                    if let Some(out) = compare_op(&mut builder, &lhs, &rhs, &func.code[ip]) {
+                        stack.push(out);
+                        continue;
+                    }
+                    if !matches!(func.code[ip], Instr::Eq | Instr::NotEq) {
+                        return None;
+                    }
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        (NATIVE_VALUE_SIZE * 2) as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
+                    ));
+                    let base = builder.ins().stack_addr(pointer_ty, slot, 0);
+                    store_native_value(&mut builder, base, 0, lhs)?;
+                    store_native_value(&mut builder, base, NATIVE_VALUE_SIZE, rhs)?;
+                    let len_val = builder.ins().iconst(types::I64, 2);
+                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        NATIVE_VALUE_SIZE as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
+                    ));
+                    let cmp_out_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
+                    let func_ref = match func.code[ip] {
+                        Instr::Eq => module.declare_func_in_func(hostcalls.eq, builder.func),
+                        _ => module.declare_func_in_func(hostcalls.not_eq, builder.func),
+                    };
+                    let call =
+                        builder.ins().call(func_ref, &[heap_ptr, base, len_val, cmp_out_ptr]);
+                    let status = builder.inst_results(call)[0];
+                    let ok_idx = *block_for_start.get(&(ip + 1))?;
+                    let mut ok_stack = stack.clone();
+                    let payload = builder.ins().load(
+                        types::I64,
+                        MemFlags::new(),
+                        cmp_out_ptr,
+                        NATIVE_VALUE_PAYLOAD_OFFSET,
+                    );
+                    ok_stack.push(StackValue {
+                        value: payload,
+                        kind: JitType::Bool,
+                    });
+                    let ok_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &ok_stack,
+                        entry_stacks.get(ok_idx)?,
+                    )?;
+                    let err_block = builder.create_block();
+                    builder.append_block_param(err_block, types::I8);
+                    builder.append_block_param(err_block, pointer_ty);
+                    let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    let err_args = [BlockArg::Value(status), BlockArg::Value(cmp_out_ptr)];
+                    builder.ins().brif(
+                        is_ok,
+                        blocks[ok_idx],
+                        &ok_args,
+                        err_block,
+                        &err_args,
+                    );
+                    builder.switch_to_block(err_block);
+                    let status_val = builder.block_params(err_block)[0];
+                    let err_out_ptr = builder.block_params(err_block)[1];
+                    copy_native_value(&mut builder, err_out_ptr, out_ptr);
+                    builder.ins().return_(&[status_val]);
+                    terminated = true;
+                    break;
                 }
                 Instr::And => {
                     let rhs = stack.pop()?;
@@ -3075,7 +3639,12 @@ fn compile_function<M: Module>(
                     terminated = true;
                     break;
                 }
-                _ => return None,
+                _ => jit_fail!(
+                    func,
+                    Some(ip),
+                    Some(&func.code[ip]),
+                    "unsupported instruction"
+                ),
             }
         }
 
@@ -3124,7 +3693,8 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
         match instr {
             Instr::Jump(target)
             | Instr::JumpIfFalse(target)
-            | Instr::JumpIfNull(target) => {
+            | Instr::JumpIfNull(target)
+            | Instr::MatchLocal { jump: target, .. } => {
                 if *target >= code.len() {
                     return None;
                 }
@@ -3143,7 +3713,7 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     starts.insert(ip + 1);
                 }
             }
-            Instr::Add => {
+            Instr::Add | Instr::Eq | Instr::NotEq => {
                 if ip + 1 < code.len() {
                     starts.insert(ip + 1);
                 }
@@ -3203,6 +3773,7 @@ fn write_native_return(
     value: StackValue,
 ) -> Option<()> {
     let (tag_value, payload) = match ret {
+        _ if value.kind == JitType::Unit => stack_tag_payload(builder, value)?,
         _ if value.kind == JitType::Value => stack_tag_payload(builder, value)?,
         ReturnKind::Int if value.kind == JitType::Int => stack_tag_payload(builder, value)?,
         ReturnKind::Bool if value.kind == JitType::Bool => stack_tag_payload(builder, value)?,
@@ -3238,6 +3809,10 @@ fn load_call_result(
     match kind {
         JitType::Value => Some(StackValue {
             value: result_ptr,
+            kind,
+        }),
+        JitType::Unit => Some(StackValue {
+            value: builder.ins().iconst(types::I64, 0),
             kind,
         }),
         JitType::Float => {
@@ -3291,6 +3866,10 @@ fn stack_tag_payload(
             builder.ins().iconst(types::I64, NativeTag::Null as i64),
             builder.ins().iconst(types::I64, 0),
         )),
+        JitType::Unit => Some((
+            builder.ins().iconst(types::I64, NativeTag::Unit as i64),
+            builder.ins().iconst(types::I64, 0),
+        )),
         JitType::Heap | JitType::Struct | JitType::Enum | JitType::Boxed => Some((
             builder.ins().iconst(types::I64, NativeTag::Heap as i64),
             value.value,
@@ -3332,6 +3911,7 @@ fn return_kind(ty: &TypeRef, program: &IrProgram) -> Option<ReturnKind> {
         TypeRefKind::Simple(name) if name.name == "Int" => Some(ReturnKind::Int),
         TypeRefKind::Simple(name) if name.name == "Bool" => Some(ReturnKind::Bool),
         TypeRefKind::Simple(name) if name.name == "Float" => Some(ReturnKind::Float),
+        TypeRefKind::Simple(name) if name.name == "Unit" => Some(ReturnKind::Value),
         TypeRefKind::Simple(name) if name.name == "String" => Some(ReturnKind::Heap),
         TypeRefKind::Simple(name) if program.types.contains_key(&name.name) => {
             Some(ReturnKind::Heap)
@@ -3341,9 +3921,10 @@ fn return_kind(ty: &TypeRef, program: &IrProgram) -> Option<ReturnKind> {
         }
         TypeRefKind::Optional(_) => Some(ReturnKind::Value),
         TypeRefKind::Result { ok, .. } => return_kind(ok, program),
-        TypeRefKind::Refined { base, .. } if base.name == "Int" => Some(ReturnKind::Int),
-        TypeRefKind::Refined { base, .. } if base.name == "Float" => Some(ReturnKind::Float),
-        TypeRefKind::Refined { base, .. } if base.name == "String" => Some(ReturnKind::Heap),
+            TypeRefKind::Refined { base, .. } if base.name == "Int" => Some(ReturnKind::Int),
+            TypeRefKind::Refined { base, .. } if base.name == "Float" => Some(ReturnKind::Float),
+            TypeRefKind::Refined { base, .. } if base.name == "Unit" => Some(ReturnKind::Value),
+            TypeRefKind::Refined { base, .. } if base.name == "String" => Some(ReturnKind::Heap),
         TypeRefKind::Refined { base, .. } if program.types.contains_key(&base.name) => {
             Some(ReturnKind::Heap)
         }
@@ -3394,6 +3975,7 @@ fn jit_kind_for_name(name: &str, program: &IrProgram) -> JitType {
         "Int" => JitType::Int,
         "Bool" => JitType::Bool,
         "Float" => JitType::Float,
+        "Unit" => JitType::Unit,
         "String" => JitType::Heap,
         _ if program.types.contains_key(name) => JitType::Struct,
         _ if program.enums.contains_key(name) => JitType::Enum,
@@ -3408,9 +3990,10 @@ fn config_field_jit_kind(program: &IrProgram, config: &str, field: &str) -> Opti
 }
 
 fn value_kind(value: &Value) -> Option<JitType> {
-    match value {
-        Value::Int(_) => Some(JitType::Int),
-        Value::Bool(_) => Some(JitType::Bool),
+        match value {
+            Value::Unit => Some(JitType::Unit),
+            Value::Int(_) => Some(JitType::Int),
+            Value::Bool(_) => Some(JitType::Bool),
         Value::Float(_) => Some(JitType::Float),
         Value::Null => Some(JitType::Null),
         Value::String(_) | Value::List(_) | Value::Map(_) => Some(JitType::Heap),
@@ -3427,6 +4010,7 @@ fn clif_type(kind: &JitType, pointer_ty: types::Type) -> types::Type {
     match kind {
         JitType::Float => types::F64,
         JitType::Value => pointer_ty,
+        JitType::Unit => types::I64,
         _ => types::I64,
     }
 }
@@ -3462,7 +4046,7 @@ fn analyze_types(
         let mut ip = start;
         while ip < end {
             match &func.code[ip] {
-                Instr::Push(Const::Unit) => stack.push(JitType::Int),
+                Instr::Push(Const::Unit) => stack.push(JitType::Unit),
                 Instr::Push(Const::Int(_)) => stack.push(JitType::Int),
                 Instr::Push(Const::Bool(_)) => stack.push(JitType::Bool),
                 Instr::Push(Const::Float(_)) => stack.push(JitType::Float),
@@ -3598,8 +4182,13 @@ fn analyze_types(
                 Instr::Eq | Instr::NotEq | Instr::Lt | Instr::LtEq | Instr::Gt | Instr::GtEq => {
                     let rhs = stack.pop()?;
                     let lhs = stack.pop()?;
-                    let out = compare_kind(lhs, rhs, &func.code[ip])?;
-                    stack.push(out);
+                    if let Some(out) = compare_kind(lhs, rhs, &func.code[ip]) {
+                        stack.push(out);
+                    } else if matches!(func.code[ip], Instr::Eq | Instr::NotEq) {
+                        stack.push(JitType::Bool);
+                    } else {
+                        return None;
+                    }
                 }
                 Instr::And | Instr::Or => {
                     let rhs = stack.pop()?;
@@ -3675,6 +4264,31 @@ fn analyze_types(
                         return None;
                     }
                     let target_idx = *block_for_start.get(target)?;
+                    merge_block_stack(
+                        &mut entry_stacks[target_idx],
+                        &stack,
+                        &mut worklist,
+                        target_idx,
+                    )?;
+                    let else_ip = ip + 1;
+                    let else_idx = *block_for_start.get(&else_ip)?;
+                    merge_block_stack(
+                        &mut entry_stacks[else_idx],
+                        &stack,
+                        &mut worklist,
+                        else_idx,
+                    )?;
+                    terminated = true;
+                    break;
+                }
+                Instr::MatchLocal { bindings, jump, .. } => {
+                    for (_, slot) in bindings {
+                        let entry = locals.get_mut(*slot)?;
+                        if entry.is_none() {
+                            *entry = Some(JitType::Value);
+                        }
+                    }
+                    let target_idx = *block_for_start.get(jump)?;
                     merge_block_stack(
                         &mut entry_stacks[target_idx],
                         &stack,
@@ -3809,6 +4423,9 @@ fn merge_kind(lhs: JitType, rhs: JitType) -> Option<JitType> {
         return Some(lhs);
     }
     if lhs == JitType::Value || rhs == JitType::Value {
+        return Some(JitType::Value);
+    }
+    if lhs == JitType::Unit || rhs == JitType::Unit {
         return Some(JitType::Value);
     }
     if lhs == JitType::Null || rhs == JitType::Null {
@@ -4029,7 +4646,7 @@ fn to_float(builder: &mut FunctionBuilder<'_>, value: &StackValue) -> Option<Cli
     }
 }
 
-fn jit_symbol(name: &str) -> String {
+pub(crate) fn jit_symbol(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 16);
     out.push_str("__fuse_jit_");
     for ch in name.chars() {
