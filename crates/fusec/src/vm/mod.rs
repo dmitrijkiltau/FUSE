@@ -125,14 +125,6 @@ impl<'a> Vm<'a> {
         Ok(())
     }
 
-    pub(crate) fn eval_configs_for_native(&mut self) -> Result<(), String> {
-        self.eval_configs().map_err(|err| self.render_error(err))
-    }
-
-    pub(crate) fn configs_snapshot(&self) -> HashMap<String, HashMap<String, Value>> {
-        self.configs.clone()
-    }
-
     pub fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, String> {
         let func = self
             .program

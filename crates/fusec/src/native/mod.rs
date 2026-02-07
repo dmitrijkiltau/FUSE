@@ -198,11 +198,6 @@ impl<'a> NativeVm<'a> {
         Ok(())
     }
 
-    fn eval_serve_native(&mut self, port: i64) -> Result<Value, String> {
-        self.eval_serve_native_inner(port)
-            .map_err(|err| self.render_native_error(err))
-    }
-
     fn app_contains_serve(&self, func: &Function) -> bool {
         func.code.iter().any(|instr| {
             matches!(
