@@ -92,6 +92,19 @@ impl NativeHeap {
         handle
     }
 
+    pub fn interned_strings_in_order(&self) -> Vec<String> {
+        let mut entries: Vec<(u64, &String)> = self
+            .interned
+            .iter()
+            .map(|(value, handle)| (*handle, value))
+            .collect();
+        entries.sort_by_key(|(handle, _)| *handle);
+        entries
+            .into_iter()
+            .map(|(_, value)| value.clone())
+            .collect()
+    }
+
     pub fn db_mut(&mut self, url: String) -> Result<&mut Db, String> {
         if self.db.is_none() {
             let db = Db::open(&url)?;

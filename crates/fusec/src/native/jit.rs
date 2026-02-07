@@ -1,7 +1,8 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use cranelift_codegen::ir::{
     AbiParam,
+    BlockArg,
     InstBuilder,
     MemFlags,
     StackSlotData,
@@ -10,9 +11,12 @@ use cranelift_codegen::ir::{
     condcodes::{FloatCC, IntCC},
     types,
 };
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
+use cranelift_codegen::settings::{self, Configurable};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
+use cranelift_native::builder as native_builder;
+use cranelift_object::{ObjectBuilder, ObjectModule};
 
 use crate::ast::{BinaryOp, Expr, ExprKind, Literal, TypeRef, TypeRefKind, UnaryOp};
 use crate::interp::Value;
@@ -52,6 +56,7 @@ enum ReturnKind {
 }
 
 struct CompiledEntry {
+    id: FuncId,
     entry: EntryFn,
     arity: usize,
 }
@@ -59,9 +64,68 @@ struct CompiledEntry {
 struct PendingCompiled {
     id: FuncId,
     arity: usize,
+    key: FuncKey,
 }
 
-struct HostCalls {
+type FuncKey = (String, Vec<JitType>);
+
+struct CompileState {
+    func_ids: HashMap<FuncKey, FuncId>,
+    name_param_types: HashMap<String, Vec<JitType>>,
+    in_progress: HashSet<FuncKey>,
+    compiled: HashSet<FuncKey>,
+}
+
+impl CompileState {
+    fn new() -> Self {
+        Self {
+            func_ids: HashMap::new(),
+            name_param_types: HashMap::new(),
+            in_progress: HashSet::new(),
+            compiled: HashSet::new(),
+        }
+    }
+
+    fn from_compiled(functions: &HashMap<FuncKey, CompiledEntry>) -> Self {
+        let mut state = Self::new();
+        for (key, entry) in functions {
+            state.func_ids.insert(key.clone(), entry.id);
+            state
+                .name_param_types
+                .insert(key.0.clone(), key.1.clone());
+            state.compiled.insert(key.clone());
+        }
+        state
+    }
+
+    fn ensure_declared<M: Module>(
+        &mut self,
+        module: &mut M,
+        name: &str,
+        param_types: &[JitType],
+    ) -> Option<(FuncKey, FuncId)> {
+        if let Some(existing) = self.name_param_types.get(name) {
+            if existing.as_slice() != param_types {
+                return None;
+            }
+        }
+        let key = (name.to_string(), param_types.to_vec());
+        if let Some(id) = self.func_ids.get(&key) {
+            return Some((key, *id));
+        }
+        let signature = entry_signature(module);
+        let symbol = jit_symbol(name);
+        let id = module
+            .declare_function(&symbol, Linkage::Local, &signature)
+            .ok()?;
+        self.func_ids.insert(key.clone(), id);
+        self.name_param_types
+            .insert(name.to_string(), param_types.to_vec());
+        Some((key, id))
+    }
+}
+
+pub(crate) struct HostCalls {
     make_list: FuncId,
     make_map: FuncId,
     make_struct: FuncId,
@@ -99,8 +163,15 @@ pub(crate) enum JitCallError {
     Runtime(String),
 }
 
+pub(crate) struct ObjectArtifact {
+    pub object: Vec<u8>,
+    pub interned_strings: Vec<String>,
+    pub entry_symbol: String,
+}
+
 const NATIVE_VALUE_SIZE: i32 = std::mem::size_of::<NativeValue>() as i32;
 const NATIVE_VALUE_PAYLOAD_OFFSET: i32 = std::mem::size_of::<NativeTag>() as i32;
+const NATIVE_VALUE_ALIGN_SHIFT: u8 = 3;
 impl JitRuntime {
     pub(crate) fn build() -> Self {
         let mut builder =
@@ -170,7 +241,9 @@ impl JitRuntime {
                 .get(name)
                 .or_else(|| program.apps.get(name))
                 .or_else(|| program.apps.values().find(|func| func.name == name))?;
-            if let Some(compiled) = compile_function(
+            let mut state = CompileState::from_compiled(&self.functions);
+            let mut pending = Vec::new();
+            if compile_function(
                 &mut self._module,
                 &self.hostcalls,
                 program,
@@ -178,21 +251,32 @@ impl JitRuntime {
                 func,
                 &param_types,
                 heap,
+                &mut state,
+                &mut pending,
             )
+            .is_some()
             {
-                if self._module.finalize_definitions().is_err() {
-                    return None;
+                if !pending.is_empty() {
+                    if self._module.finalize_definitions().is_err() {
+                        return None;
+                    }
+                    for compiled in pending {
+                        if self.functions.contains_key(&compiled.key) {
+                            continue;
+                        }
+                        let raw = self._module.get_finalized_function(compiled.id);
+                        // SAFETY: The JIT function is declared with matching signature.
+                        let entry = unsafe { std::mem::transmute::<*const u8, EntryFn>(raw) };
+                        self.functions.insert(
+                            compiled.key,
+                            CompiledEntry {
+                                id: compiled.id,
+                                entry,
+                                arity: compiled.arity,
+                            },
+                        );
+                    }
                 }
-                let raw = self._module.get_finalized_function(compiled.id);
-                // SAFETY: The JIT function is declared with `fn(*const i64) -> i64`.
-                let entry = unsafe { std::mem::transmute::<*const u8, EntryFn>(raw) };
-                self.functions.insert(
-                    key.clone(),
-                    CompiledEntry {
-                        entry,
-                        arity: compiled.arity,
-                    },
-                );
             }
         }
         let compiled = self.functions.get(&key)?;
@@ -224,8 +308,55 @@ impl JitRuntime {
 
 }
 
+pub(crate) fn emit_object_for_function(
+    program: &IrProgram,
+    func: &Function,
+) -> Result<ObjectArtifact, String> {
+    if !func.params.is_empty() {
+        return Err("object emission requires zero-arg functions".to_string());
+    }
+    let mut flag_builder = settings::builder();
+    flag_builder
+        .set("is_pic", "true")
+        .map_err(|err| format!("cranelift settings error: {err}"))?;
+    let isa_builder = native_builder().map_err(|err| format!("native isa error: {err}"))?;
+    let isa = isa_builder
+        .finish(settings::Flags::new(flag_builder))
+        .map_err(|err| format!("native isa error: {err}"))?;
+    let builder = ObjectBuilder::new(isa, "fuse_native", default_libcall_names())
+        .map_err(|err| format!("object builder error: {err}"))?;
+    let mut module = ObjectModule::new(builder);
+    let hostcalls = HostCalls::declare(&mut module);
+    let mut heap = NativeHeap::new();
+    let param_types: Vec<JitType> = Vec::new();
+    let mut state = CompileState::new();
+    let mut pending = Vec::new();
+    compile_function(
+        &mut module,
+        &hostcalls,
+        program,
+        &func.name,
+        func,
+        &param_types,
+        &mut heap,
+        &mut state,
+        &mut pending,
+    )
+    .ok_or_else(|| "native backend could not compile function".to_string())?;
+    let product = module.finish();
+    let object = product
+        .emit()
+        .map_err(|err| format!("object emit error: {err}"))?;
+    let interned_strings = heap.interned_strings_in_order();
+    Ok(ObjectArtifact {
+        object,
+        interned_strings,
+        entry_symbol: jit_symbol(&func.name),
+    })
+}
+
 impl HostCalls {
-    fn declare(module: &mut JITModule) -> Self {
+    fn declare<M: Module>(module: &mut M) -> Self {
         let pointer_ty = module.target_config().pointer_type();
         let mut list_sig = module.make_signature();
         list_sig.params.push(AbiParam::new(pointer_ty));
@@ -1948,15 +2079,27 @@ extern "C" fn fuse_native_db_one(
     }
 }
 
-fn compile_function(
-    module: &mut JITModule,
+fn entry_signature<M: Module>(module: &mut M) -> cranelift_codegen::ir::Signature {
+    let pointer_ty = module.target_config().pointer_type();
+    let mut signature = module.make_signature();
+    signature.params.push(AbiParam::new(pointer_ty));
+    signature.params.push(AbiParam::new(pointer_ty));
+    signature.params.push(AbiParam::new(pointer_ty));
+    signature.returns.push(AbiParam::new(types::I8));
+    signature
+}
+
+fn compile_function<M: Module>(
+    module: &mut M,
     hostcalls: &HostCalls,
     program: &IrProgram,
     name: &str,
     func: &Function,
     param_types: &[JitType],
     heap: &mut NativeHeap,
-) -> Option<PendingCompiled> {
+    state: &mut CompileState,
+    pending: &mut Vec<PendingCompiled>,
+) -> Option<FuncId> {
     let ret = if let Some(ret) = func.ret.as_ref() {
         return_kind(ret, program)?
     } else {
@@ -1966,14 +2109,20 @@ fn compile_function(
         return None;
     }
 
+    let (key, id) = state.ensure_declared(module, name, param_types)?;
+    if state.compiled.contains(&key) {
+        return Some(id);
+    }
+    if state.in_progress.contains(&key) {
+        return Some(id);
+    }
+    state.in_progress.insert(key.clone());
+
     let starts = block_starts(&func.code)?;
     let (local_types, entry_stacks) = analyze_types(func, param_types, &starts, program)?;
     let mut ctx = module.make_context();
     let pointer_ty = module.target_config().pointer_type();
-    ctx.func.signature.params.push(AbiParam::new(pointer_ty));
-    ctx.func.signature.params.push(AbiParam::new(pointer_ty));
-    ctx.func.signature.params.push(AbiParam::new(pointer_ty));
-    ctx.func.signature.returns.push(AbiParam::new(types::I8));
+    ctx.func.signature = entry_signature(module);
     let mut builder_ctx = FunctionBuilderContext::new();
     let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
 
@@ -2004,14 +2153,14 @@ fn compile_function(
     let mut local_value_slots: Vec<Option<cranelift_codegen::ir::StackSlot>> =
         vec![None; func.locals];
     for slot in 0..func.locals {
-        let var = Variable::from_u32(u32::try_from(slot).ok()?);
         let kind = *local_types.get(slot)?;
         let local_ty = clif_type(&kind, pointer_ty);
-        builder.declare_var(var, local_ty);
+        let var = builder.declare_var(local_ty);
         if kind == JitType::Value {
             let slot_id = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
                 NATIVE_VALUE_SIZE as u32,
+                NATIVE_VALUE_ALIGN_SHIFT,
             ));
             local_value_slots[slot] = Some(slot_id);
             let ptr = builder.ins().stack_addr(pointer_ty, slot_id, 0);
@@ -2132,6 +2281,7 @@ fn compile_function(
                         let slot = builder.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             slot_size,
+                            NATIVE_VALUE_ALIGN_SHIFT,
                         ));
                         let base = builder.ins().stack_addr(pointer_ty, slot, 0);
                         for (idx, item) in items.into_iter().enumerate() {
@@ -2167,6 +2317,7 @@ fn compile_function(
                         let slot = builder.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             slot_size,
+                            NATIVE_VALUE_ALIGN_SHIFT,
                         ));
                         let base = builder.ins().stack_addr(pointer_ty, slot, 0);
                         for (idx, (key, value)) in pairs.into_iter().enumerate() {
@@ -2209,6 +2360,7 @@ fn compile_function(
                         let slot = builder.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             slot_size,
+                            NATIVE_VALUE_ALIGN_SHIFT,
                         ));
                         let base = builder.ins().stack_addr(pointer_ty, slot, 0);
                         for (idx, (field_handle, value)) in field_handles
@@ -2231,6 +2383,7 @@ fn compile_function(
                     let validate_out_slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         NATIVE_VALUE_SIZE as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
                     ));
                     let validate_out_ptr =
                         builder.ins().stack_addr(pointer_ty, validate_out_slot, 0);
@@ -2249,12 +2402,17 @@ fn compile_function(
                     builder.append_block_param(err_block, types::I8);
                     builder.append_block_param(err_block, pointer_ty);
                     let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    let ok_args: [BlockArg; 0] = [];
+                    let err_args = [
+                        BlockArg::Value(status),
+                        BlockArg::Value(validate_out_ptr),
+                    ];
                     builder.ins().brif(
                         is_ok,
                         ok_block,
-                        &[],
+                        &ok_args,
                         err_block,
-                        &[status, validate_out_ptr],
+                        &err_args,
                     );
                     builder.switch_to_block(err_block);
                     let status_val = builder.block_params(err_block)[0];
@@ -2300,6 +2458,7 @@ fn compile_function(
                         let slot = builder.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             slot_size,
+                            NATIVE_VALUE_ALIGN_SHIFT,
                         ));
                         let base = builder.ins().stack_addr(pointer_ty, slot, 0);
                         for (idx, item) in payload.into_iter().enumerate() {
@@ -2331,6 +2490,7 @@ fn compile_function(
                         let slot = builder.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             NATIVE_VALUE_SIZE as u32,
+                            NATIVE_VALUE_ALIGN_SHIFT,
                         ));
                         let base = builder.ins().stack_addr(pointer_ty, slot, 0);
                         store_native_value(&mut builder, base, 0, value)?;
@@ -2358,6 +2518,7 @@ fn compile_function(
                         let slot = builder.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             slot_size,
+                            NATIVE_VALUE_ALIGN_SHIFT,
                         ));
                         let base = builder.ins().stack_addr(pointer_ty, slot, 0);
                         for (idx, item) in items.into_iter().enumerate() {
@@ -2379,9 +2540,12 @@ fn compile_function(
                 Instr::LoadConfigField { config, field } => {
                     let config_handle = NativeValue::intern_string(config.clone(), heap).payload;
                     let field_handle = NativeValue::intern_string(field.clone(), heap).payload;
+                    let result_kind =
+                        config_field_jit_kind(program, config, field).unwrap_or(JitType::Value);
                     let slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         (NATIVE_VALUE_SIZE * 2) as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
                     ));
                     let base = builder.ins().stack_addr(pointer_ty, slot, 0);
                     let config_val = StackValue {
@@ -2398,6 +2562,7 @@ fn compile_function(
                     let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         NATIVE_VALUE_SIZE as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
                     ));
                     let builtin_out_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
                     let func_ref = module.declare_func_in_func(hostcalls.config_get, builder.func);
@@ -2406,10 +2571,7 @@ fn compile_function(
                     let status = builder.inst_results(call)[0];
                     let ok_idx = *block_for_start.get(&(ip + 1))?;
                     let mut ok_stack = stack.clone();
-                    ok_stack.push(StackValue {
-                        value: builtin_out_ptr,
-                        kind: JitType::Value,
-                    });
+                    ok_stack.push(load_call_result(&mut builder, builtin_out_ptr, result_kind)?);
                     let ok_args = coerce_stack_args(
                         &mut builder,
                         pointer_ty,
@@ -2420,12 +2582,16 @@ fn compile_function(
                     builder.append_block_param(err_block, types::I8);
                     builder.append_block_param(err_block, pointer_ty);
                     let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    let err_args = [
+                        BlockArg::Value(status),
+                        BlockArg::Value(builtin_out_ptr),
+                    ];
                     builder.ins().brif(
                         is_ok,
                         blocks[ok_idx],
                         &ok_args,
                         err_block,
-                        &[status, builtin_out_ptr],
+                        &err_args,
                     );
                     builder.switch_to_block(err_block);
                     let status_val = builder.block_params(err_block)[0];
@@ -2436,24 +2602,6 @@ fn compile_function(
                     break;
                 }
                 Instr::Call { name, argc, kind } => {
-                    if !matches!(kind, CallKind::Builtin) {
-                        return None;
-                    }
-                    let builtin = match name.as_str() {
-                        "print" => hostcalls.builtin_print,
-                        "log" => hostcalls.builtin_log,
-                        "env" => hostcalls.builtin_env,
-                        "assert" => hostcalls.builtin_assert,
-                        "task.id" => hostcalls.task_id,
-                        "task.done" => hostcalls.task_done,
-                        "task.cancel" => hostcalls.task_cancel,
-                        "db.exec" => hostcalls.db_exec,
-                        "db.query" => hostcalls.db_query,
-                        "db.one" => hostcalls.db_one,
-                        "json.encode" => hostcalls.json_encode,
-                        "json.decode" => hostcalls.json_decode,
-                        _ => return None,
-                    };
                     let mut args = Vec::with_capacity(*argc);
                     for _ in 0..*argc {
                         args.push(stack.pop()?);
@@ -2467,30 +2615,85 @@ fn compile_function(
                         let slot = builder.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             slot_size,
+                            NATIVE_VALUE_ALIGN_SHIFT,
                         ));
                         let base = builder.ins().stack_addr(pointer_ty, slot, 0);
-                        for (idx, arg) in args.into_iter().enumerate() {
+                        for (idx, arg) in args.iter().cloned().enumerate() {
                             let offset = i32::try_from(idx).ok()?.checked_mul(NATIVE_VALUE_SIZE)?;
                             store_native_value(&mut builder, base, offset, arg)?;
                         }
                         base
                     };
-                    let len_val = builder.ins().iconst(types::I64, count as i64);
                     let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         NATIVE_VALUE_SIZE as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
                     ));
-                    let builtin_out_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
-                    let func_ref = module.declare_func_in_func(builtin, builder.func);
-                    let call =
-                        builder.ins().call(func_ref, &[heap_ptr, base, len_val, builtin_out_ptr]);
-                    let status = builder.inst_results(call)[0];
+                    let call_out_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
+                    let (status, result_kind) = match kind {
+                        CallKind::Builtin => {
+                            let builtin = match name.as_str() {
+                                "print" => hostcalls.builtin_print,
+                                "log" => hostcalls.builtin_log,
+                                "env" => hostcalls.builtin_env,
+                                "assert" => hostcalls.builtin_assert,
+                                "task.id" => hostcalls.task_id,
+                                "task.done" => hostcalls.task_done,
+                                "task.cancel" => hostcalls.task_cancel,
+                                "db.exec" => hostcalls.db_exec,
+                                "db.query" => hostcalls.db_query,
+                                "db.one" => hostcalls.db_one,
+                                "json.encode" => hostcalls.json_encode,
+                                "json.decode" => hostcalls.json_decode,
+                                _ => return None,
+                            };
+                            let len_val = builder.ins().iconst(types::I64, count as i64);
+                            let func_ref = module.declare_func_in_func(builtin, builder.func);
+                            let call = builder
+                                .ins()
+                                .call(func_ref, &[heap_ptr, base, len_val, call_out_ptr]);
+                            (builder.inst_results(call)[0], JitType::Value)
+                        }
+                        CallKind::Function => {
+                            let mut param_kinds = Vec::with_capacity(args.len());
+                            for arg in &args {
+                                param_kinds.push(arg.kind);
+                            }
+                            let callee = program
+                                .functions
+                                .get(name)
+                                .or_else(|| program.apps.get(name))
+                                .or_else(|| {
+                                    program
+                                        .apps
+                                        .values()
+                                        .find(|func| func.name == name.as_str())
+                                })?;
+                            if callee.params.len() != args.len() {
+                                return None;
+                            }
+                            let result_kind = return_jit_kind(callee.ret.as_ref(), program)?;
+                            let callee_id = compile_function(
+                                module,
+                                hostcalls,
+                                program,
+                                name,
+                                callee,
+                                &param_kinds,
+                                heap,
+                                state,
+                                pending,
+                            )?;
+                            let func_ref = module.declare_func_in_func(callee_id, builder.func);
+                            let call = builder
+                                .ins()
+                                .call(func_ref, &[base, call_out_ptr, heap_ptr]);
+                            (builder.inst_results(call)[0], result_kind)
+                        }
+                    };
                     let ok_idx = *block_for_start.get(&(ip + 1))?;
                     let mut ok_stack = stack.clone();
-                    ok_stack.push(StackValue {
-                        value: builtin_out_ptr,
-                        kind: JitType::Value,
-                    });
+                    ok_stack.push(load_call_result(&mut builder, call_out_ptr, result_kind)?);
                     let ok_args = coerce_stack_args(
                         &mut builder,
                         pointer_ty,
@@ -2501,12 +2704,13 @@ fn compile_function(
                     builder.append_block_param(err_block, types::I8);
                     builder.append_block_param(err_block, pointer_ty);
                     let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    let err_args = [BlockArg::Value(status), BlockArg::Value(call_out_ptr)];
                     builder.ins().brif(
                         is_ok,
                         blocks[ok_idx],
                         &ok_args,
                         err_block,
-                        &[status, builtin_out_ptr],
+                        &err_args,
                     );
                     builder.switch_to_block(err_block);
                     let status_val = builder.block_params(err_block)[0];
@@ -2606,6 +2810,7 @@ fn compile_function(
                     let slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         (NATIVE_VALUE_SIZE * 2) as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
                     ));
                     let base = builder.ins().stack_addr(pointer_ty, slot, 0);
                     store_native_value(&mut builder, base, 0, lhs)?;
@@ -2614,6 +2819,7 @@ fn compile_function(
                     let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         NATIVE_VALUE_SIZE as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
                     ));
                     let add_out_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
                     let func_ref = module.declare_func_in_func(hostcalls.add, builder.func);
@@ -2636,12 +2842,13 @@ fn compile_function(
                     builder.append_block_param(err_block, types::I8);
                     builder.append_block_param(err_block, pointer_ty);
                     let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    let err_args = [BlockArg::Value(status), BlockArg::Value(add_out_ptr)];
                     builder.ins().brif(
                         is_ok,
                         blocks[ok_idx],
                         &ok_args,
                         err_block,
-                        &[status, add_out_ptr],
+                        &err_args,
                     );
                     builder.switch_to_block(err_block);
                     let status_val = builder.block_params(err_block)[0];
@@ -2790,6 +2997,7 @@ fn compile_function(
                     let value_slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         NATIVE_VALUE_SIZE as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
                     ));
                     let value_ptr = builder.ins().stack_addr(pointer_ty, value_slot, 0);
                     store_native_value(&mut builder, value_ptr, 0, value)?;
@@ -2798,6 +3006,7 @@ fn compile_function(
                         let err_slot = builder.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             NATIVE_VALUE_SIZE as u32,
+                            NATIVE_VALUE_ALIGN_SHIFT,
                         ));
                         let err_ptr = builder.ins().stack_addr(pointer_ty, err_slot, 0);
                         store_native_value(&mut builder, err_ptr, 0, err_value)?;
@@ -2808,6 +3017,7 @@ fn compile_function(
                     let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         NATIVE_VALUE_SIZE as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
                     ));
                     let out_slot_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
                     let has_err_flag =
@@ -2836,12 +3046,13 @@ fn compile_function(
                     builder.append_block_param(err_block, types::I8);
                     builder.append_block_param(err_block, pointer_ty);
                     let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    let err_args = [BlockArg::Value(status), BlockArg::Value(out_slot_ptr)];
                     builder.ins().brif(
                         is_ok,
                         blocks[ok_idx],
                         &ok_args,
                         err_block,
-                        &[status, out_slot_ptr],
+                        &err_args,
                     );
                     builder.switch_to_block(err_block);
                     let status_val = builder.block_params(err_block)[0];
@@ -2894,16 +3105,16 @@ fn compile_function(
     builder.seal_all_blocks();
     builder.finalize();
 
-    let symbol = jit_symbol(name);
-    let id = module
-        .declare_function(&symbol, Linkage::Local, &ctx.func.signature)
-        .ok()?;
     module.define_function(id, &mut ctx).ok()?;
     module.clear_context(&mut ctx);
-    Some(PendingCompiled {
+    state.in_progress.remove(&key);
+    state.compiled.insert(key.clone());
+    pending.push(PendingCompiled {
         id,
         arity: func.params.len(),
-    })
+        key,
+    });
+    Some(id)
 }
 
 fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
@@ -2933,6 +3144,14 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                 }
             }
             Instr::Add => {
+                if ip + 1 < code.len() {
+                    starts.insert(ip + 1);
+                }
+            }
+            Instr::Call {
+                kind: CallKind::Function,
+                ..
+            } => {
                 if ip + 1 < code.len() {
                     starts.insert(ip + 1);
                 }
@@ -3009,6 +3228,44 @@ fn write_native_return(
         NATIVE_VALUE_PAYLOAD_OFFSET,
     );
     Some(())
+}
+
+fn load_call_result(
+    builder: &mut FunctionBuilder<'_>,
+    result_ptr: ClifValue,
+    kind: JitType,
+) -> Option<StackValue> {
+    match kind {
+        JitType::Value => Some(StackValue {
+            value: result_ptr,
+            kind,
+        }),
+        JitType::Float => {
+            let payload = builder.ins().load(
+                types::I64,
+                MemFlags::new(),
+                result_ptr,
+                NATIVE_VALUE_PAYLOAD_OFFSET,
+            );
+            let value = builder.ins().bitcast(types::F64, MemFlags::new(), payload);
+            Some(StackValue { value, kind })
+        }
+        JitType::Int
+        | JitType::Bool
+        | JitType::Null
+        | JitType::Heap
+        | JitType::Struct
+        | JitType::Enum
+        | JitType::Boxed => {
+            let payload = builder.ins().load(
+                types::I64,
+                MemFlags::new(),
+                result_ptr,
+                NATIVE_VALUE_PAYLOAD_OFFSET,
+            );
+            Some(StackValue { value: payload, kind })
+        }
+    }
 }
 
 fn stack_tag_payload(
@@ -3107,6 +3364,49 @@ fn return_kind(ty: &TypeRef, program: &IrProgram) -> Option<ReturnKind> {
     }
 }
 
+fn return_jit_kind(ret: Option<&TypeRef>, program: &IrProgram) -> Option<JitType> {
+    let ty = match ret {
+        Some(ty) => ty,
+        None => return Some(JitType::Value),
+    };
+    Some(jit_kind_for_type_ref(ty, program))
+}
+
+fn jit_kind_for_type_ref(ty: &TypeRef, program: &IrProgram) -> JitType {
+    match &ty.kind {
+        TypeRefKind::Simple(name) => jit_kind_for_name(&name.name, program),
+        TypeRefKind::Optional(_) => JitType::Value,
+        TypeRefKind::Result { .. } => JitType::Value,
+        TypeRefKind::Refined { base, .. } => jit_kind_for_name(&base.name, program),
+        TypeRefKind::Generic { base, .. }
+            if base.name == "List" || base.name == "Map" || base.name == "Task" =>
+        {
+            JitType::Heap
+        }
+        TypeRefKind::Generic { base, .. } if base.name == "Option" => JitType::Value,
+        TypeRefKind::Generic { base, .. } if base.name == "Result" => JitType::Value,
+        _ => JitType::Value,
+    }
+}
+
+fn jit_kind_for_name(name: &str, program: &IrProgram) -> JitType {
+    match name {
+        "Int" => JitType::Int,
+        "Bool" => JitType::Bool,
+        "Float" => JitType::Float,
+        "String" => JitType::Heap,
+        _ if program.types.contains_key(name) => JitType::Struct,
+        _ if program.enums.contains_key(name) => JitType::Enum,
+        _ => JitType::Value,
+    }
+}
+
+fn config_field_jit_kind(program: &IrProgram, config: &str, field: &str) -> Option<JitType> {
+    let config = program.configs.get(config)?;
+    let field_info = config.fields.iter().find(|info| info.name == field)?;
+    Some(jit_kind_for_type_ref(&field_info.ty, program))
+}
+
 fn value_kind(value: &Value) -> Option<JitType> {
     match value {
         Value::Int(_) => Some(JitType::Int),
@@ -3135,7 +3435,7 @@ fn analyze_types(
     func: &Function,
     param_types: &[JitType],
     starts: &[usize],
-    _program: &IrProgram,
+    program: &IrProgram,
 ) -> Option<(Vec<JitType>, Vec<Vec<JitType>>)> {
     let mut locals: Vec<Option<JitType>> = vec![None; func.locals];
     for (idx, kind) in param_types.iter().enumerate() {
@@ -3217,8 +3517,10 @@ fn analyze_types(
                     let kind = locals.get(*slot)?.as_ref()?;
                     stack.push(*kind);
                 }
-                Instr::LoadConfigField { .. } => {
-                    stack.push(JitType::Value);
+                Instr::LoadConfigField { config, field } => {
+                    let result_kind =
+                        config_field_jit_kind(program, config, field).unwrap_or(JitType::Value);
+                    stack.push(result_kind);
                     let ok_ip = ip + 1;
                     let ok_idx = *block_for_start.get(&ok_ip)?;
                     merge_block_stack(
@@ -3319,28 +3621,43 @@ fn analyze_types(
                     break;
                 }
                 Instr::Call { name, argc, kind } => {
-                    if !matches!(kind, CallKind::Builtin) {
-                        return None;
-                    }
-                    match name.as_str() {
-                        "print"
-                        | "log"
-                        | "env"
-                        | "assert"
-                        | "task.id"
-                        | "task.done"
-                        | "task.cancel"
-                        | "db.exec"
-                        | "db.query"
-                        | "db.one"
-                        | "json.encode"
-                        | "json.decode" => {}
-                        _ => return None,
-                    }
+                    let result_kind = match kind {
+                        CallKind::Builtin => {
+                            match name.as_str() {
+                            "print"
+                            | "log"
+                            | "env"
+                            | "assert"
+                            | "task.id"
+                            | "task.done"
+                            | "task.cancel"
+                            | "db.exec"
+                            | "db.query"
+                            | "db.one"
+                            | "json.encode"
+                            | "json.decode" => {}
+                            _ => return None,
+                            }
+                            JitType::Value
+                        }
+                        CallKind::Function => {
+                            let callee = program
+                                .functions
+                                .get(name)
+                                .or_else(|| program.apps.get(name))
+                                .or_else(|| {
+                                    program
+                                        .apps
+                                        .values()
+                                        .find(|func| func.name == name.as_str())
+                                })?;
+                            return_jit_kind(callee.ret.as_ref(), program)?
+                        }
+                    };
                     for _ in 0..*argc {
                         let _ = stack.pop()?;
                     }
-                    stack.push(JitType::Value);
+                    stack.push(result_kind);
                     let ok_ip = ip + 1;
                     let ok_idx = *block_for_start.get(&ok_ip)?;
                     merge_block_stack(
@@ -3505,17 +3822,17 @@ fn coerce_stack_args(
     pointer_ty: types::Type,
     stack: &[StackValue],
     target: &[JitType],
-) -> Option<Vec<ClifValue>> {
+) -> Option<Vec<BlockArg>> {
     if stack.len() != target.len() {
         return None;
     }
     let mut args = Vec::with_capacity(stack.len());
     for (value, target_kind) in stack.iter().zip(target.iter()) {
         if value.kind == *target_kind {
-            args.push(value.value);
+            args.push(BlockArg::Value(value.value));
         } else if *target_kind == JitType::Value {
             let ptr = ensure_value_ptr(builder, pointer_ty, *value)?;
-            args.push(ptr);
+            args.push(BlockArg::Value(ptr));
         } else {
             return None;
         }
@@ -3534,6 +3851,7 @@ fn ensure_value_ptr(
     let slot = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
         NATIVE_VALUE_SIZE as u32,
+        NATIVE_VALUE_ALIGN_SHIFT,
     ));
     let ptr = builder.ins().stack_addr(pointer_ty, slot, 0);
     store_native_value(builder, ptr, 0, value)?;

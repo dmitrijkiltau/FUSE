@@ -1,7 +1,7 @@
 mod jit;
 pub mod value;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
@@ -15,7 +15,7 @@ use crate::ir::{Function, Program as IrProgram, Service, ServiceRoute};
 use crate::loader::ModuleRegistry;
 use crate::native::value::NativeHeap;
 use crate::span::Span;
-use jit::{JitCallError, JitRuntime};
+use jit::{JitCallError, JitRuntime, ObjectArtifact};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NativeProgram {
@@ -37,6 +37,60 @@ impl NativeProgram {
 pub fn compile_registry(registry: &ModuleRegistry) -> Result<NativeProgram, Vec<String>> {
     let ir = crate::ir::lower::lower_registry(registry)?;
     Ok(NativeProgram::from_ir(ir))
+}
+
+pub struct NativeObject {
+    pub object: Vec<u8>,
+    pub interned_strings: Vec<String>,
+    pub entry_symbol: String,
+}
+
+impl From<ObjectArtifact> for NativeObject {
+    fn from(artifact: ObjectArtifact) -> Self {
+        Self {
+            object: artifact.object,
+            interned_strings: artifact.interned_strings,
+            entry_symbol: artifact.entry_symbol,
+        }
+    }
+}
+
+pub fn emit_object_for_app(
+    program: &NativeProgram,
+    name: Option<&str>,
+) -> Result<NativeObject, String> {
+    let app = if let Some(name) = name {
+        program
+            .ir
+            .apps
+            .get(name)
+            .or_else(|| program.ir.apps.values().find(|func| func.name == name))
+            .ok_or_else(|| format!("app not found: {name}"))?
+    } else {
+        program
+            .ir
+            .apps
+            .values()
+            .next()
+            .ok_or_else(|| "no app found".to_string())?
+    };
+    let artifact = jit::emit_object_for_function(&program.ir, app)?;
+    Ok(artifact.into())
+}
+
+pub fn emit_object_for_function(
+    program: &NativeProgram,
+    name: &str,
+) -> Result<NativeObject, String> {
+    let func = program
+        .ir
+        .functions
+        .get(name)
+        .or_else(|| program.ir.apps.get(name))
+        .or_else(|| program.ir.apps.values().find(|func| func.name == name))
+        .ok_or_else(|| format!("unknown function {name}"))?;
+    let artifact = jit::emit_object_for_function(&program.ir, func)?;
+    Ok(artifact.into())
 }
 
 #[derive(Debug)]
@@ -214,10 +268,6 @@ impl<'a> NativeVm<'a> {
     fn app_needs_interpreter(&self, func: &Function) -> bool {
         func.code.iter().any(|instr| match instr {
             crate::ir::Instr::Call {
-                kind: crate::ir::CallKind::Function,
-                ..
-            } => true,
-            crate::ir::Instr::Call {
                 name,
                 kind: crate::ir::CallKind::Builtin,
                 ..
@@ -339,32 +389,62 @@ impl<'a> NativeVm<'a> {
     }
 
     fn unsupported_reason(&self, func: &Function) -> Option<String> {
+        let mut seen = HashSet::new();
+        self.unsupported_reason_inner(func, &mut seen)
+    }
+
+    fn unsupported_reason_inner(
+        &self,
+        func: &Function,
+        seen: &mut HashSet<String>,
+    ) -> Option<String> {
+        if !seen.insert(func.name.clone()) {
+            return None;
+        }
+        let func_name = func.name.as_str();
         for instr in &func.code {
             match instr {
                 crate::ir::Instr::Spawn { .. } | crate::ir::Instr::Await => {
-                    return Some("spawn/await".to_string());
+                    return Some(format!("spawn/await in {func_name}"));
                 }
                 crate::ir::Instr::SetField { .. } => {
-                    return Some("field assignment".to_string());
+                    return Some(format!("field assignment in {func_name}"));
                 }
                 crate::ir::Instr::SetIndex => {
-                    return Some("index assignment".to_string());
+                    return Some(format!("index assignment in {func_name}"));
                 }
                 crate::ir::Instr::GetIndex => {
-                    return Some("index access".to_string());
+                    return Some(format!("index access in {func_name}"));
                 }
                 crate::ir::Instr::IterInit | crate::ir::Instr::IterNext { .. } => {
-                    return Some("iteration".to_string());
+                    return Some(format!("iteration in {func_name}"));
                 }
                 crate::ir::Instr::MatchLocal { .. } => {
-                    return Some("pattern matching".to_string());
+                    return Some(format!("pattern matching in {func_name}"));
                 }
                 crate::ir::Instr::Call {
                     kind: crate::ir::CallKind::Function,
                     name,
                     ..
                 } => {
-                    return Some(format!("function calls (call to {name})"));
+                    if let Some(callee) = self
+                        .program
+                        .ir
+                        .functions
+                        .get(name)
+                        .or_else(|| self.program.ir.apps.get(name))
+                        .or_else(|| {
+                            self.program
+                                .ir
+                                .apps
+                                .values()
+                                .find(|func| func.name == name.as_str())
+                        })
+                    {
+                        if let Some(reason) = self.unsupported_reason_inner(callee, seen) {
+                            return Some(reason);
+                        }
+                    }
                 }
                 crate::ir::Instr::Call {
                     kind: crate::ir::CallKind::Builtin,
@@ -372,7 +452,7 @@ impl<'a> NativeVm<'a> {
                     ..
                 } => {
                     if !self.is_supported_builtin(name) {
-                        return Some(format!("builtin {name}"));
+                        return Some(format!("builtin {name} in {func_name}"));
                     }
                 }
                 _ => {}

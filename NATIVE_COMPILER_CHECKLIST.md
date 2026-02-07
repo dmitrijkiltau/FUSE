@@ -59,7 +59,7 @@ Status legend: [x] done, [ ] pending, [~] partial
 
 ## Stage 6 — AOT artifacts (optional)
 
-- [ ] Object emission (cranelift-object)
+- [x] Object emission (cranelift-object)
 - [ ] Link step + standalone native binary
 - [ ] Persistent native cache versioning
 - [ ] Cold-start perf regression checks
