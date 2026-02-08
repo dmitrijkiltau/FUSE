@@ -5,18 +5,27 @@
   "brackets": [
     ["{", "}"],
     ["[", "]"],
-    ["(", ")"]
+    ["(", ")"],
+    ["<", ">"]
   ],
   "autoClosingPairs": [
     {"open": "{", "close": "}"},
     {"open": "[", "close": "]"},
     {"open": "(", "close": ")"},
-    {"open": "\"", "close": "\""}
+    {"open": "\"", "close": "\""},
+    {"open": "<", "close": ">", "notIn": ["string", "comment"]},
+    {"open": "${", "close": "}", "notIn": ["comment"]}
   ],
   "surroundingPairs": [
     {"open": "{", "close": "}"},
     {"open": "[", "close": "]"},
     {"open": "(", "close": ")"},
-    {"open": "\"", "close": "\""}
-  ]
+    {"open": "\"", "close": "\""},
+    {"open": "<", "close": ">"}
+  ],
+  "indentationRules": {
+    "increaseIndentPattern": "^\\s*(fn|type|enum|config|service|app|migration|table|test|if|else|else\\s+if|for|while|match|get|post|put|patch|delete|spawn)\\b.*:\\s*(#.*)?$",
+    "decreaseIndentPattern": "^\\s*(else|break|continue|return)\\b"
+  },
+  "wordPattern": "[A-Za-z_][A-Za-z0-9_]*"
 }
