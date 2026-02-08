@@ -1098,15 +1098,32 @@ impl<'a> Interpreter<'a> {
             }
             ExprKind::Call { callee, args } => {
                 if let ExprKind::Member { base, name } = &callee.kind {
+                    let base_val = self.eval_expr(base)?.unboxed();
                     if is_query_method(&name.name) {
-                        let base_val = self.eval_expr(base)?.unboxed();
-                        let mut arg_vals = Vec::with_capacity(args.len() + 1);
-                        arg_vals.push(base_val);
-                        for arg in args {
-                            arg_vals.push(self.eval_expr(&arg.value)?);
+                        if matches!(base_val, Value::Query(_)) {
+                            let mut arg_vals = Vec::with_capacity(args.len() + 1);
+                            arg_vals.push(base_val);
+                            for arg in args {
+                                arg_vals.push(self.eval_expr(&arg.value)?);
+                            }
+                            return self.eval_builtin(&format!("query.{}", name.name), arg_vals);
                         }
-                        return self.eval_builtin(&format!("query.{}", name.name), arg_vals);
                     }
+                    let mut arg_vals = Vec::new();
+                    for arg in args {
+                        arg_vals.push(self.eval_expr(&arg.value)?);
+                    }
+                    if let Some(value) = self.eval_module_member(base, &name.name)? {
+                        return self.eval_call(value, arg_vals);
+                    }
+                    if let ExprKind::Ident(ident) = &base.kind {
+                        if self.enums.contains_key(&ident.name) {
+                            let callee_val = self.eval_enum_member(&ident.name, &name.name)?;
+                            return self.eval_call(callee_val, arg_vals);
+                        }
+                    }
+                    let callee_val = self.eval_member(base_val, &name.name)?;
+                    return self.eval_call(callee_val, arg_vals);
                 }
                 let callee_val = self.eval_expr(callee)?.unboxed();
                 let mut arg_vals = Vec::new();

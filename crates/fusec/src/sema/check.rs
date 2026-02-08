@@ -1303,6 +1303,7 @@ impl<'a> Checker<'a> {
             }
         }
         match name {
+            "Unit" => Ty::Unit,
             "Int" => Ty::Int,
             "Float" => Ty::Float,
             "Bool" => Ty::Bool,
