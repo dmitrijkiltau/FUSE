@@ -104,6 +104,26 @@ fn main() -> io::Result<()> {
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
+            Some("textDocument/references") => {
+                let result = handle_references(&state, &obj);
+                let response = json_response(id, result);
+                write_message(&mut stdout, &response)?;
+            }
+            Some("textDocument/prepareCallHierarchy") => {
+                let result = handle_prepare_call_hierarchy(&state, &obj);
+                let response = json_response(id, result);
+                write_message(&mut stdout, &response)?;
+            }
+            Some("callHierarchy/incomingCalls") => {
+                let result = handle_call_hierarchy_incoming(&state, &obj);
+                let response = json_response(id, result);
+                write_message(&mut stdout, &response)?;
+            }
+            Some("callHierarchy/outgoingCalls") => {
+                let result = handle_call_hierarchy_outgoing(&state, &obj);
+                let response = json_response(id, result);
+                write_message(&mut stdout, &response)?;
+            }
             Some("workspace/symbol") => {
                 let result = handle_workspace_symbol(&state, &obj);
                 let response = json_response(id, result);
@@ -126,6 +146,8 @@ fn capabilities_result() -> JsonValue {
     caps.insert("definitionProvider".to_string(), JsonValue::Bool(true));
     caps.insert("hoverProvider".to_string(), JsonValue::Bool(true));
     caps.insert("renameProvider".to_string(), JsonValue::Bool(true));
+    caps.insert("referencesProvider".to_string(), JsonValue::Bool(true));
+    caps.insert("callHierarchyProvider".to_string(), JsonValue::Bool(true));
     caps.insert("workspaceSymbolProvider".to_string(), JsonValue::Bool(true));
     let mut root = BTreeMap::new();
     root.insert("capabilities".to_string(), JsonValue::Object(caps));
@@ -403,6 +425,19 @@ fn extract_workspace_query(obj: &BTreeMap<String, JsonValue>) -> Option<String> 
     }
 }
 
+fn extract_include_declaration(obj: &BTreeMap<String, JsonValue>) -> bool {
+    let Some(JsonValue::Object(params)) = obj.get("params") else {
+        return true;
+    };
+    match params.get("context") {
+        Some(JsonValue::Object(context)) => match context.get("includeDeclaration") {
+            Some(JsonValue::Bool(value)) => *value,
+            _ => true,
+        },
+        _ => true,
+    }
+}
+
 fn extract_root_uri(obj: &BTreeMap<String, JsonValue>) -> Option<String> {
     let params = obj.get("params")?;
     let JsonValue::Object(params) = params else { return None };
@@ -548,15 +583,214 @@ fn handle_rename(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonVal
     JsonValue::Object(root)
 }
 
+fn handle_references(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+    let Some((uri, line, character)) = extract_position(obj) else {
+        return JsonValue::Null;
+    };
+    let include_declaration = extract_include_declaration(obj);
+    let index = match build_workspace_index(state, &uri) {
+        Some(index) => index,
+        None => return JsonValue::Null,
+    };
+    let Some(def) = index.definition_at(&uri, line, character) else {
+        return JsonValue::Null;
+    };
+    JsonValue::Array(index.reference_locations(def.id, include_declaration))
+}
+
+fn handle_prepare_call_hierarchy(
+    state: &LspState,
+    obj: &BTreeMap<String, JsonValue>,
+) -> JsonValue {
+    let Some((uri, line, character)) = extract_position(obj) else {
+        return JsonValue::Null;
+    };
+    let index = match build_workspace_index(state, &uri) {
+        Some(index) => index,
+        None => return JsonValue::Null,
+    };
+    let Some(def) = index.definition_at(&uri, line, character) else {
+        return JsonValue::Null;
+    };
+    if !is_callable_def_kind(def.def.kind) {
+        return JsonValue::Null;
+    }
+    let Some(item) = call_hierarchy_item_json(&index, &def) else {
+        return JsonValue::Null;
+    };
+    JsonValue::Array(vec![item])
+}
+
+fn handle_call_hierarchy_incoming(
+    state: &LspState,
+    obj: &BTreeMap<String, JsonValue>,
+) -> JsonValue {
+    let Some(index) = build_workspace_index_for_call_hierarchy(state, obj) else {
+        return JsonValue::Null;
+    };
+    let Some(def_id) = call_hierarchy_target_def_id(&index, obj) else {
+        return JsonValue::Null;
+    };
+    let mut result = Vec::new();
+    for (from_id, sites) in index.incoming_calls(def_id) {
+        let Some(from_def) = index.def_for_target(from_id) else {
+            continue;
+        };
+        let Some(from_item) = call_hierarchy_item_json(&index, &from_def) else {
+            continue;
+        };
+        let mut ranges = Vec::new();
+        let mut seen = HashSet::new();
+        for site in sites {
+            if !seen.insert((site.span.start, site.span.end)) {
+                continue;
+            }
+            if let Some(range) = index.span_range_json(&site.uri, site.span) {
+                ranges.push(range);
+            }
+        }
+        let mut item = BTreeMap::new();
+        item.insert("from".to_string(), from_item);
+        item.insert("fromRanges".to_string(), JsonValue::Array(ranges));
+        result.push(JsonValue::Object(item));
+    }
+    JsonValue::Array(result)
+}
+
+fn handle_call_hierarchy_outgoing(
+    state: &LspState,
+    obj: &BTreeMap<String, JsonValue>,
+) -> JsonValue {
+    let Some(index) = build_workspace_index_for_call_hierarchy(state, obj) else {
+        return JsonValue::Null;
+    };
+    let Some(def_id) = call_hierarchy_target_def_id(&index, obj) else {
+        return JsonValue::Null;
+    };
+    let mut result = Vec::new();
+    for (to_id, sites) in index.outgoing_calls(def_id) {
+        let Some(to_def) = index.def_for_target(to_id) else {
+            continue;
+        };
+        let Some(to_item) = call_hierarchy_item_json(&index, &to_def) else {
+            continue;
+        };
+        let mut ranges = Vec::new();
+        let mut seen = HashSet::new();
+        for site in sites {
+            if !seen.insert((site.span.start, site.span.end)) {
+                continue;
+            }
+            if let Some(range) = index.span_range_json(&site.uri, site.span) {
+                ranges.push(range);
+            }
+        }
+        let mut item = BTreeMap::new();
+        item.insert("to".to_string(), to_item);
+        item.insert("fromRanges".to_string(), JsonValue::Array(ranges));
+        result.push(JsonValue::Object(item));
+    }
+    JsonValue::Array(result)
+}
+
+fn build_workspace_index_for_call_hierarchy(
+    state: &LspState,
+    obj: &BTreeMap<String, JsonValue>,
+) -> Option<WorkspaceIndex> {
+    let params = obj.get("params")?;
+    let JsonValue::Object(params) = params else {
+        return None;
+    };
+    let item = params.get("item")?;
+    let JsonValue::Object(item) = item else {
+        return None;
+    };
+    let uri = match item.get("uri") {
+        Some(JsonValue::String(uri)) => uri.clone(),
+        _ => return None,
+    };
+    build_workspace_index(state, &uri)
+}
+
+fn call_hierarchy_target_def_id(
+    index: &WorkspaceIndex,
+    obj: &BTreeMap<String, JsonValue>,
+) -> Option<usize> {
+    let params = obj.get("params")?;
+    let JsonValue::Object(params) = params else {
+        return None;
+    };
+    let item = params.get("item")?;
+    let JsonValue::Object(item) = item else {
+        return None;
+    };
+    if let Some(def_id) = item
+        .get("data")
+        .and_then(|value| match value {
+            JsonValue::Number(num) if *num >= 0.0 => Some(*num as usize),
+            _ => None,
+        })
+    {
+        return Some(def_id);
+    }
+    let uri = match item.get("uri") {
+        Some(JsonValue::String(uri)) => uri.clone(),
+        _ => return None,
+    };
+    let selection_range = item
+        .get("selectionRange")
+        .or_else(|| item.get("range"))?;
+    let JsonValue::Object(selection_range) = selection_range else {
+        return None;
+    };
+    let start = selection_range.get("start")?;
+    let JsonValue::Object(start) = start else {
+        return None;
+    };
+    let line = match start.get("line") {
+        Some(JsonValue::Number(line)) => *line as usize,
+        _ => return None,
+    };
+    let character = match start.get("character") {
+        Some(JsonValue::Number(character)) => *character as usize,
+        _ => return None,
+    };
+    let def = index.definition_at(&uri, line, character)?;
+    Some(def.id)
+}
+
+fn call_hierarchy_item_json(index: &WorkspaceIndex, def: &WorkspaceDef) -> Option<JsonValue> {
+    let text = index.file_text(&def.uri)?;
+    let range = span_range_json(text, def.def.span);
+    let mut out = BTreeMap::new();
+    out.insert("name".to_string(), JsonValue::String(def.def.name.clone()));
+    out.insert(
+        "kind".to_string(),
+        JsonValue::Number(def.def.kind.lsp_kind() as f64),
+    );
+    out.insert("uri".to_string(), JsonValue::String(def.uri.clone()));
+    out.insert("range".to_string(), range.clone());
+    out.insert("selectionRange".to_string(), range);
+    out.insert("data".to_string(), JsonValue::Number(def.id as f64));
+    if !def.def.detail.is_empty() {
+        out.insert("detail".to_string(), JsonValue::String(def.def.detail.clone()));
+    }
+    Some(JsonValue::Object(out))
+}
+
 fn location_json(uri: &str, text: &str, span: Span) -> JsonValue {
-    let offsets = line_offsets(text);
-    let (start_line, start_col) = offset_to_line_col(&offsets, span.start);
-    let (end_line, end_col) = offset_to_line_col(&offsets, span.end);
-    let range = range_json(start_line, start_col, end_line, end_col);
+    let range = span_range_json(text, span);
     let mut out = BTreeMap::new();
     out.insert("uri".to_string(), JsonValue::String(uri.to_string()));
     out.insert("range".to_string(), range);
     JsonValue::Object(out)
+}
+
+fn span_range_json(text: &str, span: Span) -> JsonValue {
+    let offsets = line_offsets(text);
+    let (start_line, start_col) = offset_to_line_col(&offsets, span.start);
+    let (end_line, end_col) = offset_to_line_col(&offsets, span.end);
+    range_json(start_line, start_col, end_line, end_col)
 }
 
 fn symbol_info_json(uri: &str, text: &str, def: &SymbolDef) -> JsonValue {
@@ -586,6 +820,8 @@ fn is_valid_ident(name: &str) -> bool {
 struct Index {
     defs: Vec<SymbolDef>,
     refs: Vec<SymbolRef>,
+    calls: Vec<CallRef>,
+    qualified_calls: Vec<QualifiedCallRef>,
 }
 
 impl Index {
@@ -639,6 +875,19 @@ struct SymbolRef {
     target: usize,
 }
 
+struct CallRef {
+    caller: usize,
+    callee: usize,
+    span: Span,
+}
+
+struct QualifiedCallRef {
+    caller: usize,
+    module: String,
+    item: String,
+    span: Span,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SymbolKind {
     Module,
@@ -685,6 +934,7 @@ struct WorkspaceIndex {
     file_by_uri: HashMap<String, usize>,
     defs: Vec<WorkspaceDef>,
     refs: Vec<WorkspaceRef>,
+    calls: Vec<WorkspaceCall>,
     redirects: HashMap<usize, usize>,
 }
 
@@ -707,6 +957,14 @@ struct WorkspaceRef {
     uri: String,
     span: Span,
     target: usize,
+}
+
+#[derive(Clone)]
+struct WorkspaceCall {
+    uri: String,
+    span: Span,
+    from: usize,
+    to: usize,
 }
 
 struct QualifiedRef {
@@ -780,6 +1038,66 @@ impl WorkspaceIndex {
             }
         }
         edits_by_uri
+    }
+
+    fn reference_locations(&self, def_id: usize, include_declaration: bool) -> Vec<JsonValue> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        if include_declaration {
+            if let Some(def) = self.def_for_target(def_id) {
+                if let Some(text) = self.file_text(&def.uri) {
+                    let key = (def.uri.clone(), def.def.span.start, def.def.span.end);
+                    if seen.insert(key) {
+                        out.push(location_json(&def.uri, text, def.def.span));
+                    }
+                }
+            }
+        }
+        for reference in &self.refs {
+            if reference.target != def_id {
+                continue;
+            }
+            let key = (reference.uri.clone(), reference.span.start, reference.span.end);
+            if !seen.insert(key) {
+                continue;
+            }
+            let Some(text) = self.file_text(&reference.uri) else {
+                continue;
+            };
+            out.push(location_json(&reference.uri, text, reference.span));
+        }
+        out
+    }
+
+    fn span_range_json(&self, uri: &str, span: Span) -> Option<JsonValue> {
+        let text = self.file_text(uri)?;
+        Some(span_range_json(text, span))
+    }
+
+    fn incoming_calls(&self, target: usize) -> Vec<(usize, Vec<WorkspaceCall>)> {
+        let mut grouped: HashMap<usize, Vec<WorkspaceCall>> = HashMap::new();
+        for call in &self.calls {
+            if call.to != target {
+                continue;
+            }
+            grouped.entry(call.from).or_default().push(call.clone());
+        }
+        let mut out: Vec<(usize, Vec<WorkspaceCall>)> = grouped.into_iter().collect();
+        out.sort_by_key(|(id, _)| *id);
+        out
+    }
+
+    fn outgoing_calls(&self, source: usize) -> Vec<(usize, Vec<WorkspaceCall>)> {
+        let mut grouped: HashMap<usize, Vec<WorkspaceCall>> = HashMap::new();
+        for call in &self.calls {
+            if call.from != source {
+                continue;
+            }
+            grouped.entry(call.to).or_default().push(call.clone());
+        }
+        let mut out: Vec<(usize, Vec<WorkspaceCall>)> = grouped.into_iter().collect();
+        out.sort_by_key(|(id, _)| *id);
+        out
     }
 
     fn def_for_target(&self, target: usize) -> Option<WorkspaceDef> {
@@ -986,6 +1304,7 @@ fn build_workspace_from_registry(
             }
         }
     }
+    let mut calls = Vec::new();
 
     let mut exports_by_module: HashMap<usize, HashMap<String, usize>> = HashMap::new();
     for (module_id, file_idx) in &module_to_file {
@@ -1028,6 +1347,43 @@ fn build_workspace_from_registry(
             .iter()
             .map(|(name, link)| (name.clone(), link.id))
             .collect();
+
+        for call in &file.index.calls {
+            let Some(from) = file.def_map.get(call.caller).copied() else {
+                continue;
+            };
+            let Some(to) = file.def_map.get(call.callee).copied() else {
+                continue;
+            };
+            calls.push(WorkspaceCall {
+                uri: file.uri.clone(),
+                span: call.span,
+                from,
+                to,
+            });
+        }
+
+        for call in &file.index.qualified_calls {
+            let Some(module_id) = module_aliases.get(&call.module) else {
+                continue;
+            };
+            let Some(exports) = exports_by_module.get(module_id) else {
+                continue;
+            };
+            let Some(target) = exports.get(&call.item) else {
+                continue;
+            };
+            let Some(from) = file.def_map.get(call.caller).copied() else {
+                continue;
+            };
+            calls.push(WorkspaceCall {
+                uri: file.uri.clone(),
+                span: call.span,
+                from,
+                to: *target,
+            });
+        }
+
         let qualified_refs = collect_qualified_refs(&unit.program);
         for qualified in qualified_refs {
             let Some(module_id) = module_aliases.get(&qualified.module) else { continue };
@@ -1055,12 +1411,36 @@ fn build_workspace_from_registry(
         }
         reference.target = target;
     }
+    for call in calls.iter_mut() {
+        while let Some(next) = redirects.get(&call.from) {
+            if *next == call.from {
+                break;
+            }
+            call.from = *next;
+        }
+        while let Some(next) = redirects.get(&call.to) {
+            if *next == call.to {
+                break;
+            }
+            call.to = *next;
+        }
+    }
+    calls.retain(|call| {
+        let Some(from) = defs.get(call.from) else {
+            return false;
+        };
+        let Some(to) = defs.get(call.to) else {
+            return false;
+        };
+        is_callable_def_kind(from.def.kind) && is_callable_def_kind(to.def.kind)
+    });
 
     Some(WorkspaceIndex {
         files,
         file_by_uri,
         defs,
         refs,
+        calls,
         redirects,
     })
 }
@@ -1072,6 +1452,17 @@ fn is_exported_def_kind(kind: SymbolKind) -> bool {
             | SymbolKind::Enum
             | SymbolKind::Function
             | SymbolKind::Config
+            | SymbolKind::Service
+            | SymbolKind::App
+            | SymbolKind::Migration
+            | SymbolKind::Test
+    )
+}
+
+fn is_callable_def_kind(kind: SymbolKind) -> bool {
+    matches!(
+        kind,
+        SymbolKind::Function
             | SymbolKind::Service
             | SymbolKind::App
             | SymbolKind::Migration
@@ -1388,12 +1779,18 @@ struct IndexBuilder<'a> {
     text: &'a str,
     defs: Vec<SymbolDef>,
     refs: Vec<SymbolRef>,
+    calls: Vec<CallRef>,
+    qualified_calls: Vec<QualifiedCallRef>,
     scopes: Vec<HashMap<String, usize>>,
     globals: HashMap<String, usize>,
+    app_defs: HashMap<String, usize>,
+    migration_defs: HashMap<String, usize>,
+    test_defs: HashMap<String, usize>,
     type_defs: HashMap<String, usize>,
     enum_variants: HashMap<String, usize>,
     enum_variant_ambiguous: HashSet<String>,
     enum_variants_by_enum: HashMap<String, HashMap<String, usize>>,
+    current_callable: Option<usize>,
 }
 
 impl<'a> IndexBuilder<'a> {
@@ -1402,12 +1799,18 @@ impl<'a> IndexBuilder<'a> {
             text,
             defs: Vec::new(),
             refs: Vec::new(),
+            calls: Vec::new(),
+            qualified_calls: Vec::new(),
             scopes: Vec::new(),
             globals: HashMap::new(),
+            app_defs: HashMap::new(),
+            migration_defs: HashMap::new(),
+            test_defs: HashMap::new(),
             type_defs: HashMap::new(),
             enum_variants: HashMap::new(),
             enum_variant_ambiguous: HashSet::new(),
             enum_variants_by_enum: HashMap::new(),
+            current_callable: None,
         }
     }
 
@@ -1415,6 +1818,8 @@ impl<'a> IndexBuilder<'a> {
         Index {
             defs: self.defs,
             refs: self.refs,
+            calls: self.calls,
+            qualified_calls: self.qualified_calls,
         }
     }
 
@@ -1460,15 +1865,26 @@ impl<'a> IndexBuilder<'a> {
                 }
                 Item::App(decl) => {
                     let detail = format!("app \"{}\"", decl.name.value);
-                    self.define_literal_decl(&decl.name, SymbolKind::App, detail, decl.doc.as_ref());
+                    let def_id =
+                        self.define_literal_decl(&decl.name, SymbolKind::App, detail, decl.doc.as_ref());
+                    self.app_defs.insert(decl.name.value.clone(), def_id);
                 }
                 Item::Migration(decl) => {
                     let detail = format!("migration {}", decl.name);
-                    self.define_span_decl(decl.span, decl.name.clone(), SymbolKind::Migration, detail, decl.doc.as_ref());
+                    let def_id = self.define_span_decl(
+                        decl.span,
+                        decl.name.clone(),
+                        SymbolKind::Migration,
+                        detail,
+                        decl.doc.as_ref(),
+                    );
+                    self.migration_defs.insert(decl.name.clone(), def_id);
                 }
                 Item::Test(decl) => {
                     let detail = format!("test \"{}\"", decl.name.value);
-                    self.define_literal_decl(&decl.name, SymbolKind::Test, detail, decl.doc.as_ref());
+                    let def_id =
+                        self.define_literal_decl(&decl.name, SymbolKind::Test, detail, decl.doc.as_ref());
+                    self.test_defs.insert(decl.name.value.clone(), def_id);
                 }
             }
         }
@@ -1560,12 +1976,37 @@ impl<'a> IndexBuilder<'a> {
             Item::Import(_) => {}
             Item::Type(decl) => self.visit_type_decl(decl),
             Item::Enum(decl) => self.visit_enum_decl(decl),
-            Item::Fn(decl) => self.visit_fn_decl(decl),
+            Item::Fn(decl) => {
+                let prev = self.current_callable;
+                self.current_callable = self.globals.get(&decl.name.name).copied();
+                self.visit_fn_decl(decl);
+                self.current_callable = prev;
+            }
             Item::Config(decl) => self.visit_config_decl(decl),
-            Item::Service(decl) => self.visit_service_decl(decl),
-            Item::App(decl) => self.visit_block(&decl.body),
-            Item::Migration(decl) => self.visit_block(&decl.body),
-            Item::Test(decl) => self.visit_block(&decl.body),
+            Item::Service(decl) => {
+                let prev = self.current_callable;
+                self.current_callable = self.globals.get(&decl.name.name).copied();
+                self.visit_service_decl(decl);
+                self.current_callable = prev;
+            }
+            Item::App(decl) => {
+                let prev = self.current_callable;
+                self.current_callable = self.app_defs.get(&decl.name.value).copied();
+                self.visit_block(&decl.body);
+                self.current_callable = prev;
+            }
+            Item::Migration(decl) => {
+                let prev = self.current_callable;
+                self.current_callable = self.migration_defs.get(&decl.name).copied();
+                self.visit_block(&decl.body);
+                self.current_callable = prev;
+            }
+            Item::Test(decl) => {
+                let prev = self.current_callable;
+                self.current_callable = self.test_defs.get(&decl.name.value).copied();
+                self.visit_block(&decl.body);
+                self.current_callable = prev;
+            }
         }
     }
 
@@ -1745,6 +2186,7 @@ impl<'a> IndexBuilder<'a> {
                 self.visit_expr(expr);
             }
             ExprKind::Call { callee, args } => {
+                self.record_call(callee);
                 self.visit_expr(callee);
                 for arg in args {
                     if let Some(name) = &arg.name {
@@ -1857,6 +2299,57 @@ impl<'a> IndexBuilder<'a> {
                 }
             }
         }
+    }
+
+    fn record_call(&mut self, callee: &Expr) {
+        let Some(caller) = self.current_callable else {
+            return;
+        };
+        if let Some(target) = self.call_target_local(callee) {
+            self.calls.push(CallRef {
+                caller,
+                callee: target,
+                span: callee.span,
+            });
+            return;
+        }
+        if let Some((module, item, span)) = self.call_target_qualified(callee) {
+            self.qualified_calls.push(QualifiedCallRef {
+                caller,
+                module,
+                item,
+                span,
+            });
+        }
+    }
+
+    fn call_target_local(&self, callee: &Expr) -> Option<usize> {
+        match &callee.kind {
+            ExprKind::Ident(ident) => self.resolve_value(&ident.name),
+            _ => None,
+        }
+    }
+
+    fn call_target_qualified(&self, callee: &Expr) -> Option<(String, String, Span)> {
+        let (base, name) = match &callee.kind {
+            ExprKind::Member { base, name } | ExprKind::OptionalMember { base, name } => {
+                (base, name)
+            }
+            _ => return None,
+        };
+        let ExprKind::Ident(base_ident) = &base.kind else {
+            return None;
+        };
+        let Some(base_def_id) = self.resolve_value(&base_ident.name) else {
+            return None;
+        };
+        let Some(base_def) = self.defs.get(base_def_id) else {
+            return None;
+        };
+        if base_def.kind != SymbolKind::Module {
+            return None;
+        }
+        Some((base_ident.name.clone(), name.name.clone(), name.span))
     }
 
     fn add_type_ref(&mut self, ident: &Ident) {

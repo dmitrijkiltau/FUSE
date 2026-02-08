@@ -1098,17 +1098,6 @@ impl<'a> Interpreter<'a> {
             }
             ExprKind::Call { callee, args } => {
                 if let ExprKind::Member { base, name } = &callee.kind {
-                    let base_val = self.eval_expr(base)?.unboxed();
-                    if is_query_method(&name.name) {
-                        if matches!(base_val, Value::Query(_)) {
-                            let mut arg_vals = Vec::with_capacity(args.len() + 1);
-                            arg_vals.push(base_val);
-                            for arg in args {
-                                arg_vals.push(self.eval_expr(&arg.value)?);
-                            }
-                            return self.eval_builtin(&format!("query.{}", name.name), arg_vals);
-                        }
-                    }
                     let mut arg_vals = Vec::new();
                     for arg in args {
                         arg_vals.push(self.eval_expr(&arg.value)?);
@@ -1121,6 +1110,13 @@ impl<'a> Interpreter<'a> {
                             let callee_val = self.eval_enum_member(&ident.name, &name.name)?;
                             return self.eval_call(callee_val, arg_vals);
                         }
+                    }
+                    let base_val = self.eval_expr(base)?.unboxed();
+                    if is_query_method(&name.name) && matches!(base_val, Value::Query(_)) {
+                        let mut query_args = Vec::with_capacity(args.len() + 1);
+                        query_args.push(base_val);
+                        query_args.extend(arg_vals);
+                        return self.eval_builtin(&format!("query.{}", name.name), query_args);
                     }
                     let callee_val = self.eval_member(base_val, &name.name)?;
                     return self.eval_call(callee_val, arg_vals);
