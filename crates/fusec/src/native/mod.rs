@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate as rt_validate};
 
 use crate::ast::{BinaryOp, Expr, ExprKind, HttpVerb, Ident, Literal, TypeRef, TypeRefKind, UnaryOp};
-use crate::interp::{format_error_value, Value};
+use crate::interp::{format_error_value, Task, TaskResult, Value};
 use crate::ir::{Config, Function, Program as IrProgram, Service, ServiceRoute};
 use crate::loader::ModuleRegistry;
 use crate::native::value::NativeHeap;
@@ -493,6 +493,55 @@ impl<'a> NativeVm<'a> {
                         crate::ir::CallKind::Function => {
                             let value = self.call_function_native_only_inner(name, args)?;
                             stack.push(value);
+                        }
+                    }
+                }
+                crate::ir::Instr::Spawn { name, argc } => {
+                    let mut args = Vec::new();
+                    for _ in 0..*argc {
+                        args.push(stack.pop().ok_or_else(|| "stack underflow".to_string())?);
+                    }
+                    args.reverse();
+                    let func = self
+                        .program
+                        .ir
+                        .functions
+                        .get(name)
+                        .or_else(|| self.program.ir.apps.get(name))
+                        .or_else(|| {
+                            self.program
+                                .ir
+                                .apps
+                                .values()
+                                .find(|func| func.name == name.as_str())
+                        })
+                        .ok_or_else(|| format!("unknown function {name}"))?;
+                    let result = match self
+                        .jit
+                        .try_call(&self.program.ir, name, &args, &mut self.heap)
+                    {
+                        Some(Ok(value)) => TaskResult::Ok(wrap_function_result(func, value)),
+                        Some(Err(JitCallError::Error(err_val))) => TaskResult::Error(err_val),
+                        Some(Err(JitCallError::Runtime(message))) => TaskResult::Runtime(message),
+                        None => {
+                            let reason = unsupported_reason(&self.program.ir, func)
+                                .unwrap_or_else(|| "native backend could not compile function".to_string());
+                            return Err(format!("native backend unsupported: {reason}"));
+                        }
+                    };
+                    self.heap.collect_garbage();
+                    stack.push(Value::Task(Task::from_task_result(result)));
+                }
+                crate::ir::Instr::Await => {
+                    let value = stack.pop().ok_or_else(|| "stack underflow".to_string())?;
+                    match value {
+                        Value::Task(task) => match task.result_raw() {
+                            TaskResult::Ok(value) => stack.push(value),
+                            TaskResult::Error(err) => return Err(format_error_value(&err)),
+                            TaskResult::Runtime(msg) => return Err(msg),
+                        },
+                        _ => {
+                            return Err("await expects a Task value".to_string());
                         }
                     }
                 }
@@ -1875,9 +1924,6 @@ fn unsupported_reason_inner(
     let func_name = func.name.as_str();
     for instr in &func.code {
         match instr {
-            crate::ir::Instr::Spawn { .. } | crate::ir::Instr::Await => {
-                return Some(format!("spawn/await in {func_name}"));
-            }
             crate::ir::Instr::Call {
                 kind: crate::ir::CallKind::Function,
                 name,
@@ -1917,6 +1963,7 @@ fn is_supported_builtin(name: &str) -> bool {
             | "env"
             | "assert"
             | "range"
+            | "serve"
             | "task.id"
             | "task.done"
             | "task.cancel"

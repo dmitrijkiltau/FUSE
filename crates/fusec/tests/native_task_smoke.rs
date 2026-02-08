@@ -23,18 +23,20 @@ fn run_example(backend: &str, example: &str) -> std::process::Output {
 #[test]
 fn native_task_api_smoke() {
     let output = run_example("native", "task_api.fuse");
-    assert!(
-        !output.status.success(),
-        "expected native failure for spawn/await, stdout: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("native backend unsupported"),
-        "unexpected native stderr: {stderr}"
+        output.status.success(),
+        "expected native task success, stderr: {stderr}"
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines.len() >= 4, "expected 4 output lines, got: {stdout}");
     assert!(
-        stderr.contains("spawn/await"),
-        "expected spawn/await in stderr: {stderr}"
+        lines[0].starts_with("task-"),
+        "expected task id on line 1, got: {}",
+        lines[0]
     );
+    assert_eq!(lines[1], "true");
+    assert_eq!(lines[2], "false");
+    assert_eq!(lines[3], "42");
 }

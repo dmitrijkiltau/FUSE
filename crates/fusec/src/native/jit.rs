@@ -20,7 +20,9 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 
 use crate::ast::{BinaryOp, Expr, ExprKind, Literal, PatternKind, TypeRef, TypeRefKind, UnaryOp};
 use crate::interp::Value;
-use crate::native::value::{HeapValue, NativeHeap, NativeIterator, NativeTag, NativeValue, TaskValue};
+use crate::native::value::{
+    HeapValue, NativeHeap, NativeIterator, NativeTag, NativeValue, TaskResultValue, TaskValue,
+};
 use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram};
 
 use fuse_rt::{config as rt_config, json as rt_json, validate as rt_validate};
@@ -157,6 +159,8 @@ pub(crate) struct HostCalls {
     bang: FuncId,
     iter_init: FuncId,
     iter_next: FuncId,
+    make_task: FuncId,
+    task_await: FuncId,
     add: FuncId,
     eq: FuncId,
     not_eq: FuncId,
@@ -240,6 +244,8 @@ impl JitRuntime {
         builder.symbol("fuse_native_bang", fuse_native_bang as *const u8);
         builder.symbol("fuse_native_iter_init", fuse_native_iter_init as *const u8);
         builder.symbol("fuse_native_iter_next", fuse_native_iter_next as *const u8);
+        builder.symbol("fuse_native_make_task", fuse_native_make_task as *const u8);
+        builder.symbol("fuse_native_task_await", fuse_native_task_await as *const u8);
         builder.symbol("fuse_native_add", fuse_native_add as *const u8);
         builder.symbol("fuse_native_eq", fuse_native_eq as *const u8);
         builder.symbol("fuse_native_not_eq", fuse_native_not_eq as *const u8);
@@ -585,6 +591,18 @@ impl HostCalls {
         let iter_next = module
             .declare_function("fuse_native_iter_next", Linkage::Import, &iter_sig)
             .expect("declare iter next hostcall");
+        let task_await = module
+            .declare_function("fuse_native_task_await", Linkage::Import, &iter_sig)
+            .expect("declare task await hostcall");
+
+        let mut task_sig = module.make_signature();
+        task_sig.params.push(AbiParam::new(pointer_ty));
+        task_sig.params.push(AbiParam::new(types::I8));
+        task_sig.params.push(AbiParam::new(pointer_ty));
+        task_sig.returns.push(AbiParam::new(types::I64));
+        let make_task = module
+            .declare_function("fuse_native_make_task", Linkage::Import, &task_sig)
+            .expect("declare make_task hostcall");
 
         let mut builtin_sig = module.make_signature();
         builtin_sig.params.push(AbiParam::new(pointer_ty));
@@ -708,6 +726,8 @@ impl HostCalls {
             bang,
             iter_init,
             iter_next,
+            make_task,
+            task_await,
             add,
             eq,
             not_eq,
@@ -2043,6 +2063,76 @@ extern "C" fn fuse_native_iter_next(
             0
         }
         _ => builtin_runtime_error(out, heap, format!("expected iterator, got {type_name}")),
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_make_task(
+    heap: *mut NativeHeap,
+    status: u8,
+    result: *const NativeValue,
+) -> u64 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return u64::MAX;
+    };
+    let Some(result) = (unsafe { result.as_ref() }) else {
+        return u64::MAX;
+    };
+    let task_result = match status {
+        0 => TaskResultValue::Ok(*result),
+        1 => TaskResultValue::Error(*result),
+        2 => {
+            let heap_ref: &NativeHeap = heap;
+            let message = result
+                .to_value(heap_ref)
+                .map(|value| value.to_string_value())
+                .unwrap_or_else(|| "runtime error".to_string());
+            TaskResultValue::Runtime(message)
+        }
+        _ => TaskResultValue::Runtime("runtime error".to_string()),
+    };
+    let task = TaskValue {
+        id: 0,
+        done: true,
+        cancelled: false,
+        result: task_result,
+    };
+    heap.insert(HeapValue::Task(task))
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_task_await(
+    heap: *mut NativeHeap,
+    task: *const NativeValue,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(task) = (unsafe { task.as_ref() }) else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    let Some((task, _handle)) = task_arg_from_native(heap, task) else {
+        return builtin_runtime_error(out, heap, "await expects a Task value");
+    };
+    match &task.result {
+        TaskResultValue::Ok(value) => {
+            *out = *value;
+            0
+        }
+        TaskResultValue::Error(value) => {
+            *out = *value;
+            1
+        }
+        TaskResultValue::Runtime(message) => {
+            *out = NativeValue::string(message.clone(), heap);
+            2
+        }
     }
 }
 
@@ -4392,6 +4482,97 @@ fn compile_function<M: Module>(
                     terminated = true;
                     break;
                 }
+                Instr::Spawn { name, argc } => {
+                    let mut args = Vec::with_capacity(*argc);
+                    for _ in 0..*argc {
+                        args.push(stack.pop()?);
+                    }
+                    args.reverse();
+                    let count = u32::try_from(args.len()).ok()?;
+                    let base = if count == 0 {
+                        builder.ins().iconst(pointer_ty, 0)
+                    } else {
+                        let slot_size = count.checked_mul(NATIVE_VALUE_SIZE as u32)?;
+                        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            slot_size,
+                            NATIVE_VALUE_ALIGN_SHIFT,
+                        ));
+                        let base = builder.ins().stack_addr(pointer_ty, slot, 0);
+                        for (idx, arg) in args.iter().cloned().enumerate() {
+                            let offset = i32::try_from(idx).ok()?.checked_mul(NATIVE_VALUE_SIZE)?;
+                            store_native_value(&mut builder, base, offset, arg)?;
+                        }
+                        base
+                    };
+                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        NATIVE_VALUE_SIZE as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
+                    ));
+                    let call_out_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
+                    let mut param_kinds = Vec::with_capacity(args.len());
+                    for arg in &args {
+                        param_kinds.push(arg.kind);
+                    }
+                    let callee = match program
+                        .functions
+                        .get(name)
+                        .or_else(|| program.apps.get(name))
+                        .or_else(|| program.apps.values().find(|func| func.name == name.as_str()))
+                    {
+                        Some(callee) => callee,
+                        None => jit_fail!(func, Some(ip), Some(&func.code[ip]), "unknown callee"),
+                    };
+                    if callee.params.len() != args.len() {
+                        jit_fail!(func, Some(ip), Some(&func.code[ip]), "callee arity mismatch");
+                    }
+                    let callee_id = match compile_function(
+                        module,
+                        hostcalls,
+                        program,
+                        name,
+                        callee,
+                        &param_kinds,
+                        Linkage::Local,
+                        heap,
+                        state,
+                        pending,
+                    ) {
+                        Some(id) => id,
+                        None => jit_fail!(
+                            func,
+                            Some(ip),
+                            Some(&func.code[ip]),
+                            "callee compile failed"
+                        ),
+                    };
+                    let func_ref = module.declare_func_in_func(callee_id, builder.func);
+                    let call = builder
+                        .ins()
+                        .call(func_ref, &[base, call_out_ptr, heap_ptr]);
+                    let status = builder.inst_results(call)[0];
+                    let make_task_ref =
+                        module.declare_func_in_func(hostcalls.make_task, builder.func);
+                    let task_handle =
+                        builder.ins().call(make_task_ref, &[heap_ptr, status, call_out_ptr]);
+                    let task_handle = builder.inst_results(task_handle)[0];
+                    let task_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        NATIVE_VALUE_SIZE as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
+                    ));
+                    let task_ptr = builder.ins().stack_addr(pointer_ty, task_slot, 0);
+                    let tag = builder.ins().iconst(types::I64, NativeTag::Heap as i64);
+                    builder.ins().store(MemFlags::new(), tag, task_ptr, 0);
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), task_handle, task_ptr, NATIVE_VALUE_PAYLOAD_OFFSET);
+                    stack.push(StackValue {
+                        value: task_ptr,
+                        kind: JitType::Value,
+                    });
+                }
                 Instr::Call { name, argc, kind } => {
                     let mut args = Vec::with_capacity(*argc);
                     for _ in 0..*argc {
@@ -4449,12 +4630,17 @@ fn compile_function<M: Module>(
                                 "json.decode" => hostcalls.json_decode,
                                 _ => jit_fail!(func, Some(ip), Some(&func.code[ip]), "unknown builtin"),
                             };
+                            let result_kind = match name.as_str() {
+                                "task.done" | "task.cancel" => JitType::Bool,
+                                "task.id" => JitType::Heap,
+                                _ => JitType::Value,
+                            };
                             let len_val = builder.ins().iconst(types::I64, count as i64);
                             let func_ref = module.declare_func_in_func(builtin, builder.func);
                             let call = builder
                                 .ins()
                                 .call(func_ref, &[heap_ptr, base, len_val, call_out_ptr]);
-                            (builder.inst_results(call)[0], JitType::Value)
+                            (builder.inst_results(call)[0], result_kind)
                         }
                         CallKind::Function => {
                             let mut param_kinds = Vec::with_capacity(args.len());
@@ -5123,6 +5309,61 @@ fn compile_function<M: Module>(
                     terminated = true;
                     break;
                 }
+                Instr::Await => {
+                    let value = stack.pop()?;
+                    let value_ptr = if value.kind == JitType::Value {
+                        value.value
+                    } else {
+                        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            NATIVE_VALUE_SIZE as u32,
+                            NATIVE_VALUE_ALIGN_SHIFT,
+                        ));
+                        let ptr = builder.ins().stack_addr(pointer_ty, slot, 0);
+                        store_native_value(&mut builder, ptr, 0, value)?;
+                        ptr
+                    };
+                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        NATIVE_VALUE_SIZE as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
+                    ));
+                    let await_out_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
+                    let func_ref = module.declare_func_in_func(hostcalls.task_await, builder.func);
+                    let call = builder.ins().call(func_ref, &[heap_ptr, value_ptr, await_out_ptr]);
+                    let status = builder.inst_results(call)[0];
+                    let ok_idx = *block_for_start.get(&(ip + 1))?;
+                    let mut ok_stack = stack.clone();
+                    ok_stack.push(StackValue {
+                        value: await_out_ptr,
+                        kind: JitType::Value,
+                    });
+                    let ok_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &ok_stack,
+                        entry_stacks.get(ok_idx)?,
+                    )?;
+                    let err_block = builder.create_block();
+                    builder.append_block_param(err_block, types::I8);
+                    builder.append_block_param(err_block, pointer_ty);
+                    let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    let err_args = [BlockArg::Value(status), BlockArg::Value(await_out_ptr)];
+                    builder.ins().brif(
+                        is_ok,
+                        blocks[ok_idx],
+                        &ok_args,
+                        err_block,
+                        &err_args,
+                    );
+                    builder.switch_to_block(err_block);
+                    let status_val = builder.block_params(err_block)[0];
+                    let err_out_ptr = builder.block_params(err_block)[1];
+                    copy_native_value(&mut builder, err_out_ptr, out_ptr);
+                    builder.ins().return_(&[status_val]);
+                    terminated = true;
+                    break;
+                }
                 Instr::RuntimeError(message) => {
                     let handle = NativeValue::intern_string(message.clone(), heap).payload;
                     let tag = builder.ins().iconst(types::I64, NativeTag::Heap as i64);
@@ -5136,12 +5377,6 @@ fn compile_function<M: Module>(
                     terminated = true;
                     break;
                 }
-                _ => jit_fail!(
-                    func,
-                    Some(ip),
-                    Some(&func.code[ip]),
-                    "unsupported instruction"
-                ),
             }
         }
 
@@ -5201,6 +5436,11 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                 }
             }
             Instr::Bang { .. } => {
+                if ip + 1 < code.len() {
+                    starts.insert(ip + 1);
+                }
+            }
+            Instr::Await => {
                 if ip + 1 < code.len() {
                     starts.insert(ip + 1);
                 }
@@ -5630,8 +5870,15 @@ fn analyze_types(
                     stack.push(JitType::Heap);
                 }
                 Instr::LoadLocal(slot) => {
-                    let kind = locals.get(*slot)?.as_ref()?;
-                    stack.push(*kind);
+                    let kind = match locals.get(*slot)? {
+                        Some(kind) => *kind,
+                        None => {
+                            let slot_entry = locals.get_mut(*slot)?;
+                            *slot_entry = Some(JitType::Value);
+                            JitType::Value
+                        }
+                    };
+                    stack.push(kind);
                 }
                 Instr::LoadConfigField { config, field } => {
                     let result_kind =
@@ -5807,7 +6054,11 @@ fn analyze_types(
                             | "json.decode" => {}
                             _ => return None,
                             }
-                            JitType::Value
+                            match name.as_str() {
+                                "task.done" | "task.cancel" => JitType::Bool,
+                                "task.id" => JitType::Heap,
+                                _ => JitType::Value,
+                            }
                         }
                         CallKind::Function => {
                             let callee = program
@@ -5837,6 +6088,12 @@ fn analyze_types(
                     )?;
                     terminated = true;
                     break;
+                }
+                Instr::Spawn { argc, .. } => {
+                    for _ in 0..*argc {
+                        let _ = stack.pop()?;
+                    }
+                    stack.push(JitType::Value);
                 }
                 Instr::JumpIfFalse(target) => {
                     let cond = stack.pop()?;
@@ -5923,6 +6180,20 @@ fn analyze_types(
                     terminated = true;
                     break;
                 }
+                Instr::Await => {
+                    let _ = stack.pop()?;
+                    stack.push(JitType::Value);
+                    let ok_ip = ip + 1;
+                    let ok_idx = *block_for_start.get(&ok_ip)?;
+                    merge_block_stack(
+                        &mut entry_stacks[ok_idx],
+                        &stack,
+                        &mut worklist,
+                        ok_idx,
+                    )?;
+                    terminated = true;
+                    break;
+                }
                 Instr::Return => {
                     let _ = stack.pop()?;
                     terminated = true;
@@ -5985,7 +6256,6 @@ fn analyze_types(
                     terminated = true;
                     break;
                 }
-                _ => return None,
             }
             ip += 1;
         }
