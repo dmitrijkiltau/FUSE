@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::db::Db;
-use crate::interp::{Task, TaskResult, Value};
+use crate::interp::{IteratorValue, Task, TaskResult, Value};
 use crate::ir::TypeInfo;
 
 #[repr(u64)]
@@ -22,6 +22,7 @@ pub enum HeapValue {
     String(String),
     List(Vec<NativeValue>),
     Map(std::collections::HashMap<String, NativeValue>),
+    Iterator(NativeIterator),
     Struct {
         name: String,
         fields: std::collections::HashMap<String, NativeValue>,
@@ -51,6 +52,18 @@ pub enum TaskResultValue {
     Ok(NativeValue),
     Error(NativeValue),
     Runtime(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct NativeIterator {
+    pub values: Vec<NativeValue>,
+    pub index: usize,
+}
+
+impl NativeIterator {
+    pub fn new(values: Vec<NativeValue>) -> Self {
+        Self { values, index: 0 }
+    }
 }
 
 #[repr(C)]
@@ -201,6 +214,11 @@ impl NativeHeap {
             }
             HeapValue::Map(items) => {
                 for value in items.values() {
+                    self.mark_native_value(value, marks, stack);
+                }
+            }
+            HeapValue::Iterator(iter) => {
+                for value in &iter.values {
                     self.mark_native_value(value, marks, stack);
                 }
             }
@@ -456,6 +474,20 @@ impl NativeValue {
                 };
                 Some(Self::task(task, heap))
             }
+            Value::Iterator(iter) => {
+                let mut out = Vec::with_capacity(iter.values.len());
+                for value in &iter.values {
+                    out.push(Self::from_value(value, heap)?);
+                }
+                let handle = heap.insert(HeapValue::Iterator(NativeIterator {
+                    values: out,
+                    index: iter.index,
+                }));
+                Some(Self {
+                    tag: NativeTag::Heap,
+                    payload: handle,
+                })
+            }
             Value::Query(query) => {
                 let handle = heap.insert(HeapValue::Query(query.clone()));
                 Some(Self {
@@ -489,6 +521,16 @@ impl NativeValue {
                         out.insert(key.clone(), value.to_value(heap)?);
                     }
                     Some(Value::Map(out))
+                }
+                HeapValue::Iterator(iter) => {
+                    let mut out = Vec::with_capacity(iter.values.len());
+                    for value in &iter.values {
+                        out.push(value.to_value(heap)?);
+                    }
+                    Some(Value::Iterator(IteratorValue {
+                        values: out,
+                        index: iter.index,
+                    }))
                 }
                 HeapValue::Struct { name, fields } => {
                     let mut out = std::collections::HashMap::new();

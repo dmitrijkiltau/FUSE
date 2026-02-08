@@ -20,7 +20,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 
 use crate::ast::{BinaryOp, Expr, ExprKind, Literal, PatternKind, TypeRef, TypeRefKind, UnaryOp};
 use crate::interp::Value;
-use crate::native::value::{HeapValue, NativeHeap, NativeTag, NativeValue, TaskValue};
+use crate::native::value::{HeapValue, NativeHeap, NativeIterator, NativeTag, NativeValue, TaskValue};
 use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram};
 
 use fuse_rt::{config as rt_config, json as rt_json, validate as rt_validate};
@@ -147,14 +147,20 @@ pub(crate) struct HostCalls {
     make_map: FuncId,
     make_struct: FuncId,
     get_struct_field: FuncId,
+    get_index: FuncId,
+    set_index: FuncId,
+    set_field: FuncId,
     make_enum: FuncId,
     match_enum: FuncId,
     make_box: FuncId,
     interp_string: FuncId,
     bang: FuncId,
+    iter_init: FuncId,
+    iter_next: FuncId,
     add: FuncId,
     eq: FuncId,
     not_eq: FuncId,
+    range: FuncId,
     builtin_log: FuncId,
     builtin_print: FuncId,
     builtin_env: FuncId,
@@ -224,14 +230,20 @@ impl JitRuntime {
             "fuse_native_get_struct_field",
             fuse_native_get_struct_field as *const u8,
         );
+        builder.symbol("fuse_native_get_index", fuse_native_get_index as *const u8);
+        builder.symbol("fuse_native_set_index", fuse_native_set_index as *const u8);
+        builder.symbol("fuse_native_set_field", fuse_native_set_field as *const u8);
         builder.symbol("fuse_native_make_enum", fuse_native_make_enum as *const u8);
         builder.symbol("fuse_native_match_enum", fuse_native_match_enum as *const u8);
         builder.symbol("fuse_native_make_box", fuse_native_make_box as *const u8);
         builder.symbol("fuse_native_interp_string", fuse_native_interp_string as *const u8);
         builder.symbol("fuse_native_bang", fuse_native_bang as *const u8);
+        builder.symbol("fuse_native_iter_init", fuse_native_iter_init as *const u8);
+        builder.symbol("fuse_native_iter_next", fuse_native_iter_next as *const u8);
         builder.symbol("fuse_native_add", fuse_native_add as *const u8);
         builder.symbol("fuse_native_eq", fuse_native_eq as *const u8);
         builder.symbol("fuse_native_not_eq", fuse_native_not_eq as *const u8);
+        builder.symbol("fuse_native_range", fuse_native_range as *const u8);
         builder.symbol("fuse_native_builtin_log", fuse_native_builtin_log as *const u8);
         builder.symbol("fuse_native_builtin_print", fuse_native_builtin_print as *const u8);
         builder.symbol("fuse_native_builtin_env", fuse_native_builtin_env as *const u8);
@@ -562,6 +574,18 @@ impl HostCalls {
             .declare_function("fuse_native_bang", Linkage::Import, &bang_sig)
             .expect("declare bang hostcall");
 
+        let mut iter_sig = module.make_signature();
+        iter_sig.params.push(AbiParam::new(pointer_ty));
+        iter_sig.params.push(AbiParam::new(pointer_ty));
+        iter_sig.params.push(AbiParam::new(pointer_ty));
+        iter_sig.returns.push(AbiParam::new(types::I8));
+        let iter_init = module
+            .declare_function("fuse_native_iter_init", Linkage::Import, &iter_sig)
+            .expect("declare iter init hostcall");
+        let iter_next = module
+            .declare_function("fuse_native_iter_next", Linkage::Import, &iter_sig)
+            .expect("declare iter next hostcall");
+
         let mut builtin_sig = module.make_signature();
         builtin_sig.params.push(AbiParam::new(pointer_ty));
         builtin_sig.params.push(AbiParam::new(pointer_ty));
@@ -577,6 +601,18 @@ impl HostCalls {
         let not_eq = module
             .declare_function("fuse_native_not_eq", Linkage::Import, &builtin_sig)
             .expect("declare not_eq hostcall");
+        let get_index = module
+            .declare_function("fuse_native_get_index", Linkage::Import, &builtin_sig)
+            .expect("declare get_index hostcall");
+        let set_index = module
+            .declare_function("fuse_native_set_index", Linkage::Import, &builtin_sig)
+            .expect("declare set_index hostcall");
+        let set_field = module
+            .declare_function("fuse_native_set_field", Linkage::Import, &builtin_sig)
+            .expect("declare set_field hostcall");
+        let range = module
+            .declare_function("fuse_native_range", Linkage::Import, &builtin_sig)
+            .expect("declare range hostcall");
         let builtin_log = module
             .declare_function("fuse_native_builtin_log", Linkage::Import, &builtin_sig)
             .expect("declare builtin log hostcall");
@@ -662,14 +698,20 @@ impl HostCalls {
             make_map,
             make_struct,
             get_struct_field,
+            get_index,
+            set_index,
+            set_field,
             make_enum,
             match_enum,
             make_box,
             interp_string,
             bang,
+            iter_init,
+            iter_next,
             add,
             eq,
             not_eq,
+            range,
             builtin_log,
             builtin_print,
             builtin_env,
@@ -1410,6 +1452,331 @@ extern "C" fn fuse_native_get_struct_field(
 }
 
 #[unsafe(no_mangle)]
+extern "C" fn fuse_native_get_index(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "index access expects 2 values");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(base) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "index access expects 2 values");
+    };
+    let Some(index) = args.get(1) else {
+        return builtin_runtime_error(out, heap, "index access expects 2 values");
+    };
+    let Some(base) = base.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "index access not supported on this value");
+    };
+    let Some(index) = index.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "index access not supported on this value");
+    };
+    let base = base.unboxed();
+    let index = index.unboxed();
+    let value = match base {
+        Value::List(items) => {
+            let idx = match index {
+                Value::Int(v) if v >= 0 => v as usize,
+                Value::Int(_) => {
+                    return builtin_runtime_error(out, heap, "index out of bounds");
+                }
+                _ => {
+                    return builtin_runtime_error(out, heap, "list index must be Int");
+                }
+            };
+            items
+                .get(idx)
+                .cloned()
+                .ok_or_else(|| "index out of bounds".to_string())
+        }
+        Value::Map(items) => match index {
+            Value::String(key) => Ok(items.get(&key).cloned().unwrap_or(Value::Null)),
+            _ => Err("map keys must be strings".to_string()),
+        },
+        Value::Null => Err("null access".to_string()),
+        _ => Err("index access not supported on this value".to_string()),
+    };
+    let value = match value {
+        Ok(value) => value,
+        Err(message) => return builtin_runtime_error(out, heap, message),
+    };
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "index result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_set_index(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 3 {
+        return builtin_runtime_error(out, heap, "index assignment expects 3 values");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let Some(base) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "index assignment expects 3 values");
+    };
+    let Some(index) = args.get(1) else {
+        return builtin_runtime_error(out, heap, "index assignment expects 3 values");
+    };
+    let Some(value) = args.get(2) else {
+        return builtin_runtime_error(out, heap, "index assignment expects 3 values");
+    };
+    let (index_value, value_value, boxed_inner) = {
+        let heap_ref: &NativeHeap = heap;
+        let Some(index_value) = index.to_value(heap_ref) else {
+            return builtin_runtime_error(out, heap, "assignment target must be an indexable value");
+        };
+        let Some(value_value) = value.to_value(heap_ref) else {
+            return builtin_runtime_error(out, heap, "assignment target must be an indexable value");
+        };
+        let boxed_inner = if base.tag == NativeTag::Heap {
+            match heap_ref.get(base.payload) {
+                Some(HeapValue::Boxed(inner)) => Some(*inner),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        (index_value, value_value, boxed_inner)
+    };
+
+    if let Some(inner_native) = boxed_inner {
+        let inner_value = {
+            let heap_ref: &NativeHeap = heap;
+            match inner_native.to_value(heap_ref) {
+                Some(value) => value,
+                None => {
+                    return builtin_runtime_error(
+                        out,
+                        heap,
+                        "assignment target must be an indexable value",
+                    );
+                }
+            }
+        };
+        let updated = match inner_value.unboxed() {
+            Value::List(mut items) => {
+                let idx = match index_value.unboxed() {
+                    Value::Int(v) if v >= 0 => v as usize,
+                    Value::Int(_) => {
+                        return builtin_runtime_error(out, heap, "index out of bounds");
+                    }
+                    _ => {
+                        return builtin_runtime_error(out, heap, "list index must be Int");
+                    }
+                };
+                if idx >= items.len() {
+                    return builtin_runtime_error(out, heap, "index out of bounds");
+                }
+                items[idx] = value_value;
+                Value::List(items)
+            }
+            Value::Map(mut items) => {
+                let key = match index_value.unboxed() {
+                    Value::String(key) => key,
+                    _ => {
+                        return builtin_runtime_error(out, heap, "map keys must be strings");
+                    }
+                };
+                items.insert(key, value_value);
+                Value::Map(items)
+            }
+            Value::Null => return builtin_runtime_error(out, heap, "null access"),
+            _ => {
+                return builtin_runtime_error(
+                    out,
+                    heap,
+                    "assignment target must be an indexable value",
+                );
+            }
+        };
+        let Some(native) = NativeValue::from_value(&updated, heap) else {
+            return builtin_runtime_error(out, heap, "index assignment unsupported");
+        };
+        if let Some(slot) = heap.get_mut(base.payload) {
+            if let HeapValue::Boxed(inner) = slot {
+                *inner = native;
+            }
+        }
+        *out = *base;
+        return 0;
+    }
+
+    let base_value = {
+        let heap_ref: &NativeHeap = heap;
+        let Some(value) = base.to_value(heap_ref) else {
+            return builtin_runtime_error(out, heap, "assignment target must be an indexable value");
+        };
+        value
+    };
+    let updated = match base_value.unboxed() {
+        Value::List(mut items) => {
+            let idx = match index_value.unboxed() {
+                Value::Int(v) if v >= 0 => v as usize,
+                Value::Int(_) => {
+                    return builtin_runtime_error(out, heap, "index out of bounds");
+                }
+                _ => {
+                    return builtin_runtime_error(out, heap, "list index must be Int");
+                }
+            };
+            if idx >= items.len() {
+                return builtin_runtime_error(out, heap, "index out of bounds");
+            }
+            items[idx] = value_value;
+            Value::List(items)
+        }
+        Value::Map(mut items) => {
+            let key = match index_value.unboxed() {
+                Value::String(key) => key,
+                _ => {
+                    return builtin_runtime_error(out, heap, "map keys must be strings");
+                }
+            };
+            items.insert(key, value_value);
+            Value::Map(items)
+        }
+        Value::Null => return builtin_runtime_error(out, heap, "null access"),
+        _ => {
+            return builtin_runtime_error(
+                out,
+                heap,
+                "assignment target must be an indexable value",
+            );
+        }
+    };
+    let Some(native) = NativeValue::from_value(&updated, heap) else {
+        return builtin_runtime_error(out, heap, "index assignment unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_set_field(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 3 {
+        return builtin_runtime_error(out, heap, "field assignment expects 3 values");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(base) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "field assignment expects 3 values");
+    };
+    let Some(field) = args.get(1) else {
+        return builtin_runtime_error(out, heap, "field assignment expects 3 values");
+    };
+    let Some(value) = args.get(2) else {
+        return builtin_runtime_error(out, heap, "field assignment expects 3 values");
+    };
+    let Some(field_value) = field.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "assignment target must be a struct field");
+    };
+    let field_name = match field_value.unboxed() {
+        Value::String(name) => name,
+        _ => {
+            return builtin_runtime_error(out, heap, "assignment target must be a struct field");
+        }
+    };
+    let Some(value_value) = value.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "assignment target must be a struct field");
+    };
+
+    let boxed_inner = if base.tag == NativeTag::Heap {
+        match heap_ref.get(base.payload) {
+            Some(HeapValue::Boxed(inner)) => Some(*inner),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    if let Some(inner_native) = boxed_inner {
+        let inner_value = match inner_native.to_value(heap_ref) {
+            Some(value) => value,
+            None => {
+                return builtin_runtime_error(out, heap, "assignment target must be a struct field");
+            }
+        };
+        let updated = match inner_value.unboxed() {
+            Value::Struct { name, mut fields } => {
+                fields.insert(field_name, value_value);
+                Value::Struct { name, fields }
+            }
+            _ => {
+                return builtin_runtime_error(out, heap, "assignment target must be a struct field");
+            }
+        };
+        let Some(native) = NativeValue::from_value(&updated, heap) else {
+            return builtin_runtime_error(out, heap, "field assignment unsupported");
+        };
+        if let Some(slot) = heap.get_mut(base.payload) {
+            if let HeapValue::Boxed(inner) = slot {
+                *inner = native;
+            }
+        }
+        *out = *base;
+        return 0;
+    }
+
+    let base_value = match base.to_value(heap_ref) {
+        Some(value) => value,
+        None => {
+            return builtin_runtime_error(out, heap, "assignment target must be a struct field");
+        }
+    };
+    let updated = match base_value.unboxed() {
+        Value::Struct { name, mut fields } => {
+            fields.insert(field_name, value_value);
+            Value::Struct { name, fields }
+        }
+        _ => {
+            return builtin_runtime_error(out, heap, "assignment target must be a struct field");
+        }
+    };
+    let Some(native) = NativeValue::from_value(&updated, heap) else {
+        return builtin_runtime_error(out, heap, "field assignment unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn fuse_native_make_enum(
     heap: *mut NativeHeap,
     name_handle: u64,
@@ -1584,6 +1951,102 @@ extern "C" fn fuse_native_bang(
 }
 
 #[unsafe(no_mangle)]
+extern "C" fn fuse_native_iter_init(
+    heap: *mut NativeHeap,
+    value: *const NativeValue,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(value) = (unsafe { value.as_ref() }) else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = value.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "cannot iterate over value");
+    };
+    let value = value.unboxed();
+    let iter_values = match value {
+        Value::List(items) => items,
+        Value::Map(items) => items.into_values().collect(),
+        other => {
+            return builtin_runtime_error(
+                out,
+                heap,
+                format!("cannot iterate over {}", value_type_name(&other)),
+            );
+        }
+    };
+    let mut native_values = Vec::with_capacity(iter_values.len());
+    for item in iter_values {
+        let Some(native) = NativeValue::from_value(&item, heap) else {
+            return builtin_runtime_error(out, heap, "iterator value unsupported");
+        };
+        native_values.push(native);
+    }
+    let handle = heap.insert(HeapValue::Iterator(NativeIterator::new(native_values)));
+    *out = NativeValue {
+        tag: NativeTag::Heap,
+        payload: handle,
+    };
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_iter_next(
+    heap: *mut NativeHeap,
+    iter: *const NativeValue,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(iter) = (unsafe { iter.as_ref() }) else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    let heap_ref: &NativeHeap = heap;
+    let handle = match iter.tag {
+        NativeTag::Heap => iter.payload,
+        _ => {
+            let value = iter.to_value(heap_ref).unwrap_or(Value::Null);
+            return builtin_runtime_error(
+                out,
+                heap,
+                format!("expected iterator, got {}", value_type_name(&value)),
+            );
+        }
+    };
+    let type_name = iter
+        .to_value(heap_ref)
+        .map(|value| value_type_name(&value))
+        .unwrap_or_else(|| "Unknown".to_string());
+    let Some(slot) = heap.get_mut(handle) else {
+        return builtin_runtime_error(out, heap, format!("expected iterator, got {type_name}"));
+    };
+    match slot {
+        HeapValue::Iterator(iter) => {
+            if iter.index >= iter.values.len() {
+                return 1;
+            }
+            let item = iter.values[iter.index];
+            iter.index += 1;
+            *out = item;
+            0
+        }
+        _ => builtin_runtime_error(out, heap, format!("expected iterator, got {type_name}")),
+    }
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn fuse_native_add(
     heap: *mut NativeHeap,
     args: *const NativeValue,
@@ -1628,6 +2091,106 @@ extern "C" fn fuse_native_add(
     };
     let Some(native) = NativeValue::from_value(&value, heap) else {
         return builtin_runtime_error(out, heap, "add result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_range(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "range expects 2 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(left) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "range expects 2 arguments");
+    };
+    let Some(right) = args.get(1) else {
+        return builtin_runtime_error(out, heap, "range expects 2 arguments");
+    };
+    let Some(left) = left.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "range expects numeric bounds");
+    };
+    let Some(right) = right.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "range expects numeric bounds");
+    };
+    let left = left.unboxed();
+    let right = right.unboxed();
+    let value = match (left, right) {
+        (Value::Int(start), Value::Int(end)) => {
+            if start > end {
+                return builtin_runtime_error(out, heap, "range start must be <= end");
+            }
+            let items = (start..=end).map(Value::Int).collect();
+            Value::List(items)
+        }
+        (Value::Float(start), Value::Float(end)) => {
+            if !start.is_finite() || !end.is_finite() {
+                return builtin_runtime_error(out, heap, "invalid range bounds");
+            }
+            if start > end {
+                return builtin_runtime_error(out, heap, "range start must be <= end");
+            }
+            let mut items = Vec::new();
+            let mut current = start;
+            let epsilon = 1e-9;
+            while current <= end + epsilon {
+                items.push(Value::Float(current));
+                current += 1.0;
+            }
+            Value::List(items)
+        }
+        (Value::Int(start), Value::Float(end)) => {
+            if !end.is_finite() {
+                return builtin_runtime_error(out, heap, "invalid range bounds");
+            }
+            let start = start as f64;
+            if start > end {
+                return builtin_runtime_error(out, heap, "range start must be <= end");
+            }
+            let mut items = Vec::new();
+            let mut current = start;
+            let epsilon = 1e-9;
+            while current <= end + epsilon {
+                items.push(Value::Float(current));
+                current += 1.0;
+            }
+            Value::List(items)
+        }
+        (Value::Float(start), Value::Int(end)) => {
+            if !start.is_finite() {
+                return builtin_runtime_error(out, heap, "invalid range bounds");
+            }
+            let end = end as f64;
+            if start > end {
+                return builtin_runtime_error(out, heap, "range start must be <= end");
+            }
+            let mut items = Vec::new();
+            let mut current = start;
+            let epsilon = 1e-9;
+            while current <= end + epsilon {
+                items.push(Value::Float(current));
+                current += 1.0;
+            }
+            Value::List(items)
+        }
+        _ => return builtin_runtime_error(out, heap, "range expects numeric bounds"),
+    };
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "range result unsupported");
     };
     *out = native;
     0
@@ -3408,15 +3971,53 @@ fn compile_function<M: Module>(
                             } else {
                                 let ok_idx = *block_for_start.get(&(ip + 1))?;
                                 let fail_idx = *block_for_start.get(jump)?;
-                                if local_kind != JitType::Enum {
-                                    jit_fail!(
-                                        func,
-                                        Some(ip),
-                                        Some(&func.code[ip]),
-                                        "match on non-enum"
-                                    );
-                                }
-                                let enum_handle = builder.use_var(local_var);
+                                let fail_args = coerce_stack_args(
+                                    &mut builder,
+                                    pointer_ty,
+                                    &stack,
+                                    entry_stacks.get(fail_idx)?,
+                                )?;
+                                let enum_handle = match local_kind {
+                                    JitType::Enum => builder.use_var(local_var),
+                                    JitType::Value => {
+                                        let value_ptr = builder.use_var(local_var);
+                                        let tag = builder.ins().load(
+                                            types::I64,
+                                            MemFlags::new(),
+                                            value_ptr,
+                                            0,
+                                        );
+                                        let payload = builder.ins().load(
+                                            types::I64,
+                                            MemFlags::new(),
+                                            value_ptr,
+                                            NATIVE_VALUE_PAYLOAD_OFFSET,
+                                        );
+                                        let is_heap = builder.ins().icmp_imm(
+                                            IntCC::Equal,
+                                            tag,
+                                            NativeTag::Heap as i64,
+                                        );
+                                        let match_block = builder.create_block();
+                                        builder.ins().brif(
+                                            is_heap,
+                                            match_block,
+                                            &[],
+                                            blocks[fail_idx],
+                                            &fail_args,
+                                        );
+                                        builder.switch_to_block(match_block);
+                                        payload
+                                    }
+                                    _ => {
+                                        jit_fail!(
+                                            func,
+                                            Some(ip),
+                                            Some(&func.code[ip]),
+                                            "match on non-enum"
+                                        );
+                                    }
+                                };
                                 let variant_handle =
                                     NativeValue::intern_string(ident.name.clone(), heap).payload;
                                 let func_ref =
@@ -3432,12 +4033,6 @@ fn compile_function<M: Module>(
                                 let matched = builder.inst_results(call)[0];
                                 let is_match =
                                     builder.ins().icmp_imm(IntCC::NotEqual, matched, 0);
-                                let fail_args = coerce_stack_args(
-                                    &mut builder,
-                                    pointer_ty,
-                                    &stack,
-                                    entry_stacks.get(fail_idx)?,
-                                )?;
                                 let bind_block = builder.create_block();
                                 builder.ins().brif(
                                     is_match,
@@ -3461,15 +4056,53 @@ fn compile_function<M: Module>(
                         PatternKind::EnumVariant { name, args } => {
                             let ok_idx = *block_for_start.get(&(ip + 1))?;
                             let fail_idx = *block_for_start.get(jump)?;
-                            if local_kind != JitType::Enum {
-                                jit_fail!(
-                                    func,
-                                    Some(ip),
-                                    Some(&func.code[ip]),
-                                    "match on non-enum"
-                                );
-                            }
-                            let enum_handle = builder.use_var(local_var);
+                            let fail_args = coerce_stack_args(
+                                &mut builder,
+                                pointer_ty,
+                                &stack,
+                                entry_stacks.get(fail_idx)?,
+                            )?;
+                            let enum_handle = match local_kind {
+                                JitType::Enum => builder.use_var(local_var),
+                                JitType::Value => {
+                                    let value_ptr = builder.use_var(local_var);
+                                    let tag = builder.ins().load(
+                                        types::I64,
+                                        MemFlags::new(),
+                                        value_ptr,
+                                        0,
+                                    );
+                                    let payload = builder.ins().load(
+                                        types::I64,
+                                        MemFlags::new(),
+                                        value_ptr,
+                                        NATIVE_VALUE_PAYLOAD_OFFSET,
+                                    );
+                                    let is_heap = builder.ins().icmp_imm(
+                                        IntCC::Equal,
+                                        tag,
+                                        NativeTag::Heap as i64,
+                                    );
+                                    let match_block = builder.create_block();
+                                    builder.ins().brif(
+                                        is_heap,
+                                        match_block,
+                                        &[],
+                                        blocks[fail_idx],
+                                        &fail_args,
+                                    );
+                                    builder.switch_to_block(match_block);
+                                    payload
+                                }
+                                _ => {
+                                    jit_fail!(
+                                        func,
+                                        Some(ip),
+                                        Some(&func.code[ip]),
+                                        "match on non-enum"
+                                    );
+                                }
+                            };
                             let variant_handle =
                                 NativeValue::intern_string(name.name.clone(), heap).payload;
                             let count = u32::try_from(args.len()).ok()?;
@@ -3496,12 +4129,6 @@ fn compile_function<M: Module>(
                             let matched = builder.inst_results(call)[0];
                             let is_match =
                                 builder.ins().icmp_imm(IntCC::NotEqual, matched, 0);
-                            let fail_args = coerce_stack_args(
-                                &mut builder,
-                                pointer_ty,
-                                &stack,
-                                entry_stacks.get(fail_idx)?,
-                            )?;
                             let bind_block = builder.create_block();
                             builder.ins().brif(
                                 is_match,
@@ -3627,6 +4254,144 @@ fn compile_function<M: Module>(
                     terminated = true;
                     break;
                 }
+                Instr::IterInit => {
+                    let value = stack.pop()?;
+                    let value_ptr = if value.kind == JitType::Value {
+                        value.value
+                    } else {
+                        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            NATIVE_VALUE_SIZE as u32,
+                            NATIVE_VALUE_ALIGN_SHIFT,
+                        ));
+                        let ptr = builder.ins().stack_addr(pointer_ty, slot, 0);
+                        store_native_value(&mut builder, ptr, 0, value)?;
+                        ptr
+                    };
+                    let iter_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        NATIVE_VALUE_SIZE as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
+                    ));
+                    let iter_out_ptr = builder.ins().stack_addr(pointer_ty, iter_slot, 0);
+                    let func_ref = module.declare_func_in_func(hostcalls.iter_init, builder.func);
+                    let call = builder.ins().call(func_ref, &[heap_ptr, value_ptr, iter_out_ptr]);
+                    let status = builder.inst_results(call)[0];
+                    let ok_idx = *block_for_start.get(&(ip + 1))?;
+                    let mut ok_stack = stack.clone();
+                    ok_stack.push(StackValue {
+                        value: iter_out_ptr,
+                        kind: JitType::Value,
+                    });
+                    let ok_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &ok_stack,
+                        entry_stacks.get(ok_idx)?,
+                    )?;
+                    let err_block = builder.create_block();
+                    builder.append_block_param(err_block, types::I8);
+                    builder.append_block_param(err_block, pointer_ty);
+                    let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    let err_args = [BlockArg::Value(status), BlockArg::Value(iter_out_ptr)];
+                    builder.ins().brif(
+                        is_ok,
+                        blocks[ok_idx],
+                        &ok_args,
+                        err_block,
+                        &err_args,
+                    );
+                    builder.switch_to_block(err_block);
+                    let status_val = builder.block_params(err_block)[0];
+                    let err_out_ptr = builder.block_params(err_block)[1];
+                    copy_native_value(&mut builder, err_out_ptr, out_ptr);
+                    builder.ins().return_(&[status_val]);
+                    terminated = true;
+                    break;
+                }
+                Instr::IterNext { jump } => {
+                    let iter_value = stack.pop()?;
+                    let iter_ptr = if iter_value.kind == JitType::Value {
+                        iter_value.value
+                    } else {
+                        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            NATIVE_VALUE_SIZE as u32,
+                            NATIVE_VALUE_ALIGN_SHIFT,
+                        ));
+                        let ptr = builder.ins().stack_addr(pointer_ty, slot, 0);
+                        store_native_value(&mut builder, ptr, 0, iter_value)?;
+                        ptr
+                    };
+                    let item_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        NATIVE_VALUE_SIZE as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
+                    ));
+                    let item_out_ptr = builder.ins().stack_addr(pointer_ty, item_slot, 0);
+                    let func_ref = module.declare_func_in_func(hostcalls.iter_next, builder.func);
+                    let call = builder.ins().call(func_ref, &[heap_ptr, iter_ptr, item_out_ptr]);
+                    let status = builder.inst_results(call)[0];
+
+                    let ok_idx = *block_for_start.get(&(ip + 1))?;
+                    let done_idx = *block_for_start.get(jump)?;
+                    let mut ok_stack = stack.clone();
+                    ok_stack.push(StackValue {
+                        value: item_out_ptr,
+                        kind: JitType::Value,
+                    });
+                    ok_stack.push(StackValue {
+                        value: iter_ptr,
+                        kind: JitType::Value,
+                    });
+                    let ok_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &ok_stack,
+                        entry_stacks.get(ok_idx)?,
+                    )?;
+                    let done_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &stack,
+                        entry_stacks.get(done_idx)?,
+                    )?;
+
+                    let not_ok_block = builder.create_block();
+                    builder.append_block_param(not_ok_block, types::I8);
+                    builder.append_block_param(not_ok_block, pointer_ty);
+                    let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    let not_ok_args = [BlockArg::Value(status), BlockArg::Value(item_out_ptr)];
+                    builder.ins().brif(
+                        is_ok,
+                        blocks[ok_idx],
+                        &ok_args,
+                        not_ok_block,
+                        &not_ok_args,
+                    );
+                    builder.switch_to_block(not_ok_block);
+                    let status_val = builder.block_params(not_ok_block)[0];
+                    let err_out_ptr = builder.block_params(not_ok_block)[1];
+                    let is_done = builder.ins().icmp_imm(IntCC::Equal, status_val, 1);
+                    let err_block = builder.create_block();
+                    builder.append_block_param(err_block, types::I8);
+                    builder.append_block_param(err_block, pointer_ty);
+                    let err_args = [BlockArg::Value(status_val), BlockArg::Value(err_out_ptr)];
+                    builder.ins().brif(
+                        is_done,
+                        blocks[done_idx],
+                        &done_args,
+                        err_block,
+                        &err_args,
+                    );
+                    builder.switch_to_block(err_block);
+                    let status_val = builder.block_params(err_block)[0];
+                    let err_out_ptr = builder.block_params(err_block)[1];
+                    copy_native_value(&mut builder, err_out_ptr, out_ptr);
+                    builder.ins().return_(&[status_val]);
+                    terminated = true;
+                    break;
+                }
                 Instr::Call { name, argc, kind } => {
                     let mut args = Vec::with_capacity(*argc);
                     for _ in 0..*argc {
@@ -3663,6 +4428,7 @@ fn compile_function<M: Module>(
                                 "log" => hostcalls.builtin_log,
                                 "env" => hostcalls.builtin_env,
                                 "assert" => hostcalls.builtin_assert,
+                                "range" => hostcalls.range,
                                 "task.id" => hostcalls.task_id,
                                 "task.done" => hostcalls.task_done,
                                 "task.cancel" => hostcalls.task_cancel,
@@ -3828,6 +4594,176 @@ fn compile_function<M: Module>(
                         value: handle,
                         kind: JitType::Heap,
                     });
+                }
+                Instr::GetIndex => {
+                    let index = stack.pop()?;
+                    let base = stack.pop()?;
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        (NATIVE_VALUE_SIZE * 2) as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
+                    ));
+                    let base_ptr = builder.ins().stack_addr(pointer_ty, slot, 0);
+                    store_native_value(&mut builder, base_ptr, 0, base)?;
+                    store_native_value(&mut builder, base_ptr, NATIVE_VALUE_SIZE, index)?;
+                    let len_val = builder.ins().iconst(types::I64, 2);
+                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        NATIVE_VALUE_SIZE as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
+                    ));
+                    let idx_out_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
+                    let func_ref = module.declare_func_in_func(hostcalls.get_index, builder.func);
+                    let call =
+                        builder.ins().call(func_ref, &[heap_ptr, base_ptr, len_val, idx_out_ptr]);
+                    let status = builder.inst_results(call)[0];
+                    let ok_idx = *block_for_start.get(&(ip + 1))?;
+                    let mut ok_stack = stack.clone();
+                    ok_stack.push(StackValue {
+                        value: idx_out_ptr,
+                        kind: JitType::Value,
+                    });
+                    let ok_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &ok_stack,
+                        entry_stacks.get(ok_idx)?,
+                    )?;
+                    let err_block = builder.create_block();
+                    builder.append_block_param(err_block, types::I8);
+                    builder.append_block_param(err_block, pointer_ty);
+                    let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    let err_args = [BlockArg::Value(status), BlockArg::Value(idx_out_ptr)];
+                    builder.ins().brif(
+                        is_ok,
+                        blocks[ok_idx],
+                        &ok_args,
+                        err_block,
+                        &err_args,
+                    );
+                    builder.switch_to_block(err_block);
+                    let status_val = builder.block_params(err_block)[0];
+                    let err_out_ptr = builder.block_params(err_block)[1];
+                    copy_native_value(&mut builder, err_out_ptr, out_ptr);
+                    builder.ins().return_(&[status_val]);
+                    terminated = true;
+                    break;
+                }
+                Instr::SetIndex => {
+                    let value = stack.pop()?;
+                    let index = stack.pop()?;
+                    let base = stack.pop()?;
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        (NATIVE_VALUE_SIZE * 3) as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
+                    ));
+                    let base_ptr = builder.ins().stack_addr(pointer_ty, slot, 0);
+                    store_native_value(&mut builder, base_ptr, 0, base)?;
+                    store_native_value(&mut builder, base_ptr, NATIVE_VALUE_SIZE, index)?;
+                    store_native_value(&mut builder, base_ptr, NATIVE_VALUE_SIZE * 2, value)?;
+                    let len_val = builder.ins().iconst(types::I64, 3);
+                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        NATIVE_VALUE_SIZE as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
+                    ));
+                    let set_out_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
+                    let func_ref = module.declare_func_in_func(hostcalls.set_index, builder.func);
+                    let call =
+                        builder.ins().call(func_ref, &[heap_ptr, base_ptr, len_val, set_out_ptr]);
+                    let status = builder.inst_results(call)[0];
+                    let ok_idx = *block_for_start.get(&(ip + 1))?;
+                    let mut ok_stack = stack.clone();
+                    ok_stack.push(StackValue {
+                        value: set_out_ptr,
+                        kind: JitType::Value,
+                    });
+                    let ok_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &ok_stack,
+                        entry_stacks.get(ok_idx)?,
+                    )?;
+                    let err_block = builder.create_block();
+                    builder.append_block_param(err_block, types::I8);
+                    builder.append_block_param(err_block, pointer_ty);
+                    let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    let err_args = [BlockArg::Value(status), BlockArg::Value(set_out_ptr)];
+                    builder.ins().brif(
+                        is_ok,
+                        blocks[ok_idx],
+                        &ok_args,
+                        err_block,
+                        &err_args,
+                    );
+                    builder.switch_to_block(err_block);
+                    let status_val = builder.block_params(err_block)[0];
+                    let err_out_ptr = builder.block_params(err_block)[1];
+                    copy_native_value(&mut builder, err_out_ptr, out_ptr);
+                    builder.ins().return_(&[status_val]);
+                    terminated = true;
+                    break;
+                }
+                Instr::SetField { field } => {
+                    let value = stack.pop()?;
+                    let base = stack.pop()?;
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        (NATIVE_VALUE_SIZE * 3) as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
+                    ));
+                    let base_ptr = builder.ins().stack_addr(pointer_ty, slot, 0);
+                    store_native_value(&mut builder, base_ptr, 0, base)?;
+                    let field_handle = NativeValue::intern_string(field.clone(), heap).payload;
+                    let field_val = StackValue {
+                        value: builder.ins().iconst(types::I64, field_handle as i64),
+                        kind: JitType::Heap,
+                    };
+                    store_native_value(&mut builder, base_ptr, NATIVE_VALUE_SIZE, field_val)?;
+                    store_native_value(&mut builder, base_ptr, NATIVE_VALUE_SIZE * 2, value)?;
+                    let len_val = builder.ins().iconst(types::I64, 3);
+                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        NATIVE_VALUE_SIZE as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
+                    ));
+                    let set_out_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
+                    let func_ref = module.declare_func_in_func(hostcalls.set_field, builder.func);
+                    let call =
+                        builder.ins().call(func_ref, &[heap_ptr, base_ptr, len_val, set_out_ptr]);
+                    let status = builder.inst_results(call)[0];
+                    let ok_idx = *block_for_start.get(&(ip + 1))?;
+                    let mut ok_stack = stack.clone();
+                    ok_stack.push(StackValue {
+                        value: set_out_ptr,
+                        kind: JitType::Value,
+                    });
+                    let ok_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &ok_stack,
+                        entry_stacks.get(ok_idx)?,
+                    )?;
+                    let err_block = builder.create_block();
+                    builder.append_block_param(err_block, types::I8);
+                    builder.append_block_param(err_block, pointer_ty);
+                    let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    let err_args = [BlockArg::Value(status), BlockArg::Value(set_out_ptr)];
+                    builder.ins().brif(
+                        is_ok,
+                        blocks[ok_idx],
+                        &ok_args,
+                        err_block,
+                        &err_args,
+                    );
+                    builder.switch_to_block(err_block);
+                    let status_val = builder.block_params(err_block)[0];
+                    let err_out_ptr = builder.block_params(err_block)[1];
+                    copy_native_value(&mut builder, err_out_ptr, out_ptr);
+                    builder.ins().return_(&[status_val]);
+                    terminated = true;
+                    break;
                 }
                 Instr::Pop => {
                     stack.pop()?;
@@ -4269,12 +5205,31 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     starts.insert(ip + 1);
                 }
             }
+            Instr::IterInit => {
+                if ip + 1 < code.len() {
+                    starts.insert(ip + 1);
+                }
+            }
+            Instr::IterNext { jump } => {
+                if *jump >= code.len() {
+                    return None;
+                }
+                starts.insert(*jump);
+                if ip + 1 < code.len() {
+                    starts.insert(ip + 1);
+                }
+            }
             Instr::MakeStruct { .. } => {
                 if ip + 1 < code.len() {
                     starts.insert(ip + 1);
                 }
             }
-            Instr::Add | Instr::Eq | Instr::NotEq => {
+            Instr::Add
+            | Instr::Eq
+            | Instr::NotEq
+            | Instr::GetIndex
+            | Instr::SetIndex
+            | Instr::SetField { .. } => {
                 if ip + 1 < code.len() {
                     starts.insert(ip + 1);
                 }
@@ -4297,6 +5252,7 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     | "log"
                     | "env"
                     | "assert"
+                    | "range"
                     | "task.id"
                     | "task.done"
                     | "task.cancel"
@@ -4566,13 +5522,18 @@ fn value_kind(value: &Value) -> Option<JitType> {
             Value::Int(_) => Some(JitType::Int),
             Value::Bool(_) => Some(JitType::Bool),
         Value::Float(_) => Some(JitType::Float),
-        Value::Null => Some(JitType::Null),
-        Value::String(_) | Value::List(_) | Value::Map(_) => Some(JitType::Heap),
-        Value::Struct { .. } => Some(JitType::Struct),
-        Value::Enum { .. } => Some(JitType::Enum),
-        Value::ResultOk(_) | Value::ResultErr(_) => Some(JitType::Heap),
-        Value::Boxed(_) => Some(JitType::Boxed),
-        Value::Task(_) => Some(JitType::Heap),
+        Value::Null
+        | Value::String(_)
+        | Value::List(_)
+        | Value::Map(_)
+        | Value::Struct { .. }
+        | Value::Enum { .. }
+        | Value::ResultOk(_)
+        | Value::ResultErr(_)
+        | Value::Boxed(_)
+        | Value::Task(_)
+        | Value::Query(_)
+        | Value::Iterator(_) => Some(JitType::Value),
         _ => None,
     }
 }
@@ -4687,6 +5648,43 @@ fn analyze_types(
                     terminated = true;
                     break;
                 }
+                Instr::IterInit => {
+                    let _ = stack.pop()?;
+                    stack.push(JitType::Value);
+                    let ok_ip = ip + 1;
+                    let ok_idx = *block_for_start.get(&ok_ip)?;
+                    merge_block_stack(
+                        &mut entry_stacks[ok_idx],
+                        &stack,
+                        &mut worklist,
+                        ok_idx,
+                    )?;
+                    terminated = true;
+                    break;
+                }
+                Instr::IterNext { jump } => {
+                    let _ = stack.pop()?;
+                    let done_idx = *block_for_start.get(jump)?;
+                    merge_block_stack(
+                        &mut entry_stacks[done_idx],
+                        &stack,
+                        &mut worklist,
+                        done_idx,
+                    )?;
+                    let mut ok_stack = stack.clone();
+                    ok_stack.push(JitType::Value);
+                    ok_stack.push(JitType::Value);
+                    let ok_ip = ip + 1;
+                    let ok_idx = *block_for_start.get(&ok_ip)?;
+                    merge_block_stack(
+                        &mut entry_stacks[ok_idx],
+                        &ok_stack,
+                        &mut worklist,
+                        ok_idx,
+                    )?;
+                    terminated = true;
+                    break;
+                }
                 Instr::StoreLocal(slot) => {
                     let kind = stack.pop()?;
                     match locals.get_mut(*slot)? {
@@ -4788,6 +5786,7 @@ fn analyze_types(
                             | "log"
                             | "env"
                             | "assert"
+                            | "range"
                             | "task.id"
                             | "task.done"
                             | "task.cancel"
@@ -4939,6 +5938,52 @@ fn analyze_types(
                         JitType::Struct | JitType::Value => stack.push(JitType::Heap),
                         _ => return None,
                     }
+                }
+                Instr::GetIndex => {
+                    let _ = stack.pop()?;
+                    let _ = stack.pop()?;
+                    stack.push(JitType::Value);
+                    let ok_ip = ip + 1;
+                    let ok_idx = *block_for_start.get(&ok_ip)?;
+                    merge_block_stack(
+                        &mut entry_stacks[ok_idx],
+                        &stack,
+                        &mut worklist,
+                        ok_idx,
+                    )?;
+                    terminated = true;
+                    break;
+                }
+                Instr::SetIndex => {
+                    let _ = stack.pop()?;
+                    let _ = stack.pop()?;
+                    let _ = stack.pop()?;
+                    stack.push(JitType::Value);
+                    let ok_ip = ip + 1;
+                    let ok_idx = *block_for_start.get(&ok_ip)?;
+                    merge_block_stack(
+                        &mut entry_stacks[ok_idx],
+                        &stack,
+                        &mut worklist,
+                        ok_idx,
+                    )?;
+                    terminated = true;
+                    break;
+                }
+                Instr::SetField { .. } => {
+                    let _ = stack.pop()?;
+                    let _ = stack.pop()?;
+                    stack.push(JitType::Value);
+                    let ok_ip = ip + 1;
+                    let ok_idx = *block_for_start.get(&ok_ip)?;
+                    merge_block_stack(
+                        &mut entry_stacks[ok_idx],
+                        &stack,
+                        &mut worklist,
+                        ok_idx,
+                    )?;
+                    terminated = true;
+                    break;
                 }
                 _ => return None,
             }

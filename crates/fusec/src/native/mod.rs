@@ -1878,18 +1878,6 @@ fn unsupported_reason_inner(
             crate::ir::Instr::Spawn { .. } | crate::ir::Instr::Await => {
                 return Some(format!("spawn/await in {func_name}"));
             }
-            crate::ir::Instr::SetField { .. } => {
-                return Some(format!("field assignment in {func_name}"));
-            }
-            crate::ir::Instr::SetIndex => {
-                return Some(format!("index assignment in {func_name}"));
-            }
-            crate::ir::Instr::GetIndex => {
-                return Some(format!("index access in {func_name}"));
-            }
-            crate::ir::Instr::IterInit | crate::ir::Instr::IterNext { .. } => {
-                return Some(format!("iteration in {func_name}"));
-            }
             crate::ir::Instr::Call {
                 kind: crate::ir::CallKind::Function,
                 name,
@@ -1928,6 +1916,7 @@ fn is_supported_builtin(name: &str) -> bool {
             | "log"
             | "env"
             | "assert"
+            | "range"
             | "task.id"
             | "task.done"
             | "task.cancel"
