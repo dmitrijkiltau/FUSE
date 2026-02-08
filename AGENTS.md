@@ -4,6 +4,7 @@
 
 - Always run cargo commands through `scripts/cargo_env.sh` to avoid cross-device link errors.
 - Default test command: `scripts/cargo_env.sh cargo test -p fusec`.
+- Use `scripts/fuse` for CLI commands; dist binaries are for release/distribution only.
 
 ## Specs and fixtures
 
