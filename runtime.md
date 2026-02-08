@@ -159,6 +159,10 @@ Config values are resolved in this order:
 2. Config file (default `config.toml`, overridable via `FUSE_CONFIG`)
 3. Default expressions
 
+The `fuse` CLI also loads a `.env` file from the package directory (if present) and
+injects any missing environment variables before this resolution. Existing environment
+variables are never overridden by `.env`.
+
 Config file format is a minimal TOML-like subset:
 
 ```

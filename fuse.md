@@ -124,7 +124,7 @@ The runtime currently handles:
 * `for`/`while`/`break`/`continue` loops
 * range expressions (`a..b`) evaluate to inclusive numeric lists
 * `without` type derivations
-* Config loading (env > config file > defaults)
+* Config loading (env > config file > defaults; `.env` is loaded into env for missing values)
 * JSON encode/decode and refined-type validation
 * HTTP routing + error JSON mapping
 * CLI flag binding for `fn main` when running `fusec --run <file> -- <args>`
@@ -132,7 +132,8 @@ The runtime currently handles:
 * package tooling (`fuse.toml`, `fuse run/test/build`)
 
 Today, `native` keeps VM-compatible semantics, with an initial Cranelift JIT fast-path for
-direct Int/Bool arithmetic/control-flow function calls. Unsupported instructions fall back to VM.
+direct Int/Bool arithmetic/control-flow function calls. Unsupported instructions
+fail the native backend.
 
 ## Package tooling
 
