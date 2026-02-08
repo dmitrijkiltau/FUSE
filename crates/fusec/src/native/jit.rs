@@ -4152,6 +4152,288 @@ fn compile_function<M: Module>(
                         PatternKind::Wildcard => {
                             // Always matches, no bindings to apply.
                         }
+                        PatternKind::Literal(lit) => {
+                            let ok_idx = *block_for_start.get(&(ip + 1))?;
+                            let fail_idx = *block_for_start.get(jump)?;
+                            let fail_args = coerce_stack_args(
+                                &mut builder,
+                                pointer_ty,
+                                &stack,
+                                entry_stacks.get(fail_idx)?,
+                            )?;
+                            let ok_args = coerce_stack_args(
+                                &mut builder,
+                                pointer_ty,
+                                &stack,
+                                entry_stacks.get(ok_idx)?,
+                            )?;
+                            match lit {
+                                Literal::Int(value) => {
+                                    let is_match = match local_kind {
+                                        JitType::Int => {
+                                            let local_val = builder.use_var(local_var);
+                                            builder
+                                                .ins()
+                                                .icmp_imm(IntCC::Equal, local_val, *value)
+                                        }
+                                        JitType::Value => {
+                                            let value_ptr = builder.use_var(local_var);
+                                            let tag = builder.ins().load(
+                                                types::I64,
+                                                MemFlags::new(),
+                                                value_ptr,
+                                                0,
+                                            );
+                                            let payload = builder.ins().load(
+                                                types::I64,
+                                                MemFlags::new(),
+                                                value_ptr,
+                                                NATIVE_VALUE_PAYLOAD_OFFSET,
+                                            );
+                                            let tag_ok = builder.ins().icmp_imm(
+                                                IntCC::Equal,
+                                                tag,
+                                                NativeTag::Int as i64,
+                                            );
+                                            let match_block = builder.create_block();
+                                            builder.ins().brif(
+                                                tag_ok,
+                                                match_block,
+                                                &[],
+                                                blocks[fail_idx],
+                                                &fail_args,
+                                            );
+                                            builder.switch_to_block(match_block);
+                                            builder.ins().icmp_imm(
+                                                IntCC::Equal,
+                                                payload,
+                                                *value,
+                                            )
+                                        }
+                                        _ => builder.ins().iconst(types::I8, 0),
+                                    };
+                                    builder.ins().brif(
+                                        is_match,
+                                        blocks[ok_idx],
+                                        &ok_args,
+                                        blocks[fail_idx],
+                                        &fail_args,
+                                    );
+                                    terminated = true;
+                                    break;
+                                }
+                                Literal::Bool(value) => {
+                                    let bool_val = if *value { 1 } else { 0 };
+                                    let is_match = match local_kind {
+                                        JitType::Bool => {
+                                            let local_val = builder.use_var(local_var);
+                                            builder
+                                                .ins()
+                                                .icmp_imm(IntCC::Equal, local_val, bool_val)
+                                        }
+                                        JitType::Value => {
+                                            let value_ptr = builder.use_var(local_var);
+                                            let tag = builder.ins().load(
+                                                types::I64,
+                                                MemFlags::new(),
+                                                value_ptr,
+                                                0,
+                                            );
+                                            let payload = builder.ins().load(
+                                                types::I64,
+                                                MemFlags::new(),
+                                                value_ptr,
+                                                NATIVE_VALUE_PAYLOAD_OFFSET,
+                                            );
+                                            let tag_ok = builder.ins().icmp_imm(
+                                                IntCC::Equal,
+                                                tag,
+                                                NativeTag::Bool as i64,
+                                            );
+                                            let match_block = builder.create_block();
+                                            builder.ins().brif(
+                                                tag_ok,
+                                                match_block,
+                                                &[],
+                                                blocks[fail_idx],
+                                                &fail_args,
+                                            );
+                                            builder.switch_to_block(match_block);
+                                            builder.ins().icmp_imm(
+                                                IntCC::Equal,
+                                                payload,
+                                                bool_val,
+                                            )
+                                        }
+                                        _ => builder.ins().iconst(types::I8, 0),
+                                    };
+                                    builder.ins().brif(
+                                        is_match,
+                                        blocks[ok_idx],
+                                        &ok_args,
+                                        blocks[fail_idx],
+                                        &fail_args,
+                                    );
+                                    terminated = true;
+                                    break;
+                                }
+                                Literal::Float(value) => {
+                                    let is_match = match local_kind {
+                                        JitType::Float => {
+                                            let local_val = builder.use_var(local_var);
+                                            let const_val = builder.ins().f64const(*value);
+                                            builder
+                                                .ins()
+                                                .fcmp(FloatCC::Equal, local_val, const_val)
+                                        }
+                                        JitType::Value => {
+                                            let value_ptr = builder.use_var(local_var);
+                                            let tag = builder.ins().load(
+                                                types::I64,
+                                                MemFlags::new(),
+                                                value_ptr,
+                                                0,
+                                            );
+                                            let payload = builder.ins().load(
+                                                types::I64,
+                                                MemFlags::new(),
+                                                value_ptr,
+                                                NATIVE_VALUE_PAYLOAD_OFFSET,
+                                            );
+                                            let tag_ok = builder.ins().icmp_imm(
+                                                IntCC::Equal,
+                                                tag,
+                                                NativeTag::Float as i64,
+                                            );
+                                            let match_block = builder.create_block();
+                                            builder.ins().brif(
+                                                tag_ok,
+                                                match_block,
+                                                &[],
+                                                blocks[fail_idx],
+                                                &fail_args,
+                                            );
+                                            builder.switch_to_block(match_block);
+                                            let left =
+                                                builder.ins().bitcast(types::F64, MemFlags::new(), payload);
+                                            let const_val = builder.ins().f64const(*value);
+                                            builder.ins().fcmp(
+                                                FloatCC::Equal,
+                                                left,
+                                                const_val,
+                                            )
+                                        }
+                                        _ => builder.ins().iconst(types::I8, 0),
+                                    };
+                                    builder.ins().brif(
+                                        is_match,
+                                        blocks[ok_idx],
+                                        &ok_args,
+                                        blocks[fail_idx],
+                                        &fail_args,
+                                    );
+                                    terminated = true;
+                                    break;
+                                }
+                                Literal::String(value) => {
+                                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                        StackSlotKind::ExplicitSlot,
+                                        (NATIVE_VALUE_SIZE * 2) as u32,
+                                        NATIVE_VALUE_ALIGN_SHIFT,
+                                    ));
+                                    let base = builder.ins().stack_addr(pointer_ty, slot, 0);
+                                    let local_value = StackValue {
+                                        value: builder.use_var(local_var),
+                                        kind: local_kind,
+                                    };
+                                    store_native_value(&mut builder, base, 0, local_value)?;
+                                    let literal_handle =
+                                        NativeValue::intern_string(value.clone(), heap).payload;
+                                    let literal_value = StackValue {
+                                        value: builder.ins().iconst(types::I64, literal_handle as i64),
+                                        kind: JitType::Heap,
+                                    };
+                                    store_native_value(
+                                        &mut builder,
+                                        base,
+                                        NATIVE_VALUE_SIZE,
+                                        literal_value,
+                                    )?;
+                                    let len_val = builder.ins().iconst(types::I64, 2);
+                                    let out_slot =
+                                        builder.create_sized_stack_slot(StackSlotData::new(
+                                            StackSlotKind::ExplicitSlot,
+                                            NATIVE_VALUE_SIZE as u32,
+                                            NATIVE_VALUE_ALIGN_SHIFT,
+                                        ));
+                                    let cmp_out_ptr =
+                                        builder.ins().stack_addr(pointer_ty, out_slot, 0);
+                                    let func_ref =
+                                        module.declare_func_in_func(hostcalls.eq, builder.func);
+                                    let call = builder
+                                        .ins()
+                                        .call(func_ref, &[heap_ptr, base, len_val, cmp_out_ptr]);
+                                    let status = builder.inst_results(call)[0];
+                                    let ok_block = builder.create_block();
+                                    let status_ok =
+                                        builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                                    builder.ins().brif(
+                                        status_ok,
+                                        ok_block,
+                                        &[],
+                                        blocks[fail_idx],
+                                        &fail_args,
+                                    );
+                                    builder.switch_to_block(ok_block);
+                                    let payload = builder.ins().load(
+                                        types::I64,
+                                        MemFlags::new(),
+                                        cmp_out_ptr,
+                                        NATIVE_VALUE_PAYLOAD_OFFSET,
+                                    );
+                                    let is_match =
+                                        builder.ins().icmp_imm(IntCC::NotEqual, payload, 0);
+                                    builder.ins().brif(
+                                        is_match,
+                                        blocks[ok_idx],
+                                        &ok_args,
+                                        blocks[fail_idx],
+                                        &fail_args,
+                                    );
+                                    terminated = true;
+                                    break;
+                                }
+                                Literal::Null => {
+                                    let is_match = match local_kind {
+                                        JitType::Null => builder.ins().iconst(types::I8, 1),
+                                        JitType::Value => {
+                                            let value_ptr = builder.use_var(local_var);
+                                            let tag = builder.ins().load(
+                                                types::I64,
+                                                MemFlags::new(),
+                                                value_ptr,
+                                                0,
+                                            );
+                                            builder.ins().icmp_imm(
+                                                IntCC::Equal,
+                                                tag,
+                                                NativeTag::Null as i64,
+                                            )
+                                        }
+                                        _ => builder.ins().iconst(types::I8, 0),
+                                    };
+                                    builder.ins().brif(
+                                        is_match,
+                                        blocks[ok_idx],
+                                        &ok_args,
+                                        blocks[fail_idx],
+                                        &fail_args,
+                                    );
+                                    terminated = true;
+                                    break;
+                                }
+                            }
+                        }
                         PatternKind::Ident(ident) => {
                             if let Some(bind_slot) = binding_map.get(ident.name.as_str()) {
                                 let target_var = *locals.get(*bind_slot)?;
