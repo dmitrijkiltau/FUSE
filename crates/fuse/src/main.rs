@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -307,12 +307,18 @@ fn run(args: Vec<String>) -> i32 {
             common.clean,
         ),
         Command::Check => {
+            if common.entry.is_none() && manifest.is_some() {
+                return run_project_check(&entry, &deps);
+            }
             let mut args = Vec::new();
             args.push("--check".to_string());
             args.push(entry.to_string_lossy().to_string());
             fusec::cli::run_with_deps(args, Some(&deps))
         }
         Command::Fmt => {
+            if common.entry.is_none() && manifest.is_some() {
+                return run_project_fmt(&entry, &deps);
+            }
             let mut args = Vec::new();
             args.push("--fmt".to_string());
             args.push(entry.to_string_lossy().to_string());
@@ -638,6 +644,89 @@ fn run_build(
     0
 }
 
+fn run_project_check(entry: &Path, deps: &HashMap<String, PathBuf>) -> i32 {
+    let files = match collect_project_files(entry, deps) {
+        Ok(files) => files,
+        Err(err) => {
+            eprintln!("{err}");
+            return 1;
+        }
+    };
+    let mut had_errors = false;
+    for file in files {
+        let src = match fs::read_to_string(&file) {
+            Ok(src) => src,
+            Err(err) => {
+                eprintln!("failed to read {}: {err}", file.display());
+                return 1;
+            }
+        };
+        let (registry, diags) = fusec::load_program_with_modules_and_deps(&file, &src, deps);
+        if !diags.is_empty() {
+            emit_diags_with_fallback(&diags, Some((&file, &src)));
+            had_errors = true;
+            continue;
+        }
+        let (_analysis, diags) = fusec::sema::analyze_registry(&registry);
+        if !diags.is_empty() {
+            emit_diags_with_fallback(&diags, Some((&file, &src)));
+            had_errors = true;
+        }
+    }
+    if had_errors {
+        1
+    } else {
+        0
+    }
+}
+
+fn run_project_fmt(entry: &Path, deps: &HashMap<String, PathBuf>) -> i32 {
+    let files = match collect_project_files(entry, deps) {
+        Ok(files) => files,
+        Err(err) => {
+            eprintln!("{err}");
+            return 1;
+        }
+    };
+    for file in files {
+        let src = match fs::read_to_string(&file) {
+            Ok(src) => src,
+            Err(err) => {
+                eprintln!("failed to read {}: {err}", file.display());
+                return 1;
+            }
+        };
+        let formatted = fusec::format::format_source(&src);
+        if formatted != src {
+            if let Err(err) = fs::write(&file, formatted) {
+                eprintln!("failed to write {}: {err}", file.display());
+                return 1;
+            }
+        }
+    }
+    0
+}
+
+fn collect_project_files(entry: &Path, deps: &HashMap<String, PathBuf>) -> Result<Vec<PathBuf>, String> {
+    let src = fs::read_to_string(entry)
+        .map_err(|err| format!("failed to read {}: {err}", entry.display()))?;
+    let (registry, diags) = fusec::load_program_with_modules_and_deps(entry, &src, deps);
+    if !diags.is_empty() {
+        emit_diags(&diags);
+        return Err("formatting aborted due to parse/sema errors".to_string());
+    }
+    let mut files = BTreeSet::new();
+    for unit in registry.modules.values() {
+        if unit.path.exists() {
+            files.insert(unit.path.clone());
+        }
+    }
+    if files.is_empty() {
+        files.insert(entry.to_path_buf());
+    }
+    Ok(files.into_iter().collect())
+}
+
 fn write_openapi(
     entry: &Path,
     out_path: &Path,
@@ -647,16 +736,7 @@ fn write_openapi(
         .map_err(|err| format!("failed to read {}: {err}", entry.display()))?;
     let (registry, diags) = fusec::load_program_with_modules_and_deps(entry, &src, deps);
     if !diags.is_empty() {
-        for diag in diags {
-            let level = match diag.level {
-                fusec::diag::Level::Error => "error",
-                fusec::diag::Level::Warning => "warning",
-            };
-            eprintln!(
-                "{level}: {} ({}..{})",
-                diag.message, diag.span.start, diag.span.end
-            );
-        }
+        emit_diags(&diags);
         return Err("build failed".to_string());
     }
     let json = fusec::openapi::generate_openapi(&registry)
@@ -964,16 +1044,7 @@ fn compile_artifacts(
         .map_err(|err| format!("failed to read {}: {err}", entry.display()))?;
     let (registry, diags) = fusec::load_program_with_modules_and_deps(entry, &src, deps);
     if !diags.is_empty() {
-        for diag in diags {
-            let level = match diag.level {
-                fusec::diag::Level::Error => "error",
-                fusec::diag::Level::Warning => "warning",
-            };
-            eprintln!(
-                "{level}: {} ({}..{})",
-                diag.message, diag.span.start, diag.span.end
-            );
-        }
+        emit_diags(&diags);
         return Err("build failed".to_string());
     }
     let ir = fusec::ir::lower::lower_registry(&registry).map_err(|errors| {
@@ -1154,6 +1225,67 @@ fn file_stamp(path: &Path) -> Result<FileStamp, String> {
         modified_nanos: duration.subsec_nanos(),
         size: metadata.len(),
     })
+}
+
+fn emit_diags(diags: &[fusec::diag::Diag]) {
+    emit_diags_with_fallback(diags, None);
+}
+
+fn emit_diags_with_fallback(diags: &[fusec::diag::Diag], fallback: Option<(&Path, &str)>) {
+    for diag in diags {
+        emit_diag(diag, fallback);
+    }
+}
+
+fn emit_diag(diag: &fusec::diag::Diag, fallback: Option<(&Path, &str)>) {
+    let level = match diag.level {
+        fusec::diag::Level::Error => "error",
+        fusec::diag::Level::Warning => "warning",
+    };
+    if let Some(path) = &diag.path {
+        if let Ok(src) = fs::read_to_string(path) {
+            let (line, col, line_text) = line_info(&src, diag.span.start);
+            eprintln!("{level}: {} ({}:{}:{})", diag.message, path.display(), line, col);
+            eprintln!("  {line_text}");
+            eprintln!("  {}^", " ".repeat(col.saturating_sub(1)));
+            return;
+        }
+        eprintln!("{level}: {} ({})", diag.message, path.display());
+        return;
+    }
+    if let Some((path, src)) = fallback {
+        let (line, col, line_text) = line_info(src, diag.span.start);
+        eprintln!("{level}: {} ({}:{}:{})", diag.message, path.display(), line, col);
+        eprintln!("  {line_text}");
+        eprintln!("  {}^", " ".repeat(col.saturating_sub(1)));
+        return;
+    }
+    eprintln!(
+        "{level}: {} ({}..{})",
+        diag.message, diag.span.start, diag.span.end
+    );
+}
+
+fn line_info(src: &str, offset: usize) -> (usize, usize, &str) {
+    let offset = offset.min(src.len());
+    let mut line = 1usize;
+    let mut line_start = 0usize;
+    for (idx, byte) in src.bytes().enumerate() {
+        if idx >= offset {
+            break;
+        }
+        if byte == b'\n' {
+            line += 1;
+            line_start = idx + 1;
+        }
+    }
+    let line_end = src[line_start..]
+        .find('\n')
+        .map(|rel| line_start + rel)
+        .unwrap_or(src.len());
+    let col = offset.saturating_sub(line_start) + 1;
+    let line_text = &src[line_start..line_end];
+    (line, col, line_text)
 }
 
 fn resolve_dependencies(

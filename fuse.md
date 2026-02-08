@@ -157,6 +157,8 @@ Utils = { path = "../utils" }
 `fuse run` and `fuse test` use `package.entry`. `fuse build` runs checks and emits OpenAPI
 if `build.openapi` is set. If `build.native_bin` is set, it links a standalone native binary
 at that path (native backend; config loading uses `FUSE_CONFIG` + env overrides).
+`fuse check` semantically checks the package module graph starting at `package.entry`;
+`fuse fmt` formats that same module graph.
 
 Dependencies are fetched into `.fuse/deps` and locked in `fuse.lock`. Use `dep:` import
 paths to reference dependency modules:

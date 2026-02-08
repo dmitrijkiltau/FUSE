@@ -90,15 +90,12 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * OpenAPI 3.0 generation via `fusec --openapi`
 * `fusec` flags: `--check`, `--run`, `--migrate`, `--test`, `--openapi`, `--backend` (`ast|vm|native`), `--app`
 * package manifest (`fuse.toml`) + `fuse run/test/build`
+* project-wide CLI ergonomics: `fuse check`/`fuse fmt` over the package module graph + file-aware multi-file parse/sema spans
 * dependency fetching + `fuse.lock`
 * IR cache for fast `fuse run` (`.fuse/build/program.ir`)
 * native image cache (`.fuse/build/program.native`) for `--backend native`
 * native perf smoke check (`scripts/native_perf_check.sh`, optional budgets)
 * LSP: diagnostics, formatting, go-to-definition, hover (Markdown docstrings), rename, workspace symbols, project-wide defs/refs, find references, call hierarchy, code actions (missing import, qualify symbol, organize imports), semantic tokens, inlay hints (types/params)
-
-**Tooling (planned)**
-
-* CLI ergonomics: project‑wide `fmt`/`check`, better parse/sema spans on multi‑file errors
 
 ## Non-goals (explicitly)
 
