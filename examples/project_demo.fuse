@@ -14,10 +14,8 @@ type User:
 
 fn describe(color: Color) -> String:
   match color:
-    case Red:
-      return "red"
-    case Rgb(r, g, b):
-      return "rgb ${r},${g},${b}"
+    Red -> "red"
+    Rgb(r, g, b) -> "rgb ${r},${g},${b}"
 
 fn greet(name: String) -> String:
   return "${App.greeting}, ${name}!"

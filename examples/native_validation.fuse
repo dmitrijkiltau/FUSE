@@ -20,9 +20,9 @@ fn bad_age() -> User!std.Error:
 
 fn show(label: String, result: User!std.Error):
   match result:
-    case Ok(u):
+    Ok(u):
       print("${label}: ok ${u}")
-    case Err(e):
+    Err(e):
       print("${label}: ${e.message}")
       print(json.encode(e.fields))
 

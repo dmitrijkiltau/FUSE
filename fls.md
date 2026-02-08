@@ -10,7 +10,7 @@ incomplete, the notes call it out explicitly.
 * Identifiers: `[A-Za-z_][A-Za-z0-9_]*`
 * Keywords:
   `app, service, at, get, post, put, patch, delete, fn, type, enum, let, var, return, if, else,
-  match, case, for, in, while, break, continue, import, from, as, config, migration, table, test,
+  match, for, in, while, break, continue, import, from, as, config, migration, table, test,
   body, and, or, without, spawn, await, box`
 * Literals:
   * integers (`123`)
@@ -111,7 +111,9 @@ ReturnStmt     := "return" [ Expr ] NEWLINE
 ExprStmt       := Expr NEWLINE | SpawnExpr
 
 IfStmt         := "if" Expr ":" NEWLINE Block { "else" "if" Expr ":" NEWLINE Block } [ "else" ":" NEWLINE Block ]
-MatchStmt      := "match" Expr ":" NEWLINE INDENT { "case" Pattern ":" NEWLINE Block } DEDENT
+MatchStmt      := "match" Expr ":" NEWLINE INDENT { MatchCase } DEDENT
+MatchCase      := Pattern ( "->" Expr NEWLINE | ":" NEWLINE Block )
+                # `Pattern -> Expr` is sugar for `Pattern: return Expr`
 ForStmt        := "for" Pattern "in" Expr ":" NEWLINE Block
 WhileStmt      := "while" Expr ":" NEWLINE Block
 

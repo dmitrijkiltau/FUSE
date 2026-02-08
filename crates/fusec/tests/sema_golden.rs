@@ -85,15 +85,12 @@ type User:
 
 fn describe(color: Color) -> String:
   match color:
-    case Red:
-      "red"
-    case Rgb(r, g, b):
-      "rgb"
+    Red -> "red"
+    Rgb(r, g, b) -> "rgb"
 
 fn describe_user(user: User) -> String:
   match user:
-    case User(name=n):
-      n
+    User(name=n) -> n
 "#;
     assert_diags(src, &[]);
 }

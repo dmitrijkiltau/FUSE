@@ -13,26 +13,19 @@ type std.Error.NotFound:
 
 fn describe(color: Color) -> String:
   match color:
-    case Red:
-      return "red"
-    case Rgb(r, g, b):
-      return "rgb"
+    Red -> "red"
+    Rgb(r, g, b) -> "rgb"
 
 fn describe_user(user: User) -> String:
   match user:
-    case User(name=n):
-      return n
+    User(name=n) -> n
 
 fn maybe_name(user: User?) -> String:
   match user:
-    case Some(u):
-      return u.name
-    case None:
-      return "unknown"
+    Some(u) -> u.name
+    None -> "unknown"
 
 fn handle(result: User!std.Error.NotFound) -> String:
   match result:
-    case Ok(u):
-      return u.name
-    case Err(e):
-      return e.message
+    Ok(u) -> u.name
+    Err(e) -> e.message

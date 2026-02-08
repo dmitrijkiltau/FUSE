@@ -8,8 +8,7 @@ fn require_auth() -> Auth!Unauthorized:
   return Auth(subject="system", scopes=["notes:read", "notes:write"])
 
 fn require_scope(auth: Auth, scope: String) -> Auth!Forbidden:
-  if scope == "notes:read":
-    return auth
-  if scope == "notes:write":
-    return auth
-  null ?! Forbidden(message="missing scope: ${scope}")
+  match scope:
+    "notes:read" -> auth
+    "notes:write" -> auth
+    _ -> null ?! Forbidden(message="missing scope: ${scope}")

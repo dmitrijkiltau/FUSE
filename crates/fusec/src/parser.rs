@@ -577,10 +577,24 @@ impl<'a> Parser<'a> {
             if self.at_dedent() || self.at_eof() {
                 break;
             }
-            self.expect_keyword(Keyword::Case);
             let pat = self.parse_pattern();
-            self.expect_punct(Punct::Colon);
-            let block = self.parse_block();
+            let block = if self.eat_punct(Punct::Arrow).is_some() {
+                let expr = self.parse_expr();
+                self.expect_newline();
+                let stmt = Stmt {
+                    kind: StmtKind::Return {
+                        expr: Some(expr.clone()),
+                    },
+                    span: expr.span,
+                };
+                Block {
+                    stmts: vec![stmt],
+                    span: expr.span,
+                }
+            } else {
+                self.expect_punct(Punct::Colon);
+                self.parse_block()
+            };
             cases.push((pat, block));
         }
         self.expect_dedent();

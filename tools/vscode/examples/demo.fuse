@@ -17,10 +17,8 @@ fn greeting(name: String) -> String:
 
 fn status_message(status: Status) -> String:
   match status:
-    case Success:
-      return "ok"
-    case Error(m):
-      return "error: ${m}"
+    Success -> "ok"
+    Error(m) -> "error: ${m}"
 
 service Users at "/api":
   get "/users/{id: Id}" -> User!std.Error.NotFound:
