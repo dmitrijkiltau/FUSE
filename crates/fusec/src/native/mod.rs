@@ -109,12 +109,7 @@ pub fn emit_object_for_app(
         interned_strings,
     } = match jit::emit_object_for_functions(&program.ir, &funcs) {
         Ok(artifact) => artifact,
-        Err(err) => {
-            if let Some(reason) = unsupported_reason(&program.ir, app) {
-                return Err(format!("native backend unsupported: {reason}"));
-            }
-            return Err(err);
-        }
+        Err(err) => return Err(err),
     };
     Ok(NativeObject {
         object,
@@ -546,9 +541,10 @@ impl<'a> NativeVm<'a> {
                         Some(Err(JitCallError::Error(err_val))) => TaskResult::Error(err_val),
                         Some(Err(JitCallError::Runtime(message))) => TaskResult::Runtime(message),
                         None => {
-                            let reason = unsupported_reason(&self.program.ir, func)
-                                .unwrap_or_else(|| "native backend could not compile function".to_string());
-                            return Err(format!("native backend unsupported: {reason}"));
+                            return Err(format!(
+                                "native backend could not compile function {}",
+                                func.name
+                            ));
                         }
                     };
                     self.heap.collect_garbage();
@@ -1904,9 +1900,10 @@ fn call_function_native_only_with(
         return out;
     }
     heap.collect_garbage();
-    let reason = unsupported_reason(&program.ir, func)
-        .unwrap_or_else(|| "native backend could not compile function".to_string());
-    Err(format!("native backend unsupported: {reason}"))
+    Err(format!(
+        "native backend could not compile function {}",
+        func.name
+    ))
 }
 
 fn wrap_function_result(func: &Function, value: Value) -> Value {
@@ -1929,83 +1926,6 @@ fn is_result_type(ty: Option<&crate::ast::TypeRef>) -> bool {
         },
         None => false,
     }
-}
-
-fn unsupported_reason(program: &IrProgram, func: &Function) -> Option<String> {
-    let mut seen = HashSet::new();
-    unsupported_reason_inner(program, func, &mut seen)
-}
-
-fn unsupported_reason_inner(
-    program: &IrProgram,
-    func: &Function,
-    seen: &mut HashSet<String>,
-) -> Option<String> {
-    if !seen.insert(func.name.clone()) {
-        return None;
-    }
-    let func_name = func.name.as_str();
-    for instr in &func.code {
-        match instr {
-            crate::ir::Instr::Call {
-                kind: crate::ir::CallKind::Function,
-                name,
-                ..
-            } => {
-                if let Some(callee) = program
-                    .functions
-                    .get(name)
-                    .or_else(|| program.apps.get(name))
-                    .or_else(|| program.apps.values().find(|func| func.name == name.as_str()))
-                {
-                    if let Some(reason) = unsupported_reason_inner(program, callee, seen) {
-                        return Some(reason);
-                    }
-                }
-            }
-            crate::ir::Instr::Call {
-                kind: crate::ir::CallKind::Builtin,
-                name,
-                ..
-            } => {
-                if !is_supported_builtin(name) {
-                    return Some(format!("builtin {name} in {func_name}"));
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn is_supported_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "print"
-            | "log"
-            | "env"
-            | "assert"
-            | "range"
-            | "serve"
-            | "task.id"
-            | "task.done"
-            | "task.cancel"
-            | "db.exec"
-            | "db.query"
-            | "db.one"
-            | "db.from"
-            | "query.select"
-            | "query.where"
-            | "query.order_by"
-            | "query.limit"
-            | "query.one"
-            | "query.all"
-            | "query.exec"
-            | "query.sql"
-            | "query.params"
-            | "json.encode"
-            | "json.decode"
-    )
 }
 
 struct ConfigEvaluator;
