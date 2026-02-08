@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 
 use fusec::ast::{
     Block, ConfigDecl, Doc, EnumDecl, Expr, ExprKind, FnDecl, Ident, ImportDecl, ImportSpec, Item,
@@ -7,6 +8,7 @@ use fusec::ast::{
     TypeRefKind,
 };
 use fusec::diag::{Diag, Level};
+use fusec::loader::{load_program_with_modules_and_deps_and_overrides, ModuleRegistry};
 use fusec::parse_source;
 use fusec::sema;
 use fusec::span::Span;
@@ -15,7 +17,7 @@ use fuse_rt::json::{self, JsonValue};
 fn main() -> io::Result<()> {
     let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
-    let mut docs: BTreeMap<String, String> = BTreeMap::new();
+    let mut state = LspState::default();
     let mut shutdown = false;
 
     loop {
@@ -33,6 +35,7 @@ fn main() -> io::Result<()> {
 
         match method.as_deref() {
             Some("initialize") => {
+                state.root_uri = extract_root_uri(&obj);
                 let result = capabilities_result();
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
@@ -53,7 +56,7 @@ fn main() -> io::Result<()> {
             Some("textDocument/didOpen") => {
                 if let Some(uri) = extract_text_doc_uri(&obj) {
                     if let Some(text) = extract_text_doc_text(&obj) {
-                        docs.insert(uri.clone(), text.clone());
+                        state.docs.insert(uri.clone(), text.clone());
                         publish_diagnostics(&mut stdout, &uri, &text)?;
                     }
                 }
@@ -61,25 +64,25 @@ fn main() -> io::Result<()> {
             Some("textDocument/didChange") => {
                 if let Some(uri) = extract_text_doc_uri(&obj) {
                     if let Some(text) = extract_change_text(&obj) {
-                        docs.insert(uri.clone(), text.clone());
+                        state.docs.insert(uri.clone(), text.clone());
                         publish_diagnostics(&mut stdout, &uri, &text)?;
                     }
                 }
             }
             Some("textDocument/didClose") => {
                 if let Some(uri) = extract_text_doc_uri(&obj) {
-                    docs.remove(&uri);
+                    state.docs.remove(&uri);
                     publish_empty_diagnostics(&mut stdout, &uri)?;
                 }
             }
             Some("textDocument/formatting") => {
                 let mut edits = Vec::new();
                 if let Some(uri) = extract_text_doc_uri(&obj) {
-                    if let Some(text) = docs.get(&uri) {
+                    if let Some(text) = state.docs.get(&uri) {
                         let formatted = fusec::format::format_source(text);
                         if formatted != *text {
                             edits.push(full_document_edit(text, &formatted));
-                            docs.insert(uri, formatted.clone());
+                            state.docs.insert(uri, formatted.clone());
                         }
                     }
                 }
@@ -87,22 +90,22 @@ fn main() -> io::Result<()> {
                 write_message(&mut stdout, &response)?;
             }
             Some("textDocument/definition") => {
-                let result = handle_definition(&docs, &obj);
+                let result = handle_definition(&state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("textDocument/hover") => {
-                let result = handle_hover(&docs, &obj);
+                let result = handle_hover(&state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("textDocument/rename") => {
-                let result = handle_rename(&docs, &obj);
+                let result = handle_rename(&state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("workspace/symbol") => {
-                let result = handle_workspace_symbol(&docs, &obj);
+                let result = handle_workspace_symbol(&state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
@@ -127,6 +130,12 @@ fn capabilities_result() -> JsonValue {
     let mut root = BTreeMap::new();
     root.insert("capabilities".to_string(), JsonValue::Object(caps));
     JsonValue::Object(root)
+}
+
+#[derive(Default)]
+struct LspState {
+    docs: BTreeMap<String, String>,
+    root_uri: Option<String>,
 }
 
 fn publish_diagnostics(out: &mut impl Write, uri: &str, text: &str) -> io::Result<()> {
@@ -210,6 +219,56 @@ fn line_offsets(text: &str) -> Vec<usize> {
         }
     }
     offsets
+}
+
+fn uri_to_path(uri: &str) -> Option<PathBuf> {
+    if !uri.starts_with("file://") {
+        return None;
+    }
+    let mut raw = uri.trim_start_matches("file://").to_string();
+    if raw.starts_with('/') && raw.len() > 2 && raw.as_bytes()[2] == b':' {
+        raw.remove(0);
+    }
+    let decoded = decode_uri_component(&raw);
+    if decoded.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(decoded))
+}
+
+fn path_to_uri(path: &Path) -> String {
+    let raw = path.to_string_lossy().to_string();
+    if raw.contains("://") {
+        return raw;
+    }
+    format!("file://{}", raw)
+}
+
+fn decode_uri_component(value: &str) -> String {
+    let mut out = String::new();
+    let bytes = value.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx] == b'%' && idx + 2 < bytes.len() {
+            if let (Some(a), Some(b)) = (hex_val(bytes[idx + 1]), hex_val(bytes[idx + 2])) {
+                out.push((a * 16 + b) as char);
+                idx += 3;
+                continue;
+            }
+        }
+        out.push(bytes[idx] as char);
+        idx += 1;
+    }
+    out
+}
+
+fn hex_val(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn offset_to_line_col(offsets: &[usize], offset: usize) -> (usize, usize) {
@@ -344,6 +403,22 @@ fn extract_workspace_query(obj: &BTreeMap<String, JsonValue>) -> Option<String> 
     }
 }
 
+fn extract_root_uri(obj: &BTreeMap<String, JsonValue>) -> Option<String> {
+    let params = obj.get("params")?;
+    let JsonValue::Object(params) = params else { return None };
+    if let Some(JsonValue::String(uri)) = params.get("rootUri") {
+        if !uri.is_empty() {
+            return Some(uri.clone());
+        }
+    }
+    if let Some(JsonValue::String(path)) = params.get("rootPath") {
+        if !path.is_empty() {
+            return Some(path_to_uri(Path::new(path)));
+        }
+    }
+    None
+}
+
 fn read_message(reader: &mut impl Read) -> io::Result<Option<String>> {
     let mut header = Vec::new();
     let mut buf = [0u8; 1];
@@ -377,38 +452,37 @@ fn write_message(out: &mut impl Write, value: &JsonValue) -> io::Result<()> {
     out.flush()
 }
 
-fn handle_definition(docs: &BTreeMap<String, String>, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+fn handle_definition(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
     let Some((uri, line, character)) = extract_position(obj) else {
         return JsonValue::Null;
     };
-    let Some(text) = docs.get(&uri) else { return JsonValue::Null };
-    let offsets = line_offsets(text);
-    let offset = line_col_to_offset(text, &offsets, line, character);
-    let index = build_index(text);
-    let def_id = match index.definition_at(offset) {
-        Some(def_id) => def_id,
+    let index = match build_workspace_index(state, &uri) {
+        Some(index) => index,
         None => return JsonValue::Null,
     };
-    let def = &index.defs[def_id];
-    let location = location_json(&uri, text, def.span);
+    let Some(def) = index.definition_at(&uri, line, character) else {
+        return JsonValue::Null;
+    };
+    let Some(def_text) = index.file_text(&def.uri) else {
+        return JsonValue::Null;
+    };
+    let location = location_json(&def.uri, def_text, def.def.span);
     JsonValue::Array(vec![location])
 }
 
-fn handle_hover(docs: &BTreeMap<String, String>, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+fn handle_hover(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
     let Some((uri, line, character)) = extract_position(obj) else {
         return JsonValue::Null;
     };
-    let Some(text) = docs.get(&uri) else { return JsonValue::Null };
-    let offsets = line_offsets(text);
-    let offset = line_col_to_offset(text, &offsets, line, character);
-    let index = build_index(text);
-    let def_id = match index.definition_at(offset) {
-        Some(def_id) => def_id,
+    let index = match build_workspace_index(state, &uri) {
+        Some(index) => index,
         None => return JsonValue::Null,
     };
-    let def = &index.defs[def_id];
-    let mut value = def.detail.clone();
-    if let Some(doc) = &def.doc {
+    let Some(def) = index.definition_at(&uri, line, character) else {
+        return JsonValue::Null;
+    };
+    let mut value = def.def.detail.clone();
+    if let Some(doc) = &def.def.doc {
         if !doc.trim().is_empty() {
             value.push_str("\n\n");
             value.push_str(doc.trim());
@@ -423,25 +497,28 @@ fn handle_hover(docs: &BTreeMap<String, String>, obj: &BTreeMap<String, JsonValu
 }
 
 fn handle_workspace_symbol(
-    docs: &BTreeMap<String, String>,
+    state: &LspState,
     obj: &BTreeMap<String, JsonValue>,
 ) -> JsonValue {
     let query = extract_workspace_query(obj).unwrap_or_default().to_lowercase();
     let mut symbols = Vec::new();
-    for (uri, text) in docs {
-        let index = build_index(text);
-        for def in &index.defs {
-            if !query.is_empty() && !def.name.to_lowercase().contains(&query) {
-                continue;
-            }
-            let symbol = symbol_info_json(uri, text, def);
-            symbols.push(symbol);
+    let index = match build_workspace_index(state, "") {
+        Some(index) => index,
+        None => return JsonValue::Array(Vec::new()),
+    };
+    for def in &index.defs {
+        if !query.is_empty() && !def.def.name.to_lowercase().contains(&query) {
+            continue;
         }
+        let Some(file_idx) = index.file_by_uri.get(&def.uri) else { continue };
+        let file = &index.files[*file_idx];
+        let symbol = symbol_info_json(&def.uri, &file.text, &def.def);
+        symbols.push(symbol);
     }
     JsonValue::Array(symbols)
 }
 
-fn handle_rename(docs: &BTreeMap<String, String>, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+fn handle_rename(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
     let Some((uri, line, character)) = extract_position(obj) else {
         return JsonValue::Null;
     };
@@ -451,20 +528,21 @@ fn handle_rename(docs: &BTreeMap<String, String>, obj: &BTreeMap<String, JsonVal
     if !is_valid_ident(&new_name) {
         return JsonValue::Null;
     }
-    let Some(text) = docs.get(&uri) else { return JsonValue::Null };
-    let offsets = line_offsets(text);
-    let offset = line_col_to_offset(text, &offsets, line, character);
-    let index = build_index(text);
-    let def_id = match index.definition_at(offset) {
-        Some(def_id) => def_id,
+    let index = match build_workspace_index(state, &uri) {
+        Some(index) => index,
         None => return JsonValue::Null,
     };
-    let edits = index.rename_edits(text, def_id, &new_name);
+    let Some(def) = index.definition_at(&uri, line, character) else {
+        return JsonValue::Null;
+    };
+    let edits = index.rename_edits(def.id, &new_name);
     if edits.is_empty() {
         return JsonValue::Null;
     }
     let mut changes = BTreeMap::new();
-    changes.insert(uri, JsonValue::Array(edits));
+    for (uri, edits) in edits {
+        changes.insert(uri, JsonValue::Array(edits));
+    }
     let mut root = BTreeMap::new();
     root.insert("changes".to_string(), JsonValue::Object(changes));
     JsonValue::Object(root)
@@ -544,33 +622,9 @@ impl Index {
         best.map(|(id, _)| id)
     }
 
-    fn rename_edits(&self, text: &str, def_id: usize, new_name: &str) -> Vec<JsonValue> {
-        let mut spans = Vec::new();
-        let def = &self.defs[def_id];
-        spans.push(def.span);
-        for reference in &self.refs {
-            if reference.target == def_id {
-                spans.push(reference.span);
-            }
-        }
-        let mut seen = HashSet::new();
-        let offsets = line_offsets(text);
-        spans
-            .into_iter()
-            .filter(|span| seen.insert((span.start, span.end)))
-            .map(|span| {
-                let (start_line, start_col) = offset_to_line_col(&offsets, span.start);
-                let (end_line, end_col) = offset_to_line_col(&offsets, span.end);
-                let range = range_json(start_line, start_col, end_line, end_col);
-                let mut edit = BTreeMap::new();
-                edit.insert("range".to_string(), range);
-                edit.insert("newText".to_string(), JsonValue::String(new_name.to_string()));
-                JsonValue::Object(edit)
-            })
-            .collect()
-    }
 }
 
+#[derive(Clone)]
 struct SymbolDef {
     name: String,
     span: Span,
@@ -585,7 +639,7 @@ struct SymbolRef {
     target: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum SymbolKind {
     Module,
     Type,
@@ -626,11 +680,708 @@ fn span_contains(span: Span, offset: usize) -> bool {
     offset >= span.start && offset <= span.end
 }
 
-fn build_index(text: &str) -> Index {
-    let (program, _diags) = parse_source(text);
+struct WorkspaceIndex {
+    files: Vec<WorkspaceFile>,
+    file_by_uri: HashMap<String, usize>,
+    defs: Vec<WorkspaceDef>,
+    refs: Vec<WorkspaceRef>,
+    redirects: HashMap<usize, usize>,
+}
+
+struct WorkspaceFile {
+    uri: String,
+    text: String,
+    index: Index,
+    def_map: Vec<usize>,
+    qualified_refs: Vec<QualifiedRef>,
+}
+
+#[derive(Clone)]
+struct WorkspaceDef {
+    id: usize,
+    uri: String,
+    def: SymbolDef,
+}
+
+struct WorkspaceRef {
+    uri: String,
+    span: Span,
+    target: usize,
+}
+
+struct QualifiedRef {
+    span: Span,
+    target: usize,
+}
+
+impl WorkspaceIndex {
+    fn definition_at(
+        &self,
+        uri: &str,
+        line: usize,
+        character: usize,
+    ) -> Option<WorkspaceDef> {
+        let file_idx = *self.file_by_uri.get(uri)?;
+        let file = &self.files[file_idx];
+        let offsets = line_offsets(&file.text);
+        let offset = line_col_to_offset(&file.text, &offsets, line, character);
+        if let Some(target) = best_ref_target(&file.qualified_refs, offset) {
+            let def = self.def_for_target(target)?;
+            return Some(def);
+        }
+        let local_def_id = file.index.definition_at(offset)?;
+        let mut def_id = *file.def_map.get(local_def_id)?;
+        while let Some(next) = self.redirects.get(&def_id) {
+            if *next == def_id {
+                break;
+            }
+            def_id = *next;
+        }
+        let def = self.def_for_target(def_id)?;
+        Some(def)
+    }
+
+    fn rename_edits(&self, def_id: usize, new_name: &str) -> HashMap<String, Vec<JsonValue>> {
+        let mut spans_by_uri: HashMap<String, Vec<Span>> = HashMap::new();
+        if let Some(def) = self.def_for_target(def_id) {
+            spans_by_uri
+                .entry(def.uri.clone())
+                .or_default()
+                .push(def.def.span);
+        }
+        for reference in &self.refs {
+            if reference.target == def_id {
+                spans_by_uri
+                    .entry(reference.uri.clone())
+                    .or_default()
+                    .push(reference.span);
+            }
+        }
+        let mut edits_by_uri = HashMap::new();
+        for (uri, spans) in spans_by_uri {
+            let Some(text) = self.file_text(&uri) else { continue };
+            let offsets = line_offsets(text);
+            let mut edits = Vec::new();
+            let mut seen = HashSet::new();
+            for span in spans {
+                if !seen.insert((span.start, span.end)) {
+                    continue;
+                }
+                let (start_line, start_col) = offset_to_line_col(&offsets, span.start);
+                let (end_line, end_col) = offset_to_line_col(&offsets, span.end);
+                let range = range_json(start_line, start_col, end_line, end_col);
+                let mut edit = BTreeMap::new();
+                edit.insert("range".to_string(), range);
+                edit.insert("newText".to_string(), JsonValue::String(new_name.to_string()));
+                edits.push(JsonValue::Object(edit));
+            }
+            if !edits.is_empty() {
+                edits_by_uri.insert(uri, edits);
+            }
+        }
+        edits_by_uri
+    }
+
+    fn def_for_target(&self, target: usize) -> Option<WorkspaceDef> {
+        self.defs.get(target).cloned()
+    }
+
+    fn file_text(&self, uri: &str) -> Option<&str> {
+        let idx = *self.file_by_uri.get(uri)?;
+        Some(self.files[idx].text.as_str())
+    }
+}
+
+fn best_ref_target(refs: &[QualifiedRef], offset: usize) -> Option<usize> {
+    let mut best: Option<(usize, usize)> = None;
+    for reference in refs {
+        if span_contains(reference.span, offset) {
+            let size = reference.span.end.saturating_sub(reference.span.start);
+            if best.map_or(true, |(_, best_size)| size <= best_size) {
+                best = Some((reference.target, size));
+            }
+        }
+    }
+    best.map(|(target, _)| target)
+}
+
+fn build_index_with_program(text: &str, program: &Program) -> Index {
     let mut builder = IndexBuilder::new(text);
-    builder.collect(&program);
+    builder.collect(program);
     builder.finish()
+}
+
+fn build_workspace_index(state: &LspState, focus_uri: &str) -> Option<WorkspaceIndex> {
+    let focus_path = if !focus_uri.is_empty() {
+        uri_to_path(focus_uri)
+    } else {
+        None
+    };
+    let root_path = focus_path
+        .clone()
+        .or_else(|| state.root_uri.as_deref().and_then(uri_to_path))?;
+    let entry_path = resolve_entry_path(&root_path, focus_path.as_deref())?;
+    let mut overrides = HashMap::new();
+    for (uri, text) in &state.docs {
+        if let Some(path) = uri_to_path(uri) {
+            let key = path.canonicalize().unwrap_or(path);
+            overrides.insert(key, text.clone());
+        }
+    }
+    let entry_key = entry_path.canonicalize().unwrap_or_else(|_| entry_path.clone());
+    let root_text = overrides
+        .get(&entry_key)
+        .cloned()
+        .or_else(|| std::fs::read_to_string(&entry_path).ok())?;
+    let (registry, _diags) =
+        load_program_with_modules_and_deps_and_overrides(&entry_path, &root_text, &HashMap::new(), &overrides);
+    build_workspace_from_registry(&registry, &overrides)
+}
+
+fn resolve_entry_path(root_path: &Path, focus: Option<&Path>) -> Option<PathBuf> {
+    if let Some(path) = focus {
+        if path.is_file() {
+            return Some(path.to_path_buf());
+        }
+    }
+    if root_path.is_file() {
+        return Some(root_path.to_path_buf());
+    }
+    if root_path.is_dir() {
+        if let Some(entry) = read_manifest_entry(root_path) {
+            return Some(entry);
+        }
+        let candidate = root_path.join("src").join("main.fuse");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        if let Some(first) = find_first_fuse_file(root_path) {
+            return Some(first);
+        }
+    }
+    None
+}
+
+fn read_manifest_entry(root: &Path) -> Option<PathBuf> {
+    let manifest = root.join("fuse.toml");
+    let contents = std::fs::read_to_string(&manifest).ok()?;
+    let mut in_package = false;
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        let mut parts = line.splitn(2, '=');
+        let key = parts.next()?.trim();
+        if key != "entry" {
+            continue;
+        }
+        let value = parts.next()?.trim();
+        let value = value.trim_matches('"').trim_matches('\'');
+        if value.is_empty() {
+            continue;
+        }
+        return Some(root.join(value));
+    }
+    None
+}
+
+fn find_first_fuse_file(root: &Path) -> Option<PathBuf> {
+    let mut stack = vec![root.to_path_buf()];
+    let ignore_dirs = [
+        ".git",
+        ".fuse",
+        "target",
+        "tmp",
+        "dist",
+        "build",
+        ".cargo-target",
+        ".cargo-tmp",
+        "node_modules",
+    ];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if ignore_dirs.contains(&name) {
+                        continue;
+                    }
+                }
+                stack.push(path);
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("fuse") {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn build_workspace_from_registry(
+    registry: &ModuleRegistry,
+    overrides: &HashMap<PathBuf, String>,
+) -> Option<WorkspaceIndex> {
+    let mut files = Vec::new();
+    let mut file_by_uri = HashMap::new();
+    let mut module_to_file = HashMap::new();
+    let mut modules_sorted: Vec<(usize, &fusec::loader::ModuleUnit)> =
+        registry.modules.iter().map(|(id, unit)| (*id, unit)).collect();
+    modules_sorted.sort_by_key(|(id, _)| *id);
+    for (id, unit) in modules_sorted {
+        let path_str = unit.path.to_string_lossy();
+        if path_str.starts_with('<') {
+            continue;
+        }
+        let uri = path_to_uri(&unit.path);
+        let key = unit.path.canonicalize().unwrap_or_else(|_| unit.path.clone());
+        let text = overrides
+            .get(&key)
+            .cloned()
+            .or_else(|| std::fs::read_to_string(&unit.path).ok())
+            .unwrap_or_default();
+        let index = build_index_with_program(&text, &unit.program);
+        let def_map = vec![0; index.defs.len()];
+        let file_idx = files.len();
+        files.push(WorkspaceFile {
+            uri: uri.clone(),
+            text,
+            index,
+            def_map,
+            qualified_refs: Vec::new(),
+        });
+        file_by_uri.insert(uri.clone(), file_idx);
+        module_to_file.insert(id, file_idx);
+    }
+
+    let mut defs = Vec::new();
+    for file in files.iter_mut() {
+        for (local_id, def) in file.index.defs.iter().enumerate() {
+            let global_id = defs.len();
+            defs.push(WorkspaceDef {
+                id: global_id,
+                uri: file.uri.clone(),
+                def: def.clone(),
+            });
+            file.def_map[local_id] = global_id;
+        }
+    }
+
+    let mut refs = Vec::new();
+    for file in &files {
+        for reference in &file.index.refs {
+            if let Some(global_id) = file.def_map.get(reference.target) {
+                refs.push(WorkspaceRef {
+                    uri: file.uri.clone(),
+                    span: reference.span,
+                    target: *global_id,
+                });
+            }
+        }
+    }
+
+    let mut exports_by_module: HashMap<usize, HashMap<String, usize>> = HashMap::new();
+    for (module_id, file_idx) in &module_to_file {
+        let file = &files[*file_idx];
+        let mut exports = HashMap::new();
+        for (local_id, def) in file.index.defs.iter().enumerate() {
+            if !is_exported_def_kind(def.kind) {
+                continue;
+            }
+            let global_id = file.def_map[local_id];
+            exports.entry(def.name.clone()).or_insert(global_id);
+        }
+        exports_by_module.insert(*module_id, exports);
+    }
+
+    let mut redirects = HashMap::new();
+    let mut modules_sorted: Vec<(usize, &fusec::loader::ModuleUnit)> =
+        registry.modules.iter().map(|(id, unit)| (*id, unit)).collect();
+    modules_sorted.sort_by_key(|(id, _)| *id);
+    for (module_id, unit) in modules_sorted {
+        let Some(file_idx) = module_to_file.get(&module_id) else { continue };
+        let file = &mut files[*file_idx];
+        for (name, link) in &unit.import_items {
+            let Some(exports) = exports_by_module.get(&link.id) else { continue };
+            let Some(target) = exports.get(name) else { continue };
+            if let Some(local_def_id) = find_import_def(&file.index, name) {
+                let global_id = file.def_map[local_def_id];
+                redirects.insert(global_id, *target);
+                refs.push(WorkspaceRef {
+                    uri: file.uri.clone(),
+                    span: file.index.defs[local_def_id].span,
+                    target: *target,
+                });
+            }
+        }
+
+        let module_aliases: HashMap<String, usize> = unit
+            .modules
+            .modules
+            .iter()
+            .map(|(name, link)| (name.clone(), link.id))
+            .collect();
+        let qualified_refs = collect_qualified_refs(&unit.program);
+        for qualified in qualified_refs {
+            let Some(module_id) = module_aliases.get(&qualified.module) else { continue };
+            let Some(exports) = exports_by_module.get(module_id) else { continue };
+            let Some(target) = exports.get(&qualified.item) else { continue };
+            file.qualified_refs.push(QualifiedRef {
+                span: qualified.span,
+                target: *target,
+            });
+            refs.push(WorkspaceRef {
+                uri: file.uri.clone(),
+                span: qualified.span,
+                target: *target,
+            });
+        }
+    }
+
+    for reference in refs.iter_mut() {
+        let mut target = reference.target;
+        while let Some(next) = redirects.get(&target) {
+            if *next == target {
+                break;
+            }
+            target = *next;
+        }
+        reference.target = target;
+    }
+
+    Some(WorkspaceIndex {
+        files,
+        file_by_uri,
+        defs,
+        refs,
+        redirects,
+    })
+}
+
+fn is_exported_def_kind(kind: SymbolKind) -> bool {
+    matches!(
+        kind,
+        SymbolKind::Type
+            | SymbolKind::Enum
+            | SymbolKind::Function
+            | SymbolKind::Config
+            | SymbolKind::Service
+            | SymbolKind::App
+            | SymbolKind::Migration
+            | SymbolKind::Test
+    )
+}
+
+fn find_import_def(index: &Index, name: &str) -> Option<usize> {
+    index.defs.iter().enumerate().find_map(|(idx, def)| {
+        if def.kind != SymbolKind::Variable {
+            return None;
+        }
+        if def.name != name {
+            return None;
+        }
+        if def.detail.starts_with("import ") {
+            return Some(idx);
+        }
+        None
+    })
+}
+
+struct QualifiedNameRef {
+    span: Span,
+    module: String,
+    item: String,
+}
+
+fn collect_qualified_refs(program: &Program) -> Vec<QualifiedNameRef> {
+    let mut out = Vec::new();
+    for item in &program.items {
+        match item {
+            Item::Type(decl) => {
+                for field in &decl.fields {
+                    collect_qualified_type_ref(&field.ty, &mut out);
+                }
+            }
+            Item::Enum(decl) => {
+                for variant in &decl.variants {
+                    for ty in &variant.payload {
+                        collect_qualified_type_ref(ty, &mut out);
+                    }
+                }
+            }
+            Item::Fn(decl) => {
+                for param in &decl.params {
+                    collect_qualified_type_ref(&param.ty, &mut out);
+                }
+                if let Some(ret) = &decl.ret {
+                    collect_qualified_type_ref(ret, &mut out);
+                }
+                collect_qualified_block(&decl.body, &mut out);
+            }
+            Item::Service(decl) => {
+                for route in &decl.routes {
+                    collect_qualified_type_ref(&route.ret_type, &mut out);
+                    if let Some(body) = &route.body_type {
+                        collect_qualified_type_ref(body, &mut out);
+                    }
+                    collect_qualified_block(&route.body, &mut out);
+                }
+            }
+            Item::Config(decl) => {
+                for field in &decl.fields {
+                    collect_qualified_type_ref(&field.ty, &mut out);
+                    collect_qualified_expr(&field.value, &mut out);
+                }
+            }
+            Item::App(decl) => collect_qualified_block(&decl.body, &mut out),
+            Item::Migration(decl) => collect_qualified_block(&decl.body, &mut out),
+            Item::Test(decl) => collect_qualified_block(&decl.body, &mut out),
+            Item::Import(_) => {}
+        }
+    }
+    out
+}
+
+fn collect_qualified_block(block: &Block, out: &mut Vec<QualifiedNameRef>) {
+    for stmt in &block.stmts {
+        collect_qualified_stmt(stmt, out);
+    }
+}
+
+fn collect_qualified_stmt(stmt: &Stmt, out: &mut Vec<QualifiedNameRef>) {
+    match &stmt.kind {
+        StmtKind::Let { ty, expr, .. } | StmtKind::Var { ty, expr, .. } => {
+            if let Some(ty) = ty {
+                collect_qualified_type_ref(ty, out);
+            }
+            collect_qualified_expr(expr, out);
+        }
+        StmtKind::Assign { target, expr } => {
+            collect_qualified_expr(target, out);
+            collect_qualified_expr(expr, out);
+        }
+        StmtKind::Return { expr } => {
+            if let Some(expr) = expr {
+                collect_qualified_expr(expr, out);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_block,
+            else_if,
+            else_block,
+        } => {
+            collect_qualified_expr(cond, out);
+            collect_qualified_block(then_block, out);
+            for (cond, block) in else_if {
+                collect_qualified_expr(cond, out);
+                collect_qualified_block(block, out);
+            }
+            if let Some(block) = else_block {
+                collect_qualified_block(block, out);
+            }
+        }
+        StmtKind::Match { expr, cases } => {
+            collect_qualified_expr(expr, out);
+            for (pat, block) in cases {
+                collect_qualified_pattern(pat, out);
+                collect_qualified_block(block, out);
+            }
+        }
+        StmtKind::For { pat, iter, block } => {
+            collect_qualified_pattern(pat, out);
+            collect_qualified_expr(iter, out);
+            collect_qualified_block(block, out);
+        }
+        StmtKind::While { cond, block } => {
+            collect_qualified_expr(cond, out);
+            collect_qualified_block(block, out);
+        }
+        StmtKind::Expr(expr) => collect_qualified_expr(expr, out),
+        StmtKind::Break | StmtKind::Continue => {}
+    }
+}
+
+fn collect_qualified_expr(expr: &Expr, out: &mut Vec<QualifiedNameRef>) {
+    match &expr.kind {
+        ExprKind::Literal(_) => {}
+        ExprKind::Ident(_) => {}
+        ExprKind::Binary { left, right, .. } => {
+            collect_qualified_expr(left, out);
+            collect_qualified_expr(right, out);
+        }
+        ExprKind::Unary { expr, .. } => collect_qualified_expr(expr, out),
+        ExprKind::Call { callee, args } => {
+            collect_qualified_expr(callee, out);
+            for arg in args {
+                collect_qualified_expr(&arg.value, out);
+            }
+        }
+        ExprKind::Member { base, name } => {
+            if let ExprKind::Ident(ident) = &base.kind {
+                if let Some((module, item)) = split_qualified_name(&format!("{}.{}", ident.name, name.name)) {
+                    out.push(QualifiedNameRef {
+                        span: name.span,
+                        module: module.to_string(),
+                        item: item.to_string(),
+                    });
+                }
+            }
+            collect_qualified_expr(base, out);
+        }
+        ExprKind::OptionalMember { base, name } => {
+            if let ExprKind::Ident(ident) = &base.kind {
+                if let Some((module, item)) = split_qualified_name(&format!("{}.{}", ident.name, name.name)) {
+                    out.push(QualifiedNameRef {
+                        span: name.span,
+                        module: module.to_string(),
+                        item: item.to_string(),
+                    });
+                }
+            }
+            collect_qualified_expr(base, out);
+        }
+        ExprKind::StructLit { name, fields } => {
+            if let Some((module, item)) = split_qualified_name(&name.name) {
+                out.push(QualifiedNameRef {
+                    span: name.span,
+                    module: module.to_string(),
+                    item: item.to_string(),
+                });
+            }
+            for field in fields {
+                collect_qualified_expr(&field.value, out);
+            }
+        }
+        ExprKind::ListLit(items) => {
+            for item in items {
+                collect_qualified_expr(item, out);
+            }
+        }
+        ExprKind::MapLit(items) => {
+            for (key, value) in items {
+                collect_qualified_expr(key, out);
+                collect_qualified_expr(value, out);
+            }
+        }
+        ExprKind::Index { base, index } | ExprKind::OptionalIndex { base, index } => {
+            collect_qualified_expr(base, out);
+            collect_qualified_expr(index, out);
+        }
+        ExprKind::InterpString(parts) => {
+            for part in parts {
+                if let fusec::ast::InterpPart::Expr(expr) = part {
+                    collect_qualified_expr(expr, out);
+                }
+            }
+        }
+        ExprKind::Coalesce { left, right } => {
+            collect_qualified_expr(left, out);
+            collect_qualified_expr(right, out);
+        }
+        ExprKind::BangChain { expr, error } => {
+            collect_qualified_expr(expr, out);
+            if let Some(err) = error {
+                collect_qualified_expr(err, out);
+            }
+        }
+        ExprKind::Spawn { block } => collect_qualified_block(block, out),
+        ExprKind::Await { expr } => collect_qualified_expr(expr, out),
+        ExprKind::Box { expr } => collect_qualified_expr(expr, out),
+    }
+}
+
+fn collect_qualified_pattern(pattern: &Pattern, out: &mut Vec<QualifiedNameRef>) {
+    match &pattern.kind {
+        PatternKind::Wildcard | PatternKind::Literal(_) => {}
+        PatternKind::Ident(_) => {}
+        PatternKind::EnumVariant { name, args } => {
+            if let Some((module, item)) = split_qualified_name(&name.name) {
+                out.push(QualifiedNameRef {
+                    span: name.span,
+                    module: module.to_string(),
+                    item: item.to_string(),
+                });
+            }
+            for arg in args {
+                collect_qualified_pattern(arg, out);
+            }
+        }
+        PatternKind::Struct { name, fields } => {
+            if let Some((module, item)) = split_qualified_name(&name.name) {
+                out.push(QualifiedNameRef {
+                    span: name.span,
+                    module: module.to_string(),
+                    item: item.to_string(),
+                });
+            }
+            for field in fields {
+                collect_qualified_pattern(&field.pat, out);
+            }
+        }
+    }
+}
+
+fn collect_qualified_type_ref(ty: &TypeRef, out: &mut Vec<QualifiedNameRef>) {
+    match &ty.kind {
+        TypeRefKind::Simple(ident) => {
+            if let Some((module, item)) = split_qualified_name(&ident.name) {
+                out.push(QualifiedNameRef {
+                    span: ident.span,
+                    module: module.to_string(),
+                    item: item.to_string(),
+                });
+            }
+        }
+        TypeRefKind::Generic { base, args } => {
+            if let Some((module, item)) = split_qualified_name(&base.name) {
+                out.push(QualifiedNameRef {
+                    span: base.span,
+                    module: module.to_string(),
+                    item: item.to_string(),
+                });
+            }
+            for arg in args {
+                collect_qualified_type_ref(arg, out);
+            }
+        }
+        TypeRefKind::Optional(inner) => collect_qualified_type_ref(inner, out),
+        TypeRefKind::Result { ok, err } => {
+            collect_qualified_type_ref(ok, out);
+            if let Some(err) = err {
+                collect_qualified_type_ref(err, out);
+            }
+        }
+        TypeRefKind::Refined { base, args } => {
+            if let Some((module, item)) = split_qualified_name(&base.name) {
+                out.push(QualifiedNameRef {
+                    span: base.span,
+                    module: module.to_string(),
+                    item: item.to_string(),
+                });
+            }
+            for arg in args {
+                collect_qualified_expr(arg, out);
+            }
+        }
+    }
+}
+
+fn split_qualified_name(name: &str) -> Option<(&str, &str)> {
+    let mut iter = name.rsplitn(2, '.');
+    let item = iter.next()?;
+    let module = iter.next()?;
+    if module.is_empty() || item.is_empty() {
+        return None;
+    }
+    Some((module, item))
 }
 
 struct IndexBuilder<'a> {

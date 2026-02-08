@@ -156,6 +156,24 @@ pub fn load_program_with_modules_and_deps(
     )
 }
 
+pub fn load_program_with_modules_and_deps_and_overrides(
+    path: &Path,
+    src: &str,
+    deps: &HashMap<String, PathBuf>,
+    overrides: &HashMap<PathBuf, String>,
+) -> (ModuleRegistry, Vec<Diag>) {
+    let mut loader = ModuleLoader::with_deps_and_overrides(deps, overrides);
+    let root = loader.insert_root(path, src);
+    let root = root.unwrap_or(0);
+    (
+        ModuleRegistry {
+            root,
+            modules: loader.modules,
+        },
+        loader.diags.into_vec(),
+    )
+}
+
 pub fn load_program(_path: &Path, src: &str) -> (Program, Vec<Diag>) {
     let (program, diags) = parse_source(src);
     (program, diags)
@@ -167,6 +185,7 @@ struct ModuleLoader {
     modules: HashMap<ModuleId, ModuleUnit>,
     visiting: HashSet<PathBuf>,
     deps: HashMap<String, PathBuf>,
+    source_overrides: HashMap<PathBuf, String>,
     diags: Diagnostics,
     global_names: HashMap<String, (ModuleId, Span)>,
 }
@@ -179,6 +198,32 @@ impl ModuleLoader {
             modules: HashMap::new(),
             visiting: HashSet::new(),
             deps: deps.clone(),
+            source_overrides: HashMap::new(),
+            diags: Diagnostics::default(),
+            global_names: HashMap::new(),
+        }
+    }
+
+    fn with_deps_and_overrides(
+        deps: &HashMap<String, PathBuf>,
+        overrides: &HashMap<PathBuf, String>,
+    ) -> Self {
+        let mut source_overrides = HashMap::new();
+        for (path, contents) in overrides {
+            let key = if let Ok(canon) = path.canonicalize() {
+                canon
+            } else {
+                path.to_path_buf()
+            };
+            source_overrides.insert(key, contents.clone());
+        }
+        Self {
+            next_id: 1,
+            by_path: HashMap::new(),
+            modules: HashMap::new(),
+            visiting: HashSet::new(),
+            deps: deps.clone(),
+            source_overrides,
             diags: Diagnostics::default(),
             global_names: HashMap::new(),
         }
@@ -207,17 +252,23 @@ impl ModuleLoader {
 
         let src = match src_override {
             Some(src) => src.to_string(),
-            None => match fs::read_to_string(&key) {
-                Ok(src) => src,
-                Err(err) => {
-                    self.diags.error(
-                        span,
-                        format!("failed to read module {}: {err}", key.display()),
-                    );
-                    self.visiting.remove(&key);
-                    return None;
+            None => {
+                if let Some(src) = self.source_overrides.get(&key) {
+                    src.clone()
+                } else {
+                    match fs::read_to_string(&key) {
+                        Ok(src) => src,
+                        Err(err) => {
+                            self.diags.error(
+                                span,
+                                format!("failed to read module {}: {err}", key.display()),
+                            );
+                            self.visiting.remove(&key);
+                            return None;
+                        }
+                    }
                 }
-            },
+            }
         };
         let (program, mut diags) = parse_source(&src);
         for diag in &mut diags {
