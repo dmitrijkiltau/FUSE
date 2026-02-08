@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Notes</title>
-  <script src="/lib/htmx_1.9.10.min.js"></script>
-  <script src="/lib/htmx_1.9.10_json-enc.js"></script>
-  <link rel="stylesheet" href="/style.css">
+  <script src="/assets/lib/htmx_1.9.10.min.js"></script>
+  <script src="/assets/lib/htmx_1.9.10_json-enc.js"></script>
+  <link rel="stylesheet" href="/assets/css/style.css">
 </head>
 <body>
   <main class="page">
@@ -22,8 +22,8 @@
             hx-post="/api/notes"
             hx-ext="json-enc"
             hx-target="#notes-list"
-            hx-swap="afterbegin"
-            hx-on::after-request="if(event.detail.successful) this.reset()">
+            hx-swap="none"
+            hx-on::after-request="if(event.detail.successful) { this.reset(); htmx.trigger('#notes-list', 'notesRefresh'); }">
         <div class="form-group">
           <label class="form-label" for="title">Title</label>
           <input class="form-input" type="text" id="title" name="title" placeholder="Untitled" required>
@@ -46,7 +46,8 @@
       <div class="notes-list"
            id="notes-list"
            hx-get="/api/notes"
-           hx-trigger="load, every 5s"
+           hx-trigger="load, notesRefresh, every 5s"
+           hx-sync="this:replace"
            hx-swap="innerHTML">
         <div class="state">Loading…</div>
       </div>

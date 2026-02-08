@@ -106,6 +106,9 @@ function renderNoteCard(note) {
 document.body.addEventListener('htmx:beforeSwap', function(evt) {
   if (evt.detail.target.id !== 'notes-list') return;
 
+  // Only process GET requests (list endpoint), not POST (create endpoint)
+  if (evt.detail.requestConfig.verb !== 'get') return;
+
   try {
     const notes = JSON.parse(evt.detail.xhr.response);
 
@@ -129,13 +132,7 @@ document.body.addEventListener('htmx:beforeSwap', function(evt) {
   }
 });
 
-// — htmx: refresh after create —
-
-document.body.addEventListener('htmx:afterRequest', function(evt) {
-  if (evt.detail.requestConfig.verb === 'post' && evt.detail.successful) {
-    htmx.trigger('#notes-list', 'load');
-  }
-});
+// — htmx: refresh after create — (handled inline via hx-on::after-request)
 
 // — htmx: form-level errors —
 
@@ -174,7 +171,7 @@ editForm.addEventListener('submit', async function(evt) {
 
   closeDialog(editDialog);
   pendingEditId = null;
-  htmx.trigger('#notes-list', 'load');
+  htmx.trigger('#notes-list', 'notesRefresh');
 });
 
 // — Dialog: confirm delete —
