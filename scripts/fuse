@@ -36,6 +36,79 @@ fi
 cmd="$1"
 shift
 
+if [[ "$cmd" =~ ^(run|test|build|check|fmt|openapi|migrate)$ ]]; then
+  has_manifest=0
+  skip_next=0
+  for arg in "$@"; do
+    if [[ $skip_next -eq 1 ]]; then
+      skip_next=0
+      continue
+    fi
+    case "$arg" in
+      --manifest-path)
+        has_manifest=1
+        skip_next=1
+        ;;
+      --file|--app|--backend|--clean)
+        skip_next=1
+        ;;
+    esac
+  done
+  if [[ $has_manifest -eq 0 ]]; then
+    pos_arg=""
+    skip_next=0
+    for arg in "$@"; do
+      if [[ $skip_next -eq 1 ]]; then
+        skip_next=0
+        continue
+      fi
+      case "$arg" in
+        --manifest-path|--file|--app|--backend|--clean)
+          skip_next=1
+          ;;
+        --)
+          break
+          ;;
+        --*)
+          ;;
+        *)
+          pos_arg="$arg"
+          break
+          ;;
+      esac
+    done
+    if [[ -n "$pos_arg" && -d "$pos_arg" && -f "$pos_arg/fuse.toml" ]]; then
+      new_args=()
+      removed=0
+      skip_next=0
+      for arg in "$@"; do
+        if [[ $skip_next -eq 1 ]]; then
+          new_args+=("$arg")
+          skip_next=0
+          continue
+        fi
+        case "$arg" in
+          --manifest-path|--file|--app|--backend|--clean)
+            new_args+=("$arg")
+            skip_next=1
+            ;;
+          --)
+            new_args+=("$arg")
+            ;;
+          *)
+            if [[ $removed -eq 0 && "$arg" == "$pos_arg" ]]; then
+              removed=1
+              continue
+            fi
+            new_args+=("$arg")
+            ;;
+        esac
+      done
+      set -- --manifest-path "$pos_arg" "${new_args[@]}"
+    fi
+  fi
+fi
+
 case "$cmd" in
   run|test|build|check|fmt|openapi|migrate)
     if [[ -x "$ROOT/dist/fuse" && "${FUSE_USE_CARGO:-0}" != "1" ]]; then

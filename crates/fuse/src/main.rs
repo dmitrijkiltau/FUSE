@@ -484,6 +484,14 @@ fn parse_common_args(
             return Err(format!("unknown option: {arg}"));
         }
         if out.entry.is_none() {
+            if out.manifest_path.is_none() {
+                let candidate = PathBuf::from(arg);
+                if candidate.is_dir() && candidate.join("fuse.toml").exists() {
+                    out.manifest_path = Some(candidate);
+                    idx += 1;
+                    continue;
+                }
+            }
             out.entry = Some(arg.clone());
             idx += 1;
             continue;
