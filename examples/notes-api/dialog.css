@@ -1,0 +1,52 @@
+/* — Dialog — */
+
+.dialog {
+  top: 50%;
+  transform: translateY(calc(-50% + 4rem));
+  margin: 0 auto;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: var(--sp-6);
+  max-width: 440px;
+  width: calc(100% - 2rem);
+  box-shadow: var(--shadow-lg);
+  font-family: var(--font-sans);
+
+  &::backdrop {
+    background: var(--c-overlay);
+  }
+
+  &[open] {
+    animation: dialog-in 0.15s ease forwards;
+  }
+}
+
+.dialog__title {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--c-text);
+  margin-bottom: var(--sp-2);
+}
+
+.dialog__body {
+  color: var(--c-text-2);
+  font-size: var(--fs-sm);
+  margin-bottom: var(--sp-6);
+}
+
+.dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(-50% + 4rem));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-50%);
+  }
+}

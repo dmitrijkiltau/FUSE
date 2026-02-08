@@ -98,10 +98,11 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 
 **Tooling (planned)**
 
-* LSP: find-references
-* LSP: code actions
-* LSP UX: semantic tokens + docstrings/inlay hints
-* Project indexing for multi-file workspace queries (cross-file defs/refs/rename)
+* LSP: project‑wide index (module graph + cross‑file defs/refs/rename)
+* LSP: find references + call hierarchy
+* LSP: code actions (add missing import, qualify unresolved symbols, organize imports)
+* LSP UX: semantic tokens, docstring hover, inlay hints (types/params)
+* CLI ergonomics: project‑wide `fmt`/`check`, better parse/sema spans on multi‑file errors
 
 ## Non-goals (explicitly)
 

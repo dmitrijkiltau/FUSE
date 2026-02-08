@@ -1,0 +1,62 @@
+/* — Buttons — */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--ease), color var(--ease), border-color var(--ease);
+  user-select: none;
+
+  &:active {
+    transform: translateY(0.5px);
+  }
+}
+
+.btn--primary {
+  background: var(--c-accent);
+  color: var(--c-surface);
+  border-color: var(--c-accent);
+
+  &:hover {
+    background: var(--c-accent-hv);
+    border-color: var(--c-accent-hv);
+  }
+}
+
+.btn--ghost {
+  background: transparent;
+  color: var(--c-text-2);
+  border-color: var(--c-border);
+
+  &:hover {
+    background: var(--c-bg);
+    color: var(--c-text);
+    border-color: var(--c-border-hv);
+  }
+}
+
+.btn--danger {
+  background: transparent;
+  color: var(--c-text-3);
+  border-color: var(--c-border);
+
+  &:hover {
+    background: var(--c-danger);
+    color: var(--c-danger-hv);
+    border-color: var(--c-danger);
+  }
+}
+
+.btn--sm {
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-xs);
+}

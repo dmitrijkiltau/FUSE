@@ -1,242 +1,124 @@
-* {
+/* — Design tokens — */
+@import url("tokens.css");
+
+/* — Components — */
+@import url("buttons.css");
+@import url("forms.css");
+@import url("dialog.css");
+@import url("card.css");
+
+/* — Reset — */
+
+*,
+*::before,
+*::after {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
+/* — Base — */
+
 body {
-  font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
-    Cantarell, sans-serif;
-  background: #fafafa;
-  color: #2a2a2a;
-  padding: 2rem;
-  line-height: 1.6;
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: var(--lh);
+  color: var(--c-text);
+  background: var(--c-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-.container {
-  max-width: 800px;
-  margin: 0 auto;
-  background: white;
-  padding: 2rem;
-  border-radius: 4px;
-  border: 1px solid #e8e8e8;
-}
-
-h1 {
-  margin-bottom: 2rem;
-  color: #2a2a2a;
-  border-bottom: 1px solid #e0e0e0;
-  padding-bottom: 0.5rem;
-  font-weight: 500;
-}
-
-.form-section {
-  background: #fafafa;
-  padding: 1.5rem;
-  border-radius: 4px;
-  border: 1px solid #e8e8e8;
-  margin-bottom: 2rem;
-}
-
-h2 {
-  margin-bottom: 1rem;
-  color: #4a4a4a;
-  font-size: 1.1rem;
-  font-weight: 500;
-}
-
-.form-group {
-  margin-bottom: 1rem;
-
-  label {
-    display: block;
-    margin-bottom: 0.5rem;
-    font-weight: 400;
-    color: #666;
-    font-size: 0.9rem;
-  }
-
-  input,
-  textarea {
-    width: 100%;
-    padding: 0.75rem;
-    border: 1px solid #d8d8d8;
-    border-radius: 3px;
-    font-family: inherit;
-    font-size: 0.95rem;
-    background: white;
-
-    &:focus {
-      outline: none;
-      border-color: #888;
-      background: #fefefe;
-    }
-  }
-
-  textarea {
-    resize: vertical;
-    min-height: 100px;
-  }
-}
-
-button {
-  background: #3a3a3a;
-  color: white;
+.separator {
+  height: 1px;
+  background: var(--c-border);
+  margin: var(--sp-8) 0;
   border: none;
-  padding: 0.7rem 1.3rem;
-  border-radius: 3px;
-  font-size: 0.9rem;
-  font-weight: 400;
-  cursor: pointer;
-  transition: background 0.15s;
-
-  &:hover {
-    background: #2a2a2a;
-  }
-
-  &:active {
-    transform: translateY(1px);
-  }
 }
+
+/* — Layout — */
+
+.page {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: var(--sp-12) var(--sp-6);
+}
+
+.page__header {
+  margin-bottom: var(--sp-10);
+}
+
+.page__title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--c-text);
+  letter-spacing: -0.01em;
+}
+
+.page__subtitle {
+  font-size: var(--fs-sm);
+  color: var(--c-text-3);
+  margin-top: var(--sp-1);
+}
+
+/* — Sections — */
+
+.section {
+  margin-bottom: var(--sp-8);
+}
+
+.section__title {
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--c-text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: var(--sp-4);
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--c-border);
+}
+
+/* — Create form — */
+
+.create-form {
+  padding: var(--sp-5);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+}
+
+.create-form__footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* — Notes list — */
 
 .notes-list {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  overflow: hidden;
 }
 
-.note-card {
-  background: #fafafa;
-  border: 1px solid #e0e0e0;
-  border-radius: 3px;
-  padding: 1.2rem;
-  transition: border-color 0.15s;
+/* — States — */
 
-  &:hover {
-    border-color: #c0c0c0;
-  }
-
-  h3 {
-    margin-bottom: 0.5rem;
-    color: #2a2a2a;
-    font-weight: 500;
-    font-size: 1rem;
-  }
-
-  p {
-    color: #666;
-    margin-bottom: 0.75rem;
-    white-space: pre-wrap;
-    font-size: 0.9rem;
-  }
-
-  .note-id {
-    font-size: 0.8rem;
-    color: #aaa;
-    font-family: monospace;
-  }
-
-  .note-actions {
-    display: flex;
-    gap: 0.5rem;
-    margin-top: 1rem;
-  }
-
-  .note-actions button {
-    padding: 0.4rem 0.7rem;
-    font-size: 0.85rem;
-    background: transparent;
-    color: #666;
-    border: 1px solid #d0d0d0;
-  }
-
-  .note-actions button:hover {
-    background: #f0f0f0;
-    color: #2a2a2a;
-  }
-
-  .note-actions .delete-btn {
-    color: #888;
-  }
-
-  .note-actions .delete-btn:hover {
-    background: #2a2a2a;
-    color: white;
-    border-color: #2a2a2a;
-  }
-}
-
-.error {
-  background: #f8f8f8;
-  color: #666;
-  padding: 1rem;
-  border-radius: 3px;
-  margin-top: 1rem;
-  border: 1px solid #d0d0d0;
-  border-left: 3px solid #888;
-}
-
-.success {
-  background: #f8f8f8;
-  color: #666;
-  padding: 1rem;
-  border-radius: 3px;
-  margin-top: 1rem;
-  border: 1px solid #d0d0d0;
-  border-left: 3px solid #888;
-}
-
-.loading {
+.state {
   text-align: center;
-  padding: 2rem;
-  color: #aaa;
-  font-size: 0.9rem;
+  padding: var(--sp-12) var(--sp-6);
+  color: var(--c-text-3);
+  font-size: var(--fs-sm);
 }
 
-.empty-state {
-  text-align: center;
-  padding: 3rem;
-  color: #aaa;
-  font-size: 0.9rem;
+.state--error {
+  color: var(--c-text-2);
+  border-left: 2px solid var(--c-text-3);
+  text-align: left;
+  padding: var(--sp-4);
 }
 
-dialog {
-  border: 1px solid #d0d0d0;
-  border-radius: 4px;
-  padding: 1.5rem;
-  max-width: 480px;
-  width: calc(100% - 2rem);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
-}
-
-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.25);
-}
-
-dialog h3 {
-  font-weight: 500;
-  color: #2a2a2a;
-  font-size: 1rem;
-}
-
-dialog p {
-  color: #666;
-  font-size: 0.9rem;
-}
+/* — Error dialog message — */
 
 #error-message {
   white-space: pre-line;
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 1.5rem;
-}
-
-.dialog-actions button {
-  padding: 0.5rem 0.9rem;
-  font-size: 0.85rem;
 }
