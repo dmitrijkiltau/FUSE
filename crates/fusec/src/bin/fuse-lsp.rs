@@ -129,6 +129,11 @@ fn main() -> io::Result<()> {
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
+            Some("textDocument/codeAction") => {
+                let result = handle_code_action(&state, &obj);
+                let response = json_response(id, result);
+                write_message(&mut stdout, &response)?;
+            }
             _ => {
                 if id.is_some() {
                     let response = json_response(id, JsonValue::Null);
@@ -148,6 +153,15 @@ fn capabilities_result() -> JsonValue {
     caps.insert("renameProvider".to_string(), JsonValue::Bool(true));
     caps.insert("referencesProvider".to_string(), JsonValue::Bool(true));
     caps.insert("callHierarchyProvider".to_string(), JsonValue::Bool(true));
+    let mut code_action = BTreeMap::new();
+    code_action.insert(
+        "codeActionKinds".to_string(),
+        JsonValue::Array(vec![
+            JsonValue::String("quickfix".to_string()),
+            JsonValue::String("source.organizeImports".to_string()),
+        ]),
+    );
+    caps.insert("codeActionProvider".to_string(), JsonValue::Object(code_action));
     caps.insert("workspaceSymbolProvider".to_string(), JsonValue::Bool(true));
     let mut root = BTreeMap::new();
     root.insert("capabilities".to_string(), JsonValue::Object(caps));
@@ -454,6 +468,74 @@ fn extract_root_uri(obj: &BTreeMap<String, JsonValue>) -> Option<String> {
     None
 }
 
+#[derive(Clone)]
+struct CodeActionDiag {
+    message: String,
+    span: Option<Span>,
+}
+
+fn extract_code_action_diagnostics(
+    obj: &BTreeMap<String, JsonValue>,
+    text: &str,
+) -> Vec<CodeActionDiag> {
+    let mut out = Vec::new();
+    let Some(JsonValue::Object(params)) = obj.get("params") else {
+        return out;
+    };
+    let Some(JsonValue::Object(context)) = params.get("context") else {
+        return out;
+    };
+    let Some(JsonValue::Array(diags)) = context.get("diagnostics") else {
+        return out;
+    };
+    let offsets = line_offsets(text);
+    for diag in diags {
+        let JsonValue::Object(diag_obj) = diag else {
+            continue;
+        };
+        let message = match diag_obj.get("message") {
+            Some(JsonValue::String(value)) => value.clone(),
+            _ => continue,
+        };
+        let span = diag_obj
+            .get("range")
+            .and_then(|range| lsp_range_to_span(range, text, &offsets));
+        out.push(CodeActionDiag { message, span });
+    }
+    out
+}
+
+fn lsp_range_to_span(range: &JsonValue, text: &str, offsets: &[usize]) -> Option<Span> {
+    let JsonValue::Object(range_obj) = range else {
+        return None;
+    };
+    let JsonValue::Object(start) = range_obj.get("start")? else {
+        return None;
+    };
+    let JsonValue::Object(end) = range_obj.get("end")? else {
+        return None;
+    };
+    let start_line = match start.get("line") {
+        Some(JsonValue::Number(num)) => *num as usize,
+        _ => return None,
+    };
+    let start_col = match start.get("character") {
+        Some(JsonValue::Number(num)) => *num as usize,
+        _ => return None,
+    };
+    let end_line = match end.get("line") {
+        Some(JsonValue::Number(num)) => *num as usize,
+        _ => return None,
+    };
+    let end_col = match end.get("character") {
+        Some(JsonValue::Number(num)) => *num as usize,
+        _ => return None,
+    };
+    let start_offset = line_col_to_offset(text, offsets, start_line, start_col);
+    let end_offset = line_col_to_offset(text, offsets, end_line, end_col);
+    Some(Span::new(start_offset, end_offset))
+}
+
 fn read_message(reader: &mut impl Read) -> io::Result<Option<String>> {
     let mut header = Vec::new();
     let mut buf = [0u8; 1];
@@ -583,6 +665,78 @@ fn handle_rename(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonVal
     JsonValue::Object(root)
 }
 
+fn handle_code_action(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+    let Some(uri) = extract_text_doc_uri(obj) else {
+        return JsonValue::Array(Vec::new());
+    };
+    let text = state
+        .docs
+        .get(&uri)
+        .cloned()
+        .or_else(|| uri_to_path(&uri).and_then(|path| std::fs::read_to_string(path).ok()));
+    let Some(text) = text else {
+        return JsonValue::Array(Vec::new());
+    };
+    let index = match build_workspace_index(state, &uri) {
+        Some(index) => index,
+        None => return JsonValue::Array(Vec::new()),
+    };
+    let (program, _) = parse_source(&text);
+    let imports = collect_imports(&program);
+    let mut actions = Vec::new();
+    let mut seen = HashSet::new();
+
+    for diag in extract_code_action_diagnostics(obj, &text) {
+        let Some(symbol) = parse_unknown_symbol_name(&diag.message) else {
+            continue;
+        };
+        if !is_valid_ident(&symbol) {
+            continue;
+        }
+        if let Some(span) = diag.span {
+            for alias in index.alias_modules_for_symbol(&uri, &symbol) {
+                let replacement = format!("{alias}.{symbol}");
+                let edit = workspace_edit_with_single_span(&uri, &text, span, &replacement);
+                let title = format!("Qualify as {alias}.{symbol}");
+                let key = format!("quickfix:{title}");
+                if seen.insert(key) {
+                    actions.push(code_action_json(&title, "quickfix", edit));
+                }
+            }
+        }
+
+        for module_path in import_candidates_for_symbol(&index, &uri, &symbol)
+            .into_iter()
+            .take(8)
+        {
+            let Some(edit) =
+                missing_import_workspace_edit(&uri, &text, &imports, &module_path, &symbol)
+            else {
+                continue;
+            };
+            let title = format!("Import {symbol} from {module_path}");
+            let key = format!("quickfix:{title}");
+            if seen.insert(key) {
+                actions.push(code_action_json(&title, "quickfix", edit));
+            }
+        }
+    }
+
+    if let Some(edit) = organize_imports_workspace_edit(&uri, &text, &imports) {
+        let title = "Organize imports";
+        let key = "source:organizeImports".to_string();
+        if seen.insert(key) {
+            actions.push(code_action_json(
+                title,
+                "source.organizeImports",
+                edit,
+            ));
+        }
+    }
+
+    JsonValue::Array(actions)
+}
+
 fn handle_references(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
     let Some((uri, line, character)) = extract_position(obj) else {
         return JsonValue::Null;
@@ -655,6 +809,268 @@ fn handle_call_hierarchy_incoming(
         result.push(JsonValue::Object(item));
     }
     JsonValue::Array(result)
+}
+
+fn collect_imports(program: &Program) -> Vec<ImportDecl> {
+    let mut imports = Vec::new();
+    for item in &program.items {
+        if let Item::Import(decl) = item {
+            imports.push(decl.clone());
+        }
+    }
+    imports.sort_by_key(|decl| decl.span.start);
+    imports
+}
+
+fn parse_unknown_symbol_name(message: &str) -> Option<String> {
+    for prefix in ["unknown identifier ", "unknown type "] {
+        if let Some(rest) = message.strip_prefix(prefix) {
+            let symbol = rest.trim();
+            if !symbol.is_empty() {
+                return Some(symbol.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn import_candidates_for_symbol(index: &WorkspaceIndex, uri: &str, symbol: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for def in &index.defs {
+        if def.uri == uri {
+            continue;
+        }
+        if def.def.name != symbol {
+            continue;
+        }
+        if !is_exported_def_kind(def.def.kind) {
+            continue;
+        }
+        if let Some(path) = module_import_path_between(uri, &def.uri) {
+            out.push(path);
+        }
+    }
+    if is_std_error_symbol(symbol) {
+        out.push("std.Error".to_string());
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn module_import_path_between(from_uri: &str, to_uri: &str) -> Option<String> {
+    let from = uri_to_path(from_uri)?;
+    let to = uri_to_path(to_uri)?;
+    let from_dir = from.parent()?;
+    let to_no_ext = to.with_extension("");
+
+    let mut base = from_dir;
+    let mut up_count = 0usize;
+    loop {
+        if let Ok(rest) = to_no_ext.strip_prefix(base) {
+            let rest = rest.to_string_lossy().replace('\\', "/");
+            if rest.is_empty() {
+                return None;
+            }
+            if up_count == 0 {
+                return Some(format!("./{rest}"));
+            }
+            return Some(format!("{}{}", "../".repeat(up_count), rest));
+        }
+        base = base.parent()?;
+        up_count += 1;
+    }
+}
+
+fn is_std_error_symbol(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "Error"
+            | "ValidationField"
+            | "Validation"
+            | "BadRequest"
+            | "Unauthorized"
+            | "Forbidden"
+            | "NotFound"
+            | "Conflict"
+    )
+}
+
+fn missing_import_workspace_edit(
+    uri: &str,
+    text: &str,
+    imports: &[ImportDecl],
+    module_path: &str,
+    symbol: &str,
+) -> Option<JsonValue> {
+    if let Some(existing) = imports.iter().find(|decl| match &decl.spec {
+        ImportSpec::NamedFrom { path, .. } => path.value == module_path,
+        _ => false,
+    }) {
+        let ImportSpec::NamedFrom { names, .. } = &existing.spec else {
+            return None;
+        };
+        let mut merged: Vec<String> = names.iter().map(|ident| ident.name.clone()).collect();
+        if merged.iter().any(|name| name == symbol) {
+            return None;
+        }
+        merged.push(symbol.to_string());
+        merged.sort();
+        merged.dedup();
+        let line = render_named_import(module_path, &merged);
+        return Some(workspace_edit_with_single_span(
+            uri,
+            text,
+            existing.span,
+            &line,
+        ));
+    }
+
+    if import_already_binds_symbol(imports, symbol) {
+        return None;
+    }
+    let line = render_named_import(module_path, &[symbol.to_string()]);
+    let insert_offset = imports.iter().map(|decl| decl.span.end).max().unwrap_or(0);
+    let mut new_text = String::new();
+    if insert_offset > 0 && !text[..insert_offset].ends_with('\n') {
+        new_text.push('\n');
+    }
+    new_text.push_str(&line);
+    new_text.push('\n');
+    if insert_offset == 0 && !text.is_empty() {
+        new_text.push('\n');
+    }
+    Some(workspace_edit_with_single_span(
+        uri,
+        text,
+        Span::new(insert_offset, insert_offset),
+        &new_text,
+    ))
+}
+
+fn organize_imports_workspace_edit(
+    uri: &str,
+    text: &str,
+    imports: &[ImportDecl],
+) -> Option<JsonValue> {
+    if imports.is_empty() {
+        return None;
+    }
+    let mut lines: Vec<String> = imports.iter().map(render_import_decl).collect();
+    lines.sort();
+    lines.dedup();
+    let first = imports.iter().map(|decl| decl.span.start).min()?;
+    let mut end = imports.iter().map(|decl| decl.span.end).max()?;
+    if end < text.len() && text.as_bytes().get(end) == Some(&b'\n') {
+        end += 1;
+    }
+    let replacement = if end < text.len() {
+        format!("{}\n\n", lines.join("\n"))
+    } else {
+        format!("{}\n", lines.join("\n"))
+    };
+    if text.get(first..end) == Some(replacement.as_str()) {
+        return None;
+    }
+    Some(workspace_edit_with_single_span(
+        uri,
+        text,
+        Span::new(first, end),
+        &replacement,
+    ))
+}
+
+fn import_already_binds_symbol(imports: &[ImportDecl], symbol: &str) -> bool {
+    for decl in imports {
+        match &decl.spec {
+            ImportSpec::Module { name } | ImportSpec::ModuleFrom { name, .. } => {
+                if name.name == symbol {
+                    return true;
+                }
+            }
+            ImportSpec::AliasFrom { alias, .. } => {
+                if alias.name == symbol {
+                    return true;
+                }
+            }
+            ImportSpec::NamedFrom { names, .. } => {
+                if names.iter().any(|name| name.name == symbol) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn render_import_decl(decl: &ImportDecl) -> String {
+    match &decl.spec {
+        ImportSpec::Module { name } => format!("import {}", name.name),
+        ImportSpec::ModuleFrom { name, path } => {
+            format!("import {} from {}", name.name, render_import_path(&path.value))
+        }
+        ImportSpec::AliasFrom { name, alias, path } => format!(
+            "import {} as {} from {}",
+            name.name,
+            alias.name,
+            render_import_path(&path.value)
+        ),
+        ImportSpec::NamedFrom { names, path } => {
+            let mut symbols: Vec<String> = names.iter().map(|name| name.name.clone()).collect();
+            symbols.sort();
+            symbols.dedup();
+            render_named_import(&path.value, &symbols)
+        }
+    }
+}
+
+fn render_named_import(path: &str, names: &[String]) -> String {
+    format!(
+        "import {{ {} }} from {}",
+        names.join(", "),
+        render_import_path(path)
+    )
+}
+
+fn render_import_path(path: &str) -> String {
+    if path.starts_with("./")
+        || path.starts_with("../")
+        || path.contains('/')
+        || path.contains('\\')
+    {
+        return format!("\"{}\"", path);
+    }
+    path.to_string()
+}
+
+fn workspace_edit_with_single_span(uri: &str, text: &str, span: Span, new_text: &str) -> JsonValue {
+    let edit = text_edit_json(text, span, new_text);
+    let mut changes = BTreeMap::new();
+    changes.insert(uri.to_string(), JsonValue::Array(vec![edit]));
+    let mut root = BTreeMap::new();
+    root.insert("changes".to_string(), JsonValue::Object(changes));
+    JsonValue::Object(root)
+}
+
+fn text_edit_json(text: &str, span: Span, new_text: &str) -> JsonValue {
+    let offsets = line_offsets(text);
+    let (start_line, start_col) = offset_to_line_col(&offsets, span.start);
+    let (end_line, end_col) = offset_to_line_col(&offsets, span.end);
+    let mut edit = BTreeMap::new();
+    edit.insert(
+        "range".to_string(),
+        range_json(start_line, start_col, end_line, end_col),
+    );
+    edit.insert("newText".to_string(), JsonValue::String(new_text.to_string()));
+    JsonValue::Object(edit)
+}
+
+fn code_action_json(title: &str, kind: &str, edit: JsonValue) -> JsonValue {
+    let mut out = BTreeMap::new();
+    out.insert("title".to_string(), JsonValue::String(title.to_string()));
+    out.insert("kind".to_string(), JsonValue::String(kind.to_string()));
+    out.insert("edit".to_string(), edit);
+    JsonValue::Object(out)
 }
 
 fn handle_call_hierarchy_outgoing(
@@ -935,6 +1351,7 @@ struct WorkspaceIndex {
     defs: Vec<WorkspaceDef>,
     refs: Vec<WorkspaceRef>,
     calls: Vec<WorkspaceCall>,
+    module_alias_exports: HashMap<String, HashMap<String, HashSet<String>>>,
     redirects: HashMap<usize, usize>,
 }
 
@@ -1097,6 +1514,21 @@ impl WorkspaceIndex {
         }
         let mut out: Vec<(usize, Vec<WorkspaceCall>)> = grouped.into_iter().collect();
         out.sort_by_key(|(id, _)| *id);
+        out
+    }
+
+    fn alias_modules_for_symbol(&self, uri: &str, symbol: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let Some(aliases) = self.module_alias_exports.get(uri) else {
+            return out;
+        };
+        for (alias, exports) in aliases {
+            if exports.contains(symbol) {
+                out.push(alias.clone());
+            }
+        }
+        out.sort();
+        out.dedup();
         out
     }
 
@@ -1305,6 +1737,7 @@ fn build_workspace_from_registry(
         }
     }
     let mut calls = Vec::new();
+    let mut module_alias_exports = HashMap::new();
 
     let mut exports_by_module: HashMap<usize, HashMap<String, usize>> = HashMap::new();
     for (module_id, file_idx) in &module_to_file {
@@ -1347,6 +1780,15 @@ fn build_workspace_from_registry(
             .iter()
             .map(|(name, link)| (name.clone(), link.id))
             .collect();
+        let mut alias_exports = HashMap::new();
+        for (alias, module_id) in &module_aliases {
+            if let Some(exports) = exports_by_module.get(module_id) {
+                alias_exports.insert(alias.clone(), exports.keys().cloned().collect());
+            }
+        }
+        if !alias_exports.is_empty() {
+            module_alias_exports.insert(file.uri.clone(), alias_exports);
+        }
 
         for call in &file.index.calls {
             let Some(from) = file.def_map.get(call.caller).copied() else {
@@ -1441,6 +1883,7 @@ fn build_workspace_from_registry(
         defs,
         refs,
         calls,
+        module_alias_exports,
         redirects,
     })
 }
