@@ -655,7 +655,12 @@ fn handle_hover(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValu
     let Some(def) = index.definition_at(&uri, line, character) else {
         return JsonValue::Null;
     };
-    let mut value = format!("```fuse\n{}\n```", def.def.detail.trim());
+    let mut value = format!(
+        "**{}** `{}`\n\n```fuse\n{}\n```",
+        def.def.kind.hover_label(),
+        def.def.name,
+        def.def.detail.trim()
+    );
     if let Some(doc) = &def.def.doc {
         if !doc.trim().is_empty() {
             value.push_str("\n\n");
@@ -667,6 +672,9 @@ fn handle_hover(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValu
     contents.insert("value".to_string(), JsonValue::String(value));
     let mut out = BTreeMap::new();
     out.insert("contents".to_string(), JsonValue::Object(contents));
+    if let Some(text) = index.file_text(&def.uri) {
+        out.insert("range".to_string(), span_range_json(text, def.def.span));
+    }
     JsonValue::Object(out)
 }
 
@@ -801,22 +809,45 @@ fn handle_semantic_tokens(state: &LspState, obj: &BTreeMap<String, JsonValue>) -
     let Some(text) = load_text_for_uri(state, &uri) else {
         return JsonValue::Null;
     };
-    let (program, _) = parse_source(&text);
-    let index = build_index_with_program(&text, &program);
     let mut symbol_types: HashMap<(usize, usize), usize> = HashMap::new();
-    for def in &index.defs {
-        if let Some(token_type) = semantic_type_for_symbol_kind(def.kind) {
-            symbol_types.insert((def.span.start, def.span.end), token_type);
+    if let Some(index) = build_workspace_index(state, &uri) {
+        for def in &index.defs {
+            if def.uri != uri {
+                continue;
+            }
+            if let Some(token_type) = semantic_type_for_symbol_kind(def.def.kind) {
+                symbol_types.insert((def.def.span.start, def.def.span.end), token_type);
+            }
         }
-    }
-    for reference in &index.refs {
-        let Some(def) = index.defs.get(reference.target) else {
-            continue;
-        };
-        let Some(token_type) = semantic_type_for_symbol_kind(def.kind) else {
-            continue;
-        };
-        symbol_types.insert((reference.span.start, reference.span.end), token_type);
+        for reference in &index.refs {
+            if reference.uri != uri {
+                continue;
+            }
+            let Some(def) = index.defs.get(reference.target) else {
+                continue;
+            };
+            let Some(token_type) = semantic_type_for_symbol_kind(def.def.kind) else {
+                continue;
+            };
+            symbol_types.insert((reference.span.start, reference.span.end), token_type);
+        }
+    } else {
+        let (program, _) = parse_source(&text);
+        let index = build_index_with_program(&text, &program);
+        for def in &index.defs {
+            if let Some(token_type) = semantic_type_for_symbol_kind(def.kind) {
+                symbol_types.insert((def.span.start, def.span.end), token_type);
+            }
+        }
+        for reference in &index.refs {
+            let Some(def) = index.defs.get(reference.target) else {
+                continue;
+            };
+            let Some(token_type) = semantic_type_for_symbol_kind(def.kind) else {
+                continue;
+            };
+            symbol_types.insert((reference.span.start, reference.span.end), token_type);
+        }
     }
 
     let mut token_diags = fusec::diag::Diagnostics::default();
@@ -1989,6 +2020,24 @@ impl SymbolKind {
             SymbolKind::Param => 13,
             SymbolKind::Variable => 13,
             SymbolKind::Field => 8,
+        }
+    }
+
+    fn hover_label(self) -> &'static str {
+        match self {
+            SymbolKind::Module => "Module",
+            SymbolKind::Type => "Type",
+            SymbolKind::Enum => "Enum",
+            SymbolKind::EnumVariant => "Enum Variant",
+            SymbolKind::Function => "Function",
+            SymbolKind::Config => "Config",
+            SymbolKind::Service => "Service",
+            SymbolKind::App => "App",
+            SymbolKind::Migration => "Migration",
+            SymbolKind::Test => "Test",
+            SymbolKind::Param => "Parameter",
+            SymbolKind::Variable => "Variable",
+            SymbolKind::Field => "Field",
         }
     }
 }
