@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use cranelift_codegen::ir::{
@@ -27,7 +28,48 @@ use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram};
 
 use fuse_rt::{config as rt_config, json as rt_json, validate as rt_validate};
 
+use super::NativeVm;
+
 type EntryFn = unsafe extern "C" fn(*const NativeValue, *mut NativeValue, *mut NativeHeap) -> u8;
+
+type NativeVmPtr = *mut NativeVm<'static>;
+
+thread_local! {
+    static CURRENT_VM: Cell<NativeVmPtr> = Cell::new(std::ptr::null_mut());
+}
+
+pub(crate) struct VmGuard {
+    prev: NativeVmPtr,
+}
+
+impl VmGuard {
+    pub(crate) fn enter(vm: NativeVmPtr) -> Self {
+        let prev = CURRENT_VM.with(|cell| {
+            let prev = cell.get();
+            cell.set(vm);
+            prev
+        });
+        Self { prev }
+    }
+}
+
+impl Drop for VmGuard {
+    fn drop(&mut self) {
+        CURRENT_VM.with(|cell| cell.set(self.prev));
+    }
+}
+
+fn current_vm() -> Option<&'static mut NativeVm<'static>> {
+    CURRENT_VM.with(|cell| {
+        let ptr = cell.get();
+        if ptr.is_null() {
+            None
+        } else {
+            // SAFETY: pointer is set by VmGuard for the duration of a JIT call.
+            Some(unsafe { &mut *ptr })
+        }
+    })
+}
 
 macro_rules! jit_fail {
     ($func:expr, $ip:expr, $instr:expr, $reason:expr) => {{
@@ -168,6 +210,7 @@ pub(crate) struct HostCalls {
     builtin_log: FuncId,
     builtin_print: FuncId,
     builtin_env: FuncId,
+    builtin_serve: FuncId,
     builtin_assert: FuncId,
     config_get: FuncId,
     task_id: FuncId,
@@ -253,6 +296,7 @@ impl JitRuntime {
         builder.symbol("fuse_native_builtin_log", fuse_native_builtin_log as *const u8);
         builder.symbol("fuse_native_builtin_print", fuse_native_builtin_print as *const u8);
         builder.symbol("fuse_native_builtin_env", fuse_native_builtin_env as *const u8);
+        builder.symbol("fuse_native_builtin_serve", fuse_native_builtin_serve as *const u8);
         builder.symbol(
             "fuse_native_builtin_assert",
             fuse_native_builtin_assert as *const u8,
@@ -640,6 +684,9 @@ impl HostCalls {
         let builtin_env = module
             .declare_function("fuse_native_builtin_env", Linkage::Import, &builtin_sig)
             .expect("declare builtin env hostcall");
+        let builtin_serve = module
+            .declare_function("fuse_native_builtin_serve", Linkage::Import, &builtin_sig)
+            .expect("declare builtin serve hostcall");
         let builtin_assert = module
             .declare_function("fuse_native_builtin_assert", Linkage::Import, &builtin_sig)
             .expect("declare builtin assert hostcall");
@@ -735,6 +782,7 @@ impl HostCalls {
             builtin_log,
             builtin_print,
             builtin_env,
+            builtin_serve,
             builtin_assert,
             config_get,
             task_id,
@@ -2514,6 +2562,70 @@ extern "C" fn fuse_native_builtin_env(
         Err(_) => {
             *out = NativeValue::null();
             0
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_serve(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap_ptr = heap;
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    let Some(heap_ref) = (unsafe { heap_ptr.as_ref() }) else {
+        return 2;
+    };
+    if len == 0 {
+        let Some(heap_mut) = (unsafe { heap_ptr.as_mut() }) else {
+            return 2;
+        };
+        return builtin_runtime_error(out, heap_mut, "serve expects a port number");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let Some(value) = args.get(0) else {
+        let Some(heap_mut) = (unsafe { heap_ptr.as_mut() }) else {
+            return 2;
+        };
+        return builtin_runtime_error(out, heap_mut, "serve expects a port number");
+    };
+    let Some(value) = value.to_value(heap_ref) else {
+        let Some(heap_mut) = (unsafe { heap_ptr.as_mut() }) else {
+            return 2;
+        };
+        return builtin_runtime_error(out, heap_mut, "serve expects a port number");
+    };
+    let port = match value.unboxed() {
+        Value::Int(v) => v,
+        Value::Float(v) => v as i64,
+        Value::String(s) => s.parse::<i64>().unwrap_or(0),
+        _ => {
+            let Some(heap_mut) = (unsafe { heap_ptr.as_mut() }) else {
+                return 2;
+            };
+            return builtin_runtime_error(out, heap_mut, "serve expects a port number");
+        }
+    };
+    let Some(vm) = current_vm() else {
+        let Some(heap_mut) = (unsafe { heap_ptr.as_mut() }) else {
+            return 2;
+        };
+        return builtin_runtime_error(out, heap_mut, "serve requires native runtime context");
+    };
+    match vm.eval_serve_native_inner(port) {
+        Ok(_) => {
+            *out = NativeValue::unit();
+            0
+        }
+        Err(err) => {
+            let Some(heap_mut) = (unsafe { heap_ptr.as_mut() }) else {
+                return 2;
+            };
+            builtin_runtime_error(out, heap_mut, super::render_native_error(err))
         }
     }
 }
@@ -4608,6 +4720,7 @@ fn compile_function<M: Module>(
                                 "print" => hostcalls.builtin_print,
                                 "log" => hostcalls.builtin_log,
                                 "env" => hostcalls.builtin_env,
+                                "serve" => hostcalls.builtin_serve,
                                 "assert" => hostcalls.builtin_assert,
                                 "range" => hostcalls.range,
                                 "task.id" => hostcalls.task_id,
@@ -5491,6 +5604,7 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                 "print"
                     | "log"
                     | "env"
+                    | "serve"
                     | "assert"
                     | "range"
                     | "task.id"
@@ -6032,6 +6146,7 @@ fn analyze_types(
                             "print"
                             | "log"
                             | "env"
+                            | "serve"
                             | "assert"
                             | "range"
                             | "task.id"

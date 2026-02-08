@@ -269,12 +269,6 @@ impl<'a> NativeVm<'a> {
                 .next()
                 .ok_or_else(|| "no app found".to_string())?
         };
-        if self.app_contains_serve(app) {
-            return self.eval_app_interpreter(app);
-        }
-        if self.app_needs_interpreter(app) {
-            return self.eval_app_interpreter(app);
-        }
         self.call_function_native_only_inner(&app.name, Vec::new())?;
         Ok(())
     }
@@ -293,13 +287,9 @@ impl<'a> NativeVm<'a> {
         name: &str,
         args: Vec<Value>,
     ) -> Result<Value, String> {
-        call_function_native_only_with(
-            self.program,
-            &mut self.jit,
-            &mut self.heap,
-            name,
-            args,
-        )
+        let vm_ptr = self as *mut NativeVm<'_> as *mut NativeVm<'static>;
+        let _guard = jit::VmGuard::enter(vm_ptr);
+        call_function_native_only_with(self.program, &mut self.jit, &mut self.heap, name, args)
     }
 
     fn ensure_configs_loaded(&mut self) -> Result<(), String> {
@@ -317,37 +307,69 @@ impl<'a> NativeVm<'a> {
         let mut configs: Vec<Config> = self.program.ir.configs.values().cloned().collect();
         configs.sort_by(|a, b| a.name.cmp(&b.name));
         let program = self.program;
+        let vm_ptr = self as *mut NativeVm<'_> as *mut NativeVm<'static>;
         let jit = &mut self.jit;
         let heap = &mut self.heap;
+        let _guard = jit::VmGuard::enter(vm_ptr);
         evaluator.eval_configs(configs.iter(), heap, &mut |fn_name, heap| {
             call_function_native_only_with(program, jit, heap, fn_name, Vec::new())
         })
     }
 
+    #[allow(dead_code)]
     fn app_contains_serve(&self, func: &Function) -> bool {
-        func.code.iter().any(|instr| {
-            matches!(
-                instr,
+        let mut seen = HashSet::new();
+        self.func_contains_serve(func, &mut seen)
+    }
+
+    #[allow(dead_code)]
+    fn app_needs_interpreter(&self, func: &Function) -> bool {
+        self.app_contains_serve(func)
+    }
+
+    #[allow(dead_code)]
+    fn func_contains_serve(&self, func: &Function, seen: &mut HashSet<String>) -> bool {
+        if !seen.insert(func.name.clone()) {
+            return false;
+        }
+        for instr in &func.code {
+            match instr {
                 crate::ir::Instr::Call {
                     name,
                     kind: crate::ir::CallKind::Builtin,
                     ..
-                } if name == "serve"
-            )
-        })
+                } if name == "serve" => return true,
+                crate::ir::Instr::Call {
+                    name,
+                    kind: crate::ir::CallKind::Function,
+                    ..
+                } => {
+                    if let Some(callee) = self
+                        .program
+                        .ir
+                        .functions
+                        .get(name)
+                        .or_else(|| self.program.ir.apps.get(name))
+                        .or_else(|| {
+                            self.program
+                                .ir
+                                .apps
+                                .values()
+                                .find(|func| func.name == name.as_str())
+                        })
+                    {
+                        if self.func_contains_serve(callee, seen) {
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
-    fn app_needs_interpreter(&self, func: &Function) -> bool {
-        func.code.iter().any(|instr| match instr {
-            crate::ir::Instr::Call {
-                name,
-                kind: crate::ir::CallKind::Builtin,
-                ..
-            } if name == "serve" => true,
-            _ => false,
-        })
-    }
-
+    #[allow(dead_code)]
     fn eval_app_interpreter(&mut self, func: &Function) -> Result<(), String> {
         let mut locals = vec![Value::Unit; func.locals];
         let mut stack: Vec<Value> = Vec::new();
@@ -559,6 +581,7 @@ impl<'a> NativeVm<'a> {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn port_from_value(&self, value: &Value) -> Result<i64, String> {
         match value.unboxed() {
             Value::Int(v) => Ok(v),
