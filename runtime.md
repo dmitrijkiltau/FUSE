@@ -7,7 +7,7 @@ conservative: anything not listed here is either unsupported or not implemented 
 
 * **AST interpreter**: executes the parsed AST directly.
 * **VM**: lowers to bytecode and executes the VM.
-* **Native (stage 1)**: uses a compiled native image (`program.native`) and VM-compatible runtime semantics, with a Cranelift JIT fast-path for direct Int/Bool arithmetic/control-flow function calls.
+* **Native (stage 1)**: uses a compiled native image (`program.native`) and VM-compatible runtime semantics, with a Cranelift JIT fast-path for direct Int/Bool arithmetic/control-flow function calls. Unsupported instructions fail in native.
 
 Most runtime behavior is shared, with a few differences called out below.
 
@@ -240,6 +240,7 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * `assert(cond, message?)` throws a runtime error when `cond` is false.
 * `env(name: String) -> String?` returns an env var or `null`.
 * `serve(port)` starts the HTTP server on `FUSE_HOST:port`.
+* `task.id/done/cancel` operate on spawned tasks (see Tasks below).
 
 ## Database (SQLite only)
 
