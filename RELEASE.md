@@ -30,10 +30,12 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
 4. Verify package UX manually (optional but recommended):
    - `./scripts/fuse build`
    - `./scripts/fuse run examples/project_demo.fuse`
-5. Commit release metadata:
+5. Build distributable binaries:
+   - `./scripts/build_dist.sh --release` (outputs `dist/fuse` and `dist/fuse-lsp`)
+6. Commit release metadata:
    - `git add CHANGELOG.md RELEASE.md crates/*/Cargo.toml Cargo.lock`
    - `git commit -m "release: vX.Y.Z"`
-6. Tag release:
+7. Tag release:
    - `git tag vX.Y.Z`
    - `git push origin main --tags`
 

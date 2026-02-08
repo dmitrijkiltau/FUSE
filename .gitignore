@@ -7,6 +7,7 @@ __pycache__/
 tmp/
 logs/
 .fuse/
+dist/
 *.log
 *.tmp
 .DS_Store

@@ -38,9 +38,15 @@ shift
 
 case "$cmd" in
   run|test|build|check|fmt|openapi|migrate)
+    if [[ -x "$ROOT/dist/fuse" && "${FUSE_USE_CARGO:-0}" != "1" ]]; then
+      exec "$ROOT/dist/fuse" "$cmd" "$@"
+    fi
     exec "$ROOT/scripts/cargo_env.sh" cargo run -p fuse -- "$cmd" "$@"
     ;;
   lsp)
+    if [[ -x "$ROOT/dist/fuse-lsp" && "${FUSE_USE_CARGO:-0}" != "1" ]]; then
+      exec "$ROOT/dist/fuse-lsp" "$@"
+    fi
     exec "$ROOT/scripts/cargo_env.sh" cargo run -p fusec --bin fuse-lsp -- "$@"
     ;;
   *)
