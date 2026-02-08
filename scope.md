@@ -94,11 +94,10 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * IR cache for fast `fuse run` (`.fuse/build/program.ir`)
 * native image cache (`.fuse/build/program.native`) for `--backend native`
 * native perf smoke check (`scripts/native_perf_check.sh`, optional budgets)
-* LSP: diagnostics, formatting, go-to-definition, hover, rename, workspace symbols, project-wide defs/refs, find references, call hierarchy, code actions (missing import, qualify symbol, organize imports)
+* LSP: diagnostics, formatting, go-to-definition, hover (Markdown docstrings), rename, workspace symbols, project-wide defs/refs, find references, call hierarchy, code actions (missing import, qualify symbol, organize imports), semantic tokens, inlay hints (types/params)
 
 **Tooling (planned)**
 
-* LSP UX: semantic tokens, docstring hover, inlay hints (types/params)
 * CLI ergonomics: project‑wide `fmt`/`check`, better parse/sema spans on multi‑file errors
 
 ## Non-goals (explicitly)

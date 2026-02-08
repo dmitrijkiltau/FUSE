@@ -3,9 +3,9 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use fusec::ast::{
-    Block, ConfigDecl, Doc, EnumDecl, Expr, ExprKind, FnDecl, Ident, ImportDecl, ImportSpec, Item,
-    Pattern, PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, TypeDerive, TypeRef,
-    TypeRefKind,
+    BinaryOp, Block, ConfigDecl, Doc, EnumDecl, Expr, ExprKind, FnDecl, Ident, ImportDecl,
+    ImportSpec, Item, Literal, Pattern, PatternKind, Program, ServiceDecl, Stmt, StmtKind,
+    TypeDecl, TypeDerive, TypeRef, TypeRefKind, UnaryOp,
 };
 use fusec::diag::{Diag, Level};
 use fusec::loader::{load_program_with_modules_and_deps_and_overrides, ModuleRegistry};
@@ -13,6 +13,33 @@ use fusec::parse_source;
 use fusec::sema;
 use fusec::span::Span;
 use fuse_rt::json::{self, JsonValue};
+
+const SEMANTIC_TOKEN_TYPES: [&str; 12] = [
+    "namespace",
+    "type",
+    "enum",
+    "enumMember",
+    "function",
+    "parameter",
+    "variable",
+    "property",
+    "keyword",
+    "string",
+    "number",
+    "comment",
+];
+const SEM_NAMESPACE: usize = 0;
+const SEM_TYPE: usize = 1;
+const SEM_ENUM: usize = 2;
+const SEM_ENUM_MEMBER: usize = 3;
+const SEM_FUNCTION: usize = 4;
+const SEM_PARAMETER: usize = 5;
+const SEM_VARIABLE: usize = 6;
+const SEM_PROPERTY: usize = 7;
+const SEM_KEYWORD: usize = 8;
+const SEM_STRING: usize = 9;
+const SEM_NUMBER: usize = 10;
+const SEM_COMMENT: usize = 11;
 
 fn main() -> io::Result<()> {
     let mut stdin = io::stdin().lock();
@@ -134,6 +161,16 @@ fn main() -> io::Result<()> {
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
+            Some("textDocument/semanticTokens/full") => {
+                let result = handle_semantic_tokens(&state, &obj);
+                let response = json_response(id, result);
+                write_message(&mut stdout, &response)?;
+            }
+            Some("textDocument/inlayHint") => {
+                let result = handle_inlay_hints(&state, &obj);
+                let response = json_response(id, result);
+                write_message(&mut stdout, &response)?;
+            }
             _ => {
                 if id.is_some() {
                     let response = json_response(id, JsonValue::Null);
@@ -162,6 +199,26 @@ fn capabilities_result() -> JsonValue {
         ]),
     );
     caps.insert("codeActionProvider".to_string(), JsonValue::Object(code_action));
+    caps.insert("inlayHintProvider".to_string(), JsonValue::Bool(true));
+    let mut semantic = BTreeMap::new();
+    let mut legend = BTreeMap::new();
+    legend.insert(
+        "tokenTypes".to_string(),
+        JsonValue::Array(
+            SEMANTIC_TOKEN_TYPES
+                .iter()
+                .map(|name| JsonValue::String((*name).to_string()))
+                .collect(),
+        ),
+    );
+    legend.insert("tokenModifiers".to_string(), JsonValue::Array(Vec::new()));
+    semantic.insert("legend".to_string(), JsonValue::Object(legend));
+    semantic.insert("full".to_string(), JsonValue::Bool(true));
+    semantic.insert("range".to_string(), JsonValue::Bool(false));
+    caps.insert(
+        "semanticTokensProvider".to_string(),
+        JsonValue::Object(semantic),
+    );
     caps.insert("workspaceSymbolProvider".to_string(), JsonValue::Bool(true));
     let mut root = BTreeMap::new();
     root.insert("capabilities".to_string(), JsonValue::Object(caps));
@@ -598,7 +655,7 @@ fn handle_hover(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValu
     let Some(def) = index.definition_at(&uri, line, character) else {
         return JsonValue::Null;
     };
-    let mut value = def.def.detail.clone();
+    let mut value = format!("```fuse\n{}\n```", def.def.detail.trim());
     if let Some(doc) = &def.def.doc {
         if !doc.trim().is_empty() {
             value.push_str("\n\n");
@@ -606,7 +663,7 @@ fn handle_hover(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValu
         }
     }
     let mut contents = BTreeMap::new();
-    contents.insert("kind".to_string(), JsonValue::String("plaintext".to_string()));
+    contents.insert("kind".to_string(), JsonValue::String("markdown".to_string()));
     contents.insert("value".to_string(), JsonValue::String(value));
     let mut out = BTreeMap::new();
     out.insert("contents".to_string(), JsonValue::Object(contents));
@@ -735,6 +792,601 @@ fn handle_code_action(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Js
     }
 
     JsonValue::Array(actions)
+}
+
+fn handle_semantic_tokens(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+    let Some(uri) = extract_text_doc_uri(obj) else {
+        return JsonValue::Null;
+    };
+    let Some(text) = load_text_for_uri(state, &uri) else {
+        return JsonValue::Null;
+    };
+    let (program, _) = parse_source(&text);
+    let index = build_index_with_program(&text, &program);
+    let mut symbol_types: HashMap<(usize, usize), usize> = HashMap::new();
+    for def in &index.defs {
+        if let Some(token_type) = semantic_type_for_symbol_kind(def.kind) {
+            symbol_types.insert((def.span.start, def.span.end), token_type);
+        }
+    }
+    for reference in &index.refs {
+        let Some(def) = index.defs.get(reference.target) else {
+            continue;
+        };
+        let Some(token_type) = semantic_type_for_symbol_kind(def.kind) else {
+            continue;
+        };
+        symbol_types.insert((reference.span.start, reference.span.end), token_type);
+    }
+
+    let mut token_diags = fusec::diag::Diagnostics::default();
+    let tokens = fusec::lexer::lex(&text, &mut token_diags);
+    let mut rows = Vec::new();
+    for token in tokens {
+        let token_type = match token.kind {
+            fusec::token::TokenKind::Keyword(_) => Some(SEM_KEYWORD),
+            fusec::token::TokenKind::String(_) | fusec::token::TokenKind::InterpString(_) => {
+                Some(SEM_STRING)
+            }
+            fusec::token::TokenKind::Int(_) | fusec::token::TokenKind::Float(_) => {
+                Some(SEM_NUMBER)
+            }
+            fusec::token::TokenKind::DocComment(_) => Some(SEM_COMMENT),
+            fusec::token::TokenKind::Bool(_) | fusec::token::TokenKind::Null => Some(SEM_KEYWORD),
+            fusec::token::TokenKind::Ident(_) => symbol_types
+                .get(&(token.span.start, token.span.end))
+                .copied()
+                .or(Some(SEM_VARIABLE)),
+            _ => None,
+        };
+        let Some(token_type) = token_type else {
+            continue;
+        };
+        rows.push(SemanticTokenRow {
+            span: token.span,
+            token_type,
+        });
+    }
+    rows.sort_by_key(|row| (row.span.start, row.span.end, row.token_type));
+
+    let offsets = line_offsets(&text);
+    let mut data = Vec::new();
+    let mut last_line = 0usize;
+    let mut last_col = 0usize;
+    let mut first = true;
+    for row in rows {
+        let Some(slice) = text.get(row.span.start..row.span.end) else {
+            continue;
+        };
+        let length = slice.chars().count();
+        if length == 0 {
+            continue;
+        }
+        let (line, col) = offset_to_line_col(&offsets, row.span.start);
+        let delta_line = if first { line } else { line.saturating_sub(last_line) };
+        let delta_start = if first || delta_line > 0 {
+            col
+        } else {
+            col.saturating_sub(last_col)
+        };
+        data.push(JsonValue::Number(delta_line as f64));
+        data.push(JsonValue::Number(delta_start as f64));
+        data.push(JsonValue::Number(length as f64));
+        data.push(JsonValue::Number(row.token_type as f64));
+        data.push(JsonValue::Number(0.0));
+        first = false;
+        last_line = line;
+        last_col = col;
+    }
+
+    let mut out = BTreeMap::new();
+    out.insert("data".to_string(), JsonValue::Array(data));
+    JsonValue::Object(out)
+}
+
+fn handle_inlay_hints(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+    let Some(uri) = extract_text_doc_uri(obj) else {
+        return JsonValue::Array(Vec::new());
+    };
+    let Some(text) = load_text_for_uri(state, &uri) else {
+        return JsonValue::Array(Vec::new());
+    };
+    let range = extract_inlay_range(obj, &text);
+    let (program, parse_diags) = parse_source(&text);
+    if parse_diags.iter().any(|diag| matches!(diag.level, Level::Error)) {
+        return JsonValue::Array(Vec::new());
+    }
+    let index = match build_workspace_index(state, &uri) {
+        Some(index) => index,
+        None => return JsonValue::Array(Vec::new()),
+    };
+    let offsets = line_offsets(&text);
+    let mut hints = Vec::new();
+    let mut seen = HashSet::new();
+    for item in &program.items {
+        match item {
+            Item::Fn(decl) => collect_inlay_hints_block(
+                &index,
+                &uri,
+                &text,
+                &offsets,
+                &decl.body,
+                range,
+                &mut hints,
+                &mut seen,
+            ),
+            Item::Service(decl) => {
+                for route in &decl.routes {
+                    collect_inlay_hints_block(
+                        &index,
+                        &uri,
+                        &text,
+                        &offsets,
+                        &route.body,
+                        range,
+                        &mut hints,
+                        &mut seen,
+                    );
+                }
+            }
+            Item::App(decl) => collect_inlay_hints_block(
+                &index,
+                &uri,
+                &text,
+                &offsets,
+                &decl.body,
+                range,
+                &mut hints,
+                &mut seen,
+            ),
+            Item::Migration(decl) => collect_inlay_hints_block(
+                &index,
+                &uri,
+                &text,
+                &offsets,
+                &decl.body,
+                range,
+                &mut hints,
+                &mut seen,
+            ),
+            Item::Test(decl) => collect_inlay_hints_block(
+                &index,
+                &uri,
+                &text,
+                &offsets,
+                &decl.body,
+                range,
+                &mut hints,
+                &mut seen,
+            ),
+            _ => {}
+        }
+    }
+    JsonValue::Array(hints)
+}
+
+fn semantic_type_for_symbol_kind(kind: SymbolKind) -> Option<usize> {
+    match kind {
+        SymbolKind::Module => Some(SEM_NAMESPACE),
+        SymbolKind::Type | SymbolKind::Config => Some(SEM_TYPE),
+        SymbolKind::Enum => Some(SEM_ENUM),
+        SymbolKind::EnumVariant => Some(SEM_ENUM_MEMBER),
+        SymbolKind::Function
+        | SymbolKind::Service
+        | SymbolKind::App
+        | SymbolKind::Migration
+        | SymbolKind::Test => Some(SEM_FUNCTION),
+        SymbolKind::Param => Some(SEM_PARAMETER),
+        SymbolKind::Variable => Some(SEM_VARIABLE),
+        SymbolKind::Field => Some(SEM_PROPERTY),
+    }
+}
+
+fn load_text_for_uri(state: &LspState, uri: &str) -> Option<String> {
+    state
+        .docs
+        .get(uri)
+        .cloned()
+        .or_else(|| uri_to_path(uri).and_then(|path| std::fs::read_to_string(path).ok()))
+}
+
+fn extract_inlay_range(obj: &BTreeMap<String, JsonValue>, text: &str) -> Option<Span> {
+    let Some(JsonValue::Object(params)) = obj.get("params") else {
+        return None;
+    };
+    let range = params.get("range")?;
+    let offsets = line_offsets(text);
+    lsp_range_to_span(range, text, &offsets)
+}
+
+fn collect_inlay_hints_block(
+    index: &WorkspaceIndex,
+    uri: &str,
+    text: &str,
+    offsets: &[usize],
+    block: &Block,
+    range: Option<Span>,
+    hints: &mut Vec<JsonValue>,
+    seen: &mut HashSet<(usize, String)>,
+) {
+    for stmt in &block.stmts {
+        match &stmt.kind {
+            StmtKind::Let { name, ty, expr } | StmtKind::Var { name, ty, expr } => {
+                if ty.is_none() {
+                    if let Some(ty_name) = infer_expr_type(index, uri, text, expr) {
+                        let label = format!(": {ty_name}");
+                        push_inlay_hint(
+                            offsets,
+                            name.span.end,
+                            &label,
+                            1,
+                            false,
+                            range,
+                            hints,
+                            seen,
+                        );
+                    }
+                }
+                collect_inlay_hints_expr(index, uri, text, offsets, expr, range, hints, seen);
+            }
+            StmtKind::Assign { target, expr } => {
+                collect_inlay_hints_expr(index, uri, text, offsets, target, range, hints, seen);
+                collect_inlay_hints_expr(index, uri, text, offsets, expr, range, hints, seen);
+            }
+            StmtKind::Return { expr } => {
+                if let Some(expr) = expr {
+                    collect_inlay_hints_expr(index, uri, text, offsets, expr, range, hints, seen);
+                }
+            }
+            StmtKind::If {
+                cond,
+                then_block,
+                else_if,
+                else_block,
+            } => {
+                collect_inlay_hints_expr(index, uri, text, offsets, cond, range, hints, seen);
+                collect_inlay_hints_block(
+                    index, uri, text, offsets, then_block, range, hints, seen,
+                );
+                for (else_cond, else_block) in else_if {
+                    collect_inlay_hints_expr(
+                        index, uri, text, offsets, else_cond, range, hints, seen,
+                    );
+                    collect_inlay_hints_block(
+                        index, uri, text, offsets, else_block, range, hints, seen,
+                    );
+                }
+                if let Some(else_block) = else_block {
+                    collect_inlay_hints_block(
+                        index, uri, text, offsets, else_block, range, hints, seen,
+                    );
+                }
+            }
+            StmtKind::Match { expr, cases } => {
+                collect_inlay_hints_expr(index, uri, text, offsets, expr, range, hints, seen);
+                for (_, case_block) in cases {
+                    collect_inlay_hints_block(
+                        index, uri, text, offsets, case_block, range, hints, seen,
+                    );
+                }
+            }
+            StmtKind::For { iter, block, .. } => {
+                collect_inlay_hints_expr(index, uri, text, offsets, iter, range, hints, seen);
+                collect_inlay_hints_block(index, uri, text, offsets, block, range, hints, seen);
+            }
+            StmtKind::While { cond, block } => {
+                collect_inlay_hints_expr(index, uri, text, offsets, cond, range, hints, seen);
+                collect_inlay_hints_block(index, uri, text, offsets, block, range, hints, seen);
+            }
+            StmtKind::Expr(expr) => {
+                collect_inlay_hints_expr(index, uri, text, offsets, expr, range, hints, seen);
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+}
+
+fn collect_inlay_hints_expr(
+    index: &WorkspaceIndex,
+    uri: &str,
+    text: &str,
+    offsets: &[usize],
+    expr: &Expr,
+    range: Option<Span>,
+    hints: &mut Vec<JsonValue>,
+    seen: &mut HashSet<(usize, String)>,
+) {
+    match &expr.kind {
+        ExprKind::Call { callee, args } => {
+            if let Some(param_names) = call_param_names(index, uri, text, callee) {
+                for (idx, arg) in args.iter().enumerate() {
+                    if arg.name.is_none() {
+                        if let Some(param_name) = param_names.get(idx) {
+                            if !param_name.is_empty() {
+                                let label = format!("{param_name}: ");
+                                push_inlay_hint(
+                                    offsets,
+                                    arg.value.span.start,
+                                    &label,
+                                    2,
+                                    true,
+                                    range,
+                                    hints,
+                                    seen,
+                                );
+                            }
+                        }
+                    }
+                    collect_inlay_hints_expr(
+                        index,
+                        uri,
+                        text,
+                        offsets,
+                        &arg.value,
+                        range,
+                        hints,
+                        seen,
+                    );
+                }
+            } else {
+                for arg in args {
+                    collect_inlay_hints_expr(
+                        index,
+                        uri,
+                        text,
+                        offsets,
+                        &arg.value,
+                        range,
+                        hints,
+                        seen,
+                    );
+                }
+            }
+            collect_inlay_hints_expr(index, uri, text, offsets, callee, range, hints, seen);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_inlay_hints_expr(index, uri, text, offsets, left, range, hints, seen);
+            collect_inlay_hints_expr(index, uri, text, offsets, right, range, hints, seen);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await { expr }
+        | ExprKind::Box { expr } => {
+            collect_inlay_hints_expr(index, uri, text, offsets, expr, range, hints, seen);
+        }
+        ExprKind::Member { base, .. } | ExprKind::OptionalMember { base, .. } => {
+            collect_inlay_hints_expr(index, uri, text, offsets, base, range, hints, seen);
+        }
+        ExprKind::Index {
+            base,
+            index: index_expr,
+        }
+        | ExprKind::OptionalIndex {
+            base,
+            index: index_expr,
+        } => {
+            collect_inlay_hints_expr(index, uri, text, offsets, base, range, hints, seen);
+            collect_inlay_hints_expr(index, uri, text, offsets, index_expr, range, hints, seen);
+        }
+        ExprKind::StructLit { fields, .. } => {
+            for field in fields {
+                collect_inlay_hints_expr(
+                    index,
+                    uri,
+                    text,
+                    offsets,
+                    &field.value,
+                    range,
+                    hints,
+                    seen,
+                );
+            }
+        }
+        ExprKind::ListLit(items) => {
+            for item in items {
+                collect_inlay_hints_expr(index, uri, text, offsets, item, range, hints, seen);
+            }
+        }
+        ExprKind::MapLit(items) => {
+            for (key, value) in items {
+                collect_inlay_hints_expr(index, uri, text, offsets, key, range, hints, seen);
+                collect_inlay_hints_expr(index, uri, text, offsets, value, range, hints, seen);
+            }
+        }
+        ExprKind::InterpString(parts) => {
+            for part in parts {
+                if let fusec::ast::InterpPart::Expr(expr) = part {
+                    collect_inlay_hints_expr(index, uri, text, offsets, expr, range, hints, seen);
+                }
+            }
+        }
+        ExprKind::Coalesce { left, right } => {
+            collect_inlay_hints_expr(index, uri, text, offsets, left, range, hints, seen);
+            collect_inlay_hints_expr(index, uri, text, offsets, right, range, hints, seen);
+        }
+        ExprKind::BangChain { expr, error } => {
+            collect_inlay_hints_expr(index, uri, text, offsets, expr, range, hints, seen);
+            if let Some(error) = error {
+                collect_inlay_hints_expr(index, uri, text, offsets, error, range, hints, seen);
+            }
+        }
+        ExprKind::Spawn { block } => {
+            collect_inlay_hints_block(index, uri, text, offsets, block, range, hints, seen);
+        }
+        ExprKind::Literal(_) | ExprKind::Ident(_) => {}
+    }
+}
+
+fn push_inlay_hint(
+    offsets: &[usize],
+    offset: usize,
+    label: &str,
+    kind: u32,
+    padding_right: bool,
+    range: Option<Span>,
+    hints: &mut Vec<JsonValue>,
+    seen: &mut HashSet<(usize, String)>,
+) {
+    if let Some(range) = range {
+        if offset < range.start || offset > range.end {
+            return;
+        }
+    }
+    let key = (offset, label.to_string());
+    if !seen.insert(key) {
+        return;
+    }
+    let (line, col) = offset_to_line_col(offsets, offset);
+    let mut position = BTreeMap::new();
+    position.insert("line".to_string(), JsonValue::Number(line as f64));
+    position.insert("character".to_string(), JsonValue::Number(col as f64));
+    let mut out = BTreeMap::new();
+    out.insert("position".to_string(), JsonValue::Object(position));
+    out.insert("label".to_string(), JsonValue::String(label.to_string()));
+    out.insert("kind".to_string(), JsonValue::Number(kind as f64));
+    if padding_right {
+        out.insert("paddingRight".to_string(), JsonValue::Bool(true));
+    }
+    hints.push(JsonValue::Object(out));
+}
+
+fn call_param_names(
+    index: &WorkspaceIndex,
+    uri: &str,
+    text: &str,
+    callee: &Expr,
+) -> Option<Vec<String>> {
+    let span = match &callee.kind {
+        ExprKind::Ident(ident) => ident.span,
+        ExprKind::Member { name, .. } | ExprKind::OptionalMember { name, .. } => name.span,
+        _ => callee.span,
+    };
+    let offsets = line_offsets(text);
+    let (line, col) = offset_to_line_col(&offsets, span.start);
+    let def = index.definition_at(uri, line, col)?;
+    if def.def.kind != SymbolKind::Function {
+        return None;
+    }
+    parse_fn_param_names(&def.def.detail)
+}
+
+fn parse_fn_param_names(detail: &str) -> Option<Vec<String>> {
+    if !detail.starts_with("fn ") {
+        return None;
+    }
+    let open = detail.find('(')?;
+    let close = detail[open + 1..].find(')')? + open + 1;
+    let params_text = detail[open + 1..close].trim();
+    if params_text.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut names = Vec::new();
+    for part in params_text.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let name = part.split(':').next().unwrap_or("").trim();
+        if !name.is_empty() {
+            names.push(name.to_string());
+        }
+    }
+    Some(names)
+}
+
+fn parse_fn_return_type(detail: &str) -> Option<String> {
+    let (_, ret) = detail.split_once("->")?;
+    let ret = ret.trim();
+    if ret.is_empty() {
+        return None;
+    }
+    Some(ret.to_string())
+}
+
+fn parse_declared_type_from_detail(detail: &str) -> Option<String> {
+    if !(detail.starts_with("let ")
+        || detail.starts_with("var ")
+        || detail.starts_with("param ")
+        || detail.starts_with("field "))
+    {
+        return None;
+    }
+    let (_, ty) = detail.split_once(':')?;
+    let ty = ty.trim();
+    if ty.is_empty() {
+        return None;
+    }
+    Some(ty.to_string())
+}
+
+fn infer_expr_type(index: &WorkspaceIndex, uri: &str, text: &str, expr: &Expr) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Literal(Literal::Int(_)) => Some("Int".to_string()),
+        ExprKind::Literal(Literal::Float(_)) => Some("Float".to_string()),
+        ExprKind::Literal(Literal::Bool(_)) => Some("Bool".to_string()),
+        ExprKind::Literal(Literal::String(_)) => Some("String".to_string()),
+        ExprKind::Literal(Literal::Null) => Some("Null".to_string()),
+        ExprKind::StructLit { name, .. } => Some(name.name.clone()),
+        ExprKind::ListLit(_) => Some("List".to_string()),
+        ExprKind::MapLit(_) => Some("Map".to_string()),
+        ExprKind::InterpString(_) => Some("String".to_string()),
+        ExprKind::Spawn { .. } => Some("Task".to_string()),
+        ExprKind::Coalesce { left, .. } => infer_expr_type(index, uri, text, left),
+        ExprKind::Await { expr } | ExprKind::Box { expr } | ExprKind::BangChain { expr, .. } => {
+            infer_expr_type(index, uri, text, expr)
+        }
+        ExprKind::Ident(ident) => {
+            let offsets = line_offsets(text);
+            let (line, col) = offset_to_line_col(&offsets, ident.span.start);
+            let def = index.definition_at(uri, line, col)?;
+            parse_declared_type_from_detail(&def.def.detail)
+        }
+        ExprKind::Call { callee, .. } => {
+            let span = match &callee.kind {
+                ExprKind::Ident(ident) => ident.span,
+                ExprKind::Member { name, .. } | ExprKind::OptionalMember { name, .. } => name.span,
+                _ => callee.span,
+            };
+            let offsets = line_offsets(text);
+            let (line, col) = offset_to_line_col(&offsets, span.start);
+            let def = index.definition_at(uri, line, col)?;
+            parse_fn_return_type(&def.def.detail)
+        }
+        ExprKind::Unary { op, expr } => match op {
+            UnaryOp::Not => Some("Bool".to_string()),
+            UnaryOp::Neg => infer_expr_type(index, uri, text, expr),
+        },
+        ExprKind::Binary { op, left, right } => match op {
+            BinaryOp::Eq
+            | BinaryOp::NotEq
+            | BinaryOp::Lt
+            | BinaryOp::LtEq
+            | BinaryOp::Gt
+            | BinaryOp::GtEq
+            | BinaryOp::And
+            | BinaryOp::Or => Some("Bool".to_string()),
+            BinaryOp::Range => Some("List".to_string()),
+            BinaryOp::Add => {
+                let left_ty = infer_expr_type(index, uri, text, left)?;
+                if left_ty == "String" {
+                    Some("String".to_string())
+                } else {
+                    Some(left_ty)
+                }
+            }
+            _ => infer_expr_type(index, uri, text, left)
+                .or_else(|| infer_expr_type(index, uri, text, right)),
+        },
+        ExprKind::Member { .. }
+        | ExprKind::OptionalMember { .. }
+        | ExprKind::Index { .. }
+        | ExprKind::OptionalIndex { .. } => None,
+    }
+}
+
+#[derive(Clone)]
+struct SemanticTokenRow {
+    span: Span,
+    token_type: usize,
 }
 
 fn handle_references(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
