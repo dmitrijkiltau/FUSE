@@ -70,7 +70,7 @@
   </dialog>
 
   <dialog id="error-dialog">
-    <h3>Request failed</h3>
+    <h3 id="error-title">Request failed</h3>
     <p id="error-message"></p>
     <div class="dialog-actions">
       <button type="button" id="error-ok">OK</button>
@@ -127,6 +127,23 @@
       }
     });
 
+    document.body.addEventListener('htmx:responseError', function(evt) {
+      if (!evt.detail || !evt.detail.elt || evt.detail.elt.tagName !== 'FORM') {
+        return;
+      }
+      const xhr = evt.detail.xhr;
+      if (!xhr) {
+        showError('Request failed');
+        return;
+      }
+      const details = parseErrorDetails(xhr.responseText);
+      if (details) {
+        showError(details.message, details.title);
+        return;
+      }
+      showError(`Request failed (${xhr.status})`);
+    });
+
     const editDialog = document.getElementById('edit-dialog');
     const editForm = document.getElementById('edit-form');
     const editTitle = document.getElementById('edit-title');
@@ -136,6 +153,7 @@
     const confirmCancel = document.getElementById('confirm-cancel');
     const confirmOk = document.getElementById('confirm-ok');
     const errorDialog = document.getElementById('error-dialog');
+    const errorTitle = document.getElementById('error-title');
     const errorMessage = document.getElementById('error-message');
     const errorOk = document.getElementById('error-ok');
 
@@ -154,8 +172,13 @@
       }
     }
 
-    function showError(message) {
-      errorMessage.textContent = message;
+    function showError(message, title) {
+      if (title) {
+        errorTitle.textContent = title;
+      } else {
+        errorTitle.textContent = 'Request failed';
+      }
+      errorMessage.textContent = message || 'Request failed';
       showDialog(errorDialog);
     }
 
@@ -239,14 +262,42 @@
 
     async function safeErrorMessage(resp) {
       try {
-        const data = await resp.json();
-        if (data && data.error && data.error.message) {
-          return data.error.message;
+        const details = parseErrorDetails(await resp.text());
+        if (details) {
+          return details.message;
         }
       } catch (e) {
         // ignore parse error
       }
       return `Request failed (${resp.status})`;
+    }
+
+    function parseErrorDetails(text) {
+      if (!text) return null;
+      let data = null;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        return null;
+      }
+      if (!data || !data.error) return null;
+      const err = data.error;
+      let message = err.message || 'Request failed';
+      if (Array.isArray(err.fields) && err.fields.length > 0) {
+        message = err.fields
+          .map(field => {
+            const path = (field.path || '').replace(/^body\./, '');
+            const name = path || 'field';
+            return `${name}: ${field.message || 'invalid value'}`;
+          })
+          .join('\n');
+      }
+      let title = 'Request failed';
+      if (typeof err.code === 'string' && err.code.length > 0) {
+        title = err.code.replace(/_/g, ' ');
+        title = title.charAt(0).toUpperCase() + title.slice(1);
+      }
+      return { title, message };
     }
 
     function escapeHtml(text) {

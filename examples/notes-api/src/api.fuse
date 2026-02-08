@@ -22,11 +22,6 @@ service Notes at "/api":
     let auth = require_auth() ?!
     require_scope(auth, "notes:write") ?!
 
-    if body.title == "":
-      null ?! BadRequest(message="title required")
-    if body.content == "":
-      null ?! BadRequest(message="content required")
-
     db.from("notes").select(["id"]).where("id", "=", id).one() ?! NotFound(message="not found")
     db.exec("update notes set title = ?, content = ? where id = ?", [body.title, body.content, id])
 
@@ -36,11 +31,6 @@ service Notes at "/api":
   post "/notes" body NoteCreate -> Note!Unauthorized!Forbidden!BadRequest:
     let auth = require_auth() ?!
     require_scope(auth, "notes:write") ?!
-
-    if body.title == "":
-      null ?! BadRequest(message="title required")
-    if body.content == "":
-      null ?! BadRequest(message="content required")
 
     let id = NoteId(value="note-${body.title}")
     db.exec("insert into notes (id, title, content) values (?, ?, ?)", [id.value, body.title, body.content])

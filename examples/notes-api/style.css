@@ -225,6 +225,10 @@ dialog p {
   font-size: 0.9rem;
 }
 
+#error-message {
+  white-space: pre-line;
+}
+
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
