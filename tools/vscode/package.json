@@ -4,13 +4,30 @@
   "description": "Syntax highlighting for Fuse",
   "version": "0.0.2",
   "publisher": "fuse",
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:fuse"
+  ],
   "engines": {
     "vscode": "^1.80.0"
   },
   "categories": [
     "Programming Languages"
   ],
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
   "contributes": {
+    "configuration": {
+      "title": "Fuse",
+      "properties": {
+        "fuse.lspPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to fuse-lsp binary (overrides bundled/dist lookup)."
+        }
+      }
+    },
     "languages": [
       {
         "id": "fuse",
