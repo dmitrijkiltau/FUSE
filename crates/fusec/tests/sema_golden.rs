@@ -119,3 +119,37 @@ fn main():
 "#;
     assert_diags(src, &["Error: type mismatch: expected String, found Int"]);
 }
+
+#[test]
+fn allows_defaulted_trailing_args() {
+    let src = r#"
+fn greet(name: String, excited: Bool = false):
+  if excited:
+    print("Hello, ${name}!")
+  else:
+    print("Hello, ${name}")
+
+fn main():
+  greet("world")
+"#;
+    assert_diags(src, &[]);
+}
+
+#[test]
+fn allows_box_assignment_through_immutable_binding() {
+    let src = r#"
+fn main():
+  let counter = box 0
+  counter = counter + 1
+"#;
+    assert_diags(src, &[]);
+}
+
+#[test]
+fn allows_string_concat_with_non_string_operands() {
+    let src = r#"
+fn main():
+  let _ = "rgb " + 1 + "," + 2 + "," + 3
+"#;
+    assert_diags(src, &[]);
+}

@@ -84,7 +84,51 @@ pub fn analyze_registry(registry: &ModuleRegistry) -> (Analysis, Vec<Diag>) {
         .and_then(|unit| symbols_by_id.get(&unit.id))
         .cloned()
         .unwrap_or_else(|| symbols::ModuleSymbols::default());
-    (Analysis { symbols: root_symbols }, diags.into_vec())
+    (
+        Analysis {
+            symbols: root_symbols,
+        },
+        diags.into_vec(),
+    )
+}
+
+pub fn analyze_module(registry: &ModuleRegistry, module_id: ModuleId) -> (Analysis, Vec<Diag>) {
+    let mut diags = Diagnostics::default();
+    let mut symbols_by_id: std::collections::HashMap<ModuleId, symbols::ModuleSymbols> =
+        std::collections::HashMap::new();
+    let mut import_items_by_id: std::collections::HashMap<
+        ModuleId,
+        std::collections::HashMap<String, crate::loader::ModuleLink>,
+    > = std::collections::HashMap::new();
+    let mut module_maps_by_id: std::collections::HashMap<ModuleId, crate::loader::ModuleMap> =
+        std::collections::HashMap::new();
+
+    for (id, unit) in &registry.modules {
+        let symbols = symbols::collect(&unit.program, &mut diags);
+        symbols_by_id.insert(*id, symbols);
+        import_items_by_id.insert(*id, unit.import_items.clone());
+        module_maps_by_id.insert(*id, unit.modules.clone());
+    }
+
+    let symbols = symbols_by_id
+        .get(&module_id)
+        .cloned()
+        .unwrap_or_else(symbols::ModuleSymbols::default);
+    if let Some(unit) = registry.modules.get(&module_id) {
+        let mut checker = check::Checker::new(
+            module_id,
+            &symbols,
+            &unit.modules,
+            &module_maps_by_id,
+            &unit.import_items,
+            &symbols_by_id,
+            &import_items_by_id,
+            &mut diags,
+        );
+        checker.check_program(&unit.program);
+    }
+
+    (Analysis { symbols }, diags.into_vec())
 }
 
 fn expand_type_derivations(program: &mut Program, diags: &mut Diagnostics) {

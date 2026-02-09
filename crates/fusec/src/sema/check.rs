@@ -152,6 +152,7 @@ impl<'a> Checker<'a> {
             .map(|param| ParamSig {
                 name: param.name.name.clone(),
                 ty: self.resolve_type_ref(&param.ty),
+                has_default: param.default.is_some(),
             })
             .collect();
         let ret = decl
@@ -177,6 +178,7 @@ impl<'a> Checker<'a> {
             .map(|param| ParamSig {
                 name: param.name.clone(),
                 ty: self.resolve_type_ref_in(module_id, &param.ty),
+                has_default: param.has_default,
             })
             .collect();
         let ret = sig_ref
@@ -242,7 +244,10 @@ impl<'a> Checker<'a> {
                 Ty::Unit
             }
             StmtKind::Return { expr } => {
-                let value_ty = expr.as_ref().map(|expr| self.check_expr(expr)).unwrap_or(Ty::Unit);
+                let value_ty = expr
+                    .as_ref()
+                    .map(|expr| self.check_expr(expr))
+                    .unwrap_or(Ty::Unit);
                 if let Some(expected) = self.current_return.clone() {
                     if !self.is_assignable(&value_ty, &expected) {
                         self.type_mismatch(stmt.span, &expected, &value_ty);
@@ -286,10 +291,8 @@ impl<'a> Checker<'a> {
                     Ty::Map(_, value) => *value,
                     Ty::Unknown => Ty::Unknown,
                     other => {
-                        self.diags.error(
-                            iter.span,
-                            format!("cannot iterate over type {}", other),
-                        );
+                        self.diags
+                            .error(iter.span, format!("cannot iterate over type {}", other));
                         Ty::Unknown
                     }
                 };
@@ -321,7 +324,8 @@ impl<'a> Checker<'a> {
                         if self.is_numeric(&inner_ty) {
                             inner_ty
                         } else {
-                            self.diags.error(expr.span, "unary '-' requires numeric type");
+                            self.diags
+                                .error(expr.span, "unary '-' requires numeric type");
                             Ty::Unknown
                         }
                     }
@@ -347,10 +351,7 @@ impl<'a> Checker<'a> {
                             && matches!(name.name.as_str(), "exec" | "query" | "one")
                         {
                             if args.len() < 1 || args.len() > 2 {
-                                self.diags.error(
-                                    expr.span,
-                                    "db.* expects 1 or 2 arguments",
-                                );
+                                self.diags.error(expr.span, "db.* expects 1 or 2 arguments");
                             }
                             if let Some(first) = args.get(0) {
                                 let arg_ty = self.check_expr(&first.value);
@@ -396,7 +397,11 @@ impl<'a> Checker<'a> {
                                 );
                             }
                         }
-                        if args.len() != sig.params.len() {
+                        let provided = args.len();
+                        let total = sig.params.len();
+                        let missing_are_defaulted = provided <= total
+                            && sig.params[provided..].iter().all(|param| param.has_default);
+                        if !missing_are_defaulted {
                             self.diags.error(
                                 expr.span,
                                 format!(
@@ -502,13 +507,15 @@ impl<'a> Checker<'a> {
                     Ty::Task(inner) => *inner,
                     Ty::Unknown => Ty::Unknown,
                     other => {
-                        self.diags.error(expr.span, format!("await expects Task, got {}", other));
+                        self.diags
+                            .error(expr.span, format!("await expects Task, got {}", other));
                         Ty::Unknown
                     }
                 }
             }
             ExprKind::Box { expr: inner } => {
-                self.check_expr(inner)
+                let inner_ty = self.check_expr(inner);
+                Ty::Boxed(Box::new(inner_ty))
             }
         }
     }
@@ -524,7 +531,8 @@ impl<'a> Checker<'a> {
             let mut seen = HashSet::new();
             for field in fields {
                 if !seen.insert(field.name.name.clone()) {
-                    self.diags.error(field.span, "duplicate field in struct literal");
+                    self.diags
+                        .error(field.span, "duplicate field in struct literal");
                     continue;
                 }
                 let field_info = field_defs.iter().find(|f| f.name == field.name.name);
@@ -558,7 +566,8 @@ impl<'a> Checker<'a> {
             let mut seen = HashSet::new();
             for field in fields {
                 if !seen.insert(field.name.name.clone()) {
-                    self.diags.error(field.span, "duplicate field in config literal");
+                    self.diags
+                        .error(field.span, "duplicate field in config literal");
                     continue;
                 }
                 let field_info = field_defs.iter().find(|f| f.name == field.name.name);
@@ -598,9 +607,9 @@ impl<'a> Checker<'a> {
             }
             _ => self.check_expr(base),
         };
-        let mut inner = base_ty.clone();
+        let mut inner = Self::unbox_transparent(base_ty.clone());
         if is_optional {
-            match base_ty {
+            match inner {
                 Ty::Option(inner_ty) => inner = *inner_ty,
                 Ty::Unknown => return Ty::Option(Box::new(Ty::Unknown)),
                 other => {
@@ -636,9 +645,9 @@ impl<'a> Checker<'a> {
 
     fn check_index(&mut self, base: &Expr, index: &Expr, is_optional: bool) -> Ty {
         let base_ty = self.check_expr(base);
-        let mut inner = base_ty.clone();
+        let mut inner = Self::unbox_transparent(base_ty.clone());
         if is_optional {
-            match base_ty {
+            match inner {
                 Ty::Option(inner_ty) => inner = *inner_ty,
                 Ty::Unknown => return Ty::Option(Box::new(Ty::Unknown)),
                 other => {
@@ -666,10 +675,8 @@ impl<'a> Checker<'a> {
             }
             Ty::Unknown => Ty::Unknown,
             other => {
-                self.diags.error(
-                    base.span,
-                    format!("type {} is not indexable", other),
-                );
+                self.diags
+                    .error(base.span, format!("type {} is not indexable", other));
                 Ty::Unknown
             }
         };
@@ -714,6 +721,7 @@ impl<'a> Checker<'a> {
         let sql_arg = ParamSig {
             name: "sql".to_string(),
             ty: Ty::String,
+            has_default: false,
         };
         let row_ty = Ty::Map(Box::new(Ty::String), Box::new(Ty::Unknown));
         match name.name.as_str() {
@@ -733,6 +741,7 @@ impl<'a> Checker<'a> {
                 params: vec![ParamSig {
                     name: "table".to_string(),
                     ty: Ty::String,
+                    has_default: false,
                 }],
                 ret: Box::new(Ty::External("query".to_string())),
             }),
@@ -748,12 +757,11 @@ impl<'a> Checker<'a> {
         let row_ty = Ty::Map(Box::new(Ty::String), Box::new(Ty::Unknown));
         match name.name.as_str() {
             "select" => Ty::Fn(FnSig {
-                params: vec![
-                    ParamSig {
-                        name: "columns".to_string(),
-                        ty: Ty::List(Box::new(Ty::String)),
-                    },
-                ],
+                params: vec![ParamSig {
+                    name: "columns".to_string(),
+                    ty: Ty::List(Box::new(Ty::String)),
+                    has_default: false,
+                }],
                 ret: Box::new(Ty::External("query".to_string())),
             }),
             "where" => Ty::Fn(FnSig {
@@ -761,14 +769,17 @@ impl<'a> Checker<'a> {
                     ParamSig {
                         name: "column".to_string(),
                         ty: Ty::String,
+                        has_default: false,
                     },
                     ParamSig {
                         name: "op".to_string(),
                         ty: Ty::String,
+                        has_default: false,
                     },
                     ParamSig {
                         name: "value".to_string(),
                         ty: Ty::Unknown,
+                        has_default: false,
                     },
                 ],
                 ret: Box::new(Ty::External("query".to_string())),
@@ -778,10 +789,12 @@ impl<'a> Checker<'a> {
                     ParamSig {
                         name: "column".to_string(),
                         ty: Ty::String,
+                        has_default: false,
                     },
                     ParamSig {
                         name: "dir".to_string(),
                         ty: Ty::String,
+                        has_default: false,
                     },
                 ],
                 ret: Box::new(Ty::External("query".to_string())),
@@ -790,6 +803,7 @@ impl<'a> Checker<'a> {
                 params: vec![ParamSig {
                     name: "n".to_string(),
                     ty: Ty::Int,
+                    has_default: false,
                 }],
                 ret: Box::new(Ty::External("query".to_string())),
             }),
@@ -828,6 +842,7 @@ impl<'a> Checker<'a> {
                 params: vec![ParamSig {
                     name: "task".to_string(),
                     ty: task_arg,
+                    has_default: false,
                 }],
                 ret: Box::new(Ty::Id),
             }),
@@ -835,6 +850,7 @@ impl<'a> Checker<'a> {
                 params: vec![ParamSig {
                     name: "task".to_string(),
                     ty: task_arg,
+                    has_default: false,
                 }],
                 ret: Box::new(Ty::Bool),
             }),
@@ -908,10 +924,8 @@ impl<'a> Checker<'a> {
             return Ty::Config(ident.name.clone());
         }
         if symbols.types.contains_key(&ident.name) || symbols.enums.contains_key(&ident.name) {
-            self.diags.error(
-                ident.span,
-                format!("{} is a type, not a value", ident.name),
-            );
+            self.diags
+                .error(ident.span, format!("{} is a type, not a value", ident.name));
             return Ty::Unknown;
         }
         if symbols.services.contains_key(&ident.name) || link.exports.apps.contains(&ident.name) {
@@ -952,6 +966,7 @@ impl<'a> Checker<'a> {
             .map(|(idx, ty)| ParamSig {
                 name: format!("arg{idx}"),
                 ty: self.resolve_type_ref(ty),
+                has_default: false,
             })
             .collect();
         Ty::Fn(FnSig {
@@ -1019,9 +1034,14 @@ impl<'a> Checker<'a> {
         match &target.kind {
             ExprKind::Ident(ident) => {
                 if let Some(var) = self.env.lookup(&ident.name) {
+                    if let Ty::Boxed(inner) = &var.ty {
+                        return *inner.clone();
+                    }
                     if !var.mutable {
-                        self.diags
-                            .error(ident.span, format!("cannot assign to immutable {}", ident.name));
+                        self.diags.error(
+                            ident.span,
+                            format!("cannot assign to immutable {}", ident.name),
+                        );
                     }
                     var.ty.clone()
                 } else {
@@ -1031,7 +1051,7 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Member { base, name } => {
-                let base_ty = self.check_expr(base);
+                let base_ty = Self::unbox_transparent(self.check_expr(base));
                 match base_ty {
                     Ty::Struct(name_ty) => self.lookup_field(&name_ty, &name.name, name.span),
                     Ty::Unknown => Ty::Unknown,
@@ -1045,7 +1065,7 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::OptionalMember { base, name } => {
-                let base_ty = self.check_expr(base);
+                let base_ty = Self::unbox_transparent(self.check_expr(base));
                 let inner = match base_ty {
                     Ty::Option(inner) => *inner,
                     Ty::Unknown => return Ty::Unknown,
@@ -1070,7 +1090,7 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Index { base, index } => {
-                let base_ty = self.check_expr(base);
+                let base_ty = Self::unbox_transparent(self.check_expr(base));
                 let index_ty = self.check_expr(index);
                 match base_ty {
                     Ty::List(elem_ty) => {
@@ -1141,7 +1161,7 @@ impl<'a> Checker<'a> {
 
     fn resolve_ident_expr(&mut self, ident: &crate::ast::Ident) -> Ty {
         if let Some(var) = self.env.lookup(&ident.name) {
-            return var.ty.clone();
+            return Self::unbox_transparent(var.ty.clone());
         }
         if let Some(link) = self.import_items.get(&ident.name) {
             return self.resolve_imported_value(ident, link);
@@ -1152,17 +1172,18 @@ impl<'a> Checker<'a> {
         if self.symbols.configs.contains_key(&ident.name) {
             return Ty::Config(ident.name.clone());
         }
-        if self.symbols.types.contains_key(&ident.name) || self.symbols.enums.contains_key(&ident.name)
+        if self.symbols.types.contains_key(&ident.name)
+            || self.symbols.enums.contains_key(&ident.name)
         {
-            self.diags.error(
-                ident.span,
-                format!("{} is a type, not a value", ident.name),
-            );
+            self.diags
+                .error(ident.span, format!("{} is a type, not a value", ident.name));
             return Ty::Unknown;
         }
         if self.modules.contains(&ident.name) {
-            self.diags
-                .error(ident.span, format!("{} is a module, not a value", ident.name));
+            self.diags.error(
+                ident.span,
+                format!("{} is a module, not a value", ident.name),
+            );
             return Ty::Unknown;
         }
         self.diags
@@ -1257,10 +1278,7 @@ impl<'a> Checker<'a> {
     fn resolve_simple_type_name_in(&mut self, module_id: ModuleId, name: &str, span: Span) -> Ty {
         if !name.starts_with("std.") {
             if let Some((module_name, item_name)) = split_qualified_type_name(name) {
-                let module_map = self
-                    .module_maps
-                    .get(&module_id)
-                    .unwrap_or(self.modules);
+                let module_map = self.module_maps.get(&module_id).unwrap_or(self.modules);
                 let Some(link) = module_map.get(module_name) else {
                     self.diags
                         .error(span, format!("unknown module {}", module_name));
@@ -1284,15 +1302,11 @@ impl<'a> Checker<'a> {
                     || symbols.services.contains_key(item_name)
                     || link.exports.apps.contains(item_name)
                 {
-                    self.diags.error(
-                        span,
-                        format!("{}.{} is not a type", module_name, item_name),
-                    );
+                    self.diags
+                        .error(span, format!("{}.{} is not a type", module_name, item_name));
                 } else {
-                    self.diags.error(
-                        span,
-                        format!("unknown type {}.{}", module_name, item_name),
-                    );
+                    self.diags
+                        .error(span, format!("unknown type {}.{}", module_name, item_name));
                 }
                 return Ty::Unknown;
             }
@@ -1313,10 +1327,7 @@ impl<'a> Checker<'a> {
             "Email" => Ty::Email,
             "Error" => Ty::Error,
             _ => {
-                let symbols = self
-                    .module_symbols
-                    .get(&module_id)
-                    .unwrap_or(self.symbols);
+                let symbols = self.module_symbols.get(&module_id).unwrap_or(self.symbols);
                 if symbols.types.contains_key(name) {
                     return Ty::Struct(name.to_string());
                 }
@@ -1386,6 +1397,8 @@ impl<'a> Checker<'a> {
 
     fn check_binary(&mut self, span: Span, op: &crate::ast::BinaryOp, left: Ty, right: Ty) -> Ty {
         use crate::ast::BinaryOp::*;
+        let left = Self::unbox_transparent(left);
+        let right = Self::unbox_transparent(right);
         match *op {
             Add | Sub | Mul | Div | Mod => {
                 if self.is_numeric(&left) && self.is_numeric(&right) {
@@ -1395,20 +1408,21 @@ impl<'a> Checker<'a> {
                         Ty::Int
                     }
                 } else if matches!(*op, Add)
-                    && matches!(left, Ty::String)
-                    && matches!(right, Ty::String)
+                    && (matches!(left, Ty::String) || matches!(right, Ty::String))
                 {
                     Ty::String
                 } else if left.is_unknown() || right.is_unknown() {
                     Ty::Unknown
                 } else {
-                    self.diags.error(span, "binary operator requires numeric types");
+                    self.diags
+                        .error(span, "binary operator requires numeric types");
                     Ty::Unknown
                 }
             }
             Eq | NotEq => {
                 if !self.is_assignable(&left, &right) && !self.is_assignable(&right, &left) {
-                    self.diags.error(span, "equality comparison on incompatible types");
+                    self.diags
+                        .error(span, "equality comparison on incompatible types");
                 }
                 Ty::Bool
             }
@@ -1497,6 +1511,7 @@ impl<'a> Checker<'a> {
             Ty::Float => Some(Ty::Float),
             Ty::Unknown => Some(Ty::Unknown),
             Ty::Refined { base, .. } => self.numeric_base_type(base),
+            Ty::Boxed(inner) => self.numeric_base_type(inner),
             _ => None,
         }
     }
@@ -1506,6 +1521,8 @@ impl<'a> Checker<'a> {
             return true;
         }
         match (value, target) {
+            (Ty::Boxed(value_inner), _) => self.is_assignable(value_inner, target),
+            (_, Ty::Boxed(target_inner)) => self.is_assignable(value, target_inner),
             (Ty::Refined { base, .. }, _) => self.is_assignable(base, target),
             (Ty::Result(value_ok, value_err), Ty::Result(target_ok, target_err)) => {
                 self.is_assignable(value_ok, target_ok) && self.is_assignable(value_err, target_err)
@@ -1547,6 +1564,13 @@ impl<'a> Checker<'a> {
             span,
             format!("type mismatch: expected {}, found {}", expected, found),
         );
+    }
+
+    fn unbox_transparent(mut ty: Ty) -> Ty {
+        while let Ty::Boxed(inner) = ty {
+            ty = *inner;
+        }
+        ty
     }
 
     fn check_bang_error(&mut self, span: Span, err_ty: &Ty) {
@@ -1615,13 +1639,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_enum_variant_pattern(
-        &mut self,
-        ty: &Ty,
-        name: &str,
-        args: &[Pattern],
-        span: Span,
-    ) {
+    fn check_enum_variant_pattern(&mut self, ty: &Ty, name: &str, args: &[Pattern], span: Span) {
         match ty {
             Ty::Enum(enum_name) => {
                 let info = match self.enum_info(enum_name) {
@@ -1635,10 +1653,8 @@ impl<'a> Checker<'a> {
                 let payload = match info.variants.iter().find(|v| v.name == name) {
                     Some(variant) => variant.payload.clone(),
                     None => {
-                        self.diags.error(
-                            span,
-                            format!("unknown variant {} for {}", name, enum_name),
-                        );
+                        self.diags
+                            .error(span, format!("unknown variant {} for {}", name, enum_name));
                         return;
                     }
                 };
@@ -1791,8 +1807,7 @@ impl<'a> Checker<'a> {
                 let name = parts.next().unwrap_or("").trim();
                 let ty_name = parts.next().unwrap_or("").trim();
                 if name.is_empty() || ty_name.is_empty() {
-                    self.diags
-                        .error(route.path.span, "invalid route parameter");
+                    self.diags.error(route.path.span, "invalid route parameter");
                 } else if !is_simple_ident(ty_name) {
                     self.diags.error(
                         route.path.span,
@@ -1804,7 +1819,8 @@ impl<'a> Checker<'a> {
                 }
                 idx = end_idx + 1;
             } else {
-                self.diags.error(route.path.span, "unclosed route parameter");
+                self.diags
+                    .error(route.path.span, "unclosed route parameter");
                 break;
             }
         }
@@ -1866,13 +1882,7 @@ impl TypeEnv {
             if scope.vars.contains_key(name) {
                 return Err(format!("duplicate binding: {name}"));
             }
-            scope.vars.insert(
-                name.to_string(),
-                VarInfo {
-                    ty,
-                    mutable,
-                },
-            );
+            scope.vars.insert(name.to_string(), VarInfo { ty, mutable });
         }
         Ok(())
     }

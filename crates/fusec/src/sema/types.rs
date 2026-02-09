@@ -4,6 +4,7 @@ use std::fmt;
 pub struct ParamSig {
     pub name: String,
     pub ty: Ty,
+    pub has_default: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

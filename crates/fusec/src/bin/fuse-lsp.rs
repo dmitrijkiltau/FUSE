@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use fuse_rt::json::{self, JsonValue};
 use fusec::ast::{
     BinaryOp, Block, ConfigDecl, Doc, EnumDecl, Expr, ExprKind, FnDecl, Ident, ImportDecl,
     ImportSpec, Item, Literal, Pattern, PatternKind, Program, ServiceDecl, Stmt, StmtKind,
@@ -12,7 +13,6 @@ use fusec::loader::{load_program_with_modules_and_deps_and_overrides, ModuleRegi
 use fusec::parse_source;
 use fusec::sema;
 use fusec::span::Span;
-use fuse_rt::json::{self, JsonValue};
 
 const SEMANTIC_TOKEN_TYPES: [&str; 12] = [
     "namespace",
@@ -56,7 +56,9 @@ fn main() -> io::Result<()> {
             Ok(value) => value,
             Err(_) => continue,
         };
-        let JsonValue::Object(obj) = value else { continue };
+        let JsonValue::Object(obj) = value else {
+            continue;
+        };
         let method = get_string(&obj, "method");
         let id = obj.get("id").cloned();
 
@@ -97,7 +99,7 @@ fn main() -> io::Result<()> {
                 if let Some(uri) = extract_text_doc_uri(&obj) {
                     if let Some(text) = extract_text_doc_text(&obj) {
                         state.docs.insert(uri.clone(), text.clone());
-                        publish_diagnostics(&mut stdout, &uri, &text)?;
+                        publish_diagnostics(&mut stdout, &state, &uri, &text)?;
                     }
                 }
             }
@@ -105,7 +107,7 @@ fn main() -> io::Result<()> {
                 if let Some(uri) = extract_text_doc_uri(&obj) {
                     if let Some(text) = extract_change_text(&obj) {
                         state.docs.insert(uri.clone(), text.clone());
-                        publish_diagnostics(&mut stdout, &uri, &text)?;
+                        publish_diagnostics(&mut stdout, &state, &uri, &text)?;
                     }
                 }
             }
@@ -216,7 +218,10 @@ fn capabilities_result() -> JsonValue {
             JsonValue::String("source.organizeImports".to_string()),
         ]),
     );
-    caps.insert("codeActionProvider".to_string(), JsonValue::Object(code_action));
+    caps.insert(
+        "codeActionProvider".to_string(),
+        JsonValue::Object(code_action),
+    );
     caps.insert("inlayHintProvider".to_string(), JsonValue::Bool(true));
     let mut semantic = BTreeMap::new();
     let mut legend = BTreeMap::new();
@@ -280,18 +285,89 @@ fn request_id_key(id: &JsonValue) -> Option<String> {
     }
 }
 
-fn publish_diagnostics(out: &mut impl Write, uri: &str, text: &str) -> io::Result<()> {
-    let mut diags = Vec::new();
-    let (program, parse_diags) = parse_source(text);
-    diags.extend(parse_diags);
-    if !diags.iter().any(|d| matches!(d.level, Level::Error)) {
-        let (_analysis, sema_diags) = sema::analyze_program(&program);
-        diags.extend(sema_diags);
-    }
+fn publish_diagnostics(
+    out: &mut impl Write,
+    state: &LspState,
+    uri: &str,
+    text: &str,
+) -> io::Result<()> {
+    let diags = workspace_diags_for_uri(state, uri, text).unwrap_or_else(|| {
+        let mut diags = Vec::new();
+        let (program, parse_diags) = parse_source(text);
+        diags.extend(parse_diags);
+        if !diags.iter().any(|d| matches!(d.level, Level::Error)) {
+            let (_analysis, sema_diags) = sema::analyze_program(&program);
+            diags.extend(sema_diags);
+        }
+        diags
+    });
     let diagnostics = to_lsp_diags(text, &diags);
     let params = diagnostics_params(uri, diagnostics);
     let notification = json_notification("textDocument/publishDiagnostics", params);
     write_message(out, &notification)
+}
+
+fn workspace_diags_for_uri(state: &LspState, uri: &str, _text: &str) -> Option<Vec<Diag>> {
+    let focus_path = uri_to_path(uri)?;
+    let root_path = if let Some(root_uri) = &state.root_uri {
+        uri_to_path(root_uri)?
+    } else {
+        focus_path.clone()
+    };
+    let entry_path = resolve_entry_path(&root_path, Some(&focus_path))?;
+
+    let mut overrides = HashMap::new();
+    for (doc_uri, doc_text) in &state.docs {
+        if let Some(path) = uri_to_path(doc_uri) {
+            let key = path.canonicalize().unwrap_or(path);
+            overrides.insert(key, doc_text.clone());
+        }
+    }
+
+    let entry_key = entry_path
+        .canonicalize()
+        .unwrap_or_else(|_| entry_path.clone());
+    let root_text = overrides
+        .get(&entry_key)
+        .cloned()
+        .or_else(|| std::fs::read_to_string(&entry_path).ok())?;
+    let (registry, loader_diags) = load_program_with_modules_and_deps_and_overrides(
+        &entry_path,
+        &root_text,
+        &HashMap::new(),
+        &overrides,
+    );
+
+    let focus_key = focus_path
+        .canonicalize()
+        .unwrap_or_else(|_| focus_path.clone());
+    let module_id = registry
+        .modules
+        .iter()
+        .find(|(_, unit)| {
+            unit.path
+                .canonicalize()
+                .unwrap_or_else(|_| unit.path.clone())
+                == focus_key
+        })
+        .map(|(id, _)| *id)?;
+
+    let (_, sema_diags) = sema::analyze_module(&registry, module_id);
+    let mut diags = Vec::new();
+    for diag in loader_diags {
+        if diag.path.is_none() {
+            diags.push(diag);
+            continue;
+        }
+        if let Some(path) = diag.path.as_ref() {
+            let key = path.canonicalize().unwrap_or_else(|_| path.clone());
+            if key == focus_key {
+                diags.push(diag);
+            }
+        }
+    }
+    diags.extend(sema_diags);
+    Some(diags)
 }
 
 fn publish_empty_diagnostics(out: &mut impl Write, uri: &str) -> io::Result<()> {
@@ -322,7 +398,10 @@ fn to_lsp_diags(text: &str, diags: &[Diag]) -> Vec<JsonValue> {
             let mut out = BTreeMap::new();
             out.insert("range".to_string(), range);
             out.insert("severity".to_string(), JsonValue::Number(severity));
-            out.insert("message".to_string(), JsonValue::String(diag.message.clone()));
+            out.insert(
+                "message".to_string(),
+                JsonValue::String(diag.message.clone()),
+            );
             out.insert("source".to_string(), JsonValue::String("fusec".to_string()));
             JsonValue::Object(out)
         })
@@ -336,7 +415,10 @@ fn full_document_edit(original: &str, new_text: &str) -> JsonValue {
     let range = range_json(0, 0, end_line, end_col);
     let mut edit = BTreeMap::new();
     edit.insert("range".to_string(), range);
-    edit.insert("newText".to_string(), JsonValue::String(new_text.to_string()));
+    edit.insert(
+        "newText".to_string(),
+        JsonValue::String(new_text.to_string()),
+    );
     JsonValue::Object(edit)
 }
 
@@ -435,10 +517,7 @@ fn line_col_to_offset(text: &str, offsets: &[usize], line: usize, col: usize) ->
     }
     let line = line.min(offsets.len() - 1);
     let start = offsets[line];
-    let end = offsets
-        .get(line + 1)
-        .copied()
-        .unwrap_or_else(|| text.len());
+    let end = offsets.get(line + 1).copied().unwrap_or_else(|| text.len());
     let offset = start.saturating_add(col);
     offset.min(end)
 }
@@ -465,7 +544,10 @@ fn json_error_response(id: Option<JsonValue>, code: i64, message: &str) -> JsonV
     }
     let mut err = BTreeMap::new();
     err.insert("code".to_string(), JsonValue::Number(code as f64));
-    err.insert("message".to_string(), JsonValue::String(message.to_string()));
+    err.insert(
+        "message".to_string(),
+        JsonValue::String(message.to_string()),
+    );
     root.insert("error".to_string(), JsonValue::Object(err));
     JsonValue::Object(root)
 }
@@ -487,9 +569,13 @@ fn get_string(obj: &BTreeMap<String, JsonValue>, key: &str) -> Option<String> {
 
 fn extract_text_doc_uri(obj: &BTreeMap<String, JsonValue>) -> Option<String> {
     let params = obj.get("params")?;
-    let JsonValue::Object(params) = params else { return None };
+    let JsonValue::Object(params) = params else {
+        return None;
+    };
     let text_doc = params.get("textDocument")?;
-    let JsonValue::Object(text_doc) = text_doc else { return None };
+    let JsonValue::Object(text_doc) = text_doc else {
+        return None;
+    };
     match text_doc.get("uri") {
         Some(JsonValue::String(uri)) => Some(uri.clone()),
         _ => None,
@@ -498,9 +584,13 @@ fn extract_text_doc_uri(obj: &BTreeMap<String, JsonValue>) -> Option<String> {
 
 fn extract_text_doc_text(obj: &BTreeMap<String, JsonValue>) -> Option<String> {
     let params = obj.get("params")?;
-    let JsonValue::Object(params) = params else { return None };
+    let JsonValue::Object(params) = params else {
+        return None;
+    };
     let text_doc = params.get("textDocument")?;
-    let JsonValue::Object(text_doc) = text_doc else { return None };
+    let JsonValue::Object(text_doc) = text_doc else {
+        return None;
+    };
     match text_doc.get("text") {
         Some(JsonValue::String(text)) => Some(text.clone()),
         _ => None,
@@ -509,11 +599,17 @@ fn extract_text_doc_text(obj: &BTreeMap<String, JsonValue>) -> Option<String> {
 
 fn extract_change_text(obj: &BTreeMap<String, JsonValue>) -> Option<String> {
     let params = obj.get("params")?;
-    let JsonValue::Object(params) = params else { return None };
+    let JsonValue::Object(params) = params else {
+        return None;
+    };
     let changes = params.get("contentChanges")?;
-    let JsonValue::Array(changes) = changes else { return None };
+    let JsonValue::Array(changes) = changes else {
+        return None;
+    };
     let first = changes.get(0)?;
-    let JsonValue::Object(first) = first else { return None };
+    let JsonValue::Object(first) = first else {
+        return None;
+    };
     match first.get("text") {
         Some(JsonValue::String(text)) => Some(text.clone()),
         _ => None,
@@ -522,15 +618,21 @@ fn extract_change_text(obj: &BTreeMap<String, JsonValue>) -> Option<String> {
 
 fn extract_position(obj: &BTreeMap<String, JsonValue>) -> Option<(String, usize, usize)> {
     let params = obj.get("params")?;
-    let JsonValue::Object(params) = params else { return None };
+    let JsonValue::Object(params) = params else {
+        return None;
+    };
     let text_doc = params.get("textDocument")?;
-    let JsonValue::Object(text_doc) = text_doc else { return None };
+    let JsonValue::Object(text_doc) = text_doc else {
+        return None;
+    };
     let uri = match text_doc.get("uri") {
         Some(JsonValue::String(uri)) => uri.clone(),
         _ => return None,
     };
     let position = params.get("position")?;
-    let JsonValue::Object(position) = position else { return None };
+    let JsonValue::Object(position) = position else {
+        return None;
+    };
     let line = match position.get("line") {
         Some(JsonValue::Number(num)) => *num as usize,
         _ => return None,
@@ -544,7 +646,9 @@ fn extract_position(obj: &BTreeMap<String, JsonValue>) -> Option<(String, usize,
 
 fn extract_new_name(obj: &BTreeMap<String, JsonValue>) -> Option<String> {
     let params = obj.get("params")?;
-    let JsonValue::Object(params) = params else { return None };
+    let JsonValue::Object(params) = params else {
+        return None;
+    };
     match params.get("newName") {
         Some(JsonValue::String(value)) => Some(value.clone()),
         _ => None,
@@ -553,7 +657,9 @@ fn extract_new_name(obj: &BTreeMap<String, JsonValue>) -> Option<String> {
 
 fn extract_workspace_query(obj: &BTreeMap<String, JsonValue>) -> Option<String> {
     let params = obj.get("params")?;
-    let JsonValue::Object(params) = params else { return None };
+    let JsonValue::Object(params) = params else {
+        return None;
+    };
     match params.get("query") {
         Some(JsonValue::String(query)) => Some(query.clone()),
         _ => None,
@@ -575,7 +681,9 @@ fn extract_include_declaration(obj: &BTreeMap<String, JsonValue>) -> bool {
 
 fn extract_root_uri(obj: &BTreeMap<String, JsonValue>) -> Option<String> {
     let params = obj.get("params")?;
-    let JsonValue::Object(params) = params else { return None };
+    let JsonValue::Object(params) = params else {
+        return None;
+    };
     if let Some(JsonValue::String(uri)) = params.get("rootUri") {
         if !uri.is_empty() {
             return Some(uri.clone());
@@ -677,7 +785,9 @@ fn read_message(reader: &mut impl Read) -> io::Result<Option<String>> {
             content_length = rest.trim().parse::<usize>().ok();
         }
     }
-    let Some(len) = content_length else { return Ok(None) };
+    let Some(len) = content_length else {
+        return Ok(None);
+    };
     let mut body = vec![0u8; len];
     reader.read_exact(&mut body)?;
     Ok(Some(String::from_utf8_lossy(&body).to_string()))
@@ -732,7 +842,10 @@ fn handle_hover(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValu
         }
     }
     let mut contents = BTreeMap::new();
-    contents.insert("kind".to_string(), JsonValue::String("markdown".to_string()));
+    contents.insert(
+        "kind".to_string(),
+        JsonValue::String("markdown".to_string()),
+    );
     contents.insert("value".to_string(), JsonValue::String(value));
     let mut out = BTreeMap::new();
     out.insert("contents".to_string(), JsonValue::Object(contents));
@@ -742,11 +855,10 @@ fn handle_hover(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValu
     JsonValue::Object(out)
 }
 
-fn handle_workspace_symbol(
-    state: &LspState,
-    obj: &BTreeMap<String, JsonValue>,
-) -> JsonValue {
-    let query = extract_workspace_query(obj).unwrap_or_default().to_lowercase();
+fn handle_workspace_symbol(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+    let query = extract_workspace_query(obj)
+        .unwrap_or_default()
+        .to_lowercase();
     let mut symbols = Vec::new();
     let index = match build_workspace_index(state, "") {
         Some(index) => index,
@@ -756,7 +868,9 @@ fn handle_workspace_symbol(
         if !query.is_empty() && !def.def.name.to_lowercase().contains(&query) {
             continue;
         }
-        let Some(file_idx) = index.file_by_uri.get(&def.uri) else { continue };
+        let Some(file_idx) = index.file_by_uri.get(&def.uri) else {
+            continue;
+        };
         let file = &index.files[*file_idx];
         let symbol = symbol_info_json(&def.uri, &file.text, &def.def);
         symbols.push(symbol);
@@ -855,11 +969,7 @@ fn handle_code_action(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Js
         let title = "Organize imports";
         let key = "source:organizeImports".to_string();
         if seen.insert(key) {
-            actions.push(code_action_json(
-                title,
-                "source.organizeImports",
-                edit,
-            ));
+            actions.push(code_action_json(title, "source.organizeImports", edit));
         }
     }
 
@@ -943,9 +1053,7 @@ fn semantic_tokens_for_text(
             fusec::token::TokenKind::String(_) | fusec::token::TokenKind::InterpString(_) => {
                 Some(SEM_STRING)
             }
-            fusec::token::TokenKind::Int(_) | fusec::token::TokenKind::Float(_) => {
-                Some(SEM_NUMBER)
-            }
+            fusec::token::TokenKind::Int(_) | fusec::token::TokenKind::Float(_) => Some(SEM_NUMBER),
             fusec::token::TokenKind::DocComment(_) => Some(SEM_COMMENT),
             fusec::token::TokenKind::Bool(_) | fusec::token::TokenKind::Null => Some(SEM_KEYWORD),
             fusec::token::TokenKind::Ident(_) => symbol_types
@@ -983,7 +1091,11 @@ fn semantic_tokens_for_text(
             continue;
         }
         let (line, col) = offset_to_line_col(&offsets, row.span.start);
-        let delta_line = if first { line } else { line.saturating_sub(last_line) };
+        let delta_line = if first {
+            line
+        } else {
+            line.saturating_sub(last_line)
+        };
         let delta_start = if first || delta_line > 0 {
             col
         } else {
@@ -1013,7 +1125,10 @@ fn handle_inlay_hints(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Js
     };
     let range = extract_lsp_range(obj, &text);
     let (program, parse_diags) = parse_source(&text);
-    if parse_diags.iter().any(|diag| matches!(diag.level, Level::Error)) {
+    if parse_diags
+        .iter()
+        .any(|diag| matches!(diag.level, Level::Error))
+    {
         return JsonValue::Array(Vec::new());
     }
     let index = match build_workspace_index(state, &uri) {
@@ -1026,14 +1141,7 @@ fn handle_inlay_hints(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Js
     for item in &program.items {
         match item {
             Item::Fn(decl) => collect_inlay_hints_block(
-                &index,
-                &uri,
-                &text,
-                &offsets,
-                &decl.body,
-                range,
-                &mut hints,
-                &mut seen,
+                &index, &uri, &text, &offsets, &decl.body, range, &mut hints, &mut seen,
             ),
             Item::Service(decl) => {
                 for route in &decl.routes {
@@ -1050,34 +1158,13 @@ fn handle_inlay_hints(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Js
                 }
             }
             Item::App(decl) => collect_inlay_hints_block(
-                &index,
-                &uri,
-                &text,
-                &offsets,
-                &decl.body,
-                range,
-                &mut hints,
-                &mut seen,
+                &index, &uri, &text, &offsets, &decl.body, range, &mut hints, &mut seen,
             ),
             Item::Migration(decl) => collect_inlay_hints_block(
-                &index,
-                &uri,
-                &text,
-                &offsets,
-                &decl.body,
-                range,
-                &mut hints,
-                &mut seen,
+                &index, &uri, &text, &offsets, &decl.body, range, &mut hints, &mut seen,
             ),
             Item::Test(decl) => collect_inlay_hints_block(
-                &index,
-                &uri,
-                &text,
-                &offsets,
-                &decl.body,
-                range,
-                &mut hints,
-                &mut seen,
+                &index, &uri, &text, &offsets, &decl.body, range, &mut hints, &mut seen,
             ),
             _ => {}
         }
@@ -1238,27 +1325,13 @@ fn collect_inlay_hints_expr(
                         }
                     }
                     collect_inlay_hints_expr(
-                        index,
-                        uri,
-                        text,
-                        offsets,
-                        &arg.value,
-                        range,
-                        hints,
-                        seen,
+                        index, uri, text, offsets, &arg.value, range, hints, seen,
                     );
                 }
             } else {
                 for arg in args {
                     collect_inlay_hints_expr(
-                        index,
-                        uri,
-                        text,
-                        offsets,
-                        &arg.value,
-                        range,
-                        hints,
-                        seen,
+                        index, uri, text, offsets, &arg.value, range, hints, seen,
                     );
                 }
             }
@@ -1268,9 +1341,7 @@ fn collect_inlay_hints_expr(
             collect_inlay_hints_expr(index, uri, text, offsets, left, range, hints, seen);
             collect_inlay_hints_expr(index, uri, text, offsets, right, range, hints, seen);
         }
-        ExprKind::Unary { expr, .. }
-        | ExprKind::Await { expr }
-        | ExprKind::Box { expr } => {
+        ExprKind::Unary { expr, .. } | ExprKind::Await { expr } | ExprKind::Box { expr } => {
             collect_inlay_hints_expr(index, uri, text, offsets, expr, range, hints, seen);
         }
         ExprKind::Member { base, .. } | ExprKind::OptionalMember { base, .. } => {
@@ -1524,10 +1595,7 @@ fn handle_references(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Jso
     JsonValue::Array(index.reference_locations(def.id, include_declaration))
 }
 
-fn handle_prepare_call_hierarchy(
-    state: &LspState,
-    obj: &BTreeMap<String, JsonValue>,
-) -> JsonValue {
+fn handle_prepare_call_hierarchy(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
     let Some((uri, line, character)) = extract_position(obj) else {
         return JsonValue::Null;
     };
@@ -1779,7 +1847,11 @@ fn render_import_decl(decl: &ImportDecl) -> String {
     match &decl.spec {
         ImportSpec::Module { name } => format!("import {}", name.name),
         ImportSpec::ModuleFrom { name, path } => {
-            format!("import {} from {}", name.name, render_import_path(&path.value))
+            format!(
+                "import {} from {}",
+                name.name,
+                render_import_path(&path.value)
+            )
         }
         ImportSpec::AliasFrom { name, alias, path } => format!(
             "import {} as {} from {}",
@@ -1833,7 +1905,10 @@ fn text_edit_json(text: &str, span: Span, new_text: &str) -> JsonValue {
         "range".to_string(),
         range_json(start_line, start_col, end_line, end_col),
     );
-    edit.insert("newText".to_string(), JsonValue::String(new_text.to_string()));
+    edit.insert(
+        "newText".to_string(),
+        JsonValue::String(new_text.to_string()),
+    );
     JsonValue::Object(edit)
 }
 
@@ -1912,22 +1987,17 @@ fn call_hierarchy_target_def_id(
     let JsonValue::Object(item) = item else {
         return None;
     };
-    if let Some(def_id) = item
-        .get("data")
-        .and_then(|value| match value {
-            JsonValue::Number(num) if *num >= 0.0 => Some(*num as usize),
-            _ => None,
-        })
-    {
+    if let Some(def_id) = item.get("data").and_then(|value| match value {
+        JsonValue::Number(num) if *num >= 0.0 => Some(*num as usize),
+        _ => None,
+    }) {
         return Some(def_id);
     }
     let uri = match item.get("uri") {
         Some(JsonValue::String(uri)) => uri.clone(),
         _ => return None,
     };
-    let selection_range = item
-        .get("selectionRange")
-        .or_else(|| item.get("range"))?;
+    let selection_range = item.get("selectionRange").or_else(|| item.get("range"))?;
     let JsonValue::Object(selection_range) = selection_range else {
         return None;
     };
@@ -1961,7 +2031,10 @@ fn call_hierarchy_item_json(index: &WorkspaceIndex, def: &WorkspaceDef) -> Optio
     out.insert("selectionRange".to_string(), range);
     out.insert("data".to_string(), JsonValue::Number(def.id as f64));
     if !def.def.detail.is_empty() {
-        out.insert("detail".to_string(), JsonValue::String(def.def.detail.clone()));
+        out.insert(
+            "detail".to_string(),
+            JsonValue::String(def.def.detail.clone()),
+        );
     }
     Some(JsonValue::Object(out))
 }
@@ -1991,14 +2064,19 @@ fn symbol_info_json(uri: &str, text: &str, def: &SymbolDef) -> JsonValue {
     );
     out.insert("location".to_string(), location);
     if let Some(container) = &def.container {
-        out.insert("containerName".to_string(), JsonValue::String(container.clone()));
+        out.insert(
+            "containerName".to_string(),
+            JsonValue::String(container.clone()),
+        );
     }
     JsonValue::Object(out)
 }
 
 fn is_valid_ident(name: &str) -> bool {
     let mut chars = name.chars();
-    let Some(first) = chars.next() else { return false };
+    let Some(first) = chars.next() else {
+        return false;
+    };
     if !(first == '_' || first.is_ascii_alphabetic()) {
         return false;
     }
@@ -2045,7 +2123,6 @@ impl Index {
         }
         best.map(|(id, _)| id)
     }
-
 }
 
 #[derive(Clone)]
@@ -2180,12 +2257,7 @@ struct QualifiedRef {
 }
 
 impl WorkspaceIndex {
-    fn definition_at(
-        &self,
-        uri: &str,
-        line: usize,
-        character: usize,
-    ) -> Option<WorkspaceDef> {
+    fn definition_at(&self, uri: &str, line: usize, character: usize) -> Option<WorkspaceDef> {
         let file_idx = *self.file_by_uri.get(uri)?;
         let file = &self.files[file_idx];
         let offsets = line_offsets(&file.text);
@@ -2224,7 +2296,9 @@ impl WorkspaceIndex {
         }
         let mut edits_by_uri = HashMap::new();
         for (uri, spans) in spans_by_uri {
-            let Some(text) = self.file_text(&uri) else { continue };
+            let Some(text) = self.file_text(&uri) else {
+                continue;
+            };
             let offsets = line_offsets(text);
             let mut edits = Vec::new();
             let mut seen = HashSet::new();
@@ -2237,7 +2311,10 @@ impl WorkspaceIndex {
                 let range = range_json(start_line, start_col, end_line, end_col);
                 let mut edit = BTreeMap::new();
                 edit.insert("range".to_string(), range);
-                edit.insert("newText".to_string(), JsonValue::String(new_name.to_string()));
+                edit.insert(
+                    "newText".to_string(),
+                    JsonValue::String(new_name.to_string()),
+                );
                 edits.push(JsonValue::Object(edit));
             }
             if !edits.is_empty() {
@@ -2264,7 +2341,11 @@ impl WorkspaceIndex {
             if reference.target != def_id {
                 continue;
             }
-            let key = (reference.uri.clone(), reference.span.start, reference.span.end);
+            let key = (
+                reference.uri.clone(),
+                reference.span.start,
+                reference.span.end,
+            );
             if !seen.insert(key) {
                 continue;
             }
@@ -2368,13 +2449,19 @@ fn build_workspace_index(state: &LspState, focus_uri: &str) -> Option<WorkspaceI
             overrides.insert(key, text.clone());
         }
     }
-    let entry_key = entry_path.canonicalize().unwrap_or_else(|_| entry_path.clone());
+    let entry_key = entry_path
+        .canonicalize()
+        .unwrap_or_else(|_| entry_path.clone());
     let root_text = overrides
         .get(&entry_key)
         .cloned()
         .or_else(|| std::fs::read_to_string(&entry_path).ok())?;
-    let (registry, _diags) =
-        load_program_with_modules_and_deps_and_overrides(&entry_path, &root_text, &HashMap::new(), &overrides);
+    let (registry, _diags) = load_program_with_modules_and_deps_and_overrides(
+        &entry_path,
+        &root_text,
+        &HashMap::new(),
+        &overrides,
+    );
     build_workspace_from_registry(&registry, &overrides)
 }
 
@@ -2472,8 +2559,11 @@ fn build_workspace_from_registry(
     let mut files = Vec::new();
     let mut file_by_uri = HashMap::new();
     let mut module_to_file = HashMap::new();
-    let mut modules_sorted: Vec<(usize, &fusec::loader::ModuleUnit)> =
-        registry.modules.iter().map(|(id, unit)| (*id, unit)).collect();
+    let mut modules_sorted: Vec<(usize, &fusec::loader::ModuleUnit)> = registry
+        .modules
+        .iter()
+        .map(|(id, unit)| (*id, unit))
+        .collect();
     modules_sorted.sort_by_key(|(id, _)| *id);
     for (id, unit) in modules_sorted {
         let path_str = unit.path.to_string_lossy();
@@ -2481,7 +2571,10 @@ fn build_workspace_from_registry(
             continue;
         }
         let uri = path_to_uri(&unit.path);
-        let key = unit.path.canonicalize().unwrap_or_else(|_| unit.path.clone());
+        let key = unit
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| unit.path.clone());
         let text = overrides
             .get(&key)
             .cloned()
@@ -2544,15 +2637,24 @@ fn build_workspace_from_registry(
     }
 
     let mut redirects = HashMap::new();
-    let mut modules_sorted: Vec<(usize, &fusec::loader::ModuleUnit)> =
-        registry.modules.iter().map(|(id, unit)| (*id, unit)).collect();
+    let mut modules_sorted: Vec<(usize, &fusec::loader::ModuleUnit)> = registry
+        .modules
+        .iter()
+        .map(|(id, unit)| (*id, unit))
+        .collect();
     modules_sorted.sort_by_key(|(id, _)| *id);
     for (module_id, unit) in modules_sorted {
-        let Some(file_idx) = module_to_file.get(&module_id) else { continue };
+        let Some(file_idx) = module_to_file.get(&module_id) else {
+            continue;
+        };
         let file = &mut files[*file_idx];
         for (name, link) in &unit.import_items {
-            let Some(exports) = exports_by_module.get(&link.id) else { continue };
-            let Some(target) = exports.get(name) else { continue };
+            let Some(exports) = exports_by_module.get(&link.id) else {
+                continue;
+            };
+            let Some(target) = exports.get(name) else {
+                continue;
+            };
             if let Some(local_def_id) = find_import_def(&file.index, name) {
                 let global_id = file.def_map[local_def_id];
                 redirects.insert(global_id, *target);
@@ -2618,9 +2720,15 @@ fn build_workspace_from_registry(
 
         let qualified_refs = collect_qualified_refs(&unit.program);
         for qualified in qualified_refs {
-            let Some(module_id) = module_aliases.get(&qualified.module) else { continue };
-            let Some(exports) = exports_by_module.get(module_id) else { continue };
-            let Some(target) = exports.get(&qualified.item) else { continue };
+            let Some(module_id) = module_aliases.get(&qualified.module) else {
+                continue;
+            };
+            let Some(exports) = exports_by_module.get(module_id) else {
+                continue;
+            };
+            let Some(target) = exports.get(&qualified.item) else {
+                continue;
+            };
             file.qualified_refs.push(QualifiedRef {
                 span: qualified.span,
                 target: *target,
@@ -2850,7 +2958,9 @@ fn collect_qualified_expr(expr: &Expr, out: &mut Vec<QualifiedNameRef>) {
         }
         ExprKind::Member { base, name } => {
             if let ExprKind::Ident(ident) = &base.kind {
-                if let Some((module, item)) = split_qualified_name(&format!("{}.{}", ident.name, name.name)) {
+                if let Some((module, item)) =
+                    split_qualified_name(&format!("{}.{}", ident.name, name.name))
+                {
                     out.push(QualifiedNameRef {
                         span: name.span,
                         module: module.to_string(),
@@ -2862,7 +2972,9 @@ fn collect_qualified_expr(expr: &Expr, out: &mut Vec<QualifiedNameRef>) {
         }
         ExprKind::OptionalMember { base, name } => {
             if let ExprKind::Ident(ident) = &base.kind {
-                if let Some((module, item)) = split_qualified_name(&format!("{}.{}", ident.name, name.name)) {
+                if let Some((module, item)) =
+                    split_qualified_name(&format!("{}.{}", ident.name, name.name))
+                {
                     out.push(QualifiedNameRef {
                         span: name.span,
                         module: module.to_string(),
@@ -3098,8 +3210,12 @@ impl<'a> IndexBuilder<'a> {
                 }
                 Item::App(decl) => {
                     let detail = format!("app \"{}\"", decl.name.value);
-                    let def_id =
-                        self.define_literal_decl(&decl.name, SymbolKind::App, detail, decl.doc.as_ref());
+                    let def_id = self.define_literal_decl(
+                        &decl.name,
+                        SymbolKind::App,
+                        detail,
+                        decl.doc.as_ref(),
+                    );
                     self.app_defs.insert(decl.name.value.clone(), def_id);
                 }
                 Item::Migration(decl) => {
@@ -3115,8 +3231,12 @@ impl<'a> IndexBuilder<'a> {
                 }
                 Item::Test(decl) => {
                     let detail = format!("test \"{}\"", decl.name.value);
-                    let def_id =
-                        self.define_literal_decl(&decl.name, SymbolKind::Test, detail, decl.doc.as_ref());
+                    let def_id = self.define_literal_decl(
+                        &decl.name,
+                        SymbolKind::Test,
+                        detail,
+                        decl.doc.as_ref(),
+                    );
                     self.test_defs.insert(decl.name.value.clone(), def_id);
                 }
             }
@@ -3126,13 +3246,31 @@ impl<'a> IndexBuilder<'a> {
     fn define_import(&mut self, decl: &ImportDecl) {
         match &decl.spec {
             ImportSpec::Module { name } => {
-                self.define_global(name, SymbolKind::Module, format!("module {}", name.name), None, None);
+                self.define_global(
+                    name,
+                    SymbolKind::Module,
+                    format!("module {}", name.name),
+                    None,
+                    None,
+                );
             }
             ImportSpec::ModuleFrom { name, .. } => {
-                self.define_global(name, SymbolKind::Module, format!("module {}", name.name), None, None);
+                self.define_global(
+                    name,
+                    SymbolKind::Module,
+                    format!("module {}", name.name),
+                    None,
+                    None,
+                );
             }
             ImportSpec::AliasFrom { alias, .. } => {
-                self.define_global(alias, SymbolKind::Module, format!("module {}", alias.name), None, None);
+                self.define_global(
+                    alias,
+                    SymbolKind::Module,
+                    format!("module {}", alias.name),
+                    None,
+                    None,
+                );
             }
             ImportSpec::NamedFrom { names, .. } => {
                 for name in names {
@@ -3194,10 +3332,10 @@ impl<'a> IndexBuilder<'a> {
             }
             if self.enum_variants.contains_key(&variant.name.name) {
                 self.enum_variants.remove(&variant.name.name);
-                self.enum_variant_ambiguous.insert(variant.name.name.clone());
+                self.enum_variant_ambiguous
+                    .insert(variant.name.name.clone());
             } else {
-                self.enum_variants
-                    .insert(variant.name.name.clone(), def_id);
+                self.enum_variants.insert(variant.name.name.clone(), def_id);
             }
         }
         self.enum_variants_by_enum
@@ -3266,7 +3404,11 @@ impl<'a> IndexBuilder<'a> {
     fn visit_fn_decl(&mut self, decl: &FnDecl) {
         self.enter_scope();
         for param in &decl.params {
-            let detail = format!("param {}: {}", param.name.name, self.type_ref_text(&param.ty));
+            let detail = format!(
+                "param {}: {}",
+                param.name.name,
+                self.type_ref_text(&param.ty)
+            );
             let def_id = self.define_local(&param.name, SymbolKind::Param, detail, None, None);
             self.insert_local(&param.name.name, def_id);
             self.visit_type_ref(&param.ty);
@@ -3283,8 +3425,18 @@ impl<'a> IndexBuilder<'a> {
 
     fn visit_config_decl(&mut self, decl: &ConfigDecl) {
         for field in &decl.fields {
-            let detail = format!("field {}: {}", field.name.name, self.type_ref_text(&field.ty));
-            self.define_span_decl(field.name.span, field.name.name.clone(), SymbolKind::Field, detail, None);
+            let detail = format!(
+                "field {}: {}",
+                field.name.name,
+                self.type_ref_text(&field.ty)
+            );
+            self.define_span_decl(
+                field.name.span,
+                field.name.name.clone(),
+                SymbolKind::Field,
+                detail,
+                None,
+            );
             self.visit_type_ref(&field.ty);
             self.visit_expr(&field.value);
         }

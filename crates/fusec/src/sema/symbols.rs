@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::ast::{ConfigDecl, EnumDecl, FnDecl, ImportDecl, ImportSpec, Item, Program, ServiceDecl, TypeDecl, TypeRef};
+use crate::ast::{
+    ConfigDecl, EnumDecl, FnDecl, ImportDecl, ImportSpec, Item, Program, ServiceDecl, TypeDecl,
+    TypeRef,
+};
 use crate::diag::Diagnostics;
 use crate::span::Span;
 
@@ -65,6 +68,7 @@ pub struct FnSigRef {
 pub struct ParamRef {
     pub name: String,
     pub ty: TypeRef,
+    pub has_default: bool,
     pub span: Span,
 }
 
@@ -183,7 +187,10 @@ fn collect_import(
                 );
             }
         }
-        ImportSpec::NamedFrom { names: import_names, path } => {
+        ImportSpec::NamedFrom {
+            names: import_names,
+            path,
+        } => {
             for name in import_names {
                 if register_name(&name.name, name.span, names, diags) {
                     imports.insert(
@@ -198,7 +205,11 @@ fn collect_import(
                 }
             }
         }
-        ImportSpec::AliasFrom { name: _name, alias, path } => {
+        ImportSpec::AliasFrom {
+            name: _name,
+            alias,
+            path,
+        } => {
             if register_name(&alias.name, alias.span, names, diags) {
                 imports.insert(
                     alias.name.clone(),
@@ -286,6 +297,7 @@ fn collect_fn(
         .map(|param| ParamRef {
             name: param.name.name.clone(),
             ty: param.ty.clone(),
+            has_default: param.default.is_some(),
             span: param.span,
         })
         .collect();

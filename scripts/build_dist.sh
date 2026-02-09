@@ -27,6 +27,16 @@ BIN_DIR="$ROOT/tmp/fuse-target/$PROFILE"
 DIST_DIR="$ROOT/dist"
 mkdir -p "$DIST_DIR"
 
+install_binary() {
+  local src="$1"
+  local dest="$2"
+  local tmp
+  tmp="$(mktemp "$DIST_DIR/.tmp.$(basename "$dest").XXXXXX")"
+  cp "$src" "$tmp"
+  chmod +x "$tmp"
+  mv -f "$tmp" "$dest"
+}
+
 if [[ ! -x "$BIN_DIR/fuse" ]]; then
   echo "missing binary: $BIN_DIR/fuse"
   exit 1
@@ -36,8 +46,7 @@ if [[ ! -x "$BIN_DIR/fuse-lsp" ]]; then
   exit 1
 fi
 
-cp "$BIN_DIR/fuse" "$DIST_DIR/fuse"
-cp "$BIN_DIR/fuse-lsp" "$DIST_DIR/fuse-lsp"
-chmod +x "$DIST_DIR/fuse" "$DIST_DIR/fuse-lsp"
+install_binary "$BIN_DIR/fuse" "$DIST_DIR/fuse"
+install_binary "$BIN_DIR/fuse-lsp" "$DIST_DIR/fuse-lsp"
 
 echo "dist ready: $DIST_DIR"

@@ -106,6 +106,36 @@ fn wait_error(stdout: &mut ChildStdout, id: u64) -> JsonValue {
     }
 }
 
+fn wait_diagnostics(stdout: &mut ChildStdout, uri: &str) -> Vec<JsonValue> {
+    loop {
+        let Some(msg) = read_lsp_message(stdout) else {
+            panic!("missing diagnostics for {uri}");
+        };
+        let JsonValue::Object(obj) = msg else {
+            continue;
+        };
+        let Some(JsonValue::String(method)) = obj.get("method") else {
+            continue;
+        };
+        if method != "textDocument/publishDiagnostics" {
+            continue;
+        }
+        let Some(JsonValue::Object(params)) = obj.get("params") else {
+            continue;
+        };
+        let Some(JsonValue::String(got_uri)) = params.get("uri") else {
+            continue;
+        };
+        if got_uri != uri {
+            continue;
+        }
+        if let Some(JsonValue::Array(diags)) = params.get("diagnostics") {
+            return diags.clone();
+        }
+        return Vec::new();
+    }
+}
+
 fn spawn_lsp() -> (Child, ChildStdin, ChildStdout) {
     let exe = find_fuse_lsp_bin().expect("could not locate fuse-lsp binary");
     let mut child = Command::new(exe)
@@ -134,7 +164,13 @@ fn find_fuse_lsp_bin() -> Option<PathBuf> {
     if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
         candidates.push(PathBuf::from(target_dir).join("debug").join("fuse-lsp"));
     }
-    candidates.push(workspace_dir.join("tmp").join("fuse-target").join("debug").join("fuse-lsp"));
+    candidates.push(
+        workspace_dir
+            .join("tmp")
+            .join("fuse-target")
+            .join("debug")
+            .join("fuse-lsp"),
+    );
     candidates.push(workspace_dir.join("target").join("debug").join("fuse-lsp"));
     candidates.into_iter().find(|path| path.exists())
 }
@@ -182,7 +218,10 @@ fn main():
 
     let mut util_doc = BTreeMap::new();
     util_doc.insert("uri".to_string(), JsonValue::String(util_uri.clone()));
-    util_doc.insert("languageId".to_string(), JsonValue::String("fuse".to_string()));
+    util_doc.insert(
+        "languageId".to_string(),
+        JsonValue::String("fuse".to_string()),
+    );
     util_doc.insert("version".to_string(), JsonValue::Number(1.0));
     util_doc.insert("text".to_string(), JsonValue::String(util_src.to_string()));
     let mut util_open_params = BTreeMap::new();
@@ -195,7 +234,10 @@ fn main():
 
     let mut main_doc = BTreeMap::new();
     main_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
-    main_doc.insert("languageId".to_string(), JsonValue::String("fuse".to_string()));
+    main_doc.insert(
+        "languageId".to_string(),
+        JsonValue::String("fuse".to_string()),
+    );
     main_doc.insert("version".to_string(), JsonValue::Number(1.0));
     main_doc.insert("text".to_string(), JsonValue::String(main_src.to_string()));
     let mut main_open_params = BTreeMap::new();
@@ -204,6 +246,19 @@ fn main():
         &mut stdin,
         "textDocument/didOpen",
         JsonValue::Object(main_open_params),
+    );
+
+    let util_diags = wait_diagnostics(&mut stdout, &util_uri);
+    assert!(
+        util_diags.is_empty(),
+        "expected no util diagnostics, got {}",
+        json::encode(&JsonValue::Array(util_diags))
+    );
+    let main_diags = wait_diagnostics(&mut stdout, &main_uri);
+    assert!(
+        main_diags.is_empty(),
+        "expected no main diagnostics, got {}",
+        json::encode(&JsonValue::Array(main_diags))
     );
 
     let mut hover_doc = BTreeMap::new();
@@ -226,7 +281,10 @@ fn main():
         hover_text.contains("Says hello repeatedly."),
         "hover missing docstring: {hover_text}"
     );
-    assert!(hover_text.contains("\"range\""), "hover missing range: {hover_text}");
+    assert!(
+        hover_text.contains("\"range\""),
+        "hover missing range: {hover_text}"
+    );
 
     let mut inlay_doc = BTreeMap::new();
     inlay_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
@@ -312,7 +370,10 @@ fn main():
     cancel_hover_pos.insert("line".to_string(), JsonValue::Number(3.0));
     cancel_hover_pos.insert("character".to_string(), JsonValue::Number(14.0));
     let mut cancel_hover_params = BTreeMap::new();
-    cancel_hover_params.insert("textDocument".to_string(), JsonValue::Object(cancel_hover_doc));
+    cancel_hover_params.insert(
+        "textDocument".to_string(),
+        JsonValue::Object(cancel_hover_doc),
+    );
     cancel_hover_params.insert("position".to_string(), JsonValue::Object(cancel_hover_pos));
     send_request(
         &mut stdin,
