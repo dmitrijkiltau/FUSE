@@ -88,6 +88,24 @@ fn wait_response(stdout: &mut ChildStdout, id: u64) -> JsonValue {
     }
 }
 
+fn wait_error(stdout: &mut ChildStdout, id: u64) -> JsonValue {
+    loop {
+        let Some(msg) = read_lsp_message(stdout) else {
+            panic!("missing error response for id {id}");
+        };
+        let JsonValue::Object(obj) = msg else {
+            continue;
+        };
+        let Some(JsonValue::Number(got)) = obj.get("id") else {
+            continue;
+        };
+        if *got as u64 != id {
+            continue;
+        }
+        return obj.get("error").cloned().unwrap_or(JsonValue::Null);
+    }
+}
+
 fn spawn_lsp() -> (Child, ChildStdin, ChildStdout) {
     let exe = find_fuse_lsp_bin().expect("could not locate fuse-lsp binary");
     let mut child = Command::new(exe)
@@ -238,7 +256,7 @@ fn main():
     );
 
     let mut sem_doc = BTreeMap::new();
-    sem_doc.insert("uri".to_string(), JsonValue::String(main_uri));
+    sem_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
     let mut sem_params = BTreeMap::new();
     sem_params.insert("textDocument".to_string(), JsonValue::Object(sem_doc));
     send_request(
@@ -254,13 +272,68 @@ fn main():
         "semantic tokens unexpectedly empty: {sem_text}"
     );
 
+    let mut range_start = BTreeMap::new();
+    range_start.insert("line".to_string(), JsonValue::Number(2.0));
+    range_start.insert("character".to_string(), JsonValue::Number(0.0));
+    let mut range_end = BTreeMap::new();
+    range_end.insert("line".to_string(), JsonValue::Number(4.0));
+    range_end.insert("character".to_string(), JsonValue::Number(0.0));
+    let mut range = BTreeMap::new();
+    range.insert("start".to_string(), JsonValue::Object(range_start));
+    range.insert("end".to_string(), JsonValue::Object(range_end));
+    let mut sem_range_doc = BTreeMap::new();
+    sem_range_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    let mut sem_range_params = BTreeMap::new();
+    sem_range_params.insert("textDocument".to_string(), JsonValue::Object(sem_range_doc));
+    sem_range_params.insert("range".to_string(), JsonValue::Object(range));
     send_request(
         &mut stdin,
-        5,
+        6,
+        "textDocument/semanticTokens/range",
+        JsonValue::Object(sem_range_params),
+    );
+    let sem_range = wait_response(&mut stdout, 6);
+    let sem_range_text = json::encode(&sem_range);
+    assert!(
+        sem_range_text.contains("\"data\"") && !sem_range_text.contains("\"data\":[]"),
+        "semantic tokens range unexpectedly empty: {sem_range_text}"
+    );
+
+    let mut cancel_params = BTreeMap::new();
+    cancel_params.insert("id".to_string(), JsonValue::Number(7.0));
+    send_notification(
+        &mut stdin,
+        "$/cancelRequest",
+        JsonValue::Object(cancel_params),
+    );
+    let mut cancel_hover_doc = BTreeMap::new();
+    cancel_hover_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    let mut cancel_hover_pos = BTreeMap::new();
+    cancel_hover_pos.insert("line".to_string(), JsonValue::Number(3.0));
+    cancel_hover_pos.insert("character".to_string(), JsonValue::Number(14.0));
+    let mut cancel_hover_params = BTreeMap::new();
+    cancel_hover_params.insert("textDocument".to_string(), JsonValue::Object(cancel_hover_doc));
+    cancel_hover_params.insert("position".to_string(), JsonValue::Object(cancel_hover_pos));
+    send_request(
+        &mut stdin,
+        7,
+        "textDocument/hover",
+        JsonValue::Object(cancel_hover_params),
+    );
+    let err = wait_error(&mut stdout, 7);
+    let err_text = json::encode(&err);
+    assert!(
+        err_text.contains("\"code\":-32800"),
+        "expected cancellation error: {err_text}"
+    );
+
+    send_request(
+        &mut stdin,
+        8,
         "shutdown",
         JsonValue::Object(BTreeMap::new()),
     );
-    let _ = wait_response(&mut stdout, 5);
+    let _ = wait_response(&mut stdout, 8);
     send_notification(&mut stdin, "exit", JsonValue::Object(BTreeMap::new()));
     let status = child.wait().expect("wait lsp");
     assert!(status.success(), "fuse-lsp exited with {status}");

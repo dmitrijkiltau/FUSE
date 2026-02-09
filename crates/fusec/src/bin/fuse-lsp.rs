@@ -60,6 +60,19 @@ fn main() -> io::Result<()> {
         let method = get_string(&obj, "method");
         let id = obj.get("id").cloned();
 
+        if method.as_deref() == Some("$/cancelRequest") {
+            handle_cancel(&mut state, &obj);
+            continue;
+        }
+
+        if let Some(err) = cancelled_error(&mut state, id.as_ref()) {
+            if id.is_some() {
+                let response = json_error_response(id, -32800, &err);
+                write_message(&mut stdout, &response)?;
+            }
+            continue;
+        }
+
         match method.as_deref() {
             Some("initialize") => {
                 state.root_uri = extract_root_uri(&obj);
@@ -166,6 +179,11 @@ fn main() -> io::Result<()> {
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
+            Some("textDocument/semanticTokens/range") => {
+                let result = handle_semantic_tokens_range(&state, &obj);
+                let response = json_response(id, result);
+                write_message(&mut stdout, &response)?;
+            }
             Some("textDocument/inlayHint") => {
                 let result = handle_inlay_hints(&state, &obj);
                 let response = json_response(id, result);
@@ -214,7 +232,7 @@ fn capabilities_result() -> JsonValue {
     legend.insert("tokenModifiers".to_string(), JsonValue::Array(Vec::new()));
     semantic.insert("legend".to_string(), JsonValue::Object(legend));
     semantic.insert("full".to_string(), JsonValue::Bool(true));
-    semantic.insert("range".to_string(), JsonValue::Bool(false));
+    semantic.insert("range".to_string(), JsonValue::Bool(true));
     caps.insert(
         "semanticTokensProvider".to_string(),
         JsonValue::Object(semantic),
@@ -229,6 +247,37 @@ fn capabilities_result() -> JsonValue {
 struct LspState {
     docs: BTreeMap<String, String>,
     root_uri: Option<String>,
+    cancelled: HashSet<String>,
+}
+
+fn handle_cancel(state: &mut LspState, obj: &BTreeMap<String, JsonValue>) {
+    let Some(JsonValue::Object(params)) = obj.get("params") else {
+        return;
+    };
+    let Some(id) = params.get("id") else {
+        return;
+    };
+    if let Some(key) = request_id_key(id) {
+        state.cancelled.insert(key);
+    }
+}
+
+fn cancelled_error(state: &mut LspState, id: Option<&JsonValue>) -> Option<String> {
+    let id = id?;
+    let key = request_id_key(id)?;
+    if state.cancelled.remove(&key) {
+        Some("request cancelled".to_string())
+    } else {
+        None
+    }
+}
+
+fn request_id_key(id: &JsonValue) -> Option<String> {
+    match id {
+        JsonValue::Number(num) => Some(format!("{num}")),
+        JsonValue::String(value) => Some(value.clone()),
+        _ => None,
+    }
 }
 
 fn publish_diagnostics(out: &mut impl Write, uri: &str, text: &str) -> io::Result<()> {
@@ -403,6 +452,21 @@ fn json_response(id: Option<JsonValue>, result: JsonValue) -> JsonValue {
         root.insert("id".to_string(), JsonValue::Null);
     }
     root.insert("result".to_string(), result);
+    JsonValue::Object(root)
+}
+
+fn json_error_response(id: Option<JsonValue>, code: i64, message: &str) -> JsonValue {
+    let mut root = BTreeMap::new();
+    root.insert("jsonrpc".to_string(), JsonValue::String("2.0".to_string()));
+    if let Some(id) = id {
+        root.insert("id".to_string(), id);
+    } else {
+        root.insert("id".to_string(), JsonValue::Null);
+    }
+    let mut err = BTreeMap::new();
+    err.insert("code".to_string(), JsonValue::Number(code as f64));
+    err.insert("message".to_string(), JsonValue::String(message.to_string()));
+    root.insert("error".to_string(), JsonValue::Object(err));
     JsonValue::Object(root)
 }
 
@@ -809,8 +873,28 @@ fn handle_semantic_tokens(state: &LspState, obj: &BTreeMap<String, JsonValue>) -
     let Some(text) = load_text_for_uri(state, &uri) else {
         return JsonValue::Null;
     };
+    semantic_tokens_for_text(state, &uri, &text, None)
+}
+
+fn handle_semantic_tokens_range(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+    let Some(uri) = extract_text_doc_uri(obj) else {
+        return JsonValue::Null;
+    };
+    let Some(text) = load_text_for_uri(state, &uri) else {
+        return JsonValue::Null;
+    };
+    let range = extract_lsp_range(obj, &text);
+    semantic_tokens_for_text(state, &uri, &text, range)
+}
+
+fn semantic_tokens_for_text(
+    state: &LspState,
+    uri: &str,
+    text: &str,
+    range: Option<Span>,
+) -> JsonValue {
     let mut symbol_types: HashMap<(usize, usize), usize> = HashMap::new();
-    if let Some(index) = build_workspace_index(state, &uri) {
+    if let Some(index) = build_workspace_index(state, uri) {
         for def in &index.defs {
             if def.uri != uri {
                 continue;
@@ -832,8 +916,8 @@ fn handle_semantic_tokens(state: &LspState, obj: &BTreeMap<String, JsonValue>) -
             symbol_types.insert((reference.span.start, reference.span.end), token_type);
         }
     } else {
-        let (program, _) = parse_source(&text);
-        let index = build_index_with_program(&text, &program);
+        let (program, _) = parse_source(text);
+        let index = build_index_with_program(text, &program);
         for def in &index.defs {
             if let Some(token_type) = semantic_type_for_symbol_kind(def.kind) {
                 symbol_types.insert((def.span.start, def.span.end), token_type);
@@ -851,7 +935,7 @@ fn handle_semantic_tokens(state: &LspState, obj: &BTreeMap<String, JsonValue>) -
     }
 
     let mut token_diags = fusec::diag::Diagnostics::default();
-    let tokens = fusec::lexer::lex(&text, &mut token_diags);
+    let tokens = fusec::lexer::lex(text, &mut token_diags);
     let mut rows = Vec::new();
     for token in tokens {
         let token_type = match token.kind {
@@ -873,6 +957,11 @@ fn handle_semantic_tokens(state: &LspState, obj: &BTreeMap<String, JsonValue>) -
         let Some(token_type) = token_type else {
             continue;
         };
+        if let Some(range) = range {
+            if token.span.end < range.start || token.span.start > range.end {
+                continue;
+            }
+        }
         rows.push(SemanticTokenRow {
             span: token.span,
             token_type,
@@ -880,7 +969,7 @@ fn handle_semantic_tokens(state: &LspState, obj: &BTreeMap<String, JsonValue>) -
     }
     rows.sort_by_key(|row| (row.span.start, row.span.end, row.token_type));
 
-    let offsets = line_offsets(&text);
+    let offsets = line_offsets(text);
     let mut data = Vec::new();
     let mut last_line = 0usize;
     let mut last_col = 0usize;
@@ -922,7 +1011,7 @@ fn handle_inlay_hints(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Js
     let Some(text) = load_text_for_uri(state, &uri) else {
         return JsonValue::Array(Vec::new());
     };
-    let range = extract_inlay_range(obj, &text);
+    let range = extract_lsp_range(obj, &text);
     let (program, parse_diags) = parse_source(&text);
     if parse_diags.iter().any(|diag| matches!(diag.level, Level::Error)) {
         return JsonValue::Array(Vec::new());
@@ -1021,7 +1110,7 @@ fn load_text_for_uri(state: &LspState, uri: &str) -> Option<String> {
         .or_else(|| uri_to_path(uri).and_then(|path| std::fs::read_to_string(path).ok()))
 }
 
-fn extract_inlay_range(obj: &BTreeMap<String, JsonValue>, text: &str) -> Option<Span> {
+fn extract_lsp_range(obj: &BTreeMap<String, JsonValue>, text: &str) -> Option<Span> {
     let Some(JsonValue::Object(params)) = obj.get("params") else {
         return None;
     };
