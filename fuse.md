@@ -28,6 +28,7 @@ Config, JSON, validation, and HTTP routing are built into the runtime so you don
 * Structs are `type`.
 * Enums are `enum`.
 * String interpolation uses `${expr}` inside double quotes.
+* Long call/member chains and call arguments can be split across lines.
 
 ### Hello World (app + optional CLI)
 

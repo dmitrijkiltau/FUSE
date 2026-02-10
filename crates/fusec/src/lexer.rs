@@ -46,6 +46,7 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
         if rest_trim.is_empty() {
             continue;
         }
+        let postfix_continuation = is_postfix_continuation_line(rest_trim);
 
         if saw_tab {
             diags.error(
@@ -61,7 +62,7 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
             continue;
         }
 
-        if indent_active {
+        if indent_active && !postfix_continuation {
             let current = *indent_stack.last().unwrap();
             if col > current {
                 indent_stack.push(col);
@@ -101,7 +102,7 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
                 kind: TokenKind::DocComment(content),
                 span: Span::new(line_start + comment_offset, line_start + line.len()),
             });
-            if indent_active && nesting == 0 {
+            if nesting == 0 {
                 tokens.push(Token {
                     kind: TokenKind::Newline,
                     span: Span::new(line_start + line.len(), line_start + line.len()),
@@ -343,7 +344,7 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
             i += ch.len_utf8();
         }
 
-        if indent_active && nesting == 0 {
+        if nesting == 0 {
             tokens.push(Token {
                 kind: TokenKind::Newline,
                 span: Span::new(line_start + line.len(), line_start + line.len()),
@@ -452,4 +453,11 @@ fn match_punct(s: &str) -> Option<(Punct, usize)> {
         _ => return None,
     };
     Some((punct, ch.len_utf8()))
+}
+
+fn is_postfix_continuation_line(rest_trim: &str) -> bool {
+    rest_trim.starts_with(".")
+        || rest_trim.starts_with("?.")
+        || rest_trim.starts_with("?[")
+        || rest_trim.starts_with("?!")
 }

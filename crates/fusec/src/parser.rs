@@ -996,6 +996,14 @@ impl<'a> Parser<'a> {
     fn parse_postfix(&mut self) -> Expr {
         let mut expr = self.parse_primary();
         loop {
+            if self.can_continue_postfix_after_layout() {
+                self.consume_postfix_layout();
+            } else if matches!(
+                self.peek_kind(),
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
+            ) {
+                break;
+            }
             if self.eat_punct(Punct::LParen).is_some() {
                 let args = self.parse_call_args();
                 let end = self.expect_punct(Punct::RParen);
@@ -1269,10 +1277,12 @@ impl<'a> Parser<'a> {
 
     fn parse_call_args(&mut self) -> Vec<CallArg> {
         let mut args = Vec::new();
+        self.consume_newlines();
         if self.at_punct(Punct::RParen) {
             return args;
         }
         loop {
+            self.consume_newlines();
             let start = self.peek_span();
             let (name, value) = if self.is_named_arg() {
                 let name = self.expect_ident();
@@ -1288,11 +1298,46 @@ impl<'a> Parser<'a> {
                 value,
                 span: start.merge(end),
             });
+            self.consume_newlines();
             if self.eat_punct(Punct::Comma).is_none() {
+                break;
+            }
+            self.consume_newlines();
+            if self.at_punct(Punct::RParen) {
                 break;
             }
         }
         args
+    }
+
+    fn can_continue_postfix_after_layout(&self) -> bool {
+        let mut n = 0usize;
+        while matches!(
+            self.peek_kind_n(n),
+            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
+        ) {
+            n += 1;
+        }
+        if n == 0 {
+            return false;
+        }
+        matches!(
+            self.peek_kind_n(n),
+            TokenKind::Punct(Punct::LParen)
+                | TokenKind::Punct(Punct::Dot)
+                | TokenKind::Punct(Punct::LBracket)
+                | TokenKind::Punct(Punct::Question)
+                | TokenKind::Punct(Punct::QuestionBang)
+        )
+    }
+
+    fn consume_postfix_layout(&mut self) {
+        while matches!(
+            self.peek_kind(),
+            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
+        ) {
+            self.bump();
+        }
     }
 
     fn parse_literal(&mut self) -> Literal {

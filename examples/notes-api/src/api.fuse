@@ -8,22 +8,30 @@ service Notes at "/api":
     let auth = require_auth() ?!
     require_scope(auth, "notes:read") ?!
 
-    return db.from("notes").select(["id", "title", "content"]).all()
+    return db
+      .from("notes")
+      .select(["id", "title", "content"])
+      .all()
 
   # Get a single note by id
   get "/notes/{id: String}" -> Map<String, String>!NotFound!Unauthorized!Forbidden:
     let auth = require_auth() ?!
     require_scope(auth, "notes:read") ?!
 
-    return db.from("notes").select(["id", "title", "content"]).where("id", "=", id).one() ?! NotFound(message="not found")
+    return db.from("notes").select(["id", "title", "content"]).where("id", "=", id).one()
+      ?! NotFound(message="not found")
 
   # Update a note by id
   put "/notes/{id: String}" body NoteCreate -> Note!NotFound!Unauthorized!Forbidden!BadRequest:
     let auth = require_auth() ?!
     require_scope(auth, "notes:write") ?!
 
-    db.from("notes").select(["id"]).where("id", "=", id).one() ?! NotFound(message="not found")
-    db.exec("update notes set title = ?, content = ? where id = ?", [body.title, body.content, id])
+    db.from("notes").select(["id"]).where("id", "=", id).one()
+      ?! NotFound(message="not found")
+    db.exec(
+      "update notes set title = ?, content = ? where id = ?",
+      [body.title, body.content, id]
+    )
 
     return Note(id=NoteId(value=id), title=body.title, content=body.content)
 
@@ -33,7 +41,10 @@ service Notes at "/api":
     require_scope(auth, "notes:write") ?!
 
     let id = NoteId(value="note-${body.title}")
-    db.exec("insert into notes (id, title, content) values (?, ?, ?)", [id.value, body.title, body.content])
+    db.exec(
+      "insert into notes (id, title, content) values (?, ?, ?)",
+      [id.value, body.title, body.content]
+    )
 
     return Note(id=id, title=body.title, content=body.content)
 

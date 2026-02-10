@@ -122,3 +122,29 @@ fn main():
 "#;
     assert_parse_ok(src);
 }
+
+#[test]
+fn parses_multiline_postfix_chain() {
+    let src = r#"
+fn get_note(id: Id) -> Map<String, String>!std.Error.NotFound:
+  return db
+    .from("notes")
+    .select(["id", "title", "content"])
+    .where("id", "=", id)
+    .one()
+    ?! std.Error.NotFound(message="not found")
+"#;
+    assert_parse_ok(src);
+}
+
+#[test]
+fn parses_multiline_call_args() {
+    let src = r#"
+fn create_note(id: Id, title: String, content: String):
+  db.exec(
+    "insert into notes (id, title, content) values (?, ?, ?)",
+    [id, title, content],
+  )
+"#;
+    assert_parse_ok(src);
+}

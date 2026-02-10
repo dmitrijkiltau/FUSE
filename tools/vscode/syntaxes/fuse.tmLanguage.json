@@ -416,6 +416,13 @@
     "memberAccess": {
       "patterns": [
         {
+          "name": "meta.member-call.fuse",
+          "match": "(?<=\\??\\.)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "captures": {
+            "0": {"name": "entity.name.function.fuse"}
+          }
+        },
+        {
           "name": "meta.member.fuse",
           "match": "(?<=\\??\\.)([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {

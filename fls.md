@@ -195,6 +195,9 @@ Notes:
 
 * `StructLit` is chosen when an identifier call contains named arguments.
 * `spawn` is an expression whose block provides its own newline.
+* Postfix chains can continue across line breaks when the next token is a postfix continuation
+  (`(`, `.`, `[`, `?`, `?!`), so long call/member/index chains can be wrapped line-by-line.
+* Call argument lists allow line breaks and trailing commas before `)`.
 
 ---
 
