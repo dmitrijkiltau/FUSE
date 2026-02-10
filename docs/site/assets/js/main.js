@@ -1,3 +1,4 @@
+import { enhanceHeadingLinks } from "./modules/heading-links.js";
 import { generateToc } from "./modules/toc.js";
 import {
   loadOpenApi,
@@ -23,18 +24,38 @@ let currentView = "specs";
 let currentSpecId = "fuse";
 let sidebarOpen = false;
 
-function viewFromHash() {
+function routeFromHash() {
   const raw = window.location.hash.replace(/^#/, "").trim().toLowerCase();
-  if (raw === "openapi") {
-    return "openapi";
+  if (!raw) {
+    return { view: "specs", section: "" };
   }
-  return "specs";
+
+  const [prefix, ...sectionParts] = raw.split(":");
+  if (prefix === "openapi" || prefix === "specs") {
+    return {
+      view: prefix,
+      section: decodeURIComponent(sectionParts.join(":")),
+    };
+  }
+
+  return { view: "specs", section: decodeURIComponent(raw) };
 }
 
-function syncHash(view) {
-  const next = `#${view}`;
+function syncHash(view, section = "") {
+  const encodedSection = section ? `:${encodeURIComponent(section)}` : "";
+  const next = `#${view}${encodedSection}`;
   if (window.location.hash !== next) {
     window.location.hash = next;
+  }
+}
+
+function scrollToSection(section) {
+  if (!section) {
+    return;
+  }
+  const target = document.getElementById(section);
+  if (target) {
+    target.scrollIntoView({ block: "start", behavior: "smooth" });
   }
 }
 
@@ -98,13 +119,13 @@ function renderSpecNav() {
   syncSidebarUi();
 }
 
-async function showSpecs({ updateHash = true } = {}) {
+async function showSpecs({ updateHash = true, section = "" } = {}) {
   currentView = "specs";
   setActiveTab("specs");
   specNav.hidden = false;
   syncSidebarUi();
   if (updateHash) {
-    syncHash("specs");
+    syncHash("specs", section);
   }
 
   const spec = specFiles().find((item) => item.id === currentSpecId) || specFiles()[0];
@@ -113,19 +134,21 @@ async function showSpecs({ updateHash = true } = {}) {
     const markdown = await loadSpec(spec.path);
     viewRoot.innerHTML = renderSpecHtml(markdown);
     enhanceSpecDom(viewRoot);
+    enhanceHeadingLinks(viewRoot, "specs");
   } catch (error) {
     viewRoot.innerHTML = `<p class=\"muted\">${String(error.message || error)}</p>`;
   }
   generateToc();
+  scrollToSection(section);
 }
 
-async function showOpenApi({ updateHash = true } = {}) {
+async function showOpenApi({ updateHash = true, section = "" } = {}) {
   currentView = "openapi";
   setActiveTab("openapi");
   specNav.hidden = true;
   syncSidebarUi();
   if (updateHash) {
-    syncHash("openapi");
+    syncHash("openapi", section);
   }
   setLoading("Loading OpenAPI...");
 
@@ -133,6 +156,8 @@ async function showOpenApi({ updateHash = true } = {}) {
     const doc = await loadOpenApi("/site/openapi.json");
     viewRoot.innerHTML = renderOpenApiHtml(doc);
     wireOpenApiInteractions(viewRoot);
+    enhanceHeadingLinks(viewRoot, "openapi");
+    scrollToSection(section);
   } catch (error) {
     viewRoot.innerHTML = `
       <h1>OpenAPI</h1>
@@ -166,20 +191,22 @@ mobileQuery.addEventListener("change", () => {
 });
 
 window.addEventListener("hashchange", () => {
-  const hashView = viewFromHash();
-  if (hashView === currentView) {
+  const route = routeFromHash();
+  if (route.view === currentView) {
+    scrollToSection(route.section);
     return;
   }
-  if (hashView === "openapi") {
-    showOpenApi({ updateHash: false });
+  if (route.view === "openapi") {
+    showOpenApi({ updateHash: false, section: route.section });
     return;
   }
-  showSpecs({ updateHash: false });
+  showSpecs({ updateHash: false, section: route.section });
 });
 
 renderSpecNav();
-if (viewFromHash() === "openapi") {
-  showOpenApi({ updateHash: false });
+const initialRoute = routeFromHash();
+if (initialRoute.view === "openapi") {
+  showOpenApi({ updateHash: false, section: initialRoute.section });
 } else {
-  showSpecs({ updateHash: false });
+  showSpecs({ updateHash: false, section: initialRoute.section });
 }

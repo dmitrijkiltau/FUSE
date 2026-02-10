@@ -46,5 +46,5 @@ hr {
   border: none;
   height: 1px;
   background: var(--line);
-  margin: var(--gap) 0;
+  margin: calc(var(--gap) * 3) 0;
 }

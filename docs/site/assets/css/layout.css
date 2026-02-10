@@ -156,15 +156,52 @@
   }
 
   & .panel {
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    background: var(--panel);
     padding: 16px;
 
     & h1,
     & h2,
     & h3 {
       margin: 0.8em 0 0.45em;
+    }
+
+    & :is(h2, h3) {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+
+      & .heading-copy-link {
+        appearance: none;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        opacity: 0;
+        cursor: pointer;
+        padding: 2px;
+        line-height: 0;
+        border-radius: 4px;
+        transition:
+          opacity 0.15s ease,
+          color 0.15s ease,
+          background-color 0.15s ease;
+
+        & svg {
+          width: 16px;
+          height: 16px;
+          fill: currentColor;
+        }
+
+        &:hover,
+        &:focus-visible,
+        &.is-copied {
+          color: var(--accent);
+          background: var(--accent-soft);
+        }
+      }
+
+      &:hover .heading-copy-link,
+      &:focus-within .heading-copy-link {
+        opacity: 1;
+      }
     }
 
     & p {
