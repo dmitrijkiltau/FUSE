@@ -251,6 +251,72 @@
         margin-top: 4px;
       }
     }
+
+    & .endpoint.endpoint-interactive {
+      padding: 0;
+    }
+
+    & .endpoint-trigger {
+      display: block;
+      width: 100%;
+      text-align: left;
+      border: 0;
+      background: transparent;
+      padding: 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      color: inherit;
+
+      &:hover {
+        background: color-mix(in srgb, var(--accent-soft) 65%, transparent);
+      }
+
+      &.is-active {
+        background: var(--accent-soft);
+      }
+    }
+
+    & .openapi-runner {
+      margin: 16px 0;
+      display: grid;
+      gap: 16px;
+
+      &:has(:not(#openapi-output-body:empty)) {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      &:has(#openapi-output-body:empty) {
+        grid-template-columns: 1fr;
+
+        & .openapi-runner__output {
+          display: none;
+        }
+      }
+    }
+
+    & .openapi-output {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      padding: 10px;
+
+      & .openapi-output-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+
+      & .path {
+        font-family: var(--mono);
+      }
+
+      & pre {
+        margin: 0;
+        background: transparent;
+      }
+    }
   }
 
   & .panel-overlay {

@@ -1,5 +1,9 @@
 import { generateToc } from "./modules/toc.js";
-import { loadOpenApi, renderOpenApiHtml } from "./modules/openapi.js";
+import {
+  loadOpenApi,
+  renderOpenApiHtml,
+  wireOpenApiInteractions,
+} from "./modules/openapi.js";
 import {
   enhanceSpecDom,
   loadSpec,
@@ -107,6 +111,7 @@ async function showOpenApi() {
   try {
     const doc = await loadOpenApi("/site/openapi.json");
     viewRoot.innerHTML = renderOpenApiHtml(doc);
+    wireOpenApiInteractions(viewRoot);
   } catch (error) {
     viewRoot.innerHTML = `
       <h1>OpenAPI</h1>
