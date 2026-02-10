@@ -1,46 +1,76 @@
 :root {
-  --bg: #f7f8fa;
+  /* Base surfaces */
+  --bg: #f6f7fb;
   --panel: #ffffff;
-  --line: #d8dce4;
-  --text: #1d2330;
-  --muted: #5e6677;
-  --accent: #1f5eff;
-  --accent-soft: #eaf0ff;
-  --ok: #0b8a4a;
-  --hl-keyword: #6f2dbd;
-  --hl-type: #0f6d7a;
-  --hl-string: #b54708;
-  --hl-number: #b91c1c;
-  --hl-comment: #6b7280;
-  --hl-title: #0b3fb8;
-  --hl-meta: #0b8a4a;
+  --panel-alt: #f1f3f8;
+  --line: #d6dae5;
+
+  /* Text */
+  --text: #111827;
+  --muted: #6b7280;
+  --muted-strong: #4b5563;
+
+  /* Brand / accent */
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: #eef2ff;
+
+  /* States */
+  --ok: #15803d;
+  --warn: #b45309;
+  --error: #b91c1c;
+
+  /* Syntax highlighting */
+  --hl-keyword: #6d28d9;
+  --hl-type: #0369a1;
+  --hl-string: #b45309;
+  --hl-number: #be123c;
+  --hl-comment: #9ca3af;
+  --hl-title: #1d4ed8;
+  --hl-meta: #15803d;
   --hl-operator: #374151;
 
+  /* Layout */
   --radius: 8px;
   --gap: 14px;
   --header-height: 60px;
 
+  /* Fonts */
   --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1d2330;
-    --panel: #2d3748;
-    --line: #4a5568;
-    --text: #f7f8fa;
-    --muted: #a0aec0;
-    --accent: #1f5eff;
-    --accent-soft: #eaf0ff;
-    --ok: #0b8a4a;
-    --hl-keyword: #6f2dbd;
-    --hl-type: #0f6d7a;
-    --hl-string: #b54708;
-    --hl-number: #b91c1c;
-    --hl-comment: #6b7280;
-    --hl-title: #0b3fb8;
-    --hl-meta: #0b8a4a;
-    --hl-operator: #374151;
+    /* Base surfaces */
+    --bg: #0f172a;
+    --panel: #111827;
+    --panel-alt: #1f2933;
+    --line: #273449;
+
+    /* Text */
+    --text: #e5e7eb;
+    --muted: #9ca3af;
+    --muted-strong: #cbd5e1;
+
+    /* Brand / accent */
+    --accent: #60a5fa;
+    --accent-hover: #3b82f6;
+    --accent-soft: rgba(96, 165, 250, 0.12);
+
+    /* States */
+    --ok: #22c55e;
+    --warn: #f59e0b;
+    --error: #ef4444;
+
+    /* Syntax highlighting */
+    --hl-keyword: #a78bfa;
+    --hl-type: #38bdf8;
+    --hl-string: #fbbf24;
+    --hl-number: #fb7185;
+    --hl-comment: #64748b;
+    --hl-title: #93c5fd;
+    --hl-meta: #4ade80;
+    --hl-operator: #94a3b8;
   }
 }
