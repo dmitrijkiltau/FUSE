@@ -23,6 +23,21 @@ let currentView = "specs";
 let currentSpecId = "fuse";
 let sidebarOpen = false;
 
+function viewFromHash() {
+  const raw = window.location.hash.replace(/^#/, "").trim().toLowerCase();
+  if (raw === "openapi") {
+    return "openapi";
+  }
+  return "specs";
+}
+
+function syncHash(view) {
+  const next = `#${view}`;
+  if (window.location.hash !== next) {
+    window.location.hash = next;
+  }
+}
+
 function isMobileSidebarMode() {
   return mobileQuery.matches;
 }
@@ -83,11 +98,14 @@ function renderSpecNav() {
   syncSidebarUi();
 }
 
-async function showSpecs() {
+async function showSpecs({ updateHash = true } = {}) {
   currentView = "specs";
   setActiveTab("specs");
   specNav.hidden = false;
   syncSidebarUi();
+  if (updateHash) {
+    syncHash("specs");
+  }
 
   const spec = specFiles().find((item) => item.id === currentSpecId) || specFiles()[0];
   setLoading(`Loading ${spec.title}...`);
@@ -101,11 +119,14 @@ async function showSpecs() {
   generateToc();
 }
 
-async function showOpenApi() {
+async function showOpenApi({ updateHash = true } = {}) {
   currentView = "openapi";
   setActiveTab("openapi");
   specNav.hidden = true;
   syncSidebarUi();
+  if (updateHash) {
+    syncHash("openapi");
+  }
   setLoading("Loading OpenAPI...");
 
   try {
@@ -144,7 +165,21 @@ mobileQuery.addEventListener("change", () => {
   syncSidebarUi();
 });
 
+window.addEventListener("hashchange", () => {
+  const hashView = viewFromHash();
+  if (hashView === currentView) {
+    return;
+  }
+  if (hashView === "openapi") {
+    showOpenApi({ updateHash: false });
+    return;
+  }
+  showSpecs({ updateHash: false });
+});
+
 renderSpecNav();
-if (currentView === "specs") {
-  showSpecs();
+if (viewFromHash() === "openapi") {
+  showOpenApi({ updateHash: false });
+} else {
+  showSpecs({ updateHash: false });
 }
