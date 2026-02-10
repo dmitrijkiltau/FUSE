@@ -18,6 +18,8 @@ Then in the VS Code Command Palette:
 ## LSP (diagnostics + formatting + UX)
 
 This extension now starts `fuse-lsp` directly.
+Semantic highlighting is enabled by default for `[fuse]`, so LSP token colors override
+TextMate scopes when the server is available.
 
 ### Local dev
 

@@ -18,6 +18,11 @@
     "vscode-languageclient": "^9.0.1"
   },
   "contributes": {
+    "configurationDefaults": {
+      "[fuse]": {
+        "editor.semanticHighlighting.enabled": true
+      }
+    },
     "configuration": {
       "title": "Fuse",
       "properties": {
