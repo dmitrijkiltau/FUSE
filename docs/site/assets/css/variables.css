@@ -20,6 +20,10 @@
   --warn: #b45309;
   --error: #b91c1c;
 
+  /* Code blocks */
+  --code-bg: #f3f5f9;
+  --code-border: #d6dae5;
+
   /* Syntax highlighting */
   --hl-keyword: #6d28d9;
   --hl-type: #0369a1;
@@ -63,12 +67,16 @@
     --warn: #f59e0b;
     --error: #ef4444;
 
+    /* Code blocks */
+    --code-bg: #0b1220;
+    --code-border: #334155;
+
     /* Syntax highlighting */
     --hl-keyword: #a78bfa;
     --hl-type: #38bdf8;
     --hl-string: #fbbf24;
     --hl-number: #fb7185;
-    --hl-comment: #64748b;
+    --hl-comment: #94a3b8;
     --hl-title: #93c5fd;
     --hl-meta: #4ade80;
     --hl-operator: #94a3b8;

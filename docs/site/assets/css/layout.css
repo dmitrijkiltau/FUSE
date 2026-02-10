@@ -178,9 +178,9 @@
 
     & pre {
       padding: 12px;
-      border: 1px solid var(--line);
+      border: 1px solid var(--code-border);
       border-radius: 6px;
-      background: #f3f5f9;
+      background: var(--code-bg);
       overflow-x: auto;
     }
 
@@ -314,7 +314,7 @@
 
       & pre {
         margin: 0;
-        background: transparent;
+        background: var(--code-bg);
       }
     }
   }
