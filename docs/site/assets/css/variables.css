@@ -7,6 +7,14 @@
   --accent: #1f5eff;
   --accent-soft: #eaf0ff;
   --ok: #0b8a4a;
+  --hl-keyword: #6f2dbd;
+  --hl-type: #0f6d7a;
+  --hl-string: #b54708;
+  --hl-number: #b91c1c;
+  --hl-comment: #6b7280;
+  --hl-title: #0b3fb8;
+  --hl-meta: #0b8a4a;
+  --hl-operator: #374151;
   --radius: 8px;
   --gap: 14px;
   --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;

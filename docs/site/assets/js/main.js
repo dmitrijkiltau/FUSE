@@ -1,5 +1,11 @@
+import { generateToc } from "./modules/toc.js";
 import { loadOpenApi, renderOpenApiHtml } from "./modules/openapi.js";
-import { loadSpec, renderSpecHtml, specFiles } from "./modules/specs.js";
+import {
+  enhanceSpecDom,
+  loadSpec,
+  renderSpecHtml,
+  specFiles,
+} from "./modules/specs.js";
 
 const viewRoot = document.querySelector("#view-root");
 const specNav = document.querySelector("#spec-nav");
@@ -46,9 +52,11 @@ async function showSpecs() {
   try {
     const markdown = await loadSpec(spec.path);
     viewRoot.innerHTML = renderSpecHtml(markdown);
+    enhanceSpecDom(viewRoot);
   } catch (error) {
     viewRoot.innerHTML = `<p class=\"muted\">${String(error.message || error)}</p>`;
   }
+  generateToc();
 }
 
 async function showOpenApi() {

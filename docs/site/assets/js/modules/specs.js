@@ -1,117 +1,66 @@
-const SPEC_FILES = [
-  { id: "fuse", title: "Product", path: "/fuse.md" },
-  { id: "fls", title: "Language Spec", path: "/fls.md" },
+import { marked } from "../libs/marked_16.3.0_esm.min.js";
+import defineFuseLanguage from "./highlight-fuse.js";
+
+const SPECS = [
+  { id: "fuse", title: "FUSE", path: "/fuse.md" },
+  { id: "fls", title: "FLS", path: "/fls.md" },
   { id: "runtime", title: "Runtime", path: "/runtime.md" },
   { id: "scope", title: "Scope", path: "/scope.md" },
 ];
 
-function escapeHtml(text) {
-  return text
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+let highlightInitialized = false;
+
+function ensureHighlightReady() {
+  const hljs = window.hljs;
+  if (!hljs || highlightInitialized) {
+    return;
+  }
+
+  if (!hljs.getLanguage("fuse")) {
+    hljs.registerLanguage("fuse", defineFuseLanguage);
+  }
+  highlightInitialized = true;
 }
 
-function renderMarkdown(markdown) {
-  const lines = markdown.replaceAll("\r", "").split("\n");
-  const out = [];
-  let inCode = false;
-  let inList = false;
-
-  for (const rawLine of lines) {
-    const line = rawLine.trimEnd();
-    if (line.startsWith("```") ) {
-      if (!inCode) {
-        if (inList) {
-          out.push("</ul>");
-          inList = false;
-        }
-        inCode = true;
-        out.push("<pre><code>");
-      } else {
-        inCode = false;
-        out.push("</code></pre>");
-      }
-      continue;
-    }
-
-    if (inCode) {
-      out.push(`${escapeHtml(rawLine)}\n`);
-      continue;
-    }
-
-    if (line === "") {
-      if (inList) {
-        out.push("</ul>");
-        inList = false;
-      }
-      continue;
-    }
-
-    if (line.startsWith("### ")) {
-      if (inList) {
-        out.push("</ul>");
-        inList = false;
-      }
-      out.push(`<h3>${escapeHtml(line.slice(4))}</h3>`);
-      continue;
-    }
-
-    if (line.startsWith("## ")) {
-      if (inList) {
-        out.push("</ul>");
-        inList = false;
-      }
-      out.push(`<h2>${escapeHtml(line.slice(3))}</h2>`);
-      continue;
-    }
-
-    if (line.startsWith("# ")) {
-      if (inList) {
-        out.push("</ul>");
-        inList = false;
-      }
-      out.push(`<h1>${escapeHtml(line.slice(2))}</h1>`);
-      continue;
-    }
-
-    if (line.startsWith("- ") || line.startsWith("* ")) {
-      if (!inList) {
-        out.push("<ul>");
-        inList = true;
-      }
-      out.push(`<li>${escapeHtml(line.slice(2))}</li>`);
-      continue;
-    }
-
-    if (inList) {
-      out.push("</ul>");
-      inList = false;
-    }
-    out.push(`<p>${escapeHtml(line)}</p>`);
+function ensureLanguageClass(code) {
+  if (/\blanguage-[a-z0-9_-]+\b/i.test(code.className)) {
+    return;
   }
 
-  if (inList) {
-    out.push("</ul>");
+  const text = code.textContent || "";
+  const looksLikeFuse =
+    /\b(app|service|config|type|enum|fn|match|spawn|await|box)\b/.test(text) ||
+    /->/.test(text);
+  if (looksLikeFuse) {
+    code.classList.add("language-fuse");
   }
-  if (inCode) {
-    out.push("</code></pre>");
-  }
-  return out.join("\n");
 }
 
 export function specFiles() {
-  return SPEC_FILES;
+  return SPECS;
 }
 
 export async function loadSpec(path) {
-  const res = await fetch(path);
-  if (!res.ok) {
+  const response = await fetch(path);
+  if (!response.ok) {
     throw new Error(`failed to load ${path}`);
   }
-  return res.text();
+  return response.text();
 }
 
 export function renderSpecHtml(markdown) {
-  return renderMarkdown(markdown);
+  return marked.parse(markdown);
+}
+
+export function enhanceSpecDom(root) {
+  ensureHighlightReady();
+  const hljs = window.hljs;
+  if (!hljs || !root) {
+    return;
+  }
+
+  for (const code of root.querySelectorAll("pre code")) {
+    ensureLanguageClass(code);
+    hljs.highlightElement(code);
+  }
 }
