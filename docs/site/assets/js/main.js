@@ -32,6 +32,7 @@ function setSidebarOpen(open) {
 
 function syncSidebarUi() {
   const hasSidebar = !specNav.hidden;
+  contentGrid.classList.toggle("has-sidebar", hasSidebar);
   const showToggle = hasSidebar && isMobileSidebarMode();
   sidebarToggle.hidden = !showToggle;
 

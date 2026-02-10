@@ -78,12 +78,13 @@
 
 .content-grid {
   display: grid;
+  grid-template-columns: 1fr;
   gap: var(--gap);
   padding: var(--gap);
   align-items: self-start;
   position: relative;
 
-  &:has(.sidebar:not([hidden])) {
+  &.has-sidebar {
     grid-template-columns: 260px 1fr;
   }
 
@@ -123,17 +124,19 @@
         padding: 3px 10px;
         color: var(--text);
         cursor: pointer;
-        transition: transform 0.25s ease,
+        transition:
+          transform 0.25s ease,
           background-color 0.1s ease,
           color 0.15s ease;
         text-decoration: none;
         border-radius: 6px;
-        
+
         &:not(:last-child) {
           margin-bottom: 6px;
         }
 
-        &:hover, &.is-active {
+        &:hover,
+        &.is-active {
           transform: translateX(4px);
           background-color: var(--accent-soft);
           color: var(--accent);
@@ -273,7 +276,7 @@
     padding: 10px;
     gap: 10px;
 
-    &:has(.sidebar:not([hidden])) {
+    &.has-sidebar {
       grid-template-columns: 1fr;
     }
 
@@ -283,7 +286,9 @@
       opacity: 0;
       transform: translateX(-100%);
       pointer-events: none;
-      transition: opacity 0.2s ease, transform 0.28s ease;
+      transition:
+        opacity 0.2s ease,
+        transform 0.28s ease;
       position: fixed;
       left: var(--gap);
       top: calc(var(--header-height) + var(--gap));
