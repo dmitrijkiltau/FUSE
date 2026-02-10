@@ -50,8 +50,9 @@ function resolveServerCommand(context, output) {
   }
   candidates.push(context.asAbsolutePath(path.join("bin", exe)));
 
-  const repoRoot = path.resolve(context.extensionPath, "..", "..");
-  candidates.push(path.join(repoRoot, "dist", exe));
+  // When installed, extensionPath points to VS Code's extension cache, not repo root.
+  // Prefer dist binaries discovered from workspace folders (and their parent dirs).
+  candidates.push(...workspaceDistCandidates(exe));
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) {
@@ -77,6 +78,28 @@ function platformDirName() {
   }
   const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch;
   return `${os}-${arch}`;
+}
+
+function workspaceDistCandidates(exe) {
+  const folders = vscode.workspace.workspaceFolders || [];
+  const seen = new Set();
+  const out = [];
+  for (const folder of folders) {
+    let current = folder.uri.fsPath;
+    for (let i = 0; i < 8; i++) {
+      const candidate = path.join(current, "dist", exe);
+      if (!seen.has(candidate)) {
+        seen.add(candidate);
+        out.push(candidate);
+      }
+      const parent = path.dirname(current);
+      if (parent === current) {
+        break;
+      }
+      current = parent;
+    }
+  }
+  return out;
 }
 
 module.exports = {

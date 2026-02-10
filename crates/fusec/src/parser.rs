@@ -317,11 +317,13 @@ impl<'a> Parser<'a> {
             }
         };
         let path = self.expect_string_lit();
-        let body_type = if self.eat_keyword(Keyword::Body).is_some() {
+        let body_kw = self.eat_keyword(Keyword::Body);
+        let body_type = if body_kw.is_some() {
             Some(self.parse_type_ref())
         } else {
             None
         };
+        let body_span = body_kw.map(|token| token.span);
         self.expect_punct(Punct::Arrow);
         let ret_type = self.parse_type_ref();
         self.expect_punct(Punct::Colon);
@@ -331,6 +333,7 @@ impl<'a> Parser<'a> {
             verb,
             path,
             body_type,
+            body_span,
             ret_type,
             body,
             span,

@@ -39,7 +39,7 @@ npm install
 By default the extension looks for:
 
 1. `tools/vscode/bin/<platform>/fuse-lsp` (if you bundle it)
-2. `dist/fuse-lsp` from the repo root
+2. `dist/fuse-lsp` in the current workspace folder (and parent folders)
 3. `fuse-lsp` on `PATH`
 
 You can override with the setting:
@@ -47,6 +47,9 @@ You can override with the setting:
 ```
 fuse.lspPath
 ```
+
+To verify which binary is used, open the **Fuse LSP** output channel; it logs
+`Using fuse-lsp: <path>`.
 
 Notes:
 - Run the LSP inside WSL (so it can access the repo and binaries).

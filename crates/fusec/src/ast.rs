@@ -118,6 +118,7 @@ pub struct RouteDecl {
     pub verb: HttpVerb,
     pub path: StringLit,
     pub body_type: Option<TypeRef>,
+    pub body_span: Option<Span>,
     pub ret_type: TypeRef,
     pub body: Block,
     pub span: Span,

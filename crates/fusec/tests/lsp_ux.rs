@@ -106,6 +106,54 @@ fn wait_error(stdout: &mut ChildStdout, id: u64) -> JsonValue {
     }
 }
 
+fn semantic_rows(result: &JsonValue) -> Vec<(usize, usize, usize, usize)> {
+    let JsonValue::Object(obj) = result else {
+        return Vec::new();
+    };
+    let Some(JsonValue::Array(data)) = obj.get("data") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut line = 0usize;
+    let mut col = 0usize;
+    let mut idx = 0usize;
+    while idx + 4 < data.len() {
+        let delta_line = match data[idx] {
+            JsonValue::Number(v) => v as usize,
+            _ => break,
+        };
+        let delta_col = match data[idx + 1] {
+            JsonValue::Number(v) => v as usize,
+            _ => break,
+        };
+        let len = match data[idx + 2] {
+            JsonValue::Number(v) => v as usize,
+            _ => break,
+        };
+        let token_type = match data[idx + 3] {
+            JsonValue::Number(v) => v as usize,
+            _ => break,
+        };
+        if delta_line > 0 {
+            line += delta_line;
+            col = delta_col;
+        } else {
+            col += delta_col;
+        }
+        out.push((line, col, len, token_type));
+        idx += 5;
+    }
+    out
+}
+
+fn token_type_at(rows: &[(usize, usize, usize, usize)], line: usize, col: usize) -> Option<usize> {
+    rows.iter()
+        .find(|(row_line, row_col, row_len, _)| {
+            *row_line == line && col >= *row_col && col < row_col.saturating_add(*row_len)
+        })
+        .map(|(_, _, _, token_type)| *token_type)
+}
+
 fn wait_diagnostics(stdout: &mut ChildStdout, uri: &str) -> Vec<JsonValue> {
     loop {
         let Some(msg) = read_lsp_message(stdout) else {
@@ -185,14 +233,18 @@ fn lsp_hover_semantic_tokens_and_inlay_hints() {
     )
     .expect("write fuse.toml");
 
-    let util_src = r#"## Says hello repeatedly.
-fn greet(name: String, times: Int) -> String:
-  return "${name} x ${times}"
+    let util_src = r#"type Person:
+  name: String
+
+## Says hello repeatedly.
+fn greet(user: Person, times: Int) -> String:
+  return "${user.name} x ${times}"
 "#;
-    let main_src = r#"import { greet } from "./util"
+    let main_src = r#"import { Person, greet } from "./util"
 
 fn main():
-  let out = greet("Ada", 2)
+  let user: Person = Person(name="Ada")
+  let out = greet(user, 2)
   print(out)
 "#;
     let util_path = dir.join("util.fuse");
@@ -264,7 +316,7 @@ fn main():
     let mut hover_doc = BTreeMap::new();
     hover_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
     let mut hover_pos = BTreeMap::new();
-    hover_pos.insert("line".to_string(), JsonValue::Number(3.0));
+    hover_pos.insert("line".to_string(), JsonValue::Number(4.0));
     hover_pos.insert("character".to_string(), JsonValue::Number(14.0));
     let mut hover_params = BTreeMap::new();
     hover_params.insert("textDocument".to_string(), JsonValue::Object(hover_doc));
@@ -309,7 +361,7 @@ fn main():
     let inlays = wait_response(&mut stdout, 3);
     let inlay_text = json::encode(&inlays);
     assert!(
-        inlay_text.contains("name: ") && inlay_text.contains("times: "),
+        inlay_text.contains("user: ") && inlay_text.contains("times: "),
         "inlay hints missing parameter labels: {inlay_text}"
     );
 
@@ -328,6 +380,29 @@ fn main():
     assert!(
         sem_text.contains("\"data\"") && !sem_text.contains("\"data\":[]"),
         "semantic tokens unexpectedly empty: {sem_text}"
+    );
+    let rows = semantic_rows(&sem);
+    let import_line = main_src.lines().nth(0).expect("import line");
+    let annotate_line = main_src.lines().nth(3).expect("annotate line");
+    let call_line = main_src.lines().nth(4).expect("call line");
+    let import_person_col = import_line.find("Person").expect("import Person");
+    let annotate_person_col = annotate_line.find("Person").expect("annotation Person");
+    let import_greet_col = import_line.find("greet").expect("import greet");
+    let call_greet_col = call_line.find("greet").expect("call greet");
+    let import_person_ty =
+        token_type_at(&rows, 0, import_person_col).expect("token for import Person");
+    let annotate_person_ty =
+        token_type_at(&rows, 3, annotate_person_col).expect("token for annotation Person");
+    let import_greet_ty =
+        token_type_at(&rows, 0, import_greet_col).expect("token for import greet");
+    let call_greet_ty = token_type_at(&rows, 4, call_greet_col).expect("token for call greet");
+    assert_eq!(
+        import_person_ty, annotate_person_ty,
+        "imported type token mismatch"
+    );
+    assert_eq!(
+        import_greet_ty, call_greet_ty,
+        "imported function token mismatch"
     );
 
     let mut range_start = BTreeMap::new();
@@ -367,7 +442,7 @@ fn main():
     let mut cancel_hover_doc = BTreeMap::new();
     cancel_hover_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
     let mut cancel_hover_pos = BTreeMap::new();
-    cancel_hover_pos.insert("line".to_string(), JsonValue::Number(3.0));
+    cancel_hover_pos.insert("line".to_string(), JsonValue::Number(4.0));
     cancel_hover_pos.insert("character".to_string(), JsonValue::Number(14.0));
     let mut cancel_hover_params = BTreeMap::new();
     cancel_hover_params.insert(

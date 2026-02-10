@@ -3449,10 +3449,11 @@ impl<'a> IndexBuilder<'a> {
                 self.visit_type_ref(body_ty);
             }
             self.enter_scope();
-            if route.body_type.is_some() {
-                let detail = "param body".to_string();
+            if let Some(body_ty) = &route.body_type {
+                let detail = format!("param body: {}", self.type_ref_text(body_ty));
+                let span = route.body_span.unwrap_or(body_ty.span);
                 let def_id = self.define_span_decl(
-                    route.span,
+                    span,
                     "body".to_string(),
                     SymbolKind::Param,
                     detail,
@@ -3744,8 +3745,13 @@ impl<'a> IndexBuilder<'a> {
         if is_builtin_type(&ident.name) {
             return;
         }
-        if let Some(def_id) = self.type_defs.get(&ident.name) {
-            self.add_ref(ident.span, *def_id);
+        if let Some(def_id) = self
+            .type_defs
+            .get(&ident.name)
+            .copied()
+            .or_else(|| self.globals.get(&ident.name).copied())
+        {
+            self.add_ref(ident.span, def_id);
         }
     }
 
