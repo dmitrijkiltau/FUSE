@@ -17,6 +17,16 @@ button {
   font: inherit;
 }
 
+a {
+  color: var(--accent);
+  text-decoration: none;
+
+  &:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
+  }
+}
+
 pre,
 code {
   font-family: var(--mono);
@@ -30,4 +40,11 @@ code {
   &:last-child {
     margin-bottom: 0 !important;
   }
+}
+
+hr {
+  border: none;
+  height: 1px;
+  background: var(--line);
+  margin: var(--gap) 0;
 }

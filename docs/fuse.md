@@ -5,6 +5,8 @@
 FUSE is a small, strict, "default-sane" language for CLI apps and HTTP services. This document
 describes the current implementation in this repo (parser + semantic analysis + AST interpreter + VM).
 
+---
+
 ## The core vibe (today)
 
 ### 1) Small, strict, multi-file MVP
@@ -18,6 +20,8 @@ Types exist so your code doesn't lie. You shouldn't have to negotiate with the c
 ### 3) Boundaries are first-class
 
 Config, JSON, validation, and HTTP routing are built into the runtime so you don't hand-roll glue.
+
+---
 
 ## Syntax: aggressively readable
 
@@ -44,6 +48,8 @@ Run with `fusec --run` to execute the `app`. If you pass CLI flags (for example 
 `fusec` calls `main` directly and binds flags to its parameters; the `app` block is skipped when
 program args are present.
 
+---
+
 ## Data model: types that validate at boundaries
 
 ```fuse
@@ -60,6 +66,8 @@ What the runtime does today:
 * Validation for refined types (ranges, Email).
 * Default values applied during struct construction, JSON decoding, and config loading.
 
+---
+
 ## Functions: small and explicit
 
 ```fuse
@@ -68,6 +76,8 @@ fn greet(user: User) -> String:
 ```
 
 Expression-last returns implicitly, but you can `return` when you feel dramatic.
+
+---
 
 ## Errors: Result + optional sugar
 
@@ -87,6 +97,8 @@ fn get_user(id: Id) -> User!std.Error.NotFound:
 * `T!` is `Result<T, Error>`.
 * `T!E` is `Result<T, E>`.
 * `?!` turns an `Option`/`Result` into a typed error inside a fallible function.
+
+---
 
 ## HTTP: you describe endpoints, FUSE handles JSON + validation
 
@@ -112,6 +124,8 @@ The runtime currently handles:
 * JSON responses
 * mapping `Result` errors to HTTP statuses
 
+---
+
 ## What works today (MVP)
 
 * Parser + semantic analysis for `fn`, `type`, `enum`, `config`, `service`, `app`
@@ -135,6 +149,8 @@ The runtime currently handles:
 Today, `native` keeps VM-compatible semantics, with an initial Cranelift JIT fast-path for
 direct Int/Bool arithmetic/control-flow function calls. Unsupported instructions
 fail the native backend.
+
+---
 
 ## Package tooling
 
@@ -181,6 +197,8 @@ For native cold-start regression checks, run `scripts/native_perf_check.sh` and 
 
 Use `fuse build --clean` to remove `.fuse/build` and force a fresh compile on the next run.
 
+---
+
 ## "Okay but what's novel?"
 
 Not the syntax. The novelty is the **contract at boundaries**:
@@ -188,14 +206,10 @@ config, JSON, validation, and HTTP routing are language-level and consistent acr
 VM, and current VM-compatible native path.
 OpenAPI generation is built-in; richer tooling is planned; see the scope and runtime docs for the roadmap.
 
-## Scope
+---
 
-> [scope.md](scope.md)
+## Related docs
 
-## Formal Language Specification
-
-> [fls.md](fls.md)
-
-# Runtime Semantics
-
-> [runtime.md](runtime.md)
+- [scope.md](scope.md): feature scope, language core, runtime/boilerplate killer, tooling
+- [fls.md](fls.md): lexing, parsing, semantic analysis, type system, imports, services, runtime notes
+- [runtime.md](runtime.md): runtime behavior, built-ins, concurrency model, database access, HTTP binding

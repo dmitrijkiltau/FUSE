@@ -2,6 +2,8 @@
 
 This document reflects the current scope in this repo and what is planned next.
 
+---
+
 ## Target platforms
 
 **Intended runtime targets:**
@@ -23,6 +25,8 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * Embedded (no)
 * Mobile (no)
 
+---
+
 ## Host implementation language
 
 **Rust**.
@@ -31,6 +35,8 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * Safe concurrency.
 * Distributable single-binary toolchain.
 * Good ecosystem for parsing, LSP, and codegen.
+
+---
 
 ## Execution model
 
@@ -46,6 +52,8 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * True native codegen (Cranelift/LLVM TBD)
 * Faster `fuse run` loop from native machine-code artifacts (beyond current IR/native image cache)
 * Concurrency API maturity: task identity, cancellation hooks, and structured-concurrency semantics
+
+---
 
 ## Feature scope
 
@@ -96,6 +104,8 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * native image cache (`.fuse/build/program.native`) for `--backend native`
 * native perf smoke check (`scripts/native_perf_check.sh`, optional budgets)
 * LSP: diagnostics, formatting, go-to-definition, hover (Markdown docstrings), rename, workspace symbols, project-wide defs/refs, find references, call hierarchy, code actions (missing import, qualify symbol, organize imports), semantic tokens, inlay hints (types/params)
+
+---
 
 ## Non-goals (explicitly)
 

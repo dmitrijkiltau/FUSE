@@ -3,6 +3,8 @@
 This document mirrors the parser + semantic analysis in `crates/fusec`. Where runtime support is
 incomplete, the notes call it out explicitly.
 
+---
+
 ## Lexing + indentation rules
 
 ### Tokens
@@ -277,6 +279,8 @@ The AST matches `crates/fusec/src/ast.rs`:
 * `EnumVariant(name, args...)`
 * `Struct(name, fields...)`
 
+---
+
 ## Type system (current)
 
 ### Base types
@@ -337,6 +341,8 @@ fields from the base `type` and removing the listed fields. Field types and defa
 preserved. Base types can be module-qualified (`Foo.User`). Unknown base types or fields
 are errors.
 
+---
+
 ## Imports and modules (current)
 
 `import` declarations are resolved at load time. Module imports register a module alias for
@@ -358,6 +364,8 @@ Notes:
 * Names are still globally unique across loaded modules.
 * Dependency modules are imported with `dep:` prefixes (for example, `dep:Auth/lib`).
 
+---
+
 ## Services and binding (summary)
 
 Route syntax uses typed path params inside the string literal, for example:
@@ -367,6 +375,8 @@ The `body` keyword introduces the request body type:
 `post "/users" body UserCreate -> User: ...`
 
 Runtime binding + error mapping are described in `runtime.md`.
+
+---
 
 ## Runtime support notes (current)
 
