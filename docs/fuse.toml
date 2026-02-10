@@ -1,0 +1,11 @@
+[package]
+entry = "src/main.fuse"
+app = "Docs"
+backend = "vm"
+
+[build]
+openapi = "site/openapi.json"
+
+[serve]
+static_dir = "."
+static_index = "site/index.html"

@@ -89,7 +89,7 @@ on unsupported instructions (no fallback yet).
 
 ## Specs
 
-- `fuse.md` — product overview
-- `fls.md` — formal language spec
-- `runtime.md` — runtime semantics
-- `scope.md` — scope/roadmap
+- `docs/fuse.md` — product overview
+- `docs/fls.md` — formal language spec
+- `docs/runtime.md` — runtime semantics
+- `docs/scope.md` — scope/roadmap

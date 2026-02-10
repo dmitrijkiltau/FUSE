@@ -5,10 +5,10 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
 ## Scope policy
 
 - Treat `0.1.x` as MVP-stable for currently documented behavior in:
-  - `fuse.md`
-  - `fls.md`
-  - `scope.md`
-  - `runtime.md`
+  - `docs/fuse.md`
+  - `docs/fls.md`
+  - `docs/scope.md`
+  - `docs/runtime.md`
 - Features marked planned/unsupported stay out of release criteria.
 
 ## Prerequisites

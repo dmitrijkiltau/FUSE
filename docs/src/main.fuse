@@ -1,0 +1,10 @@
+import DocsApi from "./api"
+import Meta from "./meta"
+
+config Docs:
+  port: Int = env("PORT") ?? 4080
+
+app "Docs":
+  log("info", "${Meta.title()} listening on http://localhost:${Docs.port}")
+  log("info", "${Meta.subtitle()}")
+  serve(Docs.port)

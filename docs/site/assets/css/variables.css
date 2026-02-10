@@ -1,0 +1,14 @@
+:root {
+  --bg: #f7f8fa;
+  --panel: #ffffff;
+  --line: #d8dce4;
+  --text: #1d2330;
+  --muted: #5e6677;
+  --accent: #1f5eff;
+  --accent-soft: #eaf0ff;
+  --ok: #0b8a4a;
+  --radius: 8px;
+  --gap: 14px;
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+}

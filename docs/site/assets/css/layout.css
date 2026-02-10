@@ -1,0 +1,144 @@
+.app-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+
+  & .brand {
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+
+  & .topnav {
+    display: flex;
+    gap: 8px;
+  }
+
+  & .tab {
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--muted);
+    padding: 6px 10px;
+    border-radius: var(--radius);
+    cursor: pointer;
+
+    &.is-active {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+  }
+}
+
+.content-grid {
+  display: grid;
+  gap: var(--gap);
+  padding: var(--gap);
+  align-items: self-start;
+
+  &:has(.sidebar:not([hidden])) {
+    grid-template-columns: 260px 1fr;
+  }
+
+  & .sidebar {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--panel);
+    padding: 8px;
+    align-self: start;
+    position: sticky;
+    top: var(--gap);
+
+    & .nav-item {
+      width: 100%;
+      text-align: left;
+      border: 0;
+      background: transparent;
+      padding: 8px 10px;
+      border-radius: 6px;
+      color: var(--text);
+      cursor: pointer;
+
+      &.is-active {
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-weight: 600;
+      }
+    }
+  }
+
+  & .panel {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--panel);
+    padding: 16px;
+
+    & h1,
+    & h2,
+    & h3 {
+      margin: 0.8em 0 0.45em;
+    }
+
+    & p {
+      margin: 0.45em 0;
+      line-height: 1.5;
+    }
+
+    & ul {
+      margin: 0.35em 0 0.5em 1.1em;
+    }
+
+    & pre {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #f3f5f9;
+      overflow-x: auto;
+    }
+
+    & .muted {
+      color: var(--muted);
+    }
+
+    & .endpoint {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      margin: 10px 0;
+
+      & .method {
+        color: var(--ok);
+        font-weight: 700;
+        text-transform: uppercase;
+        margin-right: 8px;
+      }
+
+      & .path {
+        font-family: var(--mono);
+      }
+
+      & .summary {
+        color: var(--muted);
+        margin-top: 4px;
+      }
+    }
+  }
+}
+
+@media (max-width: 920px) {
+  .content-grid {
+    grid-template-columns: 1fr;
+
+    & .sidebar {
+      order: 2;
+    }
+  }
+}

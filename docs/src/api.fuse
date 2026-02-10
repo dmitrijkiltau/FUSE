@@ -1,0 +1,6 @@
+service DocsApi at "/api":
+  get "/health" -> Map<String, String>:
+    return {"status": "ok", "service": "docs"}
+
+  get "/specs" -> List<String>:
+    return ["fuse.md", "fls.md", "runtime.md", "scope.md"]

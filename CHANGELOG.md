@@ -24,4 +24,4 @@ All notable changes to this project are documented in this file.
 
 ### Notes
 
-- Planned and partial items remain tracked in `scope.md` and `runtime.md`.
+- Planned and partial items remain tracked in `docs/scope.md` and `docs/runtime.md`.
