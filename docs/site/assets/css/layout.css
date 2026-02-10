@@ -173,7 +173,24 @@
     }
 
     & ul {
-      margin: 0.35em 0 0.5em 1.1em;
+      margin: 0.35em 0 0.5em 0.35em;
+
+      & li {
+        line-height: 2;
+      }
+    }
+
+    & :is(p, li, td, th, blockquote, h1, h2, h3, h4, h5, h6) code:not(.hljs) {
+      display: inline-block;
+      padding: 0.12em 0.42em;
+      border-radius: 6px;
+      border: 1px solid var(--code-inline-border);
+      background: var(--code-inline-bg);
+      color: var(--code-inline-text);
+      font-size: 0.92em;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+      vertical-align: baseline;
     }
 
     & pre {

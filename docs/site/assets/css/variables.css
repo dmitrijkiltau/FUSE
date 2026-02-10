@@ -23,6 +23,9 @@
   /* Code blocks */
   --code-bg: #f3f5f9;
   --code-border: #d6dae5;
+  --code-inline-bg: #eef2ff;
+  --code-inline-border: #d7def6;
+  --code-inline-text: #1e3a8a;
 
   /* Syntax highlighting */
   --hl-keyword: #6d28d9;
@@ -70,6 +73,9 @@
     /* Code blocks */
     --code-bg: #0b1220;
     --code-border: #334155;
+    --code-inline-bg: #1a2336;
+    --code-inline-border: #334155;
+    --code-inline-text: #bfdbfe;
 
     /* Syntax highlighting */
     --hl-keyword: #a78bfa;
