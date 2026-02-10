@@ -1047,8 +1047,11 @@ fn semantic_tokens_for_text(
     let mut token_diags = fusec::diag::Diagnostics::default();
     let tokens = fusec::lexer::lex(text, &mut token_diags);
     let mut rows = Vec::new();
-    for token in tokens {
-        let token_type = match token.kind {
+    for (idx, token) in tokens.iter().enumerate() {
+        let token_type = match &token.kind {
+            fusec::token::TokenKind::Keyword(fusec::token::Keyword::From) => {
+                semantic_member_token_type(&tokens, idx).or(Some(SEM_KEYWORD))
+            }
             fusec::token::TokenKind::Keyword(_) => Some(SEM_KEYWORD),
             fusec::token::TokenKind::String(_) | fusec::token::TokenKind::InterpString(_) => {
                 Some(SEM_STRING)
@@ -1056,9 +1059,10 @@ fn semantic_tokens_for_text(
             fusec::token::TokenKind::Int(_) | fusec::token::TokenKind::Float(_) => Some(SEM_NUMBER),
             fusec::token::TokenKind::DocComment(_) => Some(SEM_COMMENT),
             fusec::token::TokenKind::Bool(_) | fusec::token::TokenKind::Null => Some(SEM_KEYWORD),
-            fusec::token::TokenKind::Ident(_) => symbol_types
+            fusec::token::TokenKind::Ident(name) => symbol_types
                 .get(&(token.span.start, token.span.end))
                 .copied()
+                .or_else(|| semantic_ident_fallback(&tokens, idx, name))
                 .or(Some(SEM_VARIABLE)),
             _ => None,
         };
@@ -1114,6 +1118,181 @@ fn semantic_tokens_for_text(
     let mut out = BTreeMap::new();
     out.insert("data".to_string(), JsonValue::Array(data));
     JsonValue::Object(out)
+}
+
+fn semantic_ident_fallback(
+    tokens: &[fusec::token::Token],
+    idx: usize,
+    name: &str,
+) -> Option<usize> {
+    if let Some(token_type) = semantic_std_error_token_type(tokens, idx) {
+        return Some(token_type);
+    }
+    if let Some(token_type) = semantic_member_token_type(tokens, idx) {
+        return Some(token_type);
+    }
+    if is_builtin_receiver(name)
+        && matches!(
+            next_non_layout_token(tokens, idx).map(|token| &token.kind),
+            Some(fusec::token::TokenKind::Punct(fusec::token::Punct::Dot))
+        )
+    {
+        return Some(SEM_NAMESPACE);
+    }
+    if is_builtin_function_name(name)
+        && matches!(
+            next_non_layout_token(tokens, idx).map(|token| &token.kind),
+            Some(fusec::token::TokenKind::Punct(fusec::token::Punct::LParen))
+        )
+    {
+        return Some(SEM_FUNCTION);
+    }
+    if is_builtin_type_name(name) && is_type_context(tokens, idx) {
+        return Some(SEM_TYPE);
+    }
+    None
+}
+
+fn semantic_std_error_token_type(tokens: &[fusec::token::Token], idx: usize) -> Option<usize> {
+    let kind = &tokens.get(idx)?.kind;
+    if !matches!(kind, fusec::token::TokenKind::Ident(_)) {
+        return None;
+    }
+    let mut start = idx;
+    while start >= 2
+        && matches!(
+            tokens[start - 1].kind,
+            fusec::token::TokenKind::Punct(fusec::token::Punct::Dot)
+        )
+        && matches!(tokens[start - 2].kind, fusec::token::TokenKind::Ident(_))
+    {
+        start -= 2;
+    }
+    let first = ident_token_name(&tokens[start].kind)?;
+    if first != "std" {
+        return None;
+    }
+    if start + 2 >= tokens.len()
+        || !matches!(
+            tokens[start + 1].kind,
+            fusec::token::TokenKind::Punct(fusec::token::Punct::Dot)
+        )
+    {
+        return None;
+    }
+    let second = ident_token_name(&tokens[start + 2].kind)?;
+    if second != "Error" {
+        return None;
+    }
+    if idx == start {
+        Some(SEM_NAMESPACE)
+    } else {
+        Some(SEM_VARIABLE)
+    }
+}
+
+fn ident_token_name(kind: &fusec::token::TokenKind) -> Option<&str> {
+    match kind {
+        fusec::token::TokenKind::Ident(name) => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+fn semantic_member_token_type(tokens: &[fusec::token::Token], idx: usize) -> Option<usize> {
+    let prev = prev_non_layout_token(tokens, idx)?;
+    if !matches!(
+        prev.kind,
+        fusec::token::TokenKind::Punct(fusec::token::Punct::Dot)
+    ) {
+        return None;
+    }
+    if matches!(
+        next_non_layout_token(tokens, idx).map(|token| &token.kind),
+        Some(fusec::token::TokenKind::Punct(fusec::token::Punct::LParen))
+    ) {
+        Some(SEM_FUNCTION)
+    } else {
+        Some(SEM_PROPERTY)
+    }
+}
+
+fn prev_non_layout_token(
+    tokens: &[fusec::token::Token],
+    idx: usize,
+) -> Option<&fusec::token::Token> {
+    let mut i = idx;
+    while i > 0 {
+        i -= 1;
+        if !is_layout_token(&tokens[i].kind) {
+            return Some(&tokens[i]);
+        }
+    }
+    None
+}
+
+fn next_non_layout_token(
+    tokens: &[fusec::token::Token],
+    idx: usize,
+) -> Option<&fusec::token::Token> {
+    let mut i = idx + 1;
+    while i < tokens.len() {
+        if !is_layout_token(&tokens[i].kind) {
+            return Some(&tokens[i]);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn is_layout_token(kind: &fusec::token::TokenKind) -> bool {
+    matches!(
+        kind,
+        fusec::token::TokenKind::Indent
+            | fusec::token::TokenKind::Dedent
+            | fusec::token::TokenKind::Newline
+            | fusec::token::TokenKind::Eof
+    )
+}
+
+fn is_type_context(tokens: &[fusec::token::Token], idx: usize) -> bool {
+    matches!(
+        prev_non_layout_token(tokens, idx).map(|token| &token.kind),
+        Some(fusec::token::TokenKind::Punct(
+            fusec::token::Punct::Colon
+                | fusec::token::Punct::Lt
+                | fusec::token::Punct::Comma
+                | fusec::token::Punct::Arrow
+                | fusec::token::Punct::Question
+                | fusec::token::Punct::Bang
+        ))
+    )
+}
+
+fn is_builtin_receiver(name: &str) -> bool {
+    matches!(name, "db" | "task" | "json")
+}
+
+fn is_builtin_function_name(name: &str) -> bool {
+    matches!(name, "print" | "env" | "serve" | "log" | "assert")
+}
+
+fn is_builtin_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Unit"
+            | "Int"
+            | "Float"
+            | "Bool"
+            | "String"
+            | "Bytes"
+            | "Id"
+            | "Email"
+            | "Error"
+            | "List"
+            | "Map"
+            | "Task"
+            | "Range"
+    )
 }
 
 fn handle_inlay_hints(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {

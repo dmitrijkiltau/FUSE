@@ -245,6 +245,8 @@ fn greet(user: Person, times: Int) -> String:
 fn main():
   let user: Person = Person(name="Ada")
   let out = greet(user, 2)
+  let rows = db.from("notes").select(["id"]).all()
+  let _typed: List<Map<String, String>> = rows
   print(out)
 "#;
     let util_path = dir.join("util.fuse");
@@ -385,10 +387,17 @@ fn main():
     let import_line = main_src.lines().nth(0).expect("import line");
     let annotate_line = main_src.lines().nth(3).expect("annotate line");
     let call_line = main_src.lines().nth(4).expect("call line");
+    let db_line = main_src.lines().nth(5).expect("db line");
+    let typed_line = main_src.lines().nth(6).expect("typed line");
     let import_person_col = import_line.find("Person").expect("import Person");
     let annotate_person_col = annotate_line.find("Person").expect("annotation Person");
     let import_greet_col = import_line.find("greet").expect("import greet");
     let call_greet_col = call_line.find("greet").expect("call greet");
+    let from_col = db_line.find("from").expect("db from");
+    let select_col = db_line.find("select").expect("db select");
+    let list_col = typed_line.find("List").expect("typed List");
+    let map_col = typed_line.find("Map").expect("typed Map");
+    let string_col = typed_line.find("String").expect("typed String");
     let import_person_ty =
         token_type_at(&rows, 0, import_person_col).expect("token for import Person");
     let annotate_person_ty =
@@ -396,6 +405,11 @@ fn main():
     let import_greet_ty =
         token_type_at(&rows, 0, import_greet_col).expect("token for import greet");
     let call_greet_ty = token_type_at(&rows, 4, call_greet_col).expect("token for call greet");
+    let from_ty = token_type_at(&rows, 5, from_col).expect("token for from");
+    let select_ty = token_type_at(&rows, 5, select_col).expect("token for select");
+    let list_ty = token_type_at(&rows, 6, list_col).expect("token for List");
+    let map_ty = token_type_at(&rows, 6, map_col).expect("token for Map");
+    let string_ty = token_type_at(&rows, 6, string_col).expect("token for String");
     assert_eq!(
         import_person_ty, annotate_person_ty,
         "imported type token mismatch"
@@ -403,6 +417,13 @@ fn main():
     assert_eq!(
         import_greet_ty, call_greet_ty,
         "imported function token mismatch"
+    );
+    assert_eq!(from_ty, select_ty, "db method token mismatch");
+    assert_eq!(list_ty, import_person_ty, "builtin List should be typed");
+    assert_eq!(map_ty, import_person_ty, "builtin Map should be typed");
+    assert_eq!(
+        string_ty, import_person_ty,
+        "builtin String should be typed"
     );
 
     let mut range_start = BTreeMap::new();
