@@ -1,6 +1,17 @@
+let tocListenerAttached = false;
+
+const clearExistingToc = sidebar => {
+  const existing = sidebar.querySelector('.toc');
+  if (existing) {
+    existing.remove();
+  }
+}
+
 const addTocNavToSidebar = () => {
   const sidebar = document.querySelector('.sidebar');
   if (!sidebar) return;
+  clearExistingToc(sidebar);
+
   const toc = document.createElement('nav');
   toc.classList.add('toc');
   sidebar.appendChild(toc);
@@ -40,7 +51,10 @@ const updateTocActiveLink = () => {
 const generateToc = () => {
   addTocNavToSidebar();
   updateTocActiveLink();
-  window.addEventListener('scroll', updateTocActiveLink);
+  if (!tocListenerAttached) {
+    window.addEventListener('scroll', updateTocActiveLink);
+    tocListenerAttached = true;
+  }
 }
 
 export { generateToc };
