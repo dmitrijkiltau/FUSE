@@ -10,9 +10,40 @@ import {
 const viewRoot = document.querySelector("#view-root");
 const specNav = document.querySelector("#spec-nav");
 const tabs = Array.from(document.querySelectorAll(".tab"));
+const contentGrid = document.querySelector(".content-grid");
+const sidebarToggle = document.querySelector("#sidebar-toggle");
+const panelOverlay = document.querySelector("#panel-overlay");
+const mobileQuery = window.matchMedia("(max-width: 768px)");
 
 let currentView = "specs";
 let currentSpecId = "fuse";
+let sidebarOpen = false;
+
+function isMobileSidebarMode() {
+  return mobileQuery.matches;
+}
+
+function setSidebarOpen(open) {
+  sidebarOpen = open;
+  contentGrid.classList.toggle("is-sidebar-open", open);
+  sidebarToggle.setAttribute("aria-expanded", String(open));
+  panelOverlay.hidden = !open;
+}
+
+function syncSidebarUi() {
+  const hasSidebar = !specNav.hidden;
+  const showToggle = hasSidebar && isMobileSidebarMode();
+  sidebarToggle.hidden = !showToggle;
+
+  if (!showToggle) {
+    setSidebarOpen(false);
+    return;
+  }
+
+  if (!sidebarOpen) {
+    panelOverlay.hidden = true;
+  }
+}
 
 function setActiveTab(view) {
   for (const tab of tabs) {
@@ -37,15 +68,21 @@ function renderSpecNav() {
     button.addEventListener("click", () => {
       currentSpecId = button.dataset.spec;
       renderSpecNav();
+      if (isMobileSidebarMode()) {
+        setSidebarOpen(false);
+      }
       showSpecs();
     });
   }
+
+  syncSidebarUi();
 }
 
 async function showSpecs() {
   currentView = "specs";
   setActiveTab("specs");
   specNav.hidden = false;
+  syncSidebarUi();
 
   const spec = specFiles().find((item) => item.id === currentSpecId) || specFiles()[0];
   setLoading(`Loading ${spec.title}...`);
@@ -63,6 +100,7 @@ async function showOpenApi() {
   currentView = "openapi";
   setActiveTab("openapi");
   specNav.hidden = true;
+  syncSidebarUi();
   setLoading("Loading OpenAPI...");
 
   try {
@@ -87,6 +125,18 @@ for (const tab of tabs) {
     showSpecs();
   });
 }
+
+sidebarToggle.addEventListener("click", () => {
+  setSidebarOpen(!sidebarOpen);
+});
+
+panelOverlay.addEventListener("click", () => {
+  setSidebarOpen(false);
+});
+
+mobileQuery.addEventListener("change", () => {
+  syncSidebarUi();
+});
 
 renderSpecNav();
 if (currentView === "specs") {

@@ -15,9 +15,43 @@
   border-bottom: 1px solid var(--line);
   background: var(--panel);
 
+  & .topbar-left {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+  }
+
   & .brand {
     font-weight: 700;
     letter-spacing: 0.02em;
+  }
+
+  & .sidebar-toggle {
+    display: none;
+    width: 34px;
+    height: 34px;
+    border: 1px solid var(--line);
+    background: transparent;
+    border-radius: 6px;
+    color: var(--text);
+    cursor: pointer;
+    padding: 7px 6px;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    flex-direction: column;
+
+    &[hidden] {
+      display: none !important;
+    }
+
+    & .burger-line {
+      display: block;
+      width: 16px;
+      height: 2px;
+      background: currentColor;
+      border-radius: 999px;
+    }
   }
 
   & .topnav {
@@ -46,6 +80,7 @@
   gap: var(--gap);
   padding: var(--gap);
   align-items: self-start;
+  position: relative;
 
   &:has(.sidebar:not([hidden])) {
     grid-template-columns: 260px 1fr;
@@ -211,6 +246,88 @@
         color: var(--muted);
         margin-top: 4px;
       }
+    }
+  }
+
+  & .panel-overlay {
+    display: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .topbar {
+    padding: 0 12px;
+    z-index: 40;
+
+    & .topbar-left {
+      gap: 8px;
+    }
+
+    & .sidebar-toggle {
+      display: inline-flex;
+    }
+  }
+
+  .content-grid {
+    padding: 10px;
+    gap: 10px;
+
+    &:has(.sidebar:not([hidden])) {
+      grid-template-columns: 1fr;
+    }
+
+    & .sidebar {
+      width: min(82vw, 280px);
+      max-width: min(82vw, 280px);
+      opacity: 0;
+      transform: translateX(-100%);
+      pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.28s ease;
+      position: fixed;
+      left: var(--gap);
+      top: calc(var(--header-height) + var(--gap));
+      bottom: 0;
+      z-index: 30;
+      margin: 0;
+      max-height: none;
+      overflow-y: auto;
+      box-shadow: 0 10px 22px rgb(10 16 26 / 22%);
+    }
+
+    &.is-sidebar-open .sidebar {
+      opacity: 1;
+      transform: translateX(0);
+      pointer-events: auto;
+    }
+
+    & .panel {
+      position: relative;
+      z-index: 1;
+      min-width: 0;
+    }
+
+    & .panel-overlay {
+      display: block;
+      position: fixed;
+      top: var(--header-height);
+      left: 0;
+      right: 0;
+      bottom: 0;
+      border: 0;
+      margin: 0;
+      padding: 0;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+      background: color-mix(in srgb, var(--bg) 36%, transparent);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      z-index: 20;
+    }
+
+    &.is-sidebar-open .panel-overlay {
+      opacity: 1;
+      pointer-events: auto;
     }
   }
 }
