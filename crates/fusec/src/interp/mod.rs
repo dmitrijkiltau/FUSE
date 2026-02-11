@@ -7,7 +7,10 @@ use std::path::{Component, Path};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate as rt_validate};
+use fuse_rt::{
+    bytes as rt_bytes, config as rt_config, error as rt_error, json as rt_json,
+    validate as rt_validate,
+};
 
 use crate::ast::{
     AppDecl, BinaryOp, Block, ConfigDecl, EnumDecl, Expr, ExprKind, FnDecl, HttpVerb, Ident,
@@ -370,10 +373,18 @@ fn extract_validation_fields(value: Option<&Value>) -> Vec<rt_error::ValidationF
     };
     for item in items {
         let item = item.unboxed();
-        let Value::Struct { fields, .. } = item else { continue };
-        let Some(Value::String(path)) = fields.get("path") else { continue };
-        let Some(Value::String(code)) = fields.get("code") else { continue };
-        let Some(Value::String(message)) = fields.get("message") else { continue };
+        let Value::Struct { fields, .. } = item else {
+            continue;
+        };
+        let Some(Value::String(path)) = fields.get("path") else {
+            continue;
+        };
+        let Some(Value::String(code)) = fields.get("code") else {
+            continue;
+        };
+        let Some(Value::String(message)) = fields.get("message") else {
+            continue;
+        };
         out.push(rt_error::ValidationField {
             path: path.clone(),
             code: code.clone(),
@@ -741,7 +752,7 @@ impl<'a> Interpreter<'a> {
         Ok(out)
     }
 
-    pub fn parse_cli_value(&self, ty: &TypeRef, raw: &str) -> Result<Value, String> {
+    pub fn parse_cli_value(&mut self, ty: &TypeRef, raw: &str) -> Result<Value, String> {
         match self.parse_env_value(ty, raw) {
             Ok(value) => Ok(value),
             Err(err) => Err(self.render_exec_error(err)),
@@ -856,8 +867,7 @@ impl<'a> Interpreter<'a> {
     fn eval_configs(&mut self) -> ExecResult<()> {
         let config_path =
             std::env::var("FUSE_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
-        let file_values =
-            rt_config::load_config_file(&config_path).map_err(ExecError::Runtime)?;
+        let file_values = rt_config::load_config_file(&config_path).map_err(ExecError::Runtime)?;
         let decls: Vec<&ConfigDecl> = self.config_decls.values().copied().collect();
         for decl in decls {
             let name = decl.name.name.clone();
@@ -1018,7 +1028,7 @@ impl<'a> Interpreter<'a> {
                         return Err(ExecError::Runtime(format!(
                             "cannot iterate over {}",
                             self.value_type_name(&other)
-                        )))
+                        )));
                     }
                 };
                 for item in items {
@@ -1180,7 +1190,7 @@ impl<'a> Interpreter<'a> {
                             return Err(ExecError::Runtime(format!(
                                 "map keys must be strings, got {}",
                                 self.value_type_name(&key_val)
-                            )))
+                            )));
                         }
                     };
                     let value = self.eval_expr(value_expr)?;
@@ -1218,9 +1228,7 @@ impl<'a> Interpreter<'a> {
                 let value = self.eval_expr(expr)?;
                 match value {
                     Value::Task(task) => task.result(),
-                    _ => Err(ExecError::Runtime(
-                        "await expects a Task value".to_string(),
-                    )),
+                    _ => Err(ExecError::Runtime("await expects a Task value".to_string())),
                 }
             }
             ExprKind::Box { expr } => {
@@ -1284,11 +1292,9 @@ impl<'a> Interpreter<'a> {
             Value::Builtin(name) => self.eval_builtin(&name, args),
             Value::Function(name) => self.eval_function(&name, args),
             Value::EnumCtor { name, variant } => {
-                let arity = self
-                    .enum_variant_arity(&name, &variant)
-                    .ok_or_else(|| {
-                        ExecError::Runtime(format!("unknown variant {name}.{variant}"))
-                    })?;
+                let arity = self.enum_variant_arity(&name, &variant).ok_or_else(|| {
+                    ExecError::Runtime(format!("unknown variant {name}.{variant}"))
+                })?;
                 if arity != args.len() {
                     return Err(ExecError::Runtime(format!(
                         "variant {name}.{variant} expects {} value(s), got {}",
@@ -1302,7 +1308,9 @@ impl<'a> Interpreter<'a> {
                     payload: args,
                 })
             }
-            _ => Err(ExecError::Runtime("call target is not callable".to_string())),
+            _ => Err(ExecError::Runtime(
+                "call target is not callable".to_string(),
+            )),
         }
     }
 
@@ -1347,10 +1355,7 @@ impl<'a> Interpreter<'a> {
                             "level".to_string(),
                             rt_json::JsonValue::String(level.json_label().to_string()),
                         );
-                        obj.insert(
-                            "message".to_string(),
-                            rt_json::JsonValue::String(message),
-                        );
+                        obj.insert("message".to_string(), rt_json::JsonValue::String(message));
                         obj.insert("data".to_string(), data_json);
                         eprintln!("{}", rt_json::encode(&rt_json::JsonValue::Object(obj)));
                     } else {
@@ -1365,9 +1370,10 @@ impl<'a> Interpreter<'a> {
                 Ok(Value::Unit)
             }
             "json.encode" => {
-                let value = args.get(0).cloned().ok_or_else(|| {
-                    ExecError::Runtime("json.encode expects a value".to_string())
-                })?;
+                let value = args
+                    .get(0)
+                    .cloned()
+                    .ok_or_else(|| ExecError::Runtime("json.encode expects a value".to_string()))?;
                 let json = self.value_to_json(&value);
                 Ok(Value::String(rt_json::encode(&json)))
             }
@@ -1377,7 +1383,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "json.decode expects a string argument".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let json = rt_json::decode(&text)
@@ -1395,7 +1401,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "db.exec expects a SQL string".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let params = if args.len() > 1 {
@@ -1404,15 +1410,14 @@ impl<'a> Interpreter<'a> {
                         _ => {
                             return Err(ExecError::Runtime(
                                 "db.exec params must be a list".to_string(),
-                            ))
+                            ));
                         }
                     }
                 } else {
                     Vec::new()
                 };
                 let db = self.db_mut()?;
-                db.exec_params(&sql, &params)
-                    .map_err(ExecError::Runtime)?;
+                db.exec_params(&sql, &params).map_err(ExecError::Runtime)?;
                 Ok(Value::Unit)
             }
             "db.query" => {
@@ -1426,7 +1431,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "db.query expects a SQL string".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let params = if args.len() > 1 {
@@ -1435,16 +1440,14 @@ impl<'a> Interpreter<'a> {
                         _ => {
                             return Err(ExecError::Runtime(
                                 "db.query params must be a list".to_string(),
-                            ))
+                            ));
                         }
                     }
                 } else {
                     Vec::new()
                 };
                 let db = self.db_mut()?;
-                let rows = db
-                    .query_params(&sql, &params)
-                    .map_err(ExecError::Runtime)?;
+                let rows = db.query_params(&sql, &params).map_err(ExecError::Runtime)?;
                 let list = rows.into_iter().map(Value::Map).collect();
                 Ok(Value::List(list))
             }
@@ -1459,7 +1462,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "db.one expects a SQL string".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let params = if args.len() > 1 {
@@ -1468,16 +1471,14 @@ impl<'a> Interpreter<'a> {
                         _ => {
                             return Err(ExecError::Runtime(
                                 "db.one params must be a list".to_string(),
-                            ))
+                            ));
                         }
                     }
                 } else {
                     Vec::new()
                 };
                 let db = self.db_mut()?;
-                let rows = db
-                    .query_params(&sql, &params)
-                    .map_err(ExecError::Runtime)?;
+                let rows = db.query_params(&sql, &params).map_err(ExecError::Runtime)?;
                 if let Some(row) = rows.into_iter().next() {
                     Ok(Value::Map(row))
                 } else {
@@ -1490,7 +1491,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "db.from expects a table name string".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let query = Query::new(table).map_err(ExecError::Runtime)?;
@@ -1507,7 +1508,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "query.select expects a Query".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let columns = match args.get(1) {
@@ -1519,7 +1520,7 @@ impl<'a> Interpreter<'a> {
                                 _ => {
                                     return Err(ExecError::Runtime(
                                         "query.select expects a list of strings".to_string(),
-                                    ))
+                                    ));
                                 }
                             }
                         }
@@ -1528,7 +1529,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "query.select expects a list of strings".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let next = query.select(columns).map_err(ExecError::Runtime)?;
@@ -1545,7 +1546,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "query.where expects a Query".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let column = match args.get(1) {
@@ -1553,7 +1554,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "query.where expects a column string".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let op = match args.get(2) {
@@ -1561,12 +1562,13 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "query.where expects an operator string".to_string(),
-                        ))
+                        ));
                     }
                 };
-                let value = args.get(3).cloned().ok_or_else(|| {
-                    ExecError::Runtime("query.where expects a value".to_string())
-                })?;
+                let value = args
+                    .get(3)
+                    .cloned()
+                    .ok_or_else(|| ExecError::Runtime("query.where expects a value".to_string()))?;
                 let next = query
                     .where_clause(column, op, value)
                     .map_err(ExecError::Runtime)?;
@@ -1583,7 +1585,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "query.order_by expects a Query".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let column = match args.get(1) {
@@ -1591,7 +1593,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "query.order_by expects a column string".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let dir = match args.get(2) {
@@ -1599,7 +1601,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "query.order_by expects a direction string".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let next = query.order_by(column, dir).map_err(ExecError::Runtime)?;
@@ -1616,17 +1618,13 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "query.limit expects a Query".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let limit = match args.get(1) {
                     Some(Value::Int(v)) => *v,
                     Some(Value::Float(v)) => *v as i64,
-                    _ => {
-                        return Err(ExecError::Runtime(
-                            "query.limit expects an Int".to_string(),
-                        ))
-                    }
+                    _ => return Err(ExecError::Runtime("query.limit expects an Int".to_string())),
                 };
                 let next = query.limit(limit).map_err(ExecError::Runtime)?;
                 Ok(Value::Query(next))
@@ -1639,17 +1637,11 @@ impl<'a> Interpreter<'a> {
                 }
                 let query = match args.get(0) {
                     Some(Value::Query(query)) => query.clone(),
-                    _ => {
-                        return Err(ExecError::Runtime(
-                            "query.one expects a Query".to_string(),
-                        ))
-                    }
+                    _ => return Err(ExecError::Runtime("query.one expects a Query".to_string())),
                 };
                 let (sql, params) = query.build_sql(Some(1)).map_err(ExecError::Runtime)?;
                 let db = self.db_mut()?;
-                let rows = db
-                    .query_params(&sql, &params)
-                    .map_err(ExecError::Runtime)?;
+                let rows = db.query_params(&sql, &params).map_err(ExecError::Runtime)?;
                 if let Some(row) = rows.into_iter().next() {
                     Ok(Value::Map(row))
                 } else {
@@ -1664,17 +1656,11 @@ impl<'a> Interpreter<'a> {
                 }
                 let query = match args.get(0) {
                     Some(Value::Query(query)) => query.clone(),
-                    _ => {
-                        return Err(ExecError::Runtime(
-                            "query.all expects a Query".to_string(),
-                        ))
-                    }
+                    _ => return Err(ExecError::Runtime("query.all expects a Query".to_string())),
                 };
                 let (sql, params) = query.build_sql(None).map_err(ExecError::Runtime)?;
                 let db = self.db_mut()?;
-                let rows = db
-                    .query_params(&sql, &params)
-                    .map_err(ExecError::Runtime)?;
+                let rows = db.query_params(&sql, &params).map_err(ExecError::Runtime)?;
                 let list = rows.into_iter().map(Value::Map).collect();
                 Ok(Value::List(list))
             }
@@ -1686,16 +1672,11 @@ impl<'a> Interpreter<'a> {
                 }
                 let query = match args.get(0) {
                     Some(Value::Query(query)) => query.clone(),
-                    _ => {
-                        return Err(ExecError::Runtime(
-                            "query.exec expects a Query".to_string(),
-                        ))
-                    }
+                    _ => return Err(ExecError::Runtime("query.exec expects a Query".to_string())),
                 };
                 let (sql, params) = query.build_sql(None).map_err(ExecError::Runtime)?;
                 let db = self.db_mut()?;
-                db.exec_params(&sql, &params)
-                    .map_err(ExecError::Runtime)?;
+                db.exec_params(&sql, &params).map_err(ExecError::Runtime)?;
                 Ok(Value::Unit)
             }
             "query.sql" => {
@@ -1706,11 +1687,7 @@ impl<'a> Interpreter<'a> {
                 }
                 let query = match args.get(0) {
                     Some(Value::Query(query)) => query.clone(),
-                    _ => {
-                        return Err(ExecError::Runtime(
-                            "query.sql expects a Query".to_string(),
-                        ))
-                    }
+                    _ => return Err(ExecError::Runtime("query.sql expects a Query".to_string())),
                 };
                 let sql = query.sql().map_err(ExecError::Runtime)?;
                 Ok(Value::String(sql))
@@ -1726,7 +1703,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "query.params expects a Query".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let params = query.params().map_err(ExecError::Runtime)?;
@@ -1756,7 +1733,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "assert expects a Bool as the first argument".to_string(),
-                        ))
+                        ));
                     }
                 };
                 if cond {
@@ -1774,7 +1751,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "env expects a string argument".to_string(),
-                        ))
+                        ));
                     }
                 };
                 match std::env::var(key) {
@@ -1790,7 +1767,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(
                             "serve expects a port number".to_string(),
-                        ))
+                        ));
                     }
                 };
                 self.eval_serve(port)
@@ -1868,7 +1845,7 @@ impl<'a> Interpreter<'a> {
                 Err(err) => {
                     return Err(ExecError::Runtime(format!(
                         "failed to accept connection: {err}"
-                    )))
+                    )));
                 }
             };
             let response = match self.handle_http_request(&service, &mut stream) {
@@ -1916,12 +1893,7 @@ impl<'a> Interpreter<'a> {
             "PUT" => HttpVerb::Put,
             "PATCH" => HttpVerb::Patch,
             "DELETE" => HttpVerb::Delete,
-            _ => {
-                return Ok(self.http_response(
-                    405,
-                    self.internal_error_json("method not allowed"),
-                ))
-            }
+            _ => return Ok(self.http_response(405, self.internal_error_json("method not allowed"))),
         };
         let path = request
             .path
@@ -1990,7 +1962,12 @@ impl<'a> Interpreter<'a> {
             path.trim_start_matches('/').to_string()
         };
         let rel = Path::new(&rel_path);
-        if rel.components().any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_))) {
+        if rel.components().any(|c| {
+            matches!(
+                c,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        }) {
             return None;
         }
         let full = Path::new(&static_dir).join(rel);
@@ -2182,7 +2159,9 @@ impl<'a> Interpreter<'a> {
             ExecError::Return(_) => {
                 self.http_response(500, self.internal_error_json("unexpected return"))
             }
-            ExecError::Break => self.http_response(500, self.internal_error_json("break outside loop")),
+            ExecError::Break => {
+                self.http_response(500, self.internal_error_json("break outside loop"))
+            }
             ExecError::Continue => {
                 self.http_response(500, self.internal_error_json("continue outside loop"))
             }
@@ -2267,9 +2246,9 @@ impl<'a> Interpreter<'a> {
                     .configs
                     .get(&name)
                     .ok_or_else(|| ExecError::Runtime(format!("unknown config {name}")))?;
-                map.get(field)
-                    .cloned()
-                    .ok_or_else(|| ExecError::Runtime(format!("unknown config field {name}.{field}")))
+                map.get(field).cloned().ok_or_else(|| {
+                    ExecError::Runtime(format!("unknown config field {name}.{field}"))
+                })
             }
             Value::Struct { fields, .. } => fields
                 .get(field)
@@ -2383,12 +2362,7 @@ impl<'a> Interpreter<'a> {
     fn eval_struct_lit(&mut self, name: &Ident, fields: &[StructField]) -> ExecResult<Value> {
         let decl = match self.types.get(&name.name) {
             Some(decl) => *decl,
-            None => {
-                return Err(ExecError::Runtime(format!(
-                    "unknown type {}",
-                    name.name
-                )))
-            }
+            None => return Err(ExecError::Runtime(format!("unknown type {}", name.name))),
         };
         let mut values = HashMap::new();
         for field in fields {
@@ -2484,10 +2458,7 @@ impl<'a> Interpreter<'a> {
                     return Err(ExecError::Runtime("invalid assignment target".to_string()));
                 }
                 let Some(root_value) = self.env.get_mut(&root) else {
-                    return Err(ExecError::Runtime(format!(
-                        "unknown variable {}",
-                        root
-                    )));
+                    return Err(ExecError::Runtime(format!("unknown variable {}", root)));
                 };
                 Self::assign_in_value(root_value, &steps, value)
             }
@@ -2530,7 +2501,10 @@ impl<'a> Interpreter<'a> {
             ExprKind::OptionalIndex { base, index } => {
                 let root = self.collect_assign_steps(base, out)?;
                 let key = self.eval_expr(index)?;
-                out.push(AssignStep::Index { key, optional: true });
+                out.push(AssignStep::Index {
+                    key,
+                    optional: true,
+                });
                 Ok(root)
             }
             _ => Ok(None),
@@ -2563,9 +2537,9 @@ impl<'a> Interpreter<'a> {
                         fields.insert(name.clone(), value);
                         Ok(())
                     } else {
-                        let next = fields.get_mut(name).ok_or_else(|| {
-                            ExecError::Runtime(format!("unknown field {name}"))
-                        })?;
+                        let next = fields
+                            .get_mut(name)
+                            .ok_or_else(|| ExecError::Runtime(format!("unknown field {name}")))?;
                         Self::assign_in_value(next, &path[1..], value)
                     }
                 }
@@ -2703,9 +2677,7 @@ impl<'a> Interpreter<'a> {
         match (left.unboxed(), right.unboxed()) {
             (Value::Int(start), Value::Int(end)) => {
                 if start > end {
-                    return Err(ExecError::Runtime(
-                        "range start must be <= end".to_string(),
-                    ));
+                    return Err(ExecError::Runtime("range start must be <= end".to_string()));
                 }
                 let items = (start..=end).map(Value::Int).collect();
                 Ok(Value::List(items))
@@ -2724,9 +2696,7 @@ impl<'a> Interpreter<'a> {
             return Err(ExecError::Runtime("invalid range bounds".to_string()));
         }
         if start > end {
-            return Err(ExecError::Runtime(
-                "range start must be <= end".to_string(),
-            ));
+            return Err(ExecError::Runtime("range start must be <= end".to_string()));
         }
         let mut items = Vec::new();
         let mut current = start;
@@ -2763,9 +2733,17 @@ impl<'a> Interpreter<'a> {
             (Value::String(a), Value::String(b)) => match op {
                 BinaryOp::Eq => a == b,
                 BinaryOp::NotEq => a != b,
-                _ => return Err(ExecError::Runtime("unsupported string comparison".to_string())),
+                _ => {
+                    return Err(ExecError::Runtime(
+                        "unsupported string comparison".to_string(),
+                    ));
+                }
             },
-            _ => return Err(ExecError::Runtime("unsupported comparison operands".to_string())),
+            _ => {
+                return Err(ExecError::Runtime(
+                    "unsupported comparison operands".to_string(),
+                ));
+            }
         };
         Ok(Value::Bool(result))
     }
@@ -2810,7 +2788,10 @@ impl<'a> Interpreter<'a> {
         if let Some(is_match) = self.match_builtin_variant(value, &ident.name)? {
             return Ok(is_match);
         }
-        if let Value::Enum { variant, payload, .. } = value {
+        if let Value::Enum {
+            variant, payload, ..
+        } = value
+        {
             if variant == &ident.name {
                 return Ok(payload.is_empty());
             }
@@ -2937,7 +2918,7 @@ impl<'a> Interpreter<'a> {
         rt_config::env_key(config, field)
     }
 
-    fn parse_env_value(&self, ty: &TypeRef, raw: &str) -> ExecResult<Value> {
+    fn parse_env_value(&mut self, ty: &TypeRef, raw: &str) -> ExecResult<Value> {
         let raw = raw.trim();
         match &ty.kind {
             TypeRefKind::Optional(inner) => {
@@ -2968,9 +2949,16 @@ impl<'a> Interpreter<'a> {
                 "Result" => Err(ExecError::Runtime(
                     "Result is not supported for config env overrides".to_string(),
                 )),
-                _ => Err(ExecError::Runtime(
-                    "config env overrides only support simple types".to_string(),
-                )),
+                "List" | "Map" => {
+                    let json = rt_json::decode(raw)
+                        .map_err(|msg| ExecError::Runtime(format!("invalid JSON value: {msg}")))?;
+                    self.decode_json_value(&json, ty, "$")
+                }
+                _ => {
+                    let json = rt_json::decode(raw)
+                        .map_err(|msg| ExecError::Runtime(format!("invalid JSON value: {msg}")))?;
+                    self.decode_json_value(&json, ty, "$")
+                }
             },
         }
     }
@@ -2990,7 +2978,12 @@ impl<'a> Interpreter<'a> {
                 "false" => Ok(Value::Bool(false)),
                 _ => Err(ExecError::Runtime(format!("invalid Bool: {raw}"))),
             },
-            "String" | "Id" | "Email" | "Bytes" => Ok(Value::String(raw.to_string())),
+            "String" | "Id" | "Email" => Ok(Value::String(raw.to_string())),
+            "Bytes" => {
+                rt_bytes::decode_base64(raw)
+                    .map_err(|msg| ExecError::Runtime(format!("invalid Bytes (base64): {msg}")))?;
+                Ok(Value::String(raw.to_string()))
+            }
             _ => Err(ExecError::Runtime(format!(
                 "env override not supported for type {name}"
             ))),
@@ -3027,10 +3020,7 @@ impl<'a> Interpreter<'a> {
                 _ => Err(ExecError::Error(self.validation_error_value(
                     path,
                     "type_mismatch",
-                    format!(
-                        "expected Result, got {}",
-                        self.value_type_name(&value)
-                    ),
+                    format!("expected Result, got {}", self.value_type_name(&value)),
                 ))),
             },
             TypeRefKind::Refined { base, args } => {
@@ -3063,10 +3053,7 @@ impl<'a> Interpreter<'a> {
                         _ => Err(ExecError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
-                            format!(
-                                "expected Result, got {}",
-                                self.value_type_name(&value)
-                            ),
+                            format!("expected Result, got {}", self.value_type_name(&value)),
                         ))),
                     }
                 }
@@ -3087,10 +3074,7 @@ impl<'a> Interpreter<'a> {
                         _ => Err(ExecError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
-                            format!(
-                                "expected List, got {}",
-                                self.value_type_name(&value)
-                            ),
+                            format!("expected List, got {}", self.value_type_name(&value)),
                         ))),
                     }
                 }
@@ -3113,10 +3097,7 @@ impl<'a> Interpreter<'a> {
                         _ => Err(ExecError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
-                            format!(
-                                "expected Map, got {}",
-                                self.value_type_name(&value)
-                            ),
+                            format!("expected Map, got {}", self.value_type_name(&value)),
                         ))),
                     }
                 }
@@ -3138,9 +3119,7 @@ impl<'a> Interpreter<'a> {
                     if matches!(value, Value::Int(_)) {
                         return Ok(());
                     }
-                    return Err(ExecError::Runtime(format!(
-                        "expected Int, got {type_name}"
-                    )));
+                    return Err(ExecError::Runtime(format!("expected Int, got {type_name}")));
                 }
                 "Float" => {
                     if matches!(value, Value::Float(_)) {
@@ -3179,14 +3158,14 @@ impl<'a> Interpreter<'a> {
                             path,
                             "invalid_value",
                             "expected non-empty Id".to_string(),
-                        )))
+                        )));
                     }
                     _ => {
                         return Err(ExecError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
                             format!("expected Id, got {type_name}"),
-                        )))
+                        )));
                     }
                 },
                 "Email" => match value {
@@ -3196,32 +3175,45 @@ impl<'a> Interpreter<'a> {
                             path,
                             "invalid_value",
                             "invalid email address".to_string(),
-                        )))
+                        )));
                     }
                     _ => {
                         return Err(ExecError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
                             format!("expected Email, got {type_name}"),
-                        )))
+                        )));
                     }
                 },
-                "Bytes" => {
-                    if matches!(value, Value::String(_)) {
+                "Bytes" => match value {
+                    Value::String(v) => {
+                        rt_bytes::decode_base64(v).map_err(|msg| {
+                            ExecError::Error(self.validation_error_value(
+                                path,
+                                "invalid_value",
+                                format!("invalid Bytes (base64): {msg}"),
+                            ))
+                        })?;
                         return Ok(());
                     }
-                    return Err(ExecError::Error(self.validation_error_value(
-                        path,
-                        "type_mismatch",
-                        format!("expected Bytes, got {type_name}"),
-                    )));
-                }
+                    _ => {
+                        return Err(ExecError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("expected Bytes, got {type_name}"),
+                        )));
+                    }
+                },
                 _ => {}
             }
         }
         match value {
-            Value::Struct { name: struct_name, .. } if struct_name == simple_name => Ok(()),
-            Value::Enum { name: enum_name, .. } if enum_name == simple_name => Ok(()),
+            Value::Struct {
+                name: struct_name, ..
+            } if struct_name == simple_name => Ok(()),
+            Value::Enum {
+                name: enum_name, ..
+            } if enum_name == simple_name => Ok(()),
             _ => Err(ExecError::Error(self.validation_error_value(
                 path,
                 "type_mismatch",
@@ -3274,12 +3266,8 @@ impl<'a> Interpreter<'a> {
             }
             Value::Boxed(_) => rt_json::JsonValue::String("<box>".to_string()),
             Value::Query(_) => rt_json::JsonValue::String("<query>".to_string()),
-            Value::Task(_) => {
-                rt_json::JsonValue::String("<task>".to_string())
-            }
-            Value::Iterator(_) => {
-                rt_json::JsonValue::String("<iterator>".to_string())
-            }
+            Value::Task(_) => rt_json::JsonValue::String("<task>".to_string()),
+            Value::Iterator(_) => rt_json::JsonValue::String("<iterator>".to_string()),
             Value::Struct { fields, .. } => {
                 let mut out = BTreeMap::new();
                 for (key, value) in fields {
@@ -3399,7 +3387,7 @@ impl<'a> Interpreter<'a> {
                     path,
                     "invalid_value",
                     "Result is not supported for JSON body",
-                )))
+                )));
             }
             TypeRefKind::Generic { base, args } => match base.name.as_str() {
                 "Option" => {
@@ -3419,7 +3407,7 @@ impl<'a> Interpreter<'a> {
                         path,
                         "invalid_value",
                         "Result is not supported for JSON body",
-                    )))
+                    )));
                 }
                 "List" => {
                     if args.len() != 1 {
@@ -3469,7 +3457,7 @@ impl<'a> Interpreter<'a> {
                         path,
                         "type_mismatch",
                         format!("unsupported type {}", base.name),
-                    )))
+                    )));
                 }
             },
         };
@@ -3491,7 +3479,7 @@ impl<'a> Interpreter<'a> {
                         path,
                         "type_mismatch",
                         "expected Int",
-                    )))
+                    )));
                 }
             },
             "Float" => match json {
@@ -3501,7 +3489,7 @@ impl<'a> Interpreter<'a> {
                         path,
                         "type_mismatch",
                         "expected Float",
-                    )))
+                    )));
                 }
             },
             "Bool" => match json {
@@ -3511,17 +3499,36 @@ impl<'a> Interpreter<'a> {
                         path,
                         "type_mismatch",
                         "expected Bool",
-                    )))
+                    )));
                 }
             },
-            "String" | "Id" | "Email" | "Bytes" => match json {
+            "String" | "Id" | "Email" => match json {
                 rt_json::JsonValue::String(v) => Value::String(v.clone()),
                 _ => {
                     return Err(ExecError::Error(self.validation_error_value(
                         path,
                         "type_mismatch",
                         "expected String",
-                    )))
+                    )));
+                }
+            },
+            "Bytes" => match json {
+                rt_json::JsonValue::String(v) => {
+                    rt_bytes::decode_base64(v).map_err(|msg| {
+                        ExecError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            format!("invalid Bytes (base64): {msg}"),
+                        ))
+                    })?;
+                    Value::String(v.clone())
+                }
+                _ => {
+                    return Err(ExecError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        "expected String",
+                    )));
                 }
             },
             _ => return Ok(None),
@@ -3638,11 +3645,7 @@ impl<'a> Interpreter<'a> {
                 ))
             })?;
             if variant.payload.len() == 1 {
-                vec![self.decode_json_value(
-                    data,
-                    &variant.payload[0],
-                    &format!("{path}.data"),
-                )?]
+                vec![self.decode_json_value(data, &variant.payload[0], &format!("{path}.data"))?]
             } else {
                 let rt_json::JsonValue::Array(items) = data else {
                     return Err(ExecError::Error(self.validation_error_value(
@@ -3660,11 +3663,7 @@ impl<'a> Interpreter<'a> {
                 }
                 let mut out = Vec::new();
                 for (idx, (item, ty)) in items.iter().zip(variant.payload.iter()).enumerate() {
-                    out.push(self.decode_json_value(
-                        item,
-                        ty,
-                        &format!("{path}.data[{idx}]"),
-                    )?);
+                    out.push(self.decode_json_value(item, ty, &format!("{path}.data[{idx}]"))?);
                 }
                 out
             }
@@ -3676,7 +3675,13 @@ impl<'a> Interpreter<'a> {
         })
     }
 
-    fn check_refined(&self, value: &Value, base: &str, args: &[Expr], path: &str) -> ExecResult<()> {
+    fn check_refined(
+        &self,
+        value: &Value,
+        base: &str,
+        args: &[Expr],
+        path: &str,
+    ) -> ExecResult<()> {
         let value = value.unboxed();
         match base {
             "String" => {
@@ -3686,7 +3691,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(format!(
                             "type mismatch at {path}: expected String"
-                        )))
+                        )));
                     }
                 };
                 if !rt_validate::check_len(len, min, max) {
@@ -3706,7 +3711,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(format!(
                             "type mismatch at {path}: expected Int"
-                        )))
+                        )));
                     }
                 };
                 if !rt_validate::check_int_range(val, min, max) {
@@ -3726,7 +3731,7 @@ impl<'a> Interpreter<'a> {
                     _ => {
                         return Err(ExecError::Runtime(format!(
                             "type mismatch at {path}: expected Float"
-                        )))
+                        )));
                     }
                 };
                 if !rt_validate::check_float_range(val, min, max) {
@@ -3892,7 +3897,5 @@ fn parse_route_param(segment: &str) -> Option<(String, String)> {
 }
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
-    buffer
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }

@@ -118,3 +118,127 @@ app "demo":
     };
     assert_eq!(code, "invalid_value");
 }
+
+#[test]
+fn config_structured_json_support_and_bytes_validation() {
+    let program = r#"
+config App:
+  names: List<String> = ["Default"]
+  labels: Map<String, Int> = {"a": 1}
+  profile: User = User(name: "anon", age: 1)
+  token: Bytes = "Zg=="
+
+type User:
+  name: String
+  age: Int(0..120)
+
+app "demo":
+  print(App.names[0])
+  print(App.labels["x"])
+  print(App.profile.name)
+  print(App.token)
+"#;
+
+    let config = r#"
+[App]
+names = "[\"Ada\"]"
+labels = "{\"x\":5}"
+profile = "{\"name\":\"Bea\",\"age\":33}"
+token = "Zm9v"
+"#;
+
+    let program_path = write_temp_file("fuse_config_structured", "fuse", program);
+    let config_path = write_temp_file("fuse_config_structured", "toml", config);
+
+    let exe = env!("CARGO_BIN_EXE_fusec");
+    let output = Command::new(exe)
+        .arg("--run")
+        .arg("--backend")
+        .arg("ast")
+        .arg(&program_path)
+        .env("FUSE_CONFIG", &config_path)
+        .output()
+        .expect("failed to run fusec");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["Ada", "5", "Bea", "Zm9v"]);
+
+    let bad = Command::new(exe)
+        .arg("--run")
+        .arg("--backend")
+        .arg("ast")
+        .arg(&program_path)
+        .env("FUSE_CONFIG", &config_path)
+        .env("APP_TOKEN", "not_base64")
+        .output()
+        .expect("failed to run fusec");
+    assert!(!bad.status.success(), "expected invalid bytes failure");
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert!(
+        stderr.contains("invalid Bytes (base64)"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn cli_binding_supports_structured_json_values() {
+    let program = r#"
+fn main(names: List<String>, labels: Map<String, Int>, profile: User, token: Bytes):
+  print(names[0])
+  print(labels["k"])
+  print(profile.name)
+  print(token)
+
+type User:
+  name: String
+"#;
+
+    let program_path = write_temp_file("fuse_cli_structured", "fuse", program);
+    let exe = env!("CARGO_BIN_EXE_fusec");
+    let output = Command::new(exe)
+        .arg("--run")
+        .arg("--backend")
+        .arg("ast")
+        .arg(&program_path)
+        .arg("--")
+        .arg("--names=[\"Nia\"]")
+        .arg("--labels={\"k\":7}")
+        .arg("--profile={\"name\":\"Mia\"}")
+        .arg("--token=YQ==")
+        .output()
+        .expect("failed to run fusec");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["Nia", "7", "Mia", "YQ=="]);
+
+    let bad = Command::new(exe)
+        .arg("--run")
+        .arg("--backend")
+        .arg("ast")
+        .arg(&program_path)
+        .arg("--")
+        .arg("--names=[\"Nia\"]")
+        .arg("--labels={\"k\":7}")
+        .arg("--profile={\"name\":\"Mia\"}")
+        .arg("--token=nope")
+        .output()
+        .expect("failed to run fusec");
+    assert!(!bad.status.success(), "expected invalid bytes failure");
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert!(
+        stderr.contains("invalid Bytes (base64)"),
+        "stderr: {stderr}"
+    );
+}

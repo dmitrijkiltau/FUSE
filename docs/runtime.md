@@ -143,13 +143,15 @@ Rules:
 
 ### Built-in types and generics
 
-* `String`, `Id`, `Email`, `Bytes` -> JSON string.
+* `String`, `Id`, `Email` -> JSON string.
+* `Bytes` -> JSON base64 string (standard alphabet with `=` padding).
 * `Bool`, `Int`, `Float` -> JSON number/bool.
 * `List<T>` -> JSON array.
 * `Map<K,V>` -> JSON object. At runtime, `Map<K,V>` requires `K = String`; non-string keys are rejected.
+* User-defined `struct` and `enum` are supported using the same validation rules as struct literals.
 * `Result<T,E>` is **not** supported in JSON decoding.
 
-`Bytes` are treated as plain strings; base64 is not implemented.
+`Bytes` use base64 text at JSON/config/CLI boundaries. Runtime values remain strings, so existing programs that already pass base64-compatible strings continue to work.
 
 ## Config loading
 
@@ -182,13 +184,16 @@ Env override naming is derived from config and field names:
 * `dbUrl` -> `DB_URL`
 * Hyphens become underscores, and camelCase is split into `SNAKE_CASE`.
 
-Type support for config values is the same as env parsing:
+Type support for config values (env and file values) has levels:
 
-* simple scalars (`Int`, `Float`, `Bool`, `String`, `Id`, `Email`, `Bytes`)
-* `Option<T>` where `null`/empty is allowed
-* refined ranges on those base types
+* **Full**: scalars (`Int`, `Float`, `Bool`, `String`, `Id`, `Email`, `Bytes`) and `Option<T>`.
+* **Structured via JSON text**: `List<T>`, `Map<String,V>`, user-defined `struct`, user-defined `enum` (decoded from a JSON string payload and then validated recursively).
+* **Rejected**: `Map<K,V>` where `K != String`, and `Result<T,E>`.
 
-`List`, `Map`, `Result`, and user-defined types are not supported for config values.
+Compatibility notes:
+
+* `Bytes` must be valid base64 text; invalid base64 is a validation error.
+* For structured values, parse failures (invalid JSON/type mismatch/unknown field) surface as validation errors on the target field path.
 
 ## CLI binding
 
@@ -204,9 +209,14 @@ Rules:
 * `--flag value` and `--flag=value` are supported.
 * `--flag` sets a `Bool` to `true`, `--no-flag` sets it to `false`.
 * Unknown flags are validation errors.
-* Only scalar types and `Option<T>` are supported (same as env parsing).
+* Support levels mirror config/env parsing:
+  * **Full**: scalar types and `Option<T>`.
+  * **Structured via JSON text**: `List<T>`, `Map<String,V>`, user-defined `struct`, user-defined `enum`.
+  * **Rejected**: `Map<K,V>` with non-`String` keys and `Result<T,E>`.
 * Multiple values for the same flag are rejected.
 * CLI binding calls `fn main` directly (the `app` block is ignored when program args are present).
+
+For `Bytes`, CLI values must be base64 text.
 
 Validation errors are printed as JSON on stderr and usually exit with code 2.
 

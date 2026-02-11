@@ -11,8 +11,10 @@ use serde::{Deserialize, Serialize};
 
 use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate as rt_validate};
 
-use crate::ast::{BinaryOp, Expr, ExprKind, HttpVerb, Ident, Literal, TypeRef, TypeRefKind, UnaryOp};
-use crate::interp::{format_error_value, Task, TaskResult, Value};
+use crate::ast::{
+    BinaryOp, Expr, ExprKind, HttpVerb, Ident, Literal, TypeRef, TypeRefKind, UnaryOp,
+};
+use crate::interp::{Task, TaskResult, Value, format_error_value};
 use crate::ir::{Config, Function, Program as IrProgram, Service, ServiceRoute};
 use crate::loader::ModuleRegistry;
 use crate::native::value::NativeHeap;
@@ -291,8 +293,7 @@ impl<'a> NativeVm<'a> {
         if self.configs_loaded {
             return Ok(());
         }
-        self.eval_configs_native()
-            .map_err(render_native_error)?;
+        self.eval_configs_native().map_err(render_native_error)?;
         self.configs_loaded = true;
         Ok(())
     }
@@ -400,7 +401,10 @@ impl<'a> NativeVm<'a> {
                     stack.pop().ok_or_else(|| "stack underflow".to_string())?;
                 }
                 crate::ir::Instr::Dup => {
-                    let value = stack.last().cloned().ok_or_else(|| "stack underflow".to_string())?;
+                    let value = stack
+                        .last()
+                        .cloned()
+                        .ok_or_else(|| "stack underflow".to_string())?;
                     stack.push(value);
                 }
                 crate::ir::Instr::InterpString { parts } => {
@@ -433,79 +437,83 @@ impl<'a> NativeVm<'a> {
                             let args: Vec<Value> =
                                 args.into_iter().map(|val| val.unboxed()).collect();
                             match name.as_str() {
-                            "serve" => {
-                                let port_value = args.get(0).cloned().unwrap_or(Value::Null);
-                                let port = self.port_from_value(&port_value)?;
-                                let _ = self.eval_serve_native_inner(port)
-                                    .map_err(|err| self.render_native_error(err))?;
-                                return Ok(());
-                            }
-                            "print" => {
-                                let text = args.get(0).map(|v| v.to_string_value()).unwrap_or_default();
-                                println!("{text}");
-                                stack.push(Value::Unit);
-                            }
-                            "log" => {
-                                let mut level = LogLevel::Info;
-                                let mut start_idx = 0usize;
-                                if args.len() >= 2 {
-                                    if let Some(Value::String(raw_level)) = args.get(0) {
-                                        if let Some(parsed) = parse_log_level(raw_level) {
-                                            level = parsed;
-                                            start_idx = 1;
+                                "serve" => {
+                                    let port_value = args.get(0).cloned().unwrap_or(Value::Null);
+                                    let port = self.port_from_value(&port_value)?;
+                                    let _ = self
+                                        .eval_serve_native_inner(port)
+                                        .map_err(|err| self.render_native_error(err))?;
+                                    return Ok(());
+                                }
+                                "print" => {
+                                    let text = args
+                                        .get(0)
+                                        .map(|v| v.to_string_value())
+                                        .unwrap_or_default();
+                                    println!("{text}");
+                                    stack.push(Value::Unit);
+                                }
+                                "log" => {
+                                    let mut level = LogLevel::Info;
+                                    let mut start_idx = 0usize;
+                                    if args.len() >= 2 {
+                                        if let Some(Value::String(raw_level)) = args.get(0) {
+                                            if let Some(parsed) = parse_log_level(raw_level) {
+                                                level = parsed;
+                                                start_idx = 1;
+                                            }
                                         }
                                     }
-                                }
-                                if level >= min_log_level() {
-                                    let message = args
-                                        .get(start_idx)
-                                        .map(|val| val.to_string_value())
-                                        .unwrap_or_default();
-                                    let data_args = &args[start_idx.saturating_add(1)..];
-                                    if !data_args.is_empty() {
-                                        let data_json = if data_args.len() == 1 {
-                                            self.value_to_json(&data_args[0])
-                                        } else {
-                                            rt_json::JsonValue::Array(
-                                                data_args
-                                                    .iter()
-                                                    .map(|val| self.value_to_json(val))
-                                                    .collect(),
-                                            )
-                                        };
-                                        let mut obj = BTreeMap::new();
-                                        obj.insert(
-                                            "level".to_string(),
-                                            rt_json::JsonValue::String(
-                                                level.json_label().to_string(),
-                                            ),
-                                        );
-                                        obj.insert(
-                                            "message".to_string(),
-                                            rt_json::JsonValue::String(message),
-                                        );
-                                        obj.insert("data".to_string(), data_json);
-                                        eprintln!(
-                                            "{}",
-                                            rt_json::encode(&rt_json::JsonValue::Object(obj))
-                                        );
-                                    } else {
-                                        let message = args[start_idx..]
-                                            .iter()
+                                    if level >= min_log_level() {
+                                        let message = args
+                                            .get(start_idx)
                                             .map(|val| val.to_string_value())
-                                            .collect::<Vec<_>>()
-                                            .join(" ");
-                                        eprintln!("[{}] {}", level.label(), message);
+                                            .unwrap_or_default();
+                                        let data_args = &args[start_idx.saturating_add(1)..];
+                                        if !data_args.is_empty() {
+                                            let data_json = if data_args.len() == 1 {
+                                                self.value_to_json(&data_args[0])
+                                            } else {
+                                                rt_json::JsonValue::Array(
+                                                    data_args
+                                                        .iter()
+                                                        .map(|val| self.value_to_json(val))
+                                                        .collect(),
+                                                )
+                                            };
+                                            let mut obj = BTreeMap::new();
+                                            obj.insert(
+                                                "level".to_string(),
+                                                rt_json::JsonValue::String(
+                                                    level.json_label().to_string(),
+                                                ),
+                                            );
+                                            obj.insert(
+                                                "message".to_string(),
+                                                rt_json::JsonValue::String(message),
+                                            );
+                                            obj.insert("data".to_string(), data_json);
+                                            eprintln!(
+                                                "{}",
+                                                rt_json::encode(&rt_json::JsonValue::Object(obj))
+                                            );
+                                        } else {
+                                            let message = args[start_idx..]
+                                                .iter()
+                                                .map(|val| val.to_string_value())
+                                                .collect::<Vec<_>>()
+                                                .join(" ");
+                                            eprintln!("[{}] {}", level.label(), message);
+                                        }
                                     }
+                                    stack.push(Value::Unit);
                                 }
-                                stack.push(Value::Unit);
+                                other => {
+                                    return Err(format!(
+                                        "native backend unsupported: builtin {other}"
+                                    ));
+                                }
                             }
-                            other => {
-                                return Err(format!(
-                                    "native backend unsupported: builtin {other}"
-                                ))
-                            }
-                        }
                         }
                         crate::ir::CallKind::Function => {
                             let value = self.call_function_native_only_inner(name, args)?;
@@ -533,20 +541,23 @@ impl<'a> NativeVm<'a> {
                                 .find(|func| func.name == name.as_str())
                         })
                         .ok_or_else(|| format!("unknown function {name}"))?;
-                    let result = match self
-                        .jit
-                        .try_call(&self.program.ir, name, &args, &mut self.heap)
-                    {
-                        Some(Ok(value)) => TaskResult::Ok(wrap_function_result(func, value)),
-                        Some(Err(JitCallError::Error(err_val))) => TaskResult::Error(err_val),
-                        Some(Err(JitCallError::Runtime(message))) => TaskResult::Runtime(message),
-                        None => {
-                            return Err(format!(
-                                "native backend could not compile function {}",
-                                func.name
-                            ));
-                        }
-                    };
+                    let result =
+                        match self
+                            .jit
+                            .try_call(&self.program.ir, name, &args, &mut self.heap)
+                        {
+                            Some(Ok(value)) => TaskResult::Ok(wrap_function_result(func, value)),
+                            Some(Err(JitCallError::Error(err_val))) => TaskResult::Error(err_val),
+                            Some(Err(JitCallError::Runtime(message))) => {
+                                TaskResult::Runtime(message)
+                            }
+                            None => {
+                                return Err(format!(
+                                    "native backend could not compile function {}",
+                                    func.name
+                                ));
+                            }
+                        };
                     self.heap.collect_garbage();
                     stack.push(Value::Task(Task::from_task_result(result)));
                 }
@@ -582,14 +593,15 @@ impl<'a> NativeVm<'a> {
         match value.unboxed() {
             Value::Int(v) => Ok(v),
             Value::Float(v) => Ok(v as i64),
-            Value::String(s) => s.parse::<i64>().map_err(|_| "serve expects a port number".to_string()),
+            Value::String(s) => s
+                .parse::<i64>()
+                .map_err(|_| "serve expects a port number".to_string()),
             _ => Err("serve expects a port number".to_string()),
         }
     }
 
     fn eval_serve_native_inner(&mut self, port: i64) -> NativeResult<Value> {
-        self.ensure_configs_loaded()
-            .map_err(NativeError::Runtime)?;
+        self.ensure_configs_loaded().map_err(NativeError::Runtime)?;
         let service = self.select_service()?.clone();
         let host = std::env::var("FUSE_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
         let port: u16 = port
@@ -609,7 +621,7 @@ impl<'a> NativeVm<'a> {
                 Err(err) => {
                     return Err(NativeError::Runtime(format!(
                         "failed to accept connection: {err}"
-                    )))
+                    )));
                 }
             };
             let response = match self.handle_http_request(&service, &mut stream) {
@@ -661,12 +673,7 @@ impl<'a> NativeVm<'a> {
             "PUT" => HttpVerb::Put,
             "PATCH" => HttpVerb::Patch,
             "DELETE" => HttpVerb::Delete,
-            _ => {
-                return Ok(self.http_response(
-                    405,
-                    self.internal_error_json("method not allowed"),
-                ))
-            }
+            _ => return Ok(self.http_response(405, self.internal_error_json("method not allowed"))),
         };
         let path = request
             .path
@@ -735,7 +742,12 @@ impl<'a> NativeVm<'a> {
             path.trim_start_matches('/').to_string()
         };
         let rel = Path::new(&rel_path);
-        if rel.components().any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_))) {
+        if rel.components().any(|c| {
+            matches!(
+                c,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        }) {
             return None;
         }
         let full = Path::new(&static_dir).join(rel);
@@ -955,7 +967,7 @@ impl<'a> NativeVm<'a> {
         self.error_json_from_code("internal_error", message)
     }
 
-    fn parse_env_value(&self, ty: &TypeRef, raw: &str) -> NativeResult<Value> {
+    fn parse_env_value(&mut self, ty: &TypeRef, raw: &str) -> NativeResult<Value> {
         let raw = raw.trim();
         match &ty.kind {
             TypeRefKind::Optional(inner) => {
@@ -986,9 +998,12 @@ impl<'a> NativeVm<'a> {
                 "Result" => Err(NativeError::Runtime(
                     "Result is not supported for config env overrides".to_string(),
                 )),
-                _ => Err(NativeError::Runtime(
-                    "config env overrides only support simple types".to_string(),
-                )),
+                _ => {
+                    let json = rt_json::decode(raw).map_err(|msg| {
+                        NativeError::Runtime(format!("invalid JSON value: {msg}"))
+                    })?;
+                    self.decode_json_value(&json, ty, "$")
+                }
             },
         }
     }
@@ -1008,7 +1023,13 @@ impl<'a> NativeVm<'a> {
                 "false" => Ok(Value::Bool(false)),
                 _ => Err(NativeError::Runtime(format!("invalid Bool: {raw}"))),
             },
-            "String" | "Id" | "Email" | "Bytes" => Ok(Value::String(raw.to_string())),
+            "String" | "Id" | "Email" => Ok(Value::String(raw.to_string())),
+            "Bytes" => {
+                rt_bytes::decode_base64(raw).map_err(|msg| {
+                    NativeError::Runtime(format!("invalid Bytes (base64): {msg}"))
+                })?;
+                Ok(Value::String(raw.to_string()))
+            }
             _ => Err(NativeError::Runtime(format!(
                 "env override not supported for type {name}"
             ))),
@@ -1046,10 +1067,7 @@ impl<'a> NativeVm<'a> {
                 _ => Err(NativeError::Error(self.validation_error_value(
                     path,
                     "type_mismatch",
-                    format!(
-                        "expected Result, got {}",
-                        self.value_type_name(&value)
-                    ),
+                    format!("expected Result, got {}", self.value_type_name(&value)),
                 ))),
             },
             TypeRefKind::Refined { base, args } => {
@@ -1082,10 +1100,7 @@ impl<'a> NativeVm<'a> {
                         _ => Err(NativeError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
-                            format!(
-                                "expected Result, got {}",
-                                self.value_type_name(&value)
-                            ),
+                            format!("expected Result, got {}", self.value_type_name(&value)),
                         ))),
                     }
                 }
@@ -1106,10 +1121,7 @@ impl<'a> NativeVm<'a> {
                         _ => Err(NativeError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
-                            format!(
-                                "expected List, got {}",
-                                self.value_type_name(&value)
-                            ),
+                            format!("expected List, got {}", self.value_type_name(&value)),
                         ))),
                     }
                 }
@@ -1132,10 +1144,7 @@ impl<'a> NativeVm<'a> {
                         _ => Err(NativeError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
-                            format!(
-                                "expected Map, got {}",
-                                self.value_type_name(&value)
-                            ),
+                            format!("expected Map, got {}", self.value_type_name(&value)),
                         ))),
                     }
                 }
@@ -1200,14 +1209,14 @@ impl<'a> NativeVm<'a> {
                             path,
                             "invalid_value",
                             "expected non-empty Id".to_string(),
-                        )))
+                        )));
                     }
                     _ => {
                         return Err(NativeError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
                             format!("expected Id, got {type_name}"),
-                        )))
+                        )));
                     }
                 },
                 "Email" => match value {
@@ -1217,32 +1226,45 @@ impl<'a> NativeVm<'a> {
                             path,
                             "invalid_value",
                             "invalid email address".to_string(),
-                        )))
+                        )));
                     }
                     _ => {
                         return Err(NativeError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
                             format!("expected Email, got {type_name}"),
-                        )))
+                        )));
                     }
                 },
-                "Bytes" => {
-                    if matches!(value, Value::String(_)) {
+                "Bytes" => match value {
+                    Value::String(v) => {
+                        rt_bytes::decode_base64(v).map_err(|msg| {
+                            NativeError::Error(self.validation_error_value(
+                                path,
+                                "invalid_value",
+                                format!("invalid Bytes (base64): {msg}"),
+                            ))
+                        })?;
                         return Ok(());
                     }
-                    return Err(NativeError::Error(self.validation_error_value(
-                        path,
-                        "type_mismatch",
-                        format!("expected Bytes, got {type_name}"),
-                    )));
-                }
+                    _ => {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("expected Bytes, got {type_name}"),
+                        )));
+                    }
+                },
                 _ => {}
             }
         }
         match value {
-            Value::Struct { name: struct_name, .. } if struct_name == simple_name => Ok(()),
-            Value::Enum { name: enum_name, .. } if enum_name == simple_name => Ok(()),
+            Value::Struct {
+                name: struct_name, ..
+            } if struct_name == simple_name => Ok(()),
+            Value::Enum {
+                name: enum_name, ..
+            } if enum_name == simple_name => Ok(()),
             _ => Err(NativeError::Error(self.validation_error_value(
                 path,
                 "type_mismatch",
@@ -1324,7 +1346,7 @@ impl<'a> NativeVm<'a> {
                     _ => {
                         return Err(NativeError::Runtime(
                             "refined String expects a String".to_string(),
-                        ))
+                        ));
                     }
                 };
                 if rt_validate::check_len(len, min, max) {
@@ -1344,7 +1366,7 @@ impl<'a> NativeVm<'a> {
                     _ => {
                         return Err(NativeError::Runtime(
                             "refined Int expects an Int".to_string(),
-                        ))
+                        ));
                     }
                 };
                 if rt_validate::check_int_range(val, min, max) {
@@ -1364,7 +1386,7 @@ impl<'a> NativeVm<'a> {
                     _ => {
                         return Err(NativeError::Runtime(
                             "refined Float expects a Float".to_string(),
-                        ))
+                        ));
                     }
                 };
                 if rt_validate::check_float_range(val, min, max) {
@@ -1579,7 +1601,7 @@ impl<'a> NativeVm<'a> {
                     path,
                     "invalid_value",
                     "Result is not supported for JSON body",
-                )))
+                )));
             }
             TypeRefKind::Generic { base, args } => match base.name.as_str() {
                 "Option" => {
@@ -1599,7 +1621,7 @@ impl<'a> NativeVm<'a> {
                         path,
                         "invalid_value",
                         "Result is not supported for JSON body",
-                    )))
+                    )));
                 }
                 "List" => {
                     if args.len() != 1 {
@@ -1649,7 +1671,7 @@ impl<'a> NativeVm<'a> {
                         path,
                         "type_mismatch",
                         format!("unsupported type {}", base.name),
-                    )))
+                    )));
                 }
             },
         };
@@ -1671,7 +1693,7 @@ impl<'a> NativeVm<'a> {
                         path,
                         "type_mismatch",
                         "expected Int",
-                    )))
+                    )));
                 }
             },
             "Float" => match json {
@@ -1681,7 +1703,7 @@ impl<'a> NativeVm<'a> {
                         path,
                         "type_mismatch",
                         "expected Float",
-                    )))
+                    )));
                 }
             },
             "Bool" => match json {
@@ -1691,17 +1713,36 @@ impl<'a> NativeVm<'a> {
                         path,
                         "type_mismatch",
                         "expected Bool",
-                    )))
+                    )));
                 }
             },
-            "String" | "Id" | "Email" | "Bytes" => match json {
+            "String" | "Id" | "Email" => match json {
                 rt_json::JsonValue::String(v) => Value::String(v.clone()),
                 _ => {
                     return Err(NativeError::Error(self.validation_error_value(
                         path,
                         "type_mismatch",
                         "expected String",
-                    )))
+                    )));
+                }
+            },
+            "Bytes" => match json {
+                rt_json::JsonValue::String(v) => {
+                    rt_bytes::decode_base64(v).map_err(|msg| {
+                        NativeError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            format!("invalid Bytes (base64): {msg}"),
+                        ))
+                    })?;
+                    Value::String(v.clone())
+                }
+                _ => {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        "expected String",
+                    )));
                 }
             },
             _ => return Ok(None),
@@ -1820,11 +1861,7 @@ impl<'a> NativeVm<'a> {
                 ))
             })?;
             if variant.payload.len() == 1 {
-                vec![self.decode_json_value(
-                    data,
-                    &variant.payload[0],
-                    &format!("{path}.data"),
-                )?]
+                vec![self.decode_json_value(data, &variant.payload[0], &format!("{path}.data"))?]
             } else {
                 let rt_json::JsonValue::Array(items) = data else {
                     return Err(NativeError::Error(self.validation_error_value(
@@ -1842,11 +1879,7 @@ impl<'a> NativeVm<'a> {
                 }
                 let mut out = Vec::new();
                 for (idx, (item, ty)) in items.iter().zip(variant.payload.iter()).enumerate() {
-                    out.push(self.decode_json_value(
-                        item,
-                        ty,
-                        &format!("{path}.data[{idx}]"),
-                    )?);
+                    out.push(self.decode_json_value(item, ty, &format!("{path}.data[{idx}]"))?);
                 }
                 out
             }
@@ -1857,7 +1890,6 @@ impl<'a> NativeVm<'a> {
             payload,
         })
     }
-
 }
 
 fn call_function_native_only_with(
@@ -1983,7 +2015,7 @@ impl ConfigEvaluator {
         Ok(())
     }
 
-    fn parse_env_value(&self, ty: &TypeRef, raw: &str) -> NativeResult<Value> {
+    fn parse_env_value(&mut self, ty: &TypeRef, raw: &str) -> NativeResult<Value> {
         let raw = raw.trim();
         match &ty.kind {
             TypeRefKind::Optional(inner) => {
@@ -2014,9 +2046,12 @@ impl ConfigEvaluator {
                 "Result" => Err(NativeError::Runtime(
                     "Result is not supported for config env overrides".to_string(),
                 )),
-                _ => Err(NativeError::Runtime(
-                    "config env overrides only support simple types".to_string(),
-                )),
+                _ => {
+                    let json = rt_json::decode(raw).map_err(|msg| {
+                        NativeError::Runtime(format!("invalid JSON value: {msg}"))
+                    })?;
+                    self.decode_json_value(&json, ty, "$")
+                }
             },
         }
     }
@@ -2036,7 +2071,13 @@ impl ConfigEvaluator {
                 "false" => Ok(Value::Bool(false)),
                 _ => Err(NativeError::Runtime(format!("invalid Bool: {raw}"))),
             },
-            "String" | "Id" | "Email" | "Bytes" => Ok(Value::String(raw.to_string())),
+            "String" | "Id" | "Email" => Ok(Value::String(raw.to_string())),
+            "Bytes" => {
+                rt_bytes::decode_base64(raw).map_err(|msg| {
+                    NativeError::Runtime(format!("invalid Bytes (base64): {msg}"))
+                })?;
+                Ok(Value::String(raw.to_string()))
+            }
             _ => Err(NativeError::Runtime(format!(
                 "env override not supported for type {name}"
             ))),
@@ -2074,10 +2115,7 @@ impl ConfigEvaluator {
                 _ => Err(NativeError::Error(self.validation_error_value(
                     path,
                     "type_mismatch",
-                    format!(
-                        "expected Result, got {}",
-                        self.value_type_name(&value)
-                    ),
+                    format!("expected Result, got {}", self.value_type_name(&value)),
                 ))),
             },
             TypeRefKind::Refined { base, args } => {
@@ -2110,10 +2148,7 @@ impl ConfigEvaluator {
                         _ => Err(NativeError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
-                            format!(
-                                "expected Result, got {}",
-                                self.value_type_name(&value)
-                            ),
+                            format!("expected Result, got {}", self.value_type_name(&value)),
                         ))),
                     }
                 }
@@ -2134,10 +2169,7 @@ impl ConfigEvaluator {
                         _ => Err(NativeError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
-                            format!(
-                                "expected List, got {}",
-                                self.value_type_name(&value)
-                            ),
+                            format!("expected List, got {}", self.value_type_name(&value)),
                         ))),
                     }
                 }
@@ -2160,10 +2192,7 @@ impl ConfigEvaluator {
                         _ => Err(NativeError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
-                            format!(
-                                "expected Map, got {}",
-                                self.value_type_name(&value)
-                            ),
+                            format!("expected Map, got {}", self.value_type_name(&value)),
                         ))),
                     }
                 }
@@ -2228,14 +2257,14 @@ impl ConfigEvaluator {
                             path,
                             "invalid_value",
                             "expected non-empty Id".to_string(),
-                        )))
+                        )));
                     }
                     _ => {
                         return Err(NativeError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
                             format!("expected Id, got {type_name}"),
-                        )))
+                        )));
                     }
                 },
                 "Email" => match value {
@@ -2245,32 +2274,45 @@ impl ConfigEvaluator {
                             path,
                             "invalid_value",
                             "invalid email address".to_string(),
-                        )))
+                        )));
                     }
                     _ => {
                         return Err(NativeError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
                             format!("expected Email, got {type_name}"),
-                        )))
+                        )));
                     }
                 },
-                "Bytes" => {
-                    if matches!(value, Value::String(_)) {
+                "Bytes" => match value {
+                    Value::String(v) => {
+                        rt_bytes::decode_base64(v).map_err(|msg| {
+                            NativeError::Error(self.validation_error_value(
+                                path,
+                                "invalid_value",
+                                format!("invalid Bytes (base64): {msg}"),
+                            ))
+                        })?;
                         return Ok(());
                     }
-                    return Err(NativeError::Error(self.validation_error_value(
-                        path,
-                        "type_mismatch",
-                        format!("expected Bytes, got {type_name}"),
-                    )));
-                }
+                    _ => {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("expected Bytes, got {type_name}"),
+                        )));
+                    }
+                },
                 _ => {}
             }
         }
         match value {
-            Value::Struct { name: struct_name, .. } if struct_name == simple_name => Ok(()),
-            Value::Enum { name: enum_name, .. } if enum_name == simple_name => Ok(()),
+            Value::Struct {
+                name: struct_name, ..
+            } if struct_name == simple_name => Ok(()),
+            Value::Enum {
+                name: enum_name, ..
+            } if enum_name == simple_name => Ok(()),
             _ => Err(NativeError::Error(self.validation_error_value(
                 path,
                 "type_mismatch",
@@ -2344,7 +2386,7 @@ impl ConfigEvaluator {
                     _ => {
                         return Err(NativeError::Runtime(
                             "refined String expects a String".to_string(),
-                        ))
+                        ));
                     }
                 };
                 if rt_validate::check_len(len, min, max) {
@@ -2364,7 +2406,7 @@ impl ConfigEvaluator {
                     _ => {
                         return Err(NativeError::Runtime(
                             "refined Int expects an Int".to_string(),
-                        ))
+                        ));
                     }
                 };
                 if rt_validate::check_int_range(val, min, max) {
@@ -2384,7 +2426,7 @@ impl ConfigEvaluator {
                     _ => {
                         return Err(NativeError::Runtime(
                             "refined Float expects a Float".to_string(),
-                        ))
+                        ));
                     }
                 };
                 if rt_validate::check_float_range(val, min, max) {
@@ -2609,7 +2651,5 @@ fn parse_route_param(segment: &str) -> Option<(String, String)> {
 }
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
-    buffer
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }
