@@ -2929,7 +2929,20 @@ impl<'a> Interpreter<'a> {
                 }
             }
             TypeRefKind::Refined { base, .. } => self.parse_simple_env(&base.name, raw),
-            TypeRefKind::Simple(ident) => self.parse_simple_env(&ident.name, raw),
+            TypeRefKind::Simple(ident) => {
+                let (_, simple_name) = split_type_name(&ident.name);
+                match simple_name {
+                    "Int" | "Float" | "Bool" | "String" | "Id" | "Email" | "Bytes" => {
+                        self.parse_simple_env(&ident.name, raw)
+                    }
+                    _ => {
+                        let json = rt_json::decode(raw).map_err(|msg| {
+                            ExecError::Runtime(format!("invalid JSON value: {msg}"))
+                        })?;
+                        self.decode_json_value(&json, ty, "$")
+                    }
+                }
+            }
             TypeRefKind::Result { .. } => Err(ExecError::Runtime(
                 "Result is not supported for config env overrides".to_string(),
             )),
@@ -3187,7 +3200,7 @@ impl<'a> Interpreter<'a> {
                 },
                 "Bytes" => match value {
                     Value::String(v) => {
-                        rt_bytes::decode_base64(v).map_err(|msg| {
+                        rt_bytes::decode_base64(&v).map_err(|msg| {
                             ExecError::Error(self.validation_error_value(
                                 path,
                                 "invalid_value",
@@ -3514,7 +3527,7 @@ impl<'a> Interpreter<'a> {
             },
             "Bytes" => match json {
                 rt_json::JsonValue::String(v) => {
-                    rt_bytes::decode_base64(v).map_err(|msg| {
+                    rt_bytes::decode_base64(&v).map_err(|msg| {
                         ExecError::Error(self.validation_error_value(
                             path,
                             "invalid_value",

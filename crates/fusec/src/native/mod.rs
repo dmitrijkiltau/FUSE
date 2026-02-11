@@ -9,7 +9,10 @@ use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 
-use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate as rt_validate};
+use fuse_rt::{
+    bytes as rt_bytes, config as rt_config, error as rt_error, json as rt_json,
+    validate as rt_validate,
+};
 
 use crate::ast::{
     BinaryOp, Expr, ExprKind, HttpVerb, Ident, Literal, TypeRef, TypeRefKind, UnaryOp,
@@ -149,7 +152,7 @@ pub fn load_configs_for_binary<'a, I>(
 where
     I: IntoIterator<Item = &'a Config>,
 {
-    let evaluator = ConfigEvaluator;
+    let mut evaluator = ConfigEvaluator;
     evaluator
         .eval_configs(configs, heap, &mut default_fn)
         .map_err(render_native_error)
@@ -299,7 +302,7 @@ impl<'a> NativeVm<'a> {
     }
 
     fn eval_configs_native(&mut self) -> NativeResult<()> {
-        let evaluator = ConfigEvaluator;
+        let mut evaluator = ConfigEvaluator;
         let mut configs: Vec<Config> = self.program.ir.configs.values().cloned().collect();
         configs.sort_by(|a, b| a.name.cmp(&b.name));
         let program = self.program;
@@ -978,7 +981,20 @@ impl<'a> NativeVm<'a> {
                 }
             }
             TypeRefKind::Refined { base, .. } => self.parse_simple_env(&base.name, raw),
-            TypeRefKind::Simple(ident) => self.parse_simple_env(&ident.name, raw),
+            TypeRefKind::Simple(ident) => {
+                let (_, simple_name) = split_type_name(&ident.name);
+                match simple_name {
+                    "Int" | "Float" | "Bool" | "String" | "Id" | "Email" | "Bytes" => {
+                        self.parse_simple_env(&ident.name, raw)
+                    }
+                    _ => {
+                        let json = rt_json::decode(raw).map_err(|msg| {
+                            NativeError::Runtime(format!("invalid JSON value: {msg}"))
+                        })?;
+                        self.decode_json_value(&json, ty, "$")
+                    }
+                }
+            }
             TypeRefKind::Result { .. } => Err(NativeError::Runtime(
                 "Result is not supported for config env overrides".to_string(),
             )),
@@ -1238,7 +1254,7 @@ impl<'a> NativeVm<'a> {
                 },
                 "Bytes" => match value {
                     Value::String(v) => {
-                        rt_bytes::decode_base64(v).map_err(|msg| {
+                        rt_bytes::decode_base64(&v).map_err(|msg| {
                             NativeError::Error(self.validation_error_value(
                                 path,
                                 "invalid_value",
@@ -1728,7 +1744,7 @@ impl<'a> NativeVm<'a> {
             },
             "Bytes" => match json {
                 rt_json::JsonValue::String(v) => {
-                    rt_bytes::decode_base64(v).map_err(|msg| {
+                    rt_bytes::decode_base64(&v).map_err(|msg| {
                         NativeError::Error(self.validation_error_value(
                             path,
                             "invalid_value",
@@ -1964,7 +1980,7 @@ struct ConfigEvaluator;
 
 impl ConfigEvaluator {
     fn eval_configs<'a, I>(
-        &self,
+        &mut self,
         configs: I,
         heap: &mut NativeHeap,
         default_fn: &mut dyn FnMut(&str, &mut NativeHeap) -> Result<Value, String>,
@@ -2026,7 +2042,20 @@ impl ConfigEvaluator {
                 }
             }
             TypeRefKind::Refined { base, .. } => self.parse_simple_env(&base.name, raw),
-            TypeRefKind::Simple(ident) => self.parse_simple_env(&ident.name, raw),
+            TypeRefKind::Simple(ident) => {
+                let (_, simple_name) = split_type_name(&ident.name);
+                match simple_name {
+                    "Int" | "Float" | "Bool" | "String" | "Id" | "Email" | "Bytes" => {
+                        self.parse_simple_env(&ident.name, raw)
+                    }
+                    _ => {
+                        let json = rt_json::decode(raw).map_err(|msg| {
+                            NativeError::Runtime(format!("invalid JSON value: {msg}"))
+                        })?;
+                        self.decode_json_value(&json, ty, "$")
+                    }
+                }
+            }
             TypeRefKind::Result { .. } => Err(NativeError::Runtime(
                 "Result is not supported for config env overrides".to_string(),
             )),
@@ -2054,6 +2083,193 @@ impl ConfigEvaluator {
                 }
             },
         }
+    }
+
+    fn decode_json_value(
+        &mut self,
+        json: &rt_json::JsonValue,
+        ty: &TypeRef,
+        path: &str,
+    ) -> NativeResult<Value> {
+        let value = match &ty.kind {
+            TypeRefKind::Optional(inner) => {
+                if matches!(json, rt_json::JsonValue::Null) {
+                    Value::Null
+                } else {
+                    self.decode_json_value(json, inner, path)?
+                }
+            }
+            TypeRefKind::Refined { base, .. } => {
+                let base_ty = TypeRef {
+                    kind: TypeRefKind::Simple(base.clone()),
+                    span: ty.span,
+                };
+                let value = self.decode_json_value(json, &base_ty, path)?;
+                value
+            }
+            TypeRefKind::Simple(ident) => {
+                if let Some(value) = self.decode_simple_json(json, &ident.name, path)? {
+                    value
+                } else {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        "user-defined types are not supported for config env overrides",
+                    )));
+                }
+            }
+            TypeRefKind::Result { .. } => {
+                return Err(NativeError::Error(self.validation_error_value(
+                    path,
+                    "invalid_value",
+                    "Result is not supported for config env overrides",
+                )));
+            }
+            TypeRefKind::Generic { base, args } => match base.name.as_str() {
+                "Option" => {
+                    if args.len() != 1 {
+                        return Err(NativeError::Runtime(
+                            "Option expects 1 type argument".to_string(),
+                        ));
+                    }
+                    if matches!(json, rt_json::JsonValue::Null) {
+                        Value::Null
+                    } else {
+                        self.decode_json_value(json, &args[0], path)?
+                    }
+                }
+                "Result" => {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        "Result is not supported for config env overrides",
+                    )));
+                }
+                "List" => {
+                    if args.len() != 1 {
+                        return Err(NativeError::Runtime(
+                            "List expects 1 type argument".to_string(),
+                        ));
+                    }
+                    let rt_json::JsonValue::Array(items) = json else {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            "expected List",
+                        )));
+                    };
+                    let mut values = Vec::with_capacity(items.len());
+                    for (idx, item) in items.iter().enumerate() {
+                        let item_path = format!("{path}[{idx}]");
+                        values.push(self.decode_json_value(item, &args[0], &item_path)?);
+                    }
+                    Value::List(values)
+                }
+                "Map" => {
+                    if args.len() != 2 {
+                        return Err(NativeError::Runtime(
+                            "Map expects 2 type arguments".to_string(),
+                        ));
+                    }
+                    let rt_json::JsonValue::Object(items) = json else {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            "expected Map",
+                        )));
+                    };
+                    let mut values = HashMap::new();
+                    for (key, item) in items.iter() {
+                        let key_value = Value::String(key.clone());
+                        let key_path = format!("{path}.{key}");
+                        self.validate_value(&key_value, &args[0], &key_path)?;
+                        let value = self.decode_json_value(item, &args[1], &key_path)?;
+                        values.insert(key.clone(), value);
+                    }
+                    Value::Map(values)
+                }
+                _ => {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("unsupported type {} for config env overrides", base.name),
+                    )));
+                }
+            },
+        };
+        self.validate_value(&value, ty, path)?;
+        Ok(value)
+    }
+
+    fn decode_simple_json(
+        &self,
+        json: &rt_json::JsonValue,
+        name: &str,
+        path: &str,
+    ) -> NativeResult<Option<Value>> {
+        let value = match name {
+            "Int" => match json {
+                rt_json::JsonValue::Number(n) if n.fract() == 0.0 => Value::Int(*n as i64),
+                _ => {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        "expected Int",
+                    )));
+                }
+            },
+            "Float" => match json {
+                rt_json::JsonValue::Number(n) => Value::Float(*n),
+                _ => {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        "expected Float",
+                    )));
+                }
+            },
+            "Bool" => match json {
+                rt_json::JsonValue::Bool(v) => Value::Bool(*v),
+                _ => {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        "expected Bool",
+                    )));
+                }
+            },
+            "String" | "Id" | "Email" => match json {
+                rt_json::JsonValue::String(v) => Value::String(v.clone()),
+                _ => {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        "expected String",
+                    )));
+                }
+            },
+            "Bytes" => match json {
+                rt_json::JsonValue::String(v) => {
+                    rt_bytes::decode_base64(v).map_err(|msg| {
+                        NativeError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            format!("invalid Bytes (base64): {msg}"),
+                        ))
+                    })?;
+                    Value::String(v.clone())
+                }
+                _ => {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        "expected String",
+                    )));
+                }
+            },
+            _ => return Ok(None),
+        };
+        Ok(Some(value))
     }
 
     fn parse_simple_env(&self, name: &str, raw: &str) -> NativeResult<Value> {
@@ -2286,7 +2502,7 @@ impl ConfigEvaluator {
                 },
                 "Bytes" => match value {
                     Value::String(v) => {
-                        rt_bytes::decode_base64(v).map_err(|msg| {
+                        rt_bytes::decode_base64(&v).map_err(|msg| {
                             NativeError::Error(self.validation_error_value(
                                 path,
                                 "invalid_value",

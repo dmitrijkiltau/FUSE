@@ -198,9 +198,9 @@ type Payload:
 type User:
   name: String
 
-service Api:
-  route POST "/decode" body body: Payload -> Payload:
-    body
+service Api at "":
+  post "/decode" body Payload -> Payload:
+    return body
 
 app "demo":
   serve(App.port)
@@ -222,7 +222,7 @@ app "demo":
         .spawn()
         .expect("failed to start server");
 
-    let ok_body = r#"{"names":["Ada"],"labels":{"x":1},"who":{"name":"Ada"},"blob":"YQ=="}"#;
+    let ok_body = r#"{"blob":"YQ==","labels":{"x":1},"names":["Ada"],"who":{"name":"Ada"}}"#;
     let ok_req = format!(
         "POST /decode HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         ok_body.len(),

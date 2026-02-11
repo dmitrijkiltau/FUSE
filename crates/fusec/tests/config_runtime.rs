@@ -125,7 +125,7 @@ fn config_structured_json_support_and_bytes_validation() {
 config App:
   names: List<String> = ["Default"]
   labels: Map<String, Int> = {"a": 1}
-  profile: User = User(name: "anon", age: 1)
+  profile: User = User(name="anon", age=1)
   token: Bytes = "Zg=="
 
 type User:
@@ -232,7 +232,7 @@ type User:
         .arg("--names=[\"Nia\"]")
         .arg("--labels={\"k\":7}")
         .arg("--profile={\"name\":\"Mia\"}")
-        .arg("--token=nope")
+        .arg("--token=not_base64")
         .output()
         .expect("failed to run fusec");
     assert!(!bad.status.success(), "expected invalid bytes failure");
