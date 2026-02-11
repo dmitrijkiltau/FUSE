@@ -172,14 +172,77 @@ fn golden_http_users_get_not_found() {
         .spawn()
         .expect("failed to start server");
 
-    let request = format!(
-        "GET /api/users/42 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
-    );
+    let request = format!("GET /api/users/42 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n");
     let (status, response_body) = send_http_request_with_retry(port, &request);
     let _ = child.wait();
     assert_eq!(status, 404);
     assert_eq!(
         response_body,
         r#"{"error":{"code":"not_found","message":"not found"}}"#
+    );
+}
+
+#[test]
+fn golden_http_body_structured_and_bytes_validation() {
+    let port = find_free_port();
+    let src = r#"
+config App:
+  port: Int = 0
+
+type Payload:
+  names: List<String>
+  labels: Map<String, Int>
+  who: User
+  blob: Bytes
+
+type User:
+  name: String
+
+service Api at "":
+  post "/decode" body Payload -> Payload:
+    return body
+
+app "demo":
+  serve(App.port)
+"#;
+    let mut path = std::env::temp_dir();
+    path.push(format!("fuse_http_decode_{}.fuse", port));
+    std::fs::write(&path, src).expect("write temp program");
+
+    let exe = env!("CARGO_BIN_EXE_fusec");
+    let mut child = Command::new(exe)
+        .arg("--run")
+        .arg("--backend")
+        .arg("ast")
+        .arg(&path)
+        .env("APP_PORT", port.to_string())
+        .env("FUSE_MAX_REQUESTS", "2")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start server");
+
+    let ok_body = r#"{"blob":"YQ==","labels":{"x":1},"names":["Ada"],"who":{"name":"Ada"}}"#;
+    let ok_req = format!(
+        "POST /decode HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        ok_body.len(),
+        ok_body
+    );
+    let (ok_status, ok_resp) = send_http_request_with_retry(port, &ok_req);
+    assert_eq!(ok_status, 200);
+    assert_eq!(ok_resp, ok_body);
+
+    let bad_body = r#"{"names":["Ada"],"labels":{"x":1},"who":{"name":"Ada"},"blob":"not_base64"}"#;
+    let bad_req = format!(
+        "POST /decode HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        bad_body.len(),
+        bad_body
+    );
+    let (bad_status, bad_resp) = send_http_request_with_retry(port, &bad_req);
+    let _ = child.wait();
+    assert_eq!(bad_status, 400);
+    assert_eq!(
+        bad_resp,
+        r#"{"error":{"code":"validation_error","fields":[{"code":"invalid_value","message":"invalid Bytes (base64): invalid base64 length","path":"body.blob"}],"message":"validation failed"}}"#
     );
 }
