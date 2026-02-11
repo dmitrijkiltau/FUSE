@@ -291,6 +291,7 @@ The AST matches `crates/fusec/src/ast.rs`:
 * `Error` (built-in error base)
 * `List<T>`, `Map<K,V>`, `Option<T>`, `Result<T,E>`
 * Runtime constraint: `Map<K,V>` requires `K = String`.
+* Runtime detail: `Bytes` values are raw bytes; JSON/config/CLI boundaries use base64 text.
 * User-defined `type` and `enum` are nominal.
 
 Reserved namespace:

@@ -6,7 +6,10 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path};
 use std::rc::Rc;
 
-use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate as rt_validate};
+use fuse_rt::{
+    bytes as rt_bytes, config as rt_config, error as rt_error, json as rt_json,
+    validate as rt_validate,
+};
 
 use crate::ast::{
     Expr, ExprKind, HttpVerb, Ident, Literal, Pattern, PatternKind, TypeRef, TypeRefKind, UnaryOp,
@@ -1699,7 +1702,12 @@ impl<'a> Vm<'a> {
                 "false" => Ok(Value::Bool(false)),
                 _ => Err(VmError::Runtime(format!("invalid Bool: {raw}"))),
             },
-            "String" | "Id" | "Email" | "Bytes" => Ok(Value::String(raw.to_string())),
+            "String" | "Id" | "Email" => Ok(Value::String(raw.to_string())),
+            "Bytes" => {
+                let bytes = rt_bytes::decode_base64(raw)
+                    .map_err(|msg| VmError::Runtime(format!("invalid Bytes (base64): {msg}")))?;
+                Ok(Value::Bytes(bytes))
+            }
             _ => Err(VmError::Runtime(format!(
                 "env override not supported for type {name}"
             ))),
@@ -1910,7 +1918,7 @@ impl<'a> Vm<'a> {
                     }
                 },
                 "Bytes" => {
-                    if matches!(value, Value::String(_)) {
+                    if matches!(value, Value::Bytes(_)) {
                         return Ok(());
                     }
                     return Err(VmError::Error(self.validation_error_value(
@@ -1940,6 +1948,7 @@ impl<'a> Vm<'a> {
             Value::Float(_) => "Float".to_string(),
             Value::Bool(_) => "Bool".to_string(),
             Value::String(_) => "String".to_string(),
+            Value::Bytes(_) => "Bytes".to_string(),
             Value::Null => "Null".to_string(),
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
@@ -1979,6 +1988,7 @@ impl<'a> Vm<'a> {
             Value::Float(v) => rt_json::JsonValue::Number(v),
             Value::Bool(v) => rt_json::JsonValue::Bool(v),
             Value::String(v) => rt_json::JsonValue::String(v.clone()),
+            Value::Bytes(v) => rt_json::JsonValue::String(rt_bytes::encode_base64(&v)),
             Value::Null => rt_json::JsonValue::Null,
             Value::List(items) => {
                 rt_json::JsonValue::Array(items.iter().map(|v| self.value_to_json(v)).collect())
@@ -2228,8 +2238,27 @@ impl<'a> Vm<'a> {
                     )))
                 }
             },
-            "String" | "Id" | "Email" | "Bytes" => match json {
+            "String" | "Id" | "Email" => match json {
                 rt_json::JsonValue::String(v) => Value::String(v.clone()),
+                _ => {
+                    return Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        "expected String",
+                    )))
+                }
+            },
+            "Bytes" => match json {
+                rt_json::JsonValue::String(v) => {
+                    let bytes = rt_bytes::decode_base64(v).map_err(|msg| {
+                        VmError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            format!("invalid Bytes (base64): {msg}"),
+                        ))
+                    })?;
+                    Value::Bytes(bytes)
+                }
                 _ => {
                     return Err(VmError::Error(self.validation_error_value(
                         path,
@@ -2934,6 +2963,15 @@ impl<'a> Vm<'a> {
                 _ => {
                     return Err(VmError::Runtime(
                         "unsupported string comparison".to_string(),
+                    ))
+                }
+            },
+            (Value::Bytes(a), Value::Bytes(b)) => match op {
+                Instr::Eq => a == b,
+                Instr::NotEq => a != b,
+                _ => {
+                    return Err(VmError::Runtime(
+                        "unsupported bytes comparison".to_string(),
                     ))
                 }
             },

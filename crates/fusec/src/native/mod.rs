@@ -1041,10 +1041,10 @@ impl<'a> NativeVm<'a> {
             },
             "String" | "Id" | "Email" => Ok(Value::String(raw.to_string())),
             "Bytes" => {
-                rt_bytes::decode_base64(raw).map_err(|msg| {
+                let bytes = rt_bytes::decode_base64(raw).map_err(|msg| {
                     NativeError::Runtime(format!("invalid Bytes (base64): {msg}"))
                 })?;
-                Ok(Value::String(raw.to_string()))
+                Ok(Value::Bytes(bytes))
             }
             _ => Err(NativeError::Runtime(format!(
                 "env override not supported for type {name}"
@@ -1253,14 +1253,7 @@ impl<'a> NativeVm<'a> {
                     }
                 },
                 "Bytes" => match value {
-                    Value::String(v) => {
-                        rt_bytes::decode_base64(&v).map_err(|msg| {
-                            NativeError::Error(self.validation_error_value(
-                                path,
-                                "invalid_value",
-                                format!("invalid Bytes (base64): {msg}"),
-                            ))
-                        })?;
+                    Value::Bytes(_) => {
                         return Ok(());
                     }
                     _ => {
@@ -1296,6 +1289,7 @@ impl<'a> NativeVm<'a> {
             Value::Float(_) => "Float".to_string(),
             Value::Bool(_) => "Bool".to_string(),
             Value::String(_) => "String".to_string(),
+            Value::Bytes(_) => "Bytes".to_string(),
             Value::Null => "Null".to_string(),
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
@@ -1508,6 +1502,7 @@ impl<'a> NativeVm<'a> {
             Value::Float(v) => rt_json::JsonValue::Number(v),
             Value::Bool(v) => rt_json::JsonValue::Bool(v),
             Value::String(v) => rt_json::JsonValue::String(v.clone()),
+            Value::Bytes(v) => rt_json::JsonValue::String(rt_bytes::encode_base64(&v)),
             Value::Null => rt_json::JsonValue::Null,
             Value::List(items) => {
                 rt_json::JsonValue::Array(items.iter().map(|v| self.value_to_json(v)).collect())
@@ -1744,14 +1739,14 @@ impl<'a> NativeVm<'a> {
             },
             "Bytes" => match json {
                 rt_json::JsonValue::String(v) => {
-                    rt_bytes::decode_base64(&v).map_err(|msg| {
+                    let bytes = rt_bytes::decode_base64(&v).map_err(|msg| {
                         NativeError::Error(self.validation_error_value(
                             path,
                             "invalid_value",
                             format!("invalid Bytes (base64): {msg}"),
                         ))
                     })?;
-                    Value::String(v.clone())
+                    Value::Bytes(bytes)
                 }
                 _ => {
                     return Err(NativeError::Error(self.validation_error_value(
@@ -2250,14 +2245,14 @@ impl ConfigEvaluator {
             },
             "Bytes" => match json {
                 rt_json::JsonValue::String(v) => {
-                    rt_bytes::decode_base64(v).map_err(|msg| {
+                    let bytes = rt_bytes::decode_base64(v).map_err(|msg| {
                         NativeError::Error(self.validation_error_value(
                             path,
                             "invalid_value",
                             format!("invalid Bytes (base64): {msg}"),
                         ))
                     })?;
-                    Value::String(v.clone())
+                    Value::Bytes(bytes)
                 }
                 _ => {
                     return Err(NativeError::Error(self.validation_error_value(
@@ -2289,10 +2284,10 @@ impl ConfigEvaluator {
             },
             "String" | "Id" | "Email" => Ok(Value::String(raw.to_string())),
             "Bytes" => {
-                rt_bytes::decode_base64(raw).map_err(|msg| {
+                let bytes = rt_bytes::decode_base64(raw).map_err(|msg| {
                     NativeError::Runtime(format!("invalid Bytes (base64): {msg}"))
                 })?;
-                Ok(Value::String(raw.to_string()))
+                Ok(Value::Bytes(bytes))
             }
             _ => Err(NativeError::Runtime(format!(
                 "env override not supported for type {name}"
@@ -2501,14 +2496,7 @@ impl ConfigEvaluator {
                     }
                 },
                 "Bytes" => match value {
-                    Value::String(v) => {
-                        rt_bytes::decode_base64(&v).map_err(|msg| {
-                            NativeError::Error(self.validation_error_value(
-                                path,
-                                "invalid_value",
-                                format!("invalid Bytes (base64): {msg}"),
-                            ))
-                        })?;
+                    Value::Bytes(_) => {
                         return Ok(());
                     }
                     _ => {
@@ -2544,6 +2532,7 @@ impl ConfigEvaluator {
             Value::Float(_) => "Float".to_string(),
             Value::Bool(_) => "Bool".to_string(),
             Value::String(_) => "String".to_string(),
+            Value::Bytes(_) => "Bytes".to_string(),
             Value::Null => "Null".to_string(),
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),

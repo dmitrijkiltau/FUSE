@@ -151,7 +151,7 @@ Rules:
 * User-defined `struct` and `enum` are supported using the same validation rules as struct literals.
 * `Result<T,E>` is **not** supported in JSON decoding.
 
-`Bytes` use base64 text at JSON/config/CLI boundaries. Runtime values remain strings, so existing programs that already pass base64-compatible strings continue to work.
+`Bytes` use base64 text at JSON/config/CLI boundaries. Runtime values are stored as raw bytes.
 
 ## Config loading
 
@@ -286,7 +286,7 @@ Query builder (all methods return a new `Query`):
 Parameter binding:
 
 * SQL uses positional `?` placeholders and a `List` of params.
-* Supported param types: `null`, `Int`, `Float`, `Bool`, `String` (boxed/results are unwrapped).
+* Supported param types: `null`, `Int`, `Float`, `Bool`, `String`, `Bytes` (boxed/results are unwrapped).
 * `in` expects a non-empty list and expands to `IN (?, ?, ...)`.
 
 Identifier constraints:
@@ -301,7 +301,7 @@ Value mapping:
 * integers -> `Int`
 * reals -> `Float`
 * text -> `String`
-* blobs -> hex string
+* blobs -> `Bytes`
 
 Connection pooling is not implemented.
 
