@@ -202,6 +202,7 @@ pub(crate) struct HostCalls {
     builtin_env: FuncId,
     builtin_serve: FuncId,
     builtin_assert: FuncId,
+    builtin_asset: FuncId,
     config_get: FuncId,
     task_id: FuncId,
     task_done: FuncId,
@@ -312,6 +313,10 @@ impl JitRuntime {
         builder.symbol(
             "fuse_native_builtin_assert",
             fuse_native_builtin_assert as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_asset",
+            fuse_native_builtin_asset as *const u8,
         );
         builder.symbol(
             "fuse_native_config_get",
@@ -742,6 +747,9 @@ impl HostCalls {
         let builtin_assert = module
             .declare_function("fuse_native_builtin_assert", Linkage::Import, &builtin_sig)
             .expect("declare builtin assert hostcall");
+        let builtin_asset = module
+            .declare_function("fuse_native_builtin_asset", Linkage::Import, &builtin_sig)
+            .expect("declare builtin asset hostcall");
         let config_get = module
             .declare_function("fuse_native_config_get", Linkage::Import, &builtin_sig)
             .expect("declare config get hostcall");
@@ -852,6 +860,7 @@ impl HostCalls {
             builtin_env,
             builtin_serve,
             builtin_assert,
+            builtin_asset,
             config_get,
             task_id,
             task_done,
@@ -2681,6 +2690,41 @@ extern "C" fn fuse_native_builtin_env(
             0
         }
     }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_asset(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "asset expects 1 argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = args.get(0) else {
+        return builtin_runtime_error(out, heap, "asset expects a string path");
+    };
+    let Some(value) = value.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "asset expects a string path");
+    };
+    let path = match value {
+        Value::String(path) => path,
+        _ => return builtin_runtime_error(out, heap, "asset expects a string path"),
+    };
+    let resolved = crate::runtime_assets::resolve_asset_href(&path);
+    *out = NativeValue::string(resolved, heap);
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -5280,6 +5324,7 @@ fn compile_function<M: Module>(
                                 "env" => hostcalls.builtin_env,
                                 "serve" => hostcalls.builtin_serve,
                                 "assert" => hostcalls.builtin_assert,
+                                "asset" => hostcalls.builtin_asset,
                                 "range" => hostcalls.range,
                                 "task.id" => hostcalls.task_id,
                                 "task.done" => hostcalls.task_done,
@@ -6162,6 +6207,7 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     | "env"
                     | "serve"
                     | "assert"
+                    | "asset"
                     | "range"
                     | "task.id"
                     | "task.done"
@@ -6695,7 +6741,7 @@ fn analyze_types(
                     let result_kind = match kind {
                         CallKind::Builtin => {
                             match name.as_str() {
-                                "print" | "log" | "env" | "serve" | "assert" | "range"
+                                "print" | "log" | "env" | "serve" | "assert" | "asset" | "range"
                                 | "task.id" | "task.done" | "task.cancel" | "db.exec"
                                 | "db.query" | "db.one" | "db.from" | "query.select"
                                 | "query.where" | "query.order_by" | "query.limit"

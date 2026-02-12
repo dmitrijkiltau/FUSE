@@ -64,8 +64,9 @@ Build distributable binaries:
 `fuse` reads `fuse.toml` (current directory or `--manifest-path`) and uses
 `package.entry` for `fuse dev` / `fuse run` / `fuse test`.
 Set `[serve].openapi_ui = true` to expose the OpenAPI UI for normal `fuse run`.
-Set `[assets]` (`scss`, `css`, optional `watch`) to run external `sass` during `fuse build`
-and on changes in `fuse dev`.
+Set `[assets]` (`scss`, `css`, optional `watch`, optional `hash`) to run external `sass` during
+`fuse build` and on changes in `fuse dev`. With `hash = true`, use `asset("css/app.css")` in Fuse
+code to resolve logical paths to hashed public URLs.
 
 Build artifacts and caches:
 

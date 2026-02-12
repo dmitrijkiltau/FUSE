@@ -43,6 +43,17 @@ impl<'a> Checker<'a> {
         env.insert_builtin("time");
         env.insert_builtin("print");
         env.insert_builtin("assert");
+        env.insert_builtin_with_ty(
+            "asset",
+            Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "path".to_string(),
+                    ty: Ty::String,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::String),
+            }),
+        );
         env.insert_builtin("serve");
         env.insert_builtin_with_ty("task", Ty::External("task".to_string()));
         env.insert_builtin_with_ty("html", Ty::External("html".to_string()));

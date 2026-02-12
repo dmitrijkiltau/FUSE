@@ -89,7 +89,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * HTTP request binding + response encoding (JSON by default, `Html` routes emit `text/html`)
 * HTMX-friendly server-driven fragments via normal `Html` route returns (no dedicated HTMX runtime)
 * error JSON + HTTP status mapping
-* builtins: `print`, `log`, `db.exec/query/one/from`, `query.*`, `assert`, `env`, `serve`, `task.id`, `task.done`, `task.cancel`, `html.text/raw/node/render`
+* builtins: `print`, `log`, `db.exec/query/one/from`, `query.*`, `assert`, `env`, `asset`, `serve`, `task.id`, `task.done`, `task.cancel`, `html.text/raw/node/render`
 * SQLite-backed DB access + migrations via `fusec --migrate`
 * CLI arg binding for `fn main` when running with program args
 
@@ -103,6 +103,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * dev server watch mode (`fuse dev`) with restart-on-change and HTML live-reload script injection
 * OpenAPI UI auto-serve in dev (`/docs` by default) and opt-in for `fuse run`
 * asset pipeline orchestration (`[assets]` + external `sass`) in `fuse build` and `fuse dev`
+* hashed static outputs (`[assets].hash = true`) + runtime `asset(path)` helper backed by `.fuse/assets-manifest.json`
 * project-wide CLI ergonomics: `fuse check`/`fuse fmt` over the package module graph + file-aware multi-file parse/sema spans
 * dependency fetching + `fuse.lock`
 * IR cache for fast `fuse run` (`.fuse/build/program.ir`)

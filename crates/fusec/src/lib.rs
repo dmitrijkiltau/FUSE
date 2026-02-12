@@ -10,6 +10,7 @@ pub mod loader;
 pub mod native;
 pub mod openapi;
 pub mod parser;
+mod runtime_assets;
 pub mod sema;
 pub mod span;
 pub mod token;

@@ -246,6 +246,7 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * `FUSE_MAX_REQUESTS` stops the server after N requests (useful for tests).
 * `FUSE_DEV_RELOAD_WS_URL` enables dev HTML script injection (`WebSocket` auto-reload client to `/__reload`).
 * `FUSE_OPENAPI_JSON_PATH` + `FUSE_OPENAPI_UI_PATH` enable built-in OpenAPI UI serving (`GET <path>` and `<path>/openapi.json`).
+* `FUSE_ASSET_MAP` provides logical-path -> public-URL mappings for `asset(path)` (JSON object).
 
 ## Builtins (current)
 
@@ -255,6 +256,7 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * `db.from(table)` builds a parameterized query (see Database below).
 * `assert(cond, message?)` throws a runtime error when `cond` is false.
 * `env(name: String) -> String?` returns an env var or `null`.
+* `asset(path: String) -> String` resolves to a hashed/static public URL when `FUSE_ASSET_MAP` is set.
 * `serve(port)` starts the HTTP server on `FUSE_HOST:port`.
 * `task.id/done/cancel` operate on spawned tasks (see Tasks below).
 * `html.text(String)`, `html.raw(String)`, `html.node(String, Map<String,String>, List<Html>)`, `html.render(Html)`.

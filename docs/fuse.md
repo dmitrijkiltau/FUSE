@@ -152,7 +152,7 @@ mutating routes, keep normal HTTP status/error behavior, and avoid introducing a
 * AST interpreter, VM, and experimental native backend (`--backend native`)
 * `import` module loading (namespaced modules + named imports)
 * module-qualified type references in type positions (`Foo.User`, `Foo.Config`)
-* Built-ins: `print(...)`, `log(...)`, `db.exec/query/one`, `db.from`/`query.*`, `assert(...)`, `env(...)`, `serve(...)`, `task.id/done/cancel`, `html.text/raw/node/render`
+* Built-ins: `print(...)`, `log(...)`, `db.exec/query/one`, `db.from`/`query.*`, `assert(...)`, `env(...)`, `asset(path)`, `serve(...)`, `task.id/done/cancel`, `html.text/raw/node/render`
 * SQLite-backed DB access with parameter binding + query builder (`db.from`/`query.*`) + migrations (`migration` + `fusec --migrate`)
 * tests via `test "name":` + `fusec --test` (AST backend)
 * `spawn`/`await`/`box` concurrency
@@ -194,6 +194,7 @@ openapi_path = "/docs"
 scss = "assets/scss"
 css = "public/css"
 watch = true
+hash = true
 
 [dependencies]
 Auth = { git = "https://github.com/org/auth.fuse", tag = "v0.3.1" }
@@ -209,7 +210,9 @@ OpenAPI UI serving is enabled automatically in `fuse dev` (route defaults to `/d
 available for `fuse run` when `[serve].openapi_ui = true`. The spec is generated ahead-of-time by
 the CLI and served from a file (`no runtime spec generation`).
 When `[assets]` is configured, `fuse build` runs external `sass` to compile SCSS into the configured
-CSS path, and `fuse dev` reruns that compilation on watched changes.
+CSS path, and `fuse dev` reruns that compilation on watched changes. With `hash = true`, compiled CSS
+is renamed to content-hashed filenames and a manifest is emitted at `.fuse/assets-manifest.json`.
+Use `asset("css/app.css")` in Html helpers to resolve logical paths to hashed public URLs.
 `fuse check` semantically checks the package module graph starting at `package.entry`;
 `fuse fmt` formats that same module graph.
 

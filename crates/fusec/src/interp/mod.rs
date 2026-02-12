@@ -1353,9 +1353,16 @@ impl<'a> Interpreter<'a> {
             return Ok(Value::Config(name.to_string()));
         }
         match name {
-            "print" | "env" | "serve" | "log" | "db" | "assert" | "task" | "json" | "html" => {
-                Ok(Value::Builtin(name.to_string()))
-            }
+            "print"
+            | "env"
+            | "serve"
+            | "log"
+            | "db"
+            | "assert"
+            | "asset"
+            | "task"
+            | "json"
+            | "html" => Ok(Value::Builtin(name.to_string())),
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),
         }
     }
@@ -1462,6 +1469,20 @@ impl<'a> Interpreter<'a> {
                 let json = rt_json::decode(&text)
                     .map_err(|msg| ExecError::Runtime(format!("invalid json: {msg}")))?;
                 Ok(self.json_to_value(&json))
+            }
+            "asset" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime("asset expects 1 argument".to_string()));
+                }
+                let path = match args.get(0) {
+                    Some(Value::String(path)) => path,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "asset expects a string path".to_string(),
+                        ));
+                    }
+                };
+                Ok(Value::String(crate::runtime_assets::resolve_asset_href(path)))
             }
             "html.text" => {
                 if args.len() != 1 {

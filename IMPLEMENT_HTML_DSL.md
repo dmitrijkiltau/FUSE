@@ -212,19 +212,17 @@ Dev:
 Build:
 
 * Compile SCSS
-* Hash output
-* Rewrite asset references
 
 No internal SCSS parser.
 
 Current implementation note: SCSS orchestration is implemented via external `sass`
-for `fuse build` and `fuse dev`; hashed outputs remain in PHASE 7.
+for `fuse build` and `fuse dev`. Hashing + `asset(...)` landed in PHASE 7.
 
 ---
 
 # PHASE 7 — Hashed Static Files
 
-Status: PENDING
+Status: DONE
 
 When `hash = true`:
 
@@ -247,6 +245,13 @@ link({ href: asset("css/app.css") })
 ```
 
 This avoids manual rewriting.
+
+Implemented behavior in this repo:
+
+* `fuse build`/`fuse dev` with `[assets].hash = true` renames compiled CSS to content-hashed filenames.
+* Hashes are exposed to runtime via `.fuse/assets-manifest.json` and `FUSE_ASSET_MAP`.
+* New builtin helper `asset(path: String) -> String` resolves logical paths (for example `css/app.css`)
+  to hashed public URLs (for example `/css/app.<hash>.css`), with fallback to `/<path>`.
 
 ---
 

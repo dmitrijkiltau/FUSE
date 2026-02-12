@@ -815,6 +815,16 @@ impl<'a> Vm<'a> {
                     .map_err(|msg| VmError::Runtime(format!("invalid json: {msg}")))?;
                 Ok(self.json_to_value(&json))
             }
+            "asset" => {
+                if args.len() != 1 {
+                    return Err(VmError::Runtime("asset expects 1 argument".to_string()));
+                }
+                let path = match args.get(0) {
+                    Some(Value::String(path)) => path,
+                    _ => return Err(VmError::Runtime("asset expects a string path".to_string())),
+                };
+                Ok(Value::String(crate::runtime_assets::resolve_asset_href(path)))
+            }
             "html.text" => {
                 if args.len() != 1 {
                     return Err(VmError::Runtime("html.text expects 1 argument".to_string()));

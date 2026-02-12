@@ -18,15 +18,25 @@ fn write_temp_file(name: &str, ext: &str, contents: &str) -> std::path::PathBuf 
 }
 
 fn run_program(backend: &str, source: &str) -> std::process::Output {
+    run_program_with_env(backend, source, &[])
+}
+
+fn run_program_with_env(
+    backend: &str,
+    source: &str,
+    extra_env: &[(String, String)],
+) -> std::process::Output {
     let program_path = write_temp_file("fuse_html_runtime", "fuse", source);
     let exe = env!("CARGO_BIN_EXE_fusec");
-    Command::new(exe)
-        .arg("--run")
+    let mut cmd = Command::new(exe);
+    cmd.arg("--run")
         .arg("--backend")
         .arg(backend)
-        .arg(&program_path)
-        .output()
-        .expect("failed to run fusec")
+        .arg(&program_path);
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+    cmd.output().expect("failed to run fusec")
 }
 
 fn find_free_port() -> u16 {
@@ -201,6 +211,33 @@ app "html":
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert_eq!(stdout.trim(), expected, "{backend} stdout");
+    }
+}
+
+#[test]
+fn asset_builtin_resolves_hashed_paths_across_backends() {
+    let program = r#"
+app "asset":
+  print(asset("css/app.css"))
+  print(asset("/css/app.css?v=1"))
+"#;
+
+    let env = vec![(
+        "FUSE_ASSET_MAP".to_string(),
+        r#"{"css/app.css":"/css/app.3f92ac1f7d.css"}"#.to_string(),
+    )];
+    for backend in ["ast", "vm", "native"] {
+        let output = run_program_with_env(backend, program, &env);
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert!(lines.len() >= 2, "{backend} stdout: {stdout}");
+        assert_eq!(lines[0], "/css/app.3f92ac1f7d.css", "{backend} line1");
+        assert_eq!(lines[1], "/css/app.3f92ac1f7d.css?v=1", "{backend} line2");
     }
 }
 

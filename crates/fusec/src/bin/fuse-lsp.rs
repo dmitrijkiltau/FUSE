@@ -1273,7 +1273,7 @@ fn is_builtin_receiver(name: &str) -> bool {
 }
 
 fn is_builtin_function_name(name: &str) -> bool {
-    matches!(name, "print" | "env" | "serve" | "log" | "assert")
+    matches!(name, "print" | "env" | "serve" | "log" | "assert" | "asset")
 }
 
 fn is_builtin_type_name(name: &str) -> bool {

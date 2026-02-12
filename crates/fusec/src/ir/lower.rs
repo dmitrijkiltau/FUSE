@@ -122,7 +122,7 @@ impl<'a> Lowerer<'a> {
                 fn_decls.insert(decl.name.name.clone(), decl.clone());
             }
         }
-        let builtin_names = ["print", "env", "serve", "log", "assert"]
+        let builtin_names = ["print", "env", "serve", "log", "assert", "asset"]
             .into_iter()
             .map(|s| s.to_string())
             .collect();

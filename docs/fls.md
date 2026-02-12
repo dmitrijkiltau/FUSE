@@ -402,5 +402,6 @@ Runtime binding + error mapping are described in `runtime.md`.
 * `a..b` yields a numeric list (inclusive) when evaluated; descending ranges error.
 * DB builtins support parameter binding and a minimal query builder (`db.from` / `query.*`).
 * HTML builtins are available (`html.text`, `html.raw`, `html.node`, `html.render`).
+* `asset(path)` resolves logical static paths to public URLs (including hashed outputs when configured).
 * HTTP handlers returning `Html` are rendered with `Content-Type: text/html; charset=utf-8`.
 * `native` currently reuses VM runtime semantics while compiler/codegen work is still in progress, with a Cranelift JIT fast-path for direct Int/Bool arithmetic/control-flow function calls.
