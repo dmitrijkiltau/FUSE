@@ -172,6 +172,10 @@ backend = "native"
 openapi = "build/openapi.json"
 native_bin = "build/app"
 
+[serve]
+openapi_ui = true
+openapi_path = "/docs"
+
 [dependencies]
 Auth = { git = "https://github.com/org/auth.fuse", tag = "v0.3.1" }
 Utils = { path = "../utils" }
@@ -182,6 +186,9 @@ restarts on `.fuse` changes (plus `[assets].scss` when configured), injecting a 
 HTML responses. `fuse build` runs checks and emits OpenAPI
 if `build.openapi` is set. If `build.native_bin` is set, it links a standalone native binary
 at that path (native backend; config loading uses `FUSE_CONFIG` + env overrides).
+OpenAPI UI serving is enabled automatically in `fuse dev` (route defaults to `/docs`) and is
+available for `fuse run` when `[serve].openapi_ui = true`. The spec is generated ahead-of-time by
+the CLI and served from a file (`no runtime spec generation`).
 `fuse check` semantically checks the package module graph starting at `package.entry`;
 `fuse fmt` formats that same module graph.
 

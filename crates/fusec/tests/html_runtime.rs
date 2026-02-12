@@ -98,6 +98,23 @@ fn run_http_program_with_env(
     port: u16,
     extra_env: &[(String, String)],
 ) -> HttpResponse {
+    let mut responses = run_http_program_with_env_requests(
+        backend,
+        source,
+        port,
+        extra_env,
+        &["GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"],
+    );
+    responses.remove(0)
+}
+
+fn run_http_program_with_env_requests(
+    backend: &str,
+    source: &str,
+    port: u16,
+    extra_env: &[(String, String)],
+    requests: &[&str],
+) -> Vec<HttpResponse> {
     let program_path = write_temp_file("fuse_html_http", "fuse", source);
     let exe = env!("CARGO_BIN_EXE_fusec");
     let mut cmd = Command::new(exe);
@@ -106,23 +123,29 @@ fn run_http_program_with_env(
         .arg(backend)
         .arg(&program_path)
         .env("APP_PORT", port.to_string())
-        .env("FUSE_MAX_REQUESTS", "1")
+        .env("FUSE_MAX_REQUESTS", requests.len().to_string())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
     let child = cmd.spawn().expect("failed to start server");
-
-    let request = format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
-    let response = send_http_request_with_retry(port, &request);
+    let mut responses = Vec::new();
+    for request in requests {
+        let request = if request.contains("Host:") {
+            request.replace("localhost", &format!("127.0.0.1:{port}"))
+        } else {
+            request.to_string()
+        };
+        responses.push(send_http_request_with_retry(port, &request));
+    }
     let output = child.wait_with_output().expect("failed to wait for server");
     assert!(
         output.status.success(),
         "{backend} stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    response
+    responses
 }
 
 #[test]
@@ -246,4 +269,54 @@ app "docs":
             response.body
         );
     }
+}
+
+#[test]
+fn openapi_ui_routes_are_served_when_enabled() {
+    let program = r#"
+config App:
+  port: Int = 3000
+
+service Docs at "/api":
+  get "/ping" -> String:
+    return "ok"
+
+app "docs":
+  serve(App.port)
+"#;
+    let mut openapi_path = std::env::temp_dir();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    openapi_path.push(format!("fuse_openapi_ui_{stamp}.json"));
+    let openapi_json = r#"{"openapi":"3.0.0","info":{"title":"Doc","version":"1"},"paths":{"/api/ping":{"get":{"summary":"ping"}}}}"#;
+    fs::write(&openapi_path, openapi_json).expect("write openapi json");
+
+    let env = vec![
+        (
+            "FUSE_OPENAPI_JSON_PATH".to_string(),
+            openapi_path.to_string_lossy().to_string(),
+        ),
+        ("FUSE_OPENAPI_UI_PATH".to_string(), "/docs".to_string()),
+    ];
+    let requests = vec![
+        "GET /docs HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        "GET /docs/openapi.json HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    ];
+
+    for backend in ["ast", "vm", "native"] {
+        let port = find_free_port();
+        let responses = run_http_program_with_env_requests(backend, program, port, &env, &requests);
+        assert_eq!(responses[0].status, 200, "{backend} docs status");
+        assert!(
+            responses[0].body.contains("FUSE OpenAPI"),
+            "{backend} docs body: {}",
+            responses[0].body
+        );
+        assert_eq!(responses[1].status, 200, "{backend} json status");
+        assert_eq!(responses[1].body.trim(), openapi_json, "{backend} json body");
+    }
+
+    let _ = fs::remove_file(openapi_path);
 }

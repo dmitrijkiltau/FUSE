@@ -244,6 +244,7 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * `FUSE_SERVICE` selects the service when multiple are declared.
 * `FUSE_MAX_REQUESTS` stops the server after N requests (useful for tests).
 * `FUSE_DEV_RELOAD_WS_URL` enables dev HTML script injection (`WebSocket` auto-reload client to `/__reload`).
+* `FUSE_OPENAPI_JSON_PATH` + `FUSE_OPENAPI_UI_PATH` enable built-in OpenAPI UI serving (`GET <path>` and `<path>/openapi.json`).
 
 ## Builtins (current)
 

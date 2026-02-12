@@ -1379,6 +1379,9 @@ impl<'a> Vm<'a> {
             .next()
             .unwrap_or(&request.path)
             .to_string();
+        if let Some(response) = self.try_openapi_ui_response(request.method.as_str(), &path) {
+            return Ok(response);
+        }
         if let Some(response) = self.try_static_response(request.method.as_str(), &path) {
             return Ok(response);
         }
@@ -1475,6 +1478,39 @@ impl<'a> Vm<'a> {
             body = self.maybe_inject_live_reload_html(body);
         }
         Some(self.http_response_with_type(200, body, content_type))
+    }
+
+    fn try_openapi_ui_response(&self, method: &str, path: &str) -> Option<String> {
+        if method != "GET" {
+            return None;
+        }
+        let spec_path = std::env::var("FUSE_OPENAPI_JSON_PATH").ok()?;
+        let ui_path = normalize_openapi_ui_path(
+            std::env::var("FUSE_OPENAPI_UI_PATH")
+                .ok()
+                .as_deref()
+                .unwrap_or("/docs"),
+        );
+        let path_no_slash = path.strip_suffix('/').unwrap_or(path);
+        let docs_path_no_slash = ui_path.strip_suffix('/').unwrap_or(&ui_path);
+        if path_no_slash == docs_path_no_slash {
+            let spec_url = format!("{docs_path_no_slash}/openapi.json");
+            let body = self.maybe_inject_live_reload_html(openapi_ui_html(&spec_url));
+            return Some(self.http_response_with_type(200, body, "text/html; charset=utf-8"));
+        }
+        let spec_route = format!("{docs_path_no_slash}/openapi.json");
+        if path == spec_route {
+            let body = match fs::read_to_string(&spec_path) {
+                Ok(body) => body,
+                Err(err) => return Some(self.http_response(500, self.internal_error_json(&format!("failed to read openapi spec: {err}")))),
+            };
+            return Some(self.http_response_with_type(
+                200,
+                body,
+                "application/json; charset=utf-8",
+            ));
+        }
+        None
     }
 
     fn eval_route(
@@ -3219,4 +3255,27 @@ fn escape_js_single_quoted(value: &str) -> String {
         }
     }
     out
+}
+
+fn normalize_openapi_ui_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "/docs".to_string();
+    }
+    let mut path = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    while path.len() > 1 && path.ends_with('/') {
+        path.pop();
+    }
+    path
+}
+
+fn openapi_ui_html(spec_url: &str) -> String {
+    let spec_url = escape_js_single_quoted(spec_url);
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>OpenAPI</title><style>:root{{color-scheme:light dark;font-family:ui-sans-serif,system-ui,sans-serif}}body{{margin:0;padding:24px;background:#0b1020;color:#e6e8ee}}main{{max-width:980px;margin:0 auto}}h1{{margin:0 0 12px;font-size:1.6rem}}.muted{{color:#9aa3b2;font-size:.92rem}}.card{{margin-top:16px;padding:16px;border:1px solid #27314a;border-radius:12px;background:#121a2c}}.route{{padding:8px 0;border-bottom:1px solid #222b43}}.route:last-child{{border-bottom:0}}.method{{display:inline-block;min-width:56px;font-weight:700}}code{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}}</style></head><body><main><h1>FUSE OpenAPI</h1><div class=\"muted\">spec: <code id=\"spec-url\"></code></div><section id=\"status\" class=\"card\">Loading…</section><section id=\"routes\" class=\"card\" hidden><h2>Routes</h2><div id=\"route-list\"></div></section></main><script>(function(){{var specUrl='{spec_url}';document.getElementById('spec-url').textContent=specUrl;var status=document.getElementById('status');var routes=document.getElementById('routes');var list=document.getElementById('route-list');fetch(specUrl).then(function(res){{if(!res.ok){{throw new Error('HTTP '+res.status);}}return res.json();}}).then(function(doc){{status.textContent='Loaded '+(doc.info&&doc.info.title?doc.info.title:'OpenAPI')+' '+((doc.info&&doc.info.version)||'');var paths=doc.paths||{{}};var entries=[];Object.keys(paths).sort().forEach(function(path){{var item=paths[path]||{{}};Object.keys(item).forEach(function(method){{entries.push([method.toUpperCase(),path,(item[method]&&item[method].summary)||'']);}});}});if(entries.length===0){{list.textContent='No routes found.';routes.hidden=false;return;}}list.innerHTML='';entries.forEach(function(entry){{var row=document.createElement('div');row.className='route';row.innerHTML='<span class=\"method\">'+entry[0]+'</span> <code>'+entry[1]+'</code>'+(entry[2]?' <span class=\"muted\">'+entry[2]+'</span>':'');list.appendChild(row);}});routes.hidden=false;}}).catch(function(err){{status.textContent='Failed to load OpenAPI: '+err.message;}});}})();</script></body></html>"
+    )
 }

@@ -62,6 +62,8 @@ struct BuildConfig {
 struct ServeConfig {
     static_dir: Option<String>,
     static_index: Option<String>,
+    openapi_ui: Option<bool>,
+    openapi_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -257,6 +259,34 @@ fn run(args: Vec<String>) -> i32 {
         None
     };
 
+    let backend_flag = backend.map(|backend| backend.as_str().to_string());
+
+    let deps = match resolve_dependencies(manifest.as_ref(), manifest_dir.as_deref()) {
+        Ok(deps) => deps,
+        Err(err) => {
+            eprintln!("{err}");
+            return 1;
+        }
+    };
+
+    if matches!(command, Command::Run) {
+        let dev_mode = env::var("FUSE_DEV_MODE")
+            .ok()
+            .as_deref()
+            .map(|value| value == "1")
+            .unwrap_or(false);
+        if let Err(err) = configure_openapi_ui_env(
+            &entry,
+            manifest.as_ref(),
+            manifest_dir.as_deref(),
+            &deps,
+            dev_mode,
+        ) {
+            eprintln!("{err}");
+            return 1;
+        }
+    }
+
     match command {
         Command::Run if common.program_args.is_empty() => match backend {
             Some(RunBackend::Ast) => {}
@@ -275,16 +305,6 @@ fn run(args: Vec<String>) -> i32 {
         },
         _ => {}
     }
-
-    let backend_flag = backend.map(|backend| backend.as_str().to_string());
-
-    let deps = match resolve_dependencies(manifest.as_ref(), manifest_dir.as_deref()) {
-        Ok(deps) => deps,
-        Err(err) => {
-            eprintln!("{err}");
-            return 1;
-        }
-    };
 
     match command {
         Command::Dev => run_dev(
@@ -359,6 +379,83 @@ fn run(args: Vec<String>) -> i32 {
             fusec::cli::run_with_deps(args, Some(&deps))
         }
     }
+}
+
+fn configure_openapi_ui_env(
+    entry: &Path,
+    manifest: Option<&Manifest>,
+    manifest_dir: Option<&Path>,
+    deps: &HashMap<String, PathBuf>,
+    dev_mode: bool,
+) -> Result<(), String> {
+    let serve = manifest.and_then(|m| m.serve.as_ref());
+    let enabled = if dev_mode {
+        serve.and_then(|cfg| cfg.openapi_ui).unwrap_or(true)
+    } else {
+        serve.and_then(|cfg| cfg.openapi_ui).unwrap_or(false)
+    };
+    if !enabled {
+        unsafe {
+            env::remove_var("FUSE_OPENAPI_JSON_PATH");
+            env::remove_var("FUSE_OPENAPI_UI_PATH");
+        }
+        return Ok(());
+    }
+    let openapi_json = generate_openapi_json(entry, deps)?;
+    let out_path = openapi_ui_spec_path(manifest_dir)?;
+    if let Some(parent) = out_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+    }
+    fs::write(&out_path, openapi_json)
+        .map_err(|err| format!("failed to write {}: {err}", out_path.display()))?;
+    let ui_path = serve
+        .and_then(|cfg| cfg.openapi_path.as_deref())
+        .map(normalize_openapi_ui_route)
+        .unwrap_or_else(|| "/docs".to_string());
+    unsafe {
+        env::set_var(
+            "FUSE_OPENAPI_JSON_PATH",
+            out_path.to_string_lossy().to_string(),
+        );
+        env::set_var("FUSE_OPENAPI_UI_PATH", ui_path);
+    }
+    Ok(())
+}
+
+fn generate_openapi_json(entry: &Path, deps: &HashMap<String, PathBuf>) -> Result<String, String> {
+    let src = fs::read_to_string(entry)
+        .map_err(|err| format!("failed to read {}: {err}", entry.display()))?;
+    let (registry, diags) = fusec::load_program_with_modules_and_deps(entry, &src, deps);
+    if !diags.is_empty() {
+        emit_diags(&diags);
+        return Err("openapi ui setup failed".to_string());
+    }
+    fusec::openapi::generate_openapi(&registry).map_err(|err| format!("openapi error: {err}"))
+}
+
+fn openapi_ui_spec_path(manifest_dir: Option<&Path>) -> Result<PathBuf, String> {
+    let base = match manifest_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => env::current_dir().map_err(|err| format!("cwd error: {err}"))?,
+    };
+    Ok(base.join(".fuse").join("dev").join("openapi.json"))
+}
+
+fn normalize_openapi_ui_route(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "/docs".to_string();
+    }
+    let mut path = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    while path.len() > 1 && path.ends_with('/') {
+        path.pop();
+    }
+    path
 }
 
 fn run_dev(
@@ -460,6 +557,7 @@ fn spawn_dev_child(
         cmd.arg("--backend");
         cmd.arg(backend.as_str());
     }
+    cmd.env("FUSE_DEV_MODE", "1");
     cmd.env("FUSE_DEV_RELOAD_WS_URL", ws_url);
     cmd.spawn()
         .map_err(|err| format!("dev error: failed to start app: {err}"))

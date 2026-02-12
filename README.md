@@ -31,6 +31,8 @@ Run package in watch mode with live reload:
 ./scripts/fuse dev --manifest-path examples/notes-api
 ```
 
+OpenAPI UI is auto-exposed in dev at `/docs` (configurable via `[serve].openapi_path`).
+
 Start the LSP:
 
 ```
@@ -61,6 +63,7 @@ Build distributable binaries:
 
 `fuse` reads `fuse.toml` (current directory or `--manifest-path`) and uses
 `package.entry` for `fuse dev` / `fuse run` / `fuse test`.
+Set `[serve].openapi_ui = true` to expose the OpenAPI UI for normal `fuse run`.
 
 Build artifacts and caches:
 

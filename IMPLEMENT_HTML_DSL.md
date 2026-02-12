@@ -129,9 +129,19 @@ Simple page reload.
 
 # PHASE 4 — OpenAPI UI Auto Serve
 
-Status: PENDING
+Status: DONE
 
-In dev mode only (unless explicitly enabled):
+Implemented behavior in this repo:
+
+```toml
+[serve]
+openapi_ui = true
+openapi_path = "/docs"
+```
+
+`fuse dev` enables OpenAPI UI by default; `fuse run` requires explicit opt-in (`openapi_ui = true`).
+
+Equivalent app-level intent:
 
 ```fuse
 app "Api":
