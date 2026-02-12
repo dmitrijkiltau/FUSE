@@ -69,6 +69,7 @@ What the runtime does today:
 * Default values applied during struct construction, JSON decoding, and config loading.
 * `Bytes` are stored as raw bytes at runtime and use base64 text at JSON/config/CLI boundaries.
 * `Html` is a runtime tree type built via `html.text/raw/node`; `html.render` turns it into `String`.
+* `svg.inline(path)` loads raw SVG from `assets/svg` (or `FUSE_SVG_DIR`) as `Html`.
 * HTML block form is compile-time sugar over `List<Html>` children; no implicit string-to-`Html` coercion.
 
 ---
@@ -152,7 +153,7 @@ mutating routes, keep normal HTTP status/error behavior, and avoid introducing a
 * AST interpreter, VM, and experimental native backend (`--backend native`)
 * `import` module loading (namespaced modules + named imports)
 * module-qualified type references in type positions (`Foo.User`, `Foo.Config`)
-* Built-ins: `print(...)`, `log(...)`, `db.exec/query/one`, `db.from`/`query.*`, `assert(...)`, `env(...)`, `asset(path)`, `serve(...)`, `task.id/done/cancel`, `html.text/raw/node/render`
+* Built-ins: `print(...)`, `log(...)`, `db.exec/query/one`, `db.from`/`query.*`, `assert(...)`, `env(...)`, `asset(path)`, `serve(...)`, `task.id/done/cancel`, `html.text/raw/node/render`, `svg.inline`
 * SQLite-backed DB access with parameter binding + query builder (`db.from`/`query.*`) + migrations (`migration` + `fusec --migrate`)
 * tests via `test "name":` + `fusec --test` (AST backend)
 * `spawn`/`await`/`box` concurrency

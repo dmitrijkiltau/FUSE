@@ -57,6 +57,7 @@ impl<'a> Checker<'a> {
         env.insert_builtin("serve");
         env.insert_builtin_with_ty("task", Ty::External("task".to_string()));
         env.insert_builtin_with_ty("html", Ty::External("html".to_string()));
+        env.insert_builtin_with_ty("svg", Ty::External("svg".to_string()));
         env.insert_builtin("errors");
         Self {
             module_id,
@@ -735,6 +736,7 @@ impl<'a> Checker<'a> {
             "query" => self.lookup_query_member(name),
             "task" => self.lookup_task_member(name),
             "html" => self.lookup_html_member(name),
+            "svg" => self.lookup_svg_member(name),
             _ => {
                 self.diags.error(
                     name.span,
@@ -786,6 +788,24 @@ impl<'a> Checker<'a> {
             _ => {
                 self.diags
                     .error(name.span, format!("unknown html method {}", name.name));
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn lookup_svg_member(&mut self, name: &crate::ast::Ident) -> Ty {
+        match name.name.as_str() {
+            "inline" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "name".to_string(),
+                    ty: Ty::String,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::Html),
+            }),
+            _ => {
+                self.diags
+                    .error(name.span, format!("unknown svg method {}", name.name));
                 Ty::Unknown
             }
         }

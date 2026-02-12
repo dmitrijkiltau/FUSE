@@ -122,7 +122,7 @@ impl<'a> Lowerer<'a> {
                 fn_decls.insert(decl.name.name.clone(), decl.clone());
             }
         }
-        let builtin_names = ["print", "env", "serve", "log", "assert", "asset"]
+        let builtin_names = ["print", "env", "serve", "log", "assert", "asset", "svg"]
             .into_iter()
             .map(|s| s.to_string())
             .collect();
@@ -1119,6 +1119,7 @@ impl FuncBuilder {
                             || ident.name == "task"
                             || ident.name == "json"
                             || ident.name == "html"
+                            || ident.name == "svg"
                         {
                             for arg in args {
                                 self.lower_expr(&arg.value);

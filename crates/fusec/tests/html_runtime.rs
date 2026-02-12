@@ -17,6 +17,17 @@ fn write_temp_file(name: &str, ext: &str, contents: &str) -> std::path::PathBuf 
     path
 }
 
+fn write_temp_dir(name: &str) -> std::path::PathBuf {
+    let mut path = std::env::temp_dir();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    path.push(format!("{name}_{stamp}"));
+    fs::create_dir_all(&path).expect("failed to create temp dir");
+    path
+}
+
 fn run_program(backend: &str, source: &str) -> std::process::Output {
     run_program_with_env(backend, source, &[])
 }
@@ -309,6 +320,60 @@ app "api":
             responses[1].body
         );
         upstream_thread.join().expect("join upstream server");
+    }
+}
+
+#[test]
+fn svg_inline_builtin_loads_raw_svg_across_backends() {
+    let svg_root = write_temp_dir("fuse_svg_runtime");
+    let icons_dir = svg_root.join("icons");
+    fs::create_dir_all(&icons_dir).expect("create icons dir");
+    let svg_path = icons_dir.join("check.svg");
+    let svg_body = "<svg viewBox=\"0 0 1 1\"><path d=\"M0 0L1 1\"/></svg>";
+    fs::write(&svg_path, svg_body).expect("write svg file");
+
+    let program = r#"
+app "svg":
+  let icon = svg.inline("icons/check")
+  print(html.render(icon))
+"#;
+    let env = vec![(
+        "FUSE_SVG_DIR".to_string(),
+        svg_root.to_string_lossy().to_string(),
+    )];
+
+    for backend in ["ast", "vm", "native"] {
+        let output = run_program_with_env(backend, program, &env);
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(stdout.trim(), svg_body, "{backend} svg output");
+    }
+
+    let _ = fs::remove_dir_all(&svg_root);
+}
+
+#[test]
+fn svg_inline_rejects_path_traversal() {
+    let program = r#"
+app "svg":
+  print(html.render(svg.inline("../secret")))
+"#;
+    for backend in ["ast", "vm", "native"] {
+        let output = run_program(backend, program);
+        assert!(
+            !output.status.success(),
+            "{backend} unexpectedly succeeded: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("path traversal is not allowed"),
+            "{backend} stderr: {stderr}"
+        );
     }
 }
 

@@ -11,6 +11,7 @@ pub mod native;
 pub mod openapi;
 pub mod parser;
 mod runtime_assets;
+mod runtime_svg;
 pub mod sema;
 pub mod span;
 pub mod token;

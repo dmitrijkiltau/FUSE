@@ -403,5 +403,6 @@ Runtime binding + error mapping are described in `runtime.md`.
 * DB builtins support parameter binding and a minimal query builder (`db.from` / `query.*`).
 * HTML builtins are available (`html.text`, `html.raw`, `html.node`, `html.render`).
 * `asset(path)` resolves logical static paths to public URLs (including hashed outputs when configured).
+* `svg.inline(path)` loads raw SVG as `Html` from `assets/svg` (or `FUSE_SVG_DIR`).
 * HTTP handlers returning `Html` are rendered with `Content-Type: text/html; charset=utf-8`.
 * `native` currently reuses VM runtime semantics while compiler/codegen work is still in progress, with a Cranelift JIT fast-path for direct Int/Bool arithmetic/control-flow function calls.

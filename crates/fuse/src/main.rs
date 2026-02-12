@@ -1258,6 +1258,7 @@ fn sha1_digest(input: &[u8]) -> [u8; 20] {
 
 fn apply_serve_env(manifest: Option<&Manifest>, manifest_dir: Option<&Path>) {
     apply_asset_manifest_env(manifest_dir);
+    apply_svg_env(manifest_dir);
     let dev_mode = env::var("FUSE_DEV_MODE")
         .ok()
         .as_deref()
@@ -1290,6 +1291,17 @@ fn apply_serve_env(manifest: Option<&Manifest>, manifest_dir: Option<&Path>) {
         None => unsafe {
             env::remove_var("FUSE_STATIC_INDEX");
         },
+    }
+}
+
+fn apply_svg_env(manifest_dir: Option<&Path>) {
+    let base = manifest_dir
+        .map(PathBuf::from)
+        .or_else(|| env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let svg_dir = base.join("assets").join("svg");
+    unsafe {
+        env::set_var("FUSE_SVG_DIR", svg_dir.to_string_lossy().to_string());
     }
 }
 

@@ -1362,7 +1362,8 @@ impl<'a> Interpreter<'a> {
             | "asset"
             | "task"
             | "json"
-            | "html" => Ok(Value::Builtin(name.to_string())),
+            | "html"
+            | "svg" => Ok(Value::Builtin(name.to_string())),
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),
         }
     }
@@ -1585,6 +1586,21 @@ impl<'a> Interpreter<'a> {
                     }
                 };
                 Ok(Value::String(node.render_to_string()))
+            }
+            "svg.inline" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime("svg.inline expects 1 argument".to_string()));
+                }
+                let name = match args.get(0) {
+                    Some(Value::String(name)) => name,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "svg.inline expects a String path".to_string(),
+                        ));
+                    }
+                };
+                let svg = crate::runtime_svg::load_svg_inline(name).map_err(ExecError::Runtime)?;
+                Ok(Value::Html(HtmlNode::Raw(svg)))
             }
             "db.exec" => {
                 if args.len() > 2 {
@@ -2528,6 +2544,10 @@ impl<'a> Interpreter<'a> {
             Value::Builtin(name) if name == "html" => match field {
                 "text" | "raw" | "node" | "render" => Ok(Value::Builtin(format!("html.{field}"))),
                 _ => Err(ExecError::Runtime(format!("unknown html method {field}"))),
+            },
+            Value::Builtin(name) if name == "svg" => match field {
+                "inline" => Ok(Value::Builtin(format!("svg.{field}"))),
+                _ => Err(ExecError::Runtime(format!("unknown svg method {field}"))),
             },
             Value::Config(name) => {
                 let map = self

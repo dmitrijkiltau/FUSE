@@ -1269,7 +1269,7 @@ fn is_type_context(tokens: &[fusec::token::Token], idx: usize) -> bool {
 }
 
 fn is_builtin_receiver(name: &str) -> bool {
-    matches!(name, "db" | "task" | "json" | "html")
+    matches!(name, "db" | "task" | "json" | "html" | "svg")
 }
 
 fn is_builtin_function_name(name: &str) -> bool {

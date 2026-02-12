@@ -314,7 +314,7 @@ Implemented behavior in this repo:
 
 # PHASE 10 — Optional SVG Loading
 
-Status: PENDING
+Status: DONE
 
 Add server-side inline SVG support with deterministic resolution.
 
@@ -347,6 +347,15 @@ svg.inline(name: String) -> Html
 - Enable inline SVG for styling and reuse
 - Keep resolution predictable and boring
 - Avoid building a resolver or asset framework
+
+Implemented behavior in this repo:
+
+* `svg.inline(name: String) -> Html` is available in AST, VM, and native backends.
+* Base directory defaults to `assets/svg` (CLI sets `FUSE_SVG_DIR` relative to manifest dir).
+* Missing `.svg` extension is appended automatically.
+* Nested paths are allowed; `..` traversal is rejected.
+* Missing files return runtime errors.
+* Dev mode (`FUSE_DEV_MODE=1`) reads from disk per call; non-dev mode uses in-process caching.
 
 ---
 

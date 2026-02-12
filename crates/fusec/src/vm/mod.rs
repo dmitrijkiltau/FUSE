@@ -919,6 +919,21 @@ impl<'a> Vm<'a> {
                 };
                 Ok(Value::String(node.render_to_string()))
             }
+            "svg.inline" => {
+                if args.len() != 1 {
+                    return Err(VmError::Runtime("svg.inline expects 1 argument".to_string()));
+                }
+                let name = match args.get(0) {
+                    Some(Value::String(name)) => name,
+                    _ => {
+                        return Err(VmError::Runtime(
+                            "svg.inline expects a String path".to_string(),
+                        ));
+                    }
+                };
+                let svg = crate::runtime_svg::load_svg_inline(name).map_err(VmError::Runtime)?;
+                Ok(Value::Html(crate::interp::HtmlNode::Raw(svg)))
+            }
             "db.exec" => {
                 if args.len() > 2 {
                     return Err(VmError::Runtime(

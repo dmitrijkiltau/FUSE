@@ -248,6 +248,7 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * `FUSE_OPENAPI_JSON_PATH` + `FUSE_OPENAPI_UI_PATH` enable built-in OpenAPI UI serving (`GET <path>` and `<path>/openapi.json`).
 * `FUSE_ASSET_MAP` provides logical-path -> public-URL mappings for `asset(path)` (JSON object).
 * `FUSE_VITE_PROXY_URL` enables fallback proxying of unknown HTTP routes to a Vite dev server (`http://host:port[/base]`).
+* `FUSE_SVG_DIR` overrides the SVG base directory used by `svg.inline` (default `assets/svg`).
 
 ## Builtins (current)
 
@@ -261,6 +262,7 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * `serve(port)` starts the HTTP server on `FUSE_HOST:port`.
 * `task.id/done/cancel` operate on spawned tasks (see Tasks below).
 * `html.text(String)`, `html.raw(String)`, `html.node(String, Map<String,String>, List<Html>)`, `html.render(Html)`.
+* `svg.inline(path: String) -> Html` loads raw SVG from the configured SVG directory.
 * HTML block call syntax (`div(): ...`) is compile-time sugar lowered to normal calls with explicit
   attrs + `List<Html>` children; runtime behavior is unchanged.
 

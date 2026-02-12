@@ -70,6 +70,7 @@ code to resolve logical paths to hashed public URLs.
 Set `[assets.hooks].before_build` to run an external command once before `fuse build`.
 Set `[vite]` to proxy unknown routes to Vite in `fuse dev` and default static serving to `dist`
 in `fuse run` when `[serve].static_dir` is not set.
+Use `svg.inline("icons/name")` to load raw SVG from `assets/svg` (or `FUSE_SVG_DIR`) as `Html`.
 
 Build artifacts and caches:
 

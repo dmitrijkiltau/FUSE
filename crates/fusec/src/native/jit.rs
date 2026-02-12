@@ -226,6 +226,7 @@ pub(crate) struct HostCalls {
     html_raw: FuncId,
     html_node: FuncId,
     html_render: FuncId,
+    svg_inline: FuncId,
     validate_struct: FuncId,
 }
 
@@ -342,6 +343,10 @@ impl JitRuntime {
         builder.symbol(
             "fuse_native_html_render",
             fuse_native_html_render as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_svg_inline",
+            fuse_native_svg_inline as *const u8,
         );
         builder.symbol(
             "fuse_native_validate_struct",
@@ -819,6 +824,9 @@ impl HostCalls {
         let html_render = module
             .declare_function("fuse_native_html_render", Linkage::Import, &builtin_sig)
             .expect("declare html render hostcall");
+        let svg_inline = module
+            .declare_function("fuse_native_svg_inline", Linkage::Import, &builtin_sig)
+            .expect("declare svg inline hostcall");
         let mut validate_sig = module.make_signature();
         validate_sig.params.push(AbiParam::new(pointer_ty));
         validate_sig.params.push(AbiParam::new(types::I64));
@@ -884,6 +892,7 @@ impl HostCalls {
             html_raw,
             html_node,
             html_render,
+            svg_inline,
             validate_struct,
         }
     }
@@ -3266,6 +3275,43 @@ extern "C" fn fuse_native_html_render(
 }
 
 #[unsafe(no_mangle)]
+extern "C" fn fuse_native_svg_inline(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "svg.inline expects 1 argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = args.first().and_then(|arg| arg.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "svg.inline expects a String path");
+    };
+    let Value::String(path) = value else {
+        return builtin_runtime_error(out, heap, "svg.inline expects a String path");
+    };
+    let svg = match crate::runtime_svg::load_svg_inline(&path) {
+        Ok(svg) => svg,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let value = Value::Html(HtmlNode::Raw(svg));
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "svg.inline result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn fuse_native_validate_struct(
     heap: *mut NativeHeap,
     name_handle: u64,
@@ -5348,6 +5394,7 @@ fn compile_function<M: Module>(
                                 "html.raw" => hostcalls.html_raw,
                                 "html.node" => hostcalls.html_node,
                                 "html.render" => hostcalls.html_render,
+                                "svg.inline" => hostcalls.svg_inline,
                                 _ => jit_fail!(
                                     func,
                                     Some(ip),
@@ -6231,6 +6278,7 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     | "html.raw"
                     | "html.node"
                     | "html.render"
+                    | "svg.inline"
             ) =>
             {
                 if ip + 1 < code.len() {
@@ -6747,7 +6795,8 @@ fn analyze_types(
                                 | "query.where" | "query.order_by" | "query.limit"
                                 | "query.one" | "query.all" | "query.exec" | "query.sql"
                                 | "query.params" | "json.encode" | "json.decode" | "html.text"
-                                | "html.raw" | "html.node" | "html.render" => {}
+                                | "html.raw" | "html.node" | "html.render"
+                                | "svg.inline" => {}
                                 _ => return None,
                             }
                             match name.as_str() {
