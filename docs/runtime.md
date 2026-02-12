@@ -247,6 +247,7 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * `FUSE_DEV_RELOAD_WS_URL` enables dev HTML script injection (`WebSocket` auto-reload client to `/__reload`).
 * `FUSE_OPENAPI_JSON_PATH` + `FUSE_OPENAPI_UI_PATH` enable built-in OpenAPI UI serving (`GET <path>` and `<path>/openapi.json`).
 * `FUSE_ASSET_MAP` provides logical-path -> public-URL mappings for `asset(path)` (JSON object).
+* `FUSE_VITE_PROXY_URL` enables fallback proxying of unknown HTTP routes to a Vite dev server (`http://host:port[/base]`).
 
 ## Builtins (current)
 

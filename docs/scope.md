@@ -105,6 +105,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * asset pipeline orchestration (`[assets]` + external `sass`) in `fuse build` and `fuse dev`
 * hashed static outputs (`[assets].hash = true`) + runtime `asset(path)` helper backed by `.fuse/assets-manifest.json`
 * external asset hooks (`[assets.hooks].before_build`) for pre-build tool integration
+* optional Vite integration (`[vite]`): dev unknown-route proxy + production `dist` static default
 * project-wide CLI ergonomics: `fuse check`/`fuse fmt` over the package module graph + file-aware multi-file parse/sema spans
 * dependency fetching + `fuse.lock`
 * IR cache for fast `fuse run` (`.fuse/build/program.ir`)

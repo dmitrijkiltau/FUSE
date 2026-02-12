@@ -199,6 +199,10 @@ hash = true
 [assets.hooks]
 before_build = "npm run build"
 
+[vite]
+dev_url = "http://127.0.0.1:5173"
+dist_dir = "dist"
+
 [dependencies]
 Auth = { git = "https://github.com/org/auth.fuse", tag = "v0.3.1" }
 Utils = { path = "../utils" }
@@ -217,6 +221,8 @@ CSS path, and `fuse dev` reruns that compilation on watched changes. With `hash 
 is renamed to content-hashed filenames and a manifest is emitted at `.fuse/assets-manifest.json`.
 Use `asset("css/app.css")` in Html helpers to resolve logical paths to hashed public URLs.
 If `[assets.hooks].before_build` is set, `fuse build` runs that command once before build checks.
+With `[vite]`, `fuse dev` proxies unknown routes to `vite.dev_url` (default `http://127.0.0.1:5173`).
+For `fuse run`, if `[serve].static_dir` is not set, static files default to `vite.dist_dir` (default `dist`).
 `fuse check` semantically checks the package module graph starting at `package.entry`;
 `fuse fmt` formats that same module graph.
 

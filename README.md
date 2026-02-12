@@ -68,6 +68,8 @@ Set `[assets]` (`scss`, `css`, optional `watch`, optional `hash`) to run externa
 `fuse build` and on changes in `fuse dev`. With `hash = true`, use `asset("css/app.css")` in Fuse
 code to resolve logical paths to hashed public URLs.
 Set `[assets.hooks].before_build` to run an external command once before `fuse build`.
+Set `[vite]` to proxy unknown routes to Vite in `fuse dev` and default static serving to `dist`
+in `fuse run` when `[serve].static_dir` is not set.
 
 Build artifacts and caches:
 

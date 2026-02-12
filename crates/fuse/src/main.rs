@@ -44,6 +44,8 @@ struct Manifest {
     #[serde(default)]
     assets: Option<AssetsConfig>,
     #[serde(default)]
+    vite: Option<ViteConfig>,
+    #[serde(default)]
     dependencies: BTreeMap<String, DependencySpec>,
 }
 
@@ -82,6 +84,12 @@ struct AssetsConfig {
 #[derive(Debug, Deserialize)]
 struct AssetHooksConfig {
     before_build: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ViteConfig {
+    dev_url: Option<String>,
+    dist_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -1250,8 +1258,14 @@ fn sha1_digest(input: &[u8]) -> [u8; 20] {
 
 fn apply_serve_env(manifest: Option<&Manifest>, manifest_dir: Option<&Path>) {
     apply_asset_manifest_env(manifest_dir);
+    let dev_mode = env::var("FUSE_DEV_MODE")
+        .ok()
+        .as_deref()
+        .map(|value| value == "1")
+        .unwrap_or(false);
+    apply_vite_proxy_env(manifest, dev_mode);
     let serve = manifest.and_then(|m| m.serve.as_ref());
-    let static_dir = serve.and_then(|cfg| cfg.static_dir.as_ref());
+    let static_dir = resolve_static_dir_setting(manifest, serve, dev_mode);
     let static_index = serve.and_then(|cfg| cfg.static_index.as_ref());
     match static_dir {
         Some(static_dir) => {
@@ -1276,6 +1290,47 @@ fn apply_serve_env(manifest: Option<&Manifest>, manifest_dir: Option<&Path>) {
         None => unsafe {
             env::remove_var("FUSE_STATIC_INDEX");
         },
+    }
+}
+
+fn resolve_static_dir_setting<'a>(
+    manifest: Option<&'a Manifest>,
+    serve: Option<&'a ServeConfig>,
+    dev_mode: bool,
+) -> Option<&'a str> {
+    if let Some(static_dir) = serve.and_then(|cfg| cfg.static_dir.as_deref()) {
+        return Some(static_dir);
+    }
+    if dev_mode {
+        return None;
+    }
+    manifest
+        .and_then(|m| m.vite.as_ref())
+        .and_then(|vite| vite.dist_dir.as_deref())
+        .or_else(|| manifest.and_then(|m| m.vite.as_ref()).map(|_| "dist"))
+}
+
+fn apply_vite_proxy_env(manifest: Option<&Manifest>, dev_mode: bool) {
+    if !dev_mode {
+        unsafe {
+            env::remove_var("FUSE_VITE_PROXY_URL");
+        }
+        return;
+    }
+    let Some(vite) = manifest.and_then(|m| m.vite.as_ref()) else {
+        unsafe {
+            env::remove_var("FUSE_VITE_PROXY_URL");
+        }
+        return;
+    };
+    let url = vite
+        .dev_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .unwrap_or("http://127.0.0.1:5173");
+    unsafe {
+        env::set_var("FUSE_VITE_PROXY_URL", url);
     }
 }
 

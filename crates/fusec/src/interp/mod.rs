@@ -2106,6 +2106,9 @@ impl<'a> Interpreter<'a> {
         let (route, params) = match self.match_route(service, &verb, &path)? {
             Some(result) => result,
             None => {
+                if let Some(response) = self.try_vite_proxy_response(&request) {
+                    return Ok(response);
+                }
                 let body = self.error_json_from_code("not_found", "not found");
                 return Ok(self.http_response(404, body));
             }
@@ -2196,6 +2199,11 @@ impl<'a> Interpreter<'a> {
             body = self.maybe_inject_live_reload_html(body);
         }
         Some(self.http_response_with_type(200, body, content_type))
+    }
+
+    fn try_vite_proxy_response(&self, request: &HttpRequest) -> Option<String> {
+        let base_url = std::env::var("FUSE_VITE_PROXY_URL").ok()?;
+        proxy_http_request(request, &base_url)
     }
 
     fn try_openapi_ui_response(&self, method: &str, path: &str) -> Option<String> {
@@ -4216,6 +4224,71 @@ fn parse_route_param(segment: &str) -> Option<(String, String)> {
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn proxy_http_request(request: &HttpRequest, base_url: &str) -> Option<String> {
+    let (host, port, base_path) = parse_proxy_base_url(base_url)?;
+    let request_path = if request.path.starts_with('/') {
+        request.path.clone()
+    } else {
+        format!("/{}", request.path)
+    };
+    let target_path = join_proxy_paths(&base_path, &request_path);
+    let mut upstream = TcpStream::connect((host.as_str(), port)).ok()?;
+    let mut head = format!(
+        "{} {} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nContent-Length: {}\r\n",
+        request.method,
+        target_path,
+        request.body.len()
+    );
+    if !request.body.is_empty() {
+        head.push_str("Content-Type: application/json\r\n");
+    }
+    head.push_str("\r\n");
+    upstream.write_all(head.as_bytes()).ok()?;
+    if !request.body.is_empty() {
+        upstream.write_all(&request.body).ok()?;
+    }
+    let mut response = Vec::new();
+    upstream.read_to_end(&mut response).ok()?;
+    Some(String::from_utf8_lossy(&response).into_owned())
+}
+
+fn parse_proxy_base_url(raw: &str) -> Option<(String, u16, String)> {
+    let trimmed = raw.trim();
+    let rest = trimmed.strip_prefix("http://")?;
+    let (authority, path) = match rest.split_once('/') {
+        Some((authority, tail)) => (authority, format!("/{}", tail.trim_start_matches('/'))),
+        None => (rest, "/".to_string()),
+    };
+    if authority.is_empty() {
+        return None;
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => {
+            let port = port.parse::<u16>().ok()?;
+            (host.to_string(), port)
+        }
+        None => (authority.to_string(), 80),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some((host, port, path))
+}
+
+fn join_proxy_paths(base_path: &str, request_path: &str) -> String {
+    if base_path == "/" {
+        return request_path.to_string();
+    }
+    if request_path == "/" {
+        return base_path.to_string();
+    }
+    format!(
+        "{}/{}",
+        base_path.trim_end_matches('/'),
+        request_path.trim_start_matches('/')
+    )
 }
 
 fn escape_js_single_quoted(value: &str) -> String {

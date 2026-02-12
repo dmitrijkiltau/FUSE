@@ -288,7 +288,7 @@ Implemented behavior in this repo:
 
 # PHASE 9 — Vite Integration
 
-Status: PENDING
+Status: DONE
 
 If project uses Vite:
 
@@ -296,6 +296,19 @@ If project uses Vite:
 * Production: serve `dist/` output
 
 FUSE acts as backend + proxy, not bundler.
+
+Implemented behavior in this repo:
+
+* New optional manifest section:
+
+  ```toml
+  [vite]
+  dev_url = "http://127.0.0.1:5173"
+  dist_dir = "dist"
+  ```
+* In `fuse dev`, unknown HTTP routes are proxied to `vite.dev_url` (or default `http://127.0.0.1:5173`).
+* In `fuse run`/production mode, when `[vite]` is set and `[serve].static_dir` is not set,
+  static serving defaults to `vite.dist_dir` (or `dist`).
 
 ---
 

@@ -98,6 +98,36 @@ fn send_http_request_with_retry(port: u16, request: &str) -> HttpResponse {
     }
 }
 
+fn spawn_one_shot_http_server(
+    expected_request_line: &'static str,
+    response: &'static str,
+) -> (u16, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind upstream server");
+    let port = listener.local_addr().expect("upstream addr").port();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept upstream request");
+        let mut buffer = Vec::new();
+        let mut temp = [0u8; 1024];
+        loop {
+            let read = stream.read(&mut temp).expect("read upstream request");
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&temp[..read]);
+            if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let request = String::from_utf8_lossy(&buffer);
+        let first_line = request.lines().next().unwrap_or("");
+        assert_eq!(first_line, expected_request_line, "upstream request line");
+        stream
+            .write_all(response.as_bytes())
+            .expect("write upstream response");
+    });
+    (port, handle)
+}
+
 fn run_http_program(backend: &str, source: &str, port: u16) -> HttpResponse {
     run_http_program_with_env(backend, source, port, &[])
 }
@@ -238,6 +268,47 @@ app "asset":
         assert!(lines.len() >= 2, "{backend} stdout: {stdout}");
         assert_eq!(lines[0], "/css/app.3f92ac1f7d.css", "{backend} line1");
         assert_eq!(lines[1], "/css/app.3f92ac1f7d.css?v=1", "{backend} line2");
+    }
+}
+
+#[test]
+fn vite_proxy_fallback_routes_unknown_paths_across_backends() {
+    let program = r#"
+config App:
+  port: Int = 3000
+
+service Api at "/api":
+  get "/ping" -> String:
+    return "pong"
+
+app "api":
+  serve(App.port)
+"#;
+
+    for backend in ["ast", "vm", "native"] {
+        let (upstream_port, upstream_thread) = spawn_one_shot_http_server(
+            "GET /vite/app.js?x=1 HTTP/1.1",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/javascript; charset=utf-8\r\nContent-Length: 19\r\n\r\nconsole.log('vite')\n",
+        );
+        let port = find_free_port();
+        let env = vec![(
+            "FUSE_VITE_PROXY_URL".to_string(),
+            format!("http://127.0.0.1:{upstream_port}/vite"),
+        )];
+        let requests = vec![
+            "GET /api/ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            "GET /app.js?x=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        ];
+        let responses = run_http_program_with_env_requests(backend, program, port, &env, &requests);
+        assert_eq!(responses[0].status, 200, "{backend} route status");
+        assert_eq!(responses[0].body.trim(), "\"pong\"", "{backend} route body");
+        assert_eq!(responses[1].status, 200, "{backend} proxy status");
+        assert!(
+            responses[1].body.contains("console.log('vite')"),
+            "{backend} proxy body: {}",
+            responses[1].body
+        );
+        upstream_thread.join().expect("join upstream server");
     }
 }
 
