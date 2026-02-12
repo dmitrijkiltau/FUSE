@@ -44,8 +44,8 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 
 * AST interpreter backend
 * Bytecode + VM backend
-* Experimental `native` backend path (`--backend native`) backed by compiled IR image + VM compatibility runtime
-* Native includes a Cranelift JIT slice for direct `fn` calls over Int/Bool arithmetic + control flow; unsupported instructions fail in native
+* `native` backend path (`--backend native`) backed by compiled IR image + VM-compatible runtime semantics
+* Native includes a Cranelift JIT slice for direct function execution; backend remains under active iteration
 
 **Planned:**
 
@@ -85,7 +85,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * JSON encode/decode for structs/enums
 * validation derived from refined types
 * config loading (env > config file > defaults)
-* config/env/CLI parsing is limited to scalar types + `Option` + refined ranges
+* config/env/CLI parsing supports scalar types + `Option`, and structured values (`List`/`Map<String,_>`/struct/enum) via JSON text payloads
 * HTTP request binding + response encoding (JSON by default, `Html` routes emit `text/html`)
 * HTMX-friendly server-driven fragments via normal `Html` route returns (no dedicated HTMX runtime)
 * error JSON + HTTP status mapping

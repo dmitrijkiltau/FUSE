@@ -405,4 +405,4 @@ Runtime binding + error mapping are described in `runtime.md`.
 * `asset(path)` resolves logical static paths to public URLs (including hashed outputs when configured).
 * `svg.inline(path)` loads raw SVG as `Html` from `assets/svg` (or `FUSE_SVG_DIR`).
 * HTTP handlers returning `Html` are rendered with `Content-Type: text/html; charset=utf-8`.
-* `native` currently reuses VM runtime semantics while compiler/codegen work is still in progress, with a Cranelift JIT fast-path for direct Int/Bool arithmetic/control-flow function calls.
+* `native` targets VM-compatible runtime semantics and includes a Cranelift JIT fast-path for direct function execution.

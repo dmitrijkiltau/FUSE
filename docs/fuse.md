@@ -3,7 +3,7 @@
 *Write intent. Get software.*
 
 FUSE is a small, strict, "default-sane" language for CLI apps and HTTP services. This document
-describes the current implementation in this repo (parser + semantic analysis + AST interpreter + VM).
+describes the current implementation in this repo (parser + semantic analysis + AST interpreter + VM + native backend path).
 
 ---
 
@@ -150,7 +150,7 @@ mutating routes, keep normal HTTP status/error behavior, and avoid introducing a
 ## What works today (MVP)
 
 * Parser + semantic analysis for `fn`, `type`, `enum`, `config`, `service`, `app`
-* AST interpreter, VM, and experimental native backend (`--backend native`)
+* AST interpreter, VM, and native backend (`--backend native`, still evolving)
 * `import` module loading (namespaced modules + named imports)
 * module-qualified type references in type positions (`Foo.User`, `Foo.Config`)
 * Built-ins: `print(...)`, `log(...)`, `db.exec/query/one`, `db.from`/`query.*`, `assert(...)`, `env(...)`, `asset(path)`, `serve(...)`, `task.id/done/cancel`, `html.text/raw/node/render`, `svg.inline`
@@ -167,9 +167,9 @@ mutating routes, keep normal HTTP status/error behavior, and avoid introducing a
 * OpenAPI 3.0 generation via `fusec --openapi` (services, schemas, refined types, error responses)
 * package tooling (`fuse.toml`, `fuse dev/run/test/build`)
 
-Today, `native` keeps VM-compatible semantics, with an initial Cranelift JIT fast-path for
-direct Int/Bool arithmetic/control-flow function calls. Unsupported instructions
-fail the native backend.
+Today, `native` targets VM-compatible semantics and includes a Cranelift JIT fast-path for
+direct function execution. If native compilation/execution fails for a function, the run fails
+(no automatic fallback to another backend inside the same run).
 
 ---
 

@@ -8,7 +8,8 @@
 
 ## Specs and fixtures
 
-- Keep language specs in sync when semantics change:
+- Keep language specs/docs in sync when semantics or tooling change:
+  - `README.md`
   - `docs/fuse.md`
   - `docs/fls.md`
   - `docs/scope.md`
