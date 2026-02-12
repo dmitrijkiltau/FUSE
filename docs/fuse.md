@@ -66,6 +66,7 @@ What the runtime does today:
 * Validation for refined types (ranges, Email).
 * Default values applied during struct construction, JSON decoding, and config loading.
 * `Bytes` are stored as raw bytes at runtime and use base64 text at JSON/config/CLI boundaries.
+* `Html` is a runtime tree type built via `html.text/raw/node`; `html.render` turns it into `String`.
 
 ---
 
@@ -122,7 +123,8 @@ app "users":
 The runtime currently handles:
 
 * path + body decoding and validation
-* JSON responses
+* JSON responses by default
+* `Html` route responses with `Content-Type: text/html; charset=utf-8`
 * mapping `Result` errors to HTTP statuses
 
 ---
@@ -133,7 +135,7 @@ The runtime currently handles:
 * AST interpreter, VM, and experimental native backend (`--backend native`)
 * `import` module loading (namespaced modules + named imports)
 * module-qualified type references in type positions (`Foo.User`, `Foo.Config`)
-* Built-ins: `print(...)`, `log(...)`, `db.exec/query/one`, `db.from`/`query.*`, `assert(...)`, `env(...)`, `serve(...)`, `task.id/done/cancel`
+* Built-ins: `print(...)`, `log(...)`, `db.exec/query/one`, `db.from`/`query.*`, `assert(...)`, `env(...)`, `serve(...)`, `task.id/done/cancel`, `html.text/raw/node/render`
 * SQLite-backed DB access with parameter binding + query builder (`db.from`/`query.*`) + migrations (`migration` + `fusec --migrate`)
 * tests via `test "name":` + `fusec --test` (AST backend)
 * `spawn`/`await`/`box` concurrency

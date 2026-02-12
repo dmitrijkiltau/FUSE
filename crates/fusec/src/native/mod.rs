@@ -714,6 +714,7 @@ impl<'a> NativeVm<'a> {
             Ok(value) => value,
             Err(err) => return Err(err),
         };
+        let html_response = is_html_response_type(&route.ret_type);
         match value {
             Value::ResultErr(err) => {
                 let status = self.http_status_for_error_value(&err);
@@ -721,12 +722,22 @@ impl<'a> NativeVm<'a> {
                 Ok(self.http_response(status, json))
             }
             Value::ResultOk(ok) => {
-                let json = self.value_to_json(&ok);
-                Ok(self.http_response(200, rt_json::encode(&json)))
+                if html_response {
+                    let body = self.render_html_value(ok.as_ref())?;
+                    Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
+                } else {
+                    let json = self.value_to_json(&ok);
+                    Ok(self.http_response(200, rt_json::encode(&json)))
+                }
             }
             other => {
-                let json = self.value_to_json(&other);
-                Ok(self.http_response(200, rt_json::encode(&json)))
+                if html_response {
+                    let body = self.render_html_value(&other)?;
+                    Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
+                } else {
+                    let json = self.value_to_json(&other);
+                    Ok(self.http_response(200, rt_json::encode(&json)))
+                }
             }
         }
     }
@@ -968,6 +979,16 @@ impl<'a> NativeVm<'a> {
 
     fn internal_error_json(&self, message: &str) -> String {
         self.error_json_from_code("internal_error", message)
+    }
+
+    fn render_html_value(&self, value: &Value) -> NativeResult<String> {
+        match value.unboxed() {
+            Value::Html(node) => Ok(node.render_to_string()),
+            other => Err(NativeError::Runtime(format!(
+                "expected Html response, got {}",
+                self.value_type_name(&other)
+            ))),
+        }
     }
 
     fn parse_env_value(&mut self, ty: &TypeRef, raw: &str) -> NativeResult<Value> {
@@ -1264,6 +1285,18 @@ impl<'a> NativeVm<'a> {
                         )));
                     }
                 },
+                "Html" => match value {
+                    Value::Html(_) => {
+                        return Ok(());
+                    }
+                    _ => {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("expected Html, got {type_name}"),
+                        )));
+                    }
+                },
                 _ => {}
             }
         }
@@ -1290,6 +1323,7 @@ impl<'a> NativeVm<'a> {
             Value::Bool(_) => "Bool".to_string(),
             Value::String(_) => "String".to_string(),
             Value::Bytes(_) => "Bytes".to_string(),
+            Value::Html(_) => "Html".to_string(),
             Value::Null => "Null".to_string(),
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
@@ -1503,6 +1537,7 @@ impl<'a> NativeVm<'a> {
             Value::Bool(v) => rt_json::JsonValue::Bool(v),
             Value::String(v) => rt_json::JsonValue::String(v.clone()),
             Value::Bytes(v) => rt_json::JsonValue::String(rt_bytes::encode_base64(&v)),
+            Value::Html(node) => rt_json::JsonValue::String(node.render_to_string()),
             Value::Null => rt_json::JsonValue::Null,
             Value::List(items) => {
                 rt_json::JsonValue::Array(items.iter().map(|v| self.value_to_json(v)).collect())
@@ -1756,6 +1791,13 @@ impl<'a> NativeVm<'a> {
                     )));
                 }
             },
+            "Html" => {
+                return Err(NativeError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    "expected Html",
+                )));
+            }
             _ => return Ok(None),
         };
         Ok(Some(value))
@@ -2262,6 +2304,13 @@ impl ConfigEvaluator {
                     )));
                 }
             },
+            "Html" => {
+                return Err(NativeError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    "expected Html",
+                )));
+            }
             _ => return Ok(None),
         };
         Ok(Some(value))
@@ -2507,6 +2556,18 @@ impl ConfigEvaluator {
                         )));
                     }
                 },
+                "Html" => match value {
+                    Value::Html(_) => {
+                        return Ok(());
+                    }
+                    _ => {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("expected Html, got {type_name}"),
+                        )));
+                    }
+                },
                 _ => {}
             }
         }
@@ -2533,6 +2594,7 @@ impl ConfigEvaluator {
             Value::Bool(_) => "Bool".to_string(),
             Value::String(_) => "String".to_string(),
             Value::Bytes(_) => "Bytes".to_string(),
+            Value::Html(_) => "Html".to_string(),
             Value::Null => "Null".to_string(),
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
@@ -2744,6 +2806,24 @@ fn split_type_name(name: &str) -> (Option<&str>, &str) {
     match name.split_once('.') {
         Some((module, rest)) if !module.is_empty() && !rest.is_empty() => (Some(module), rest),
         _ => (None, name),
+    }
+}
+
+fn is_html_type_name(name: &str) -> bool {
+    let (_, simple) = split_type_name(name);
+    simple == "Html"
+}
+
+fn is_html_response_type(ty: &TypeRef) -> bool {
+    match &ty.kind {
+        TypeRefKind::Simple(ident) => is_html_type_name(&ident.name),
+        TypeRefKind::Refined { base, .. } => is_html_type_name(&base.name),
+        TypeRefKind::Optional(inner) => is_html_response_type(inner),
+        TypeRefKind::Result { ok, .. } => is_html_response_type(ok),
+        TypeRefKind::Generic { base, args } => match base.name.as_str() {
+            "Option" | "Result" => args.first().is_some_and(is_html_response_type),
+            _ => false,
+        },
     }
 }
 

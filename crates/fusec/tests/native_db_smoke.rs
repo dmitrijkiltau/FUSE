@@ -40,9 +40,7 @@ fn native_db_smoke() {
     let native = load_native_example("native_db.fuse");
     let mut vm = NativeVm::new(&native);
 
-    let init = vm
-        .call_function("db_init", vec![])
-        .expect("db_init failed");
+    let init = vm.call_function("db_init", vec![]).expect("db_init failed");
     assert!(vm.has_jit_function("db_init"));
     match init {
         Value::Int(value) => assert_eq!(value, 1),

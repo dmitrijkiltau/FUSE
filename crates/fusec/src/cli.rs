@@ -244,13 +244,10 @@ where
         }
         let app = app_name.as_deref();
         if !program_args.is_empty() {
-            let main_decl = program
-                .items
-                .iter()
-                .find_map(|item| match item {
-                    Item::Fn(decl) if decl.name.name == "main" => Some(decl),
-                    _ => None,
-                });
+            let main_decl = program.items.iter().find_map(|item| match item {
+                Item::Fn(decl) if decl.name.name == "main" => Some(decl),
+                _ => None,
+            });
             let main_decl = match main_decl {
                 Some(decl) => decl,
                 None => {
@@ -556,7 +553,10 @@ fn parse_program_args(args: &[String]) -> Result<RawArgs, String> {
             return Err(format!("unexpected argument: {arg}"));
         }
         if let Some((name, val)) = arg.strip_prefix("--").and_then(|s| s.split_once('=')) {
-            values.entry(name.to_string()).or_default().push(val.to_string());
+            values
+                .entry(name.to_string())
+                .or_default()
+                .push(val.to_string());
             idx += 1;
             continue;
         }
@@ -643,7 +643,13 @@ fn emit_diag(diag: &Diag, fallback_src: Option<&str>) {
     if let Some(path) = &diag.path {
         if let Ok(src) = fs::read_to_string(path) {
             let (line, col, line_text) = line_info(&src, diag.span.start);
-            eprintln!("{level}: {} ({}:{}:{})", diag.message, path.display(), line, col);
+            eprintln!(
+                "{level}: {} ({}:{}:{})",
+                diag.message,
+                path.display(),
+                line,
+                col
+            );
             eprintln!("  {line_text}");
             eprintln!("  {}^", " ".repeat(col.saturating_sub(1)));
             return;

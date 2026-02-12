@@ -145,6 +145,7 @@ Rules:
 
 * `String`, `Id`, `Email` -> JSON string.
 * `Bytes` -> JSON base64 string (standard alphabet with `=` padding).
+* `Html` -> JSON string via `html.render(...)` output.
 * `Bool`, `Int`, `Float` -> JSON number/bool.
 * `List<T>` -> JSON array.
 * `Map<K,V>` -> JSON object. At runtime, `Map<K,V>` requires `K = String`; non-string keys are rejected.
@@ -152,6 +153,7 @@ Rules:
 * `Result<T,E>` is **not** supported in JSON decoding.
 
 `Bytes` use base64 text at JSON/config/CLI boundaries. Runtime values are stored as raw bytes.
+`Html` values are runtime trees (`Element`, `Text`, `Raw`) and are not parsed from config/env/CLI.
 
 ## Config loading
 
@@ -188,7 +190,7 @@ Type support for config values (env and file values) has levels:
 
 * **Full**: scalars (`Int`, `Float`, `Bool`, `String`, `Id`, `Email`, `Bytes`) and `Option<T>`.
 * **Structured via JSON text**: `List<T>`, `Map<String,V>`, user-defined `struct`, user-defined `enum` (decoded from a JSON string payload and then validated recursively).
-* **Rejected**: `Map<K,V>` where `K != String`, and `Result<T,E>`.
+* **Rejected**: `Html`, `Map<K,V>` where `K != String`, and `Result<T,E>`.
 
 Compatibility notes:
 
@@ -212,7 +214,7 @@ Rules:
 * Support levels mirror config/env parsing:
   * **Full**: scalar types and `Option<T>`.
   * **Structured via JSON text**: `List<T>`, `Map<String,V>`, user-defined `struct`, user-defined `enum`.
-  * **Rejected**: `Map<K,V>` with non-`String` keys and `Result<T,E>`.
+  * **Rejected**: `Html`, `Map<K,V>` with non-`String` keys and `Result<T,E>`.
 * Multiple values for the same flag are rejected.
 * CLI binding calls `fn main` directly (the `app` block is ignored when program args are present).
 
@@ -231,7 +233,8 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 
 ### Response
 
-* Successful values encode as JSON with `Content-Type: application/json`.
+* Successful values encode as JSON with `Content-Type: application/json` by default.
+* If a route return type is `Html` (or `Result<Html, E>` on success), the response body is rendered once and sent with `Content-Type: text/html; charset=utf-8`.
 * `Result` errors are mapped using the status rules above.
 * Unsupported HTTP methods return `405` with `internal_error` JSON.
 
@@ -251,6 +254,7 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * `env(name: String) -> String?` returns an env var or `null`.
 * `serve(port)` starts the HTTP server on `FUSE_HOST:port`.
 * `task.id/done/cancel` operate on spawned tasks (see Tasks below).
+* `html.text(String)`, `html.raw(String)`, `html.node(String, Map<String,String>, List<Html>)`, `html.render(Html)`.
 
 ## Database (SQLite only)
 

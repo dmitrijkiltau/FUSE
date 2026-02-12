@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::db::Db;
-use crate::interp::{IteratorValue, Task, TaskResult, Value};
+use crate::interp::{HtmlNode, IteratorValue, Task, TaskResult, Value};
 use crate::ir::TypeInfo;
 
 #[repr(u64)]
@@ -21,6 +21,7 @@ pub enum NativeTag {
 pub enum HeapValue {
     String(String),
     Bytes(Vec<u8>),
+    Html(HtmlNode),
     List(Vec<NativeValue>),
     Map(std::collections::HashMap<String, NativeValue>),
     Iterator(NativeIterator),
@@ -207,7 +208,7 @@ impl NativeHeap {
 
     fn mark_children(&self, value: &HeapValue, marks: &mut [bool], stack: &mut Vec<u64>) {
         match value {
-            HeapValue::String(_) | HeapValue::Bytes(_) => {}
+            HeapValue::String(_) | HeapValue::Bytes(_) | HeapValue::Html(_) => {}
             HeapValue::List(items) => {
                 for item in items {
                     self.mark_native_value(item, marks, stack);
@@ -416,6 +417,13 @@ impl NativeValue {
             Value::Null => Some(Self::null()),
             Value::String(v) => Some(Self::string(v.clone(), heap)),
             Value::Bytes(v) => Some(Self::bytes(v.clone(), heap)),
+            Value::Html(node) => {
+                let handle = heap.insert(HeapValue::Html(node.clone()));
+                Some(Self {
+                    tag: NativeTag::Heap,
+                    payload: handle,
+                })
+            }
             Value::List(values) => {
                 let mut out = Vec::with_capacity(values.len());
                 for value in values {
@@ -446,12 +454,7 @@ impl NativeValue {
                 for value in payload {
                     out.push(Self::from_value(value, heap)?);
                 }
-                Some(Self::enum_value(
-                    name.clone(),
-                    variant.clone(),
-                    out,
-                    heap,
-                ))
+                Some(Self::enum_value(name.clone(), variant.clone(), out, heap))
             }
             Value::ResultOk(value) => {
                 let inner = Self::from_value(value, heap)?;
@@ -468,9 +471,7 @@ impl NativeValue {
             }
             Value::Task(task) => {
                 let result = match task.result_raw() {
-                    TaskResult::Ok(value) => {
-                        TaskResultValue::Ok(Self::from_value(&value, heap)?)
-                    }
+                    TaskResult::Ok(value) => TaskResultValue::Ok(Self::from_value(&value, heap)?),
                     TaskResult::Error(value) => {
                         TaskResultValue::Error(Self::from_value(&value, heap)?)
                     }
@@ -519,6 +520,7 @@ impl NativeValue {
             NativeTag::Heap => match heap.get(self.payload)? {
                 HeapValue::String(value) => Some(Value::String(value.clone())),
                 HeapValue::Bytes(value) => Some(Value::Bytes(value.clone())),
+                HeapValue::Html(node) => Some(Value::Html(node.clone())),
                 HeapValue::List(values) => {
                     let mut out = Vec::with_capacity(values.len());
                     for value in values {
@@ -584,12 +586,8 @@ impl NativeValue {
                 HeapValue::Task(task) => {
                     let result = match &task.result {
                         TaskResultValue::Ok(value) => TaskResult::Ok(value.to_value(heap)?),
-                        TaskResultValue::Error(value) => {
-                            TaskResult::Error(value.to_value(heap)?)
-                        }
-                        TaskResultValue::Runtime(message) => {
-                            TaskResult::Runtime(message.clone())
-                        }
+                        TaskResultValue::Error(value) => TaskResult::Error(value.to_value(heap)?),
+                        TaskResultValue::Runtime(message) => TaskResult::Runtime(message.clone()),
                     };
                     Some(Value::Task(Task::from_state(
                         task.id,
@@ -635,6 +633,9 @@ mod tests {
             Some(HeapValue::String(value)) => assert_eq!(value, "keep"),
             other => panic!("expected interned string, got {other:?}"),
         }
-        assert!(heap.get(drop_handle).is_none(), "expected drop_handle to be collected");
+        assert!(
+            heap.get(drop_handle).is_none(),
+            "expected drop_handle to be collected"
+        );
     }
 }

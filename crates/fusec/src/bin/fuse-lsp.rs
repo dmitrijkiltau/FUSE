@@ -9,7 +9,7 @@ use fusec::ast::{
     TypeDecl, TypeDerive, TypeRef, TypeRefKind, UnaryOp,
 };
 use fusec::diag::{Diag, Level};
-use fusec::loader::{load_program_with_modules_and_deps_and_overrides, ModuleRegistry};
+use fusec::loader::{ModuleRegistry, load_program_with_modules_and_deps_and_overrides};
 use fusec::parse_source;
 use fusec::sema;
 use fusec::span::Span;
@@ -1269,7 +1269,7 @@ fn is_type_context(tokens: &[fusec::token::Token], idx: usize) -> bool {
 }
 
 fn is_builtin_receiver(name: &str) -> bool {
-    matches!(name, "db" | "task" | "json")
+    matches!(name, "db" | "task" | "json" | "html")
 }
 
 fn is_builtin_function_name(name: &str) -> bool {
@@ -1285,6 +1285,7 @@ fn is_builtin_type_name(name: &str) -> bool {
             | "Bool"
             | "String"
             | "Bytes"
+            | "Html"
             | "Id"
             | "Email"
             | "Error"
@@ -4076,6 +4077,7 @@ fn is_builtin_type(name: &str) -> bool {
             | "Bool"
             | "String"
             | "Bytes"
+            | "Html"
             | "Id"
             | "Email"
             | "Error"

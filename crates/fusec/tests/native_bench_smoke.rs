@@ -59,7 +59,9 @@ fn call_once_native(native: &NativeProgram, n: i64) -> Duration {
 }
 
 fn env_budget_ms(name: &str) -> Option<u64> {
-    std::env::var(name).ok().and_then(|raw| raw.parse::<u64>().ok())
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
 }
 
 fn check_budget(label: &str, duration: Duration, env: &str) {

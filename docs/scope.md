@@ -85,9 +85,9 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * validation derived from refined types
 * config loading (env > config file > defaults)
 * config/env/CLI parsing is limited to scalar types + `Option` + refined ranges
-* HTTP request binding + response encoding
+* HTTP request binding + response encoding (JSON by default, `Html` routes emit `text/html`)
 * error JSON + HTTP status mapping
-* builtins: `print`, `log`, `db.exec/query/one/from`, `query.*`, `assert`, `env`, `serve`, `task.id`, `task.done`, `task.cancel`
+* builtins: `print`, `log`, `db.exec/query/one/from`, `query.*`, `assert`, `env`, `serve`, `task.id`, `task.done`, `task.cancel`, `html.text/raw/node/render`
 * SQLite-backed DB access + migrations via `fusec --migrate`
 * CLI arg binding for `fn main` when running with program args
 

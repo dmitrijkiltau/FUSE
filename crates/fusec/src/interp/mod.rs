@@ -29,6 +29,7 @@ pub enum Value {
     Bool(bool),
     String(String),
     Bytes(Vec<u8>),
+    Html(HtmlNode),
     Null,
     List(Vec<Value>),
     Map(HashMap<String, Value>),
@@ -54,6 +55,57 @@ pub enum Value {
     Config(String),
     Function(String),
     Builtin(String),
+}
+
+#[derive(Clone, Debug)]
+pub enum HtmlNode {
+    Element {
+        tag: String,
+        attrs: HashMap<String, String>,
+        children: Vec<HtmlNode>,
+    },
+    Text(String),
+    Raw(String),
+}
+
+impl HtmlNode {
+    pub fn render_to_string(&self) -> String {
+        let mut out = String::new();
+        self.render_into(&mut out);
+        out
+    }
+
+    fn render_into(&self, out: &mut String) {
+        match self {
+            HtmlNode::Text(text) | HtmlNode::Raw(text) => {
+                out.push_str(text);
+            }
+            HtmlNode::Element {
+                tag,
+                attrs,
+                children,
+            } => {
+                out.push('<');
+                out.push_str(tag);
+                let mut attrs_sorted: Vec<(&String, &String)> = attrs.iter().collect();
+                attrs_sorted.sort_by(|(left, _), (right, _)| left.cmp(right));
+                for (key, value) in attrs_sorted {
+                    out.push(' ');
+                    out.push_str(key);
+                    out.push_str("=\"");
+                    out.push_str(value);
+                    out.push('"');
+                }
+                out.push('>');
+                for child in children {
+                    child.render_into(out);
+                }
+                out.push_str("</");
+                out.push_str(tag);
+                out.push('>');
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -180,6 +232,7 @@ impl Value {
             Value::Bool(v) => v.to_string(),
             Value::String(v) => v.clone(),
             Value::Bytes(v) => rt_bytes::encode_base64(&v),
+            Value::Html(node) => node.render_to_string(),
             Value::Null => "null".to_string(),
             Value::List(items) => {
                 let text = items
@@ -289,6 +342,24 @@ fn split_type_name(name: &str) -> (Option<&str>, &str) {
     match name.split_once('.') {
         Some((module, rest)) if !module.is_empty() && !rest.is_empty() => (Some(module), rest),
         _ => (None, name),
+    }
+}
+
+fn is_html_type_name(name: &str) -> bool {
+    let (_, simple) = split_type_name(name);
+    simple == "Html"
+}
+
+fn is_html_response_type(ty: &TypeRef) -> bool {
+    match &ty.kind {
+        TypeRefKind::Simple(ident) => is_html_type_name(&ident.name),
+        TypeRefKind::Refined { base, .. } => is_html_type_name(&base.name),
+        TypeRefKind::Optional(inner) => is_html_response_type(inner),
+        TypeRefKind::Result { ok, .. } => is_html_response_type(ok),
+        TypeRefKind::Generic { base, args } => match base.name.as_str() {
+            "Option" | "Result" => args.first().is_some_and(is_html_response_type),
+            _ => false,
+        },
     }
 }
 
@@ -1282,7 +1353,7 @@ impl<'a> Interpreter<'a> {
             return Ok(Value::Config(name.to_string()));
         }
         match name {
-            "print" | "env" | "serve" | "log" | "db" | "assert" | "task" | "json" => {
+            "print" | "env" | "serve" | "log" | "db" | "assert" | "task" | "json" | "html" => {
                 Ok(Value::Builtin(name.to_string()))
             }
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),
@@ -1391,6 +1462,108 @@ impl<'a> Interpreter<'a> {
                 let json = rt_json::decode(&text)
                     .map_err(|msg| ExecError::Runtime(format!("invalid json: {msg}")))?;
                 Ok(self.json_to_value(&json))
+            }
+            "html.text" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "html.text expects 1 argument".to_string(),
+                    ));
+                }
+                let text = match args.get(0) {
+                    Some(Value::String(text)) => text.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime("html.text expects a String".to_string()));
+                    }
+                };
+                Ok(Value::Html(HtmlNode::Text(text)))
+            }
+            "html.raw" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "html.raw expects 1 argument".to_string(),
+                    ));
+                }
+                let text = match args.get(0) {
+                    Some(Value::String(text)) => text.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime("html.raw expects a String".to_string()));
+                    }
+                };
+                Ok(Value::Html(HtmlNode::Raw(text)))
+            }
+            "html.node" => {
+                if args.len() != 3 {
+                    return Err(ExecError::Runtime(
+                        "html.node expects 3 arguments".to_string(),
+                    ));
+                }
+                let tag = match args.get(0) {
+                    Some(Value::String(tag)) => tag.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "html.node expects a String tag".to_string(),
+                        ));
+                    }
+                };
+                let attrs = match args.get(1) {
+                    Some(Value::Map(map)) => {
+                        let mut attrs = HashMap::with_capacity(map.len());
+                        for (key, value) in map {
+                            let Value::String(text) = value else {
+                                return Err(ExecError::Runtime(
+                                    "html.node attrs must be Map<String, String>".to_string(),
+                                ));
+                            };
+                            attrs.insert(key.clone(), text.clone());
+                        }
+                        attrs
+                    }
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "html.node expects attrs as Map<String, String>".to_string(),
+                        ));
+                    }
+                };
+                let children = match args.get(2) {
+                    Some(Value::List(items)) => {
+                        let mut children = Vec::with_capacity(items.len());
+                        for item in items {
+                            let Value::Html(node) = item else {
+                                return Err(ExecError::Runtime(
+                                    "html.node children must be List<Html>".to_string(),
+                                ));
+                            };
+                            children.push(node.clone());
+                        }
+                        children
+                    }
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "html.node expects children as List<Html>".to_string(),
+                        ));
+                    }
+                };
+                Ok(Value::Html(HtmlNode::Element {
+                    tag,
+                    attrs,
+                    children,
+                }))
+            }
+            "html.render" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "html.render expects 1 argument".to_string(),
+                    ));
+                }
+                let node = match args.get(0) {
+                    Some(Value::Html(node)) => node,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "html.render expects an Html value".to_string(),
+                        ));
+                    }
+                };
+                Ok(Value::String(node.render_to_string()))
             }
             "db.exec" => {
                 if args.len() > 2 {
@@ -1933,6 +2106,7 @@ impl<'a> Interpreter<'a> {
             Ok(value) => value,
             Err(err) => return Err(err),
         };
+        let html_response = is_html_response_type(&route.ret_type);
         match value {
             Value::ResultErr(err) => {
                 let status = self.http_status_for_error_value(&err);
@@ -1940,12 +2114,22 @@ impl<'a> Interpreter<'a> {
                 Ok(self.http_response(status, json))
             }
             Value::ResultOk(ok) => {
-                let json = self.value_to_json(&ok);
-                Ok(self.http_response(200, rt_json::encode(&json)))
+                if html_response {
+                    let body = self.render_html_value(ok.as_ref())?;
+                    Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
+                } else {
+                    let json = self.value_to_json(&ok);
+                    Ok(self.http_response(200, rt_json::encode(&json)))
+                }
             }
             other => {
-                let json = self.value_to_json(&other);
-                Ok(self.http_response(200, rt_json::encode(&json)))
+                if html_response {
+                    let body = self.render_html_value(&other)?;
+                    Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
+                } else {
+                    let json = self.value_to_json(&other);
+                    Ok(self.http_response(200, rt_json::encode(&json)))
+                }
             }
         }
     }
@@ -2207,6 +2391,16 @@ impl<'a> Interpreter<'a> {
         self.error_json_from_code("internal_error", message)
     }
 
+    fn render_html_value(&self, value: &Value) -> ExecResult<String> {
+        match value.unboxed() {
+            Value::Html(node) => Ok(node.render_to_string()),
+            other => Err(ExecError::Runtime(format!(
+                "expected Html response, got {}",
+                self.value_type_name(&other)
+            ))),
+        }
+    }
+
     fn wrap_function_result(&self, ret: &Option<TypeRef>, value: Value) -> ExecResult<Value> {
         if self.is_result_type(ret.as_ref()) {
             match value {
@@ -2242,6 +2436,10 @@ impl<'a> Interpreter<'a> {
             Value::Builtin(name) if name == "task" => match field {
                 "id" | "done" | "cancel" => Ok(Value::Builtin(format!("task.{field}"))),
                 _ => Err(ExecError::Runtime(format!("unknown task method {field}"))),
+            },
+            Value::Builtin(name) if name == "html" => match field {
+                "text" | "raw" | "node" | "render" => Ok(Value::Builtin(format!("html.{field}"))),
+                _ => Err(ExecError::Runtime(format!("unknown html method {field}"))),
             },
             Value::Config(name) => {
                 let map = self
@@ -2943,7 +3141,7 @@ impl<'a> Interpreter<'a> {
             TypeRefKind::Simple(ident) => {
                 let (_, simple_name) = split_type_name(&ident.name);
                 match simple_name {
-                    "Int" | "Float" | "Bool" | "String" | "Id" | "Email" | "Bytes" => {
+                    "Int" | "Float" | "Bool" | "String" | "Id" | "Email" | "Bytes" | "Html" => {
                         self.parse_simple_env(&ident.name, raw)
                     }
                     _ => {
@@ -3221,6 +3419,18 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
                 },
+                "Html" => match value {
+                    Value::Html(_) => {
+                        return Ok(());
+                    }
+                    _ => {
+                        return Err(ExecError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("expected Html, got {type_name}"),
+                        )));
+                    }
+                },
                 _ => {}
             }
         }
@@ -3247,6 +3457,7 @@ impl<'a> Interpreter<'a> {
             Value::Bool(_) => "Bool".to_string(),
             Value::String(_) => "String".to_string(),
             Value::Bytes(_) => "Bytes".to_string(),
+            Value::Html(_) => "Html".to_string(),
             Value::Null => "Null".to_string(),
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
@@ -3272,6 +3483,7 @@ impl<'a> Interpreter<'a> {
             Value::Bool(v) => rt_json::JsonValue::Bool(v),
             Value::String(v) => rt_json::JsonValue::String(v.clone()),
             Value::Bytes(v) => rt_json::JsonValue::String(rt_bytes::encode_base64(&v)),
+            Value::Html(node) => rt_json::JsonValue::String(node.render_to_string()),
             Value::Null => rt_json::JsonValue::Null,
             Value::List(items) => {
                 rt_json::JsonValue::Array(items.iter().map(|v| self.value_to_json(v)).collect())
@@ -3550,6 +3762,13 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
             },
+            "Html" => {
+                return Err(ExecError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    "expected Html",
+                )));
+            }
             _ => return Ok(None),
         };
         Ok(Some(value))

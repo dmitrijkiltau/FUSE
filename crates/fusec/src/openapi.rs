@@ -54,10 +54,16 @@ impl<'a> OpenApiBuilder<'a> {
         let (paths, tags) = self.collect_paths_and_tags();
 
         let mut root = BTreeMap::new();
-        root.insert("openapi".to_string(), JsonValue::String("3.0.0".to_string()));
+        root.insert(
+            "openapi".to_string(),
+            JsonValue::String("3.0.0".to_string()),
+        );
         let mut info = BTreeMap::new();
         info.insert("title".to_string(), JsonValue::String(self.title.clone()));
-        info.insert("version".to_string(), JsonValue::String("0.1.0".to_string()));
+        info.insert(
+            "version".to_string(),
+            JsonValue::String("0.1.0".to_string()),
+        );
         root.insert("info".to_string(), JsonValue::Object(info));
         root.insert("paths".to_string(), JsonValue::Object(paths));
         let mut components = BTreeMap::new();
@@ -231,7 +237,10 @@ impl<'a> OpenApiBuilder<'a> {
         let mut responses = BTreeMap::new();
         let ok_schema = self.schema_for_response(unit, &route.ret_type);
         let mut ok = BTreeMap::new();
-        ok.insert("description".to_string(), JsonValue::String("OK".to_string()));
+        ok.insert(
+            "description".to_string(),
+            JsonValue::String("OK".to_string()),
+        );
         let mut ok_content = BTreeMap::new();
         let mut ok_json = BTreeMap::new();
         ok_json.insert("schema".to_string(), ok_schema);
@@ -383,7 +392,11 @@ impl<'a> OpenApiBuilder<'a> {
         );
         let mut variants = Vec::new();
         for variant in &decl.variants {
-            variants.push(self.schema_for_enum_variant(unit, variant.name.name.as_str(), &variant.payload));
+            variants.push(self.schema_for_enum_variant(
+                unit,
+                variant.name.name.as_str(),
+                &variant.payload,
+            ));
         }
         schema.insert("oneOf".to_string(), JsonValue::Array(variants));
         JsonValue::Object(schema)
@@ -623,7 +636,10 @@ fn primitive_schema(name: &str) -> Option<JsonValue> {
         }
         "Float" => {
             schema.insert("type".to_string(), JsonValue::String("number".to_string()));
-            schema.insert("format".to_string(), JsonValue::String("double".to_string()));
+            schema.insert(
+                "format".to_string(),
+                JsonValue::String("double".to_string()),
+            );
         }
         "Bool" => {
             schema.insert("type".to_string(), JsonValue::String("boolean".to_string()));
@@ -645,10 +661,7 @@ fn primitive_schema(name: &str) -> Option<JsonValue> {
 }
 
 fn string_schema() -> BTreeMap<String, JsonValue> {
-    BTreeMap::from([(
-        "type".to_string(),
-        JsonValue::String("string".to_string()),
-    )])
+    BTreeMap::from([("type".to_string(), JsonValue::String("string".to_string()))])
 }
 
 fn is_optional_type(ty: &TypeRef) -> bool {
@@ -668,7 +681,10 @@ fn make_nullable(schema: JsonValue) -> JsonValue {
         JsonValue::Object(mut map) => {
             if map.contains_key("$ref") {
                 let mut out = BTreeMap::new();
-                out.insert("allOf".to_string(), JsonValue::Array(vec![JsonValue::Object(map)]));
+                out.insert(
+                    "allOf".to_string(),
+                    JsonValue::Array(vec![JsonValue::Object(map)]),
+                );
                 out.insert("nullable".to_string(), JsonValue::Bool(true));
                 JsonValue::Object(out)
             } else {
@@ -688,7 +704,10 @@ fn apply_constraints(schema: JsonValue, constraints: BTreeMap<String, JsonValue>
         JsonValue::Object(mut map) => {
             if map.contains_key("$ref") {
                 let mut out = BTreeMap::new();
-                out.insert("allOf".to_string(), JsonValue::Array(vec![JsonValue::Object(map)]));
+                out.insert(
+                    "allOf".to_string(),
+                    JsonValue::Array(vec![JsonValue::Object(map)]),
+                );
                 for (key, value) in constraints {
                     out.insert(key, value);
                 }

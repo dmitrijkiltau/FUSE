@@ -45,30 +45,61 @@ pub enum Instr {
     Jump(usize),
     JumpIfFalse(usize),
     JumpIfNull(usize),
-    Call { name: String, argc: usize, kind: CallKind },
-    Spawn { name: String, argc: usize },
+    Call {
+        name: String,
+        argc: usize,
+        kind: CallKind,
+    },
+    Spawn {
+        name: String,
+        argc: usize,
+    },
     Await,
     MakeBox,
     Return,
-    Bang { has_error: bool },
-    MakeList { len: usize },
-    MakeMap { len: usize },
-    MakeStruct { name: String, fields: Vec<String> },
-    MakeEnum { name: String, variant: String, argc: usize },
-    GetField { field: String },
+    Bang {
+        has_error: bool,
+    },
+    MakeList {
+        len: usize,
+    },
+    MakeMap {
+        len: usize,
+    },
+    MakeStruct {
+        name: String,
+        fields: Vec<String>,
+    },
+    MakeEnum {
+        name: String,
+        variant: String,
+        argc: usize,
+    },
+    GetField {
+        field: String,
+    },
     GetIndex,
-    SetField { field: String },
+    SetField {
+        field: String,
+    },
     SetIndex,
-    InterpString { parts: usize },
+    InterpString {
+        parts: usize,
+    },
     MatchLocal {
         slot: usize,
         pat: Pattern,
         bindings: Vec<(String, usize)>,
         jump: usize,
     },
-    LoadConfigField { config: String, field: String },
+    LoadConfigField {
+        config: String,
+        field: String,
+    },
     IterInit,
-    IterNext { jump: usize },
+    IterNext {
+        jump: usize,
+    },
     RuntimeError(String),
 }
 

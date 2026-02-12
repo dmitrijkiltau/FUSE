@@ -611,7 +611,9 @@ fn run_build(
         eprintln!("{err}");
         return 1;
     }
-    if let Some(native_bin) = manifest.and_then(|m| m.build.as_ref().and_then(|b| b.native_bin.clone())) {
+    if let Some(native_bin) =
+        manifest.and_then(|m| m.build.as_ref().and_then(|b| b.native_bin.clone()))
+    {
         if let Err(err) = write_native_binary(manifest_dir, &artifacts.native, app, &native_bin) {
             eprintln!("{err}");
             return 1;
@@ -673,11 +675,7 @@ fn run_project_check(entry: &Path, deps: &HashMap<String, PathBuf>) -> i32 {
             had_errors = true;
         }
     }
-    if had_errors {
-        1
-    } else {
-        0
-    }
+    if had_errors { 1 } else { 0 }
 }
 
 fn run_project_fmt(entry: &Path, deps: &HashMap<String, PathBuf>) -> i32 {
@@ -707,7 +705,10 @@ fn run_project_fmt(entry: &Path, deps: &HashMap<String, PathBuf>) -> i32 {
     0
 }
 
-fn collect_project_files(entry: &Path, deps: &HashMap<String, PathBuf>) -> Result<Vec<PathBuf>, String> {
+fn collect_project_files(
+    entry: &Path,
+    deps: &HashMap<String, PathBuf>,
+) -> Result<Vec<PathBuf>, String> {
     let src = fs::read_to_string(entry)
         .map_err(|err| format!("failed to read {}: {err}", entry.display()))?;
     let (registry, diags) = fusec::load_program_with_modules_and_deps(entry, &src, deps);
@@ -767,13 +768,11 @@ fn write_native_binary(
     let object_path = build_dir.join("program.o");
     fs::write(&object_path, &artifact.object)
         .map_err(|err| format!("failed to write {}: {err}", object_path.display()))?;
-    let mut configs: Vec<fusec::ir::Config> =
-        program.ir.configs.values().cloned().collect();
+    let mut configs: Vec<fusec::ir::Config> = program.ir.configs.values().cloned().collect();
     configs.sort_by(|a, b| a.name.cmp(&b.name));
     let config_bytes =
         bincode::serialize(&configs).map_err(|err| format!("config encode failed: {err}"))?;
-    let mut types: Vec<fusec::ir::TypeInfo> =
-        program.ir.types.values().cloned().collect();
+    let mut types: Vec<fusec::ir::TypeInfo> = program.ir.types.values().cloned().collect();
     types.sort_by(|a, b| a.name.cmp(&b.name));
     let type_bytes =
         bincode::serialize(&types).map_err(|err| format!("type encode failed: {err}"))?;
@@ -946,8 +945,7 @@ fn main() {{
 }}
 "#
     );
-    fs::write(path, source)
-        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    fs::write(path, source).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     Ok(())
 }
 
@@ -1011,15 +1009,18 @@ fn find_repo_root(start: &Path) -> Result<PathBuf, String> {
 
 fn find_latest_rlib(dir: &Path, prefix: &str) -> Result<PathBuf, String> {
     let mut best: Option<(SystemTime, PathBuf)> = None;
-    let entries = fs::read_dir(dir)
-        .map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
+    let entries =
+        fs::read_dir(dir).map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
     for entry in entries {
         let entry = entry.map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("rlib") {
             continue;
         }
-        let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
         if !file_name.starts_with(prefix) {
             continue;
         }
@@ -1245,7 +1246,13 @@ fn emit_diag(diag: &fusec::diag::Diag, fallback: Option<(&Path, &str)>) {
     if let Some(path) = &diag.path {
         if let Ok(src) = fs::read_to_string(path) {
             let (line, col, line_text) = line_info(&src, diag.span.start);
-            eprintln!("{level}: {} ({}:{}:{})", diag.message, path.display(), line, col);
+            eprintln!(
+                "{level}: {} ({}:{}:{})",
+                diag.message,
+                path.display(),
+                line,
+                col
+            );
             eprintln!("  {line_text}");
             eprintln!("  {}^", " ".repeat(col.saturating_sub(1)));
             return;
@@ -1255,7 +1262,13 @@ fn emit_diag(diag: &fusec::diag::Diag, fallback: Option<(&Path, &str)>) {
     }
     if let Some((path, src)) = fallback {
         let (line, col, line_text) = line_info(src, diag.span.start);
-        eprintln!("{level}: {} ({}:{}:{})", diag.message, path.display(), line, col);
+        eprintln!(
+            "{level}: {} ({}:{}:{})",
+            diag.message,
+            path.display(),
+            line,
+            col
+        );
         eprintln!("  {line_text}");
         eprintln!("  {}^", " ".repeat(col.saturating_sub(1)));
         return;

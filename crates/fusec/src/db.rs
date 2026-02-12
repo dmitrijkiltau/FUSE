@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use rusqlite::types::{Value as SqlValue, ValueRef};
-use rusqlite::{params_from_iter, Connection, Params};
+use rusqlite::{Connection, Params, params_from_iter};
 
 use crate::interp::Value;
 
@@ -222,7 +222,10 @@ impl Db {
             .query(params_from_iter(sql_params))
             .map_err(|err| format!("db query failed: {err}"))?;
         let mut out = Vec::new();
-        while let Some(row) = rows.next().map_err(|err| format!("db query failed: {err}"))? {
+        while let Some(row) = rows
+            .next()
+            .map_err(|err| format!("db query failed: {err}"))?
+        {
             let mut map = HashMap::new();
             for (idx, name) in columns.iter().enumerate() {
                 let value = row
@@ -385,9 +388,7 @@ fn value_from_ref(value: ValueRef<'_>) -> Value {
         ValueRef::Null => Value::Null,
         ValueRef::Integer(v) => Value::Int(v),
         ValueRef::Real(v) => Value::Float(v),
-        ValueRef::Text(bytes) => {
-            Value::String(String::from_utf8_lossy(bytes).to_string())
-        }
+        ValueRef::Text(bytes) => Value::String(String::from_utf8_lossy(bytes).to_string()),
         ValueRef::Blob(bytes) => Value::Bytes(bytes.to_vec()),
     }
 }

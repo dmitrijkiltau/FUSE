@@ -1,7 +1,7 @@
 use fusec::interp::Value;
 use std::collections::HashMap;
 
-use fusec::native::value::{NativeHeap, NativeValue, NativeTag};
+use fusec::native::value::{NativeHeap, NativeTag, NativeValue};
 
 #[test]
 fn native_value_roundtrip_numeric() {
@@ -133,7 +133,16 @@ fn assert_value_eq(expected: &Value, actual: &Value) {
                 assert_value_eq(value, other);
             }
         }
-        (Value::Struct { name: a_name, fields: a }, Value::Struct { name: b_name, fields: b }) => {
+        (
+            Value::Struct {
+                name: a_name,
+                fields: a,
+            },
+            Value::Struct {
+                name: b_name,
+                fields: b,
+            },
+        ) => {
             assert_eq!(a_name, b_name);
             assert_eq!(a.len(), b.len());
             for (key, value) in a {

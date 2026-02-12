@@ -12,7 +12,11 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token], diags: &'a mut Diagnostics) -> Self {
-        Self { tokens, pos: 0, diags }
+        Self {
+            tokens,
+            pos: 0,
+            diags,
+        }
     }
 
     pub fn parse_program(&mut self) -> Program {
@@ -381,7 +385,12 @@ impl<'a> Parser<'a> {
         self.expect_punct(Punct::Colon);
         let body = self.parse_block();
         let span = name.span.merge(body.span);
-        AppDecl { name, body, doc, span }
+        AppDecl {
+            name,
+            body,
+            doc,
+            span,
+        }
     }
 
     fn parse_migration_decl(&mut self, doc: Option<Doc>) -> MigrationDecl {
@@ -414,7 +423,12 @@ impl<'a> Parser<'a> {
         self.expect_punct(Punct::Colon);
         let body = self.parse_block();
         let span = name.span.merge(body.span);
-        TestDecl { name, body, doc, span }
+        TestDecl {
+            name,
+            body,
+            doc,
+            span,
+        }
     }
 
     fn parse_param(&mut self) -> Param {
@@ -506,7 +520,10 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_expr();
                 if self.eat_punct(Punct::Assign).is_some() {
                     let value = self.parse_expr();
-                    StmtKind::Assign { target: expr, expr: value }
+                    StmtKind::Assign {
+                        target: expr,
+                        expr: value,
+                    }
                 } else {
                     StmtKind::Expr(expr)
                 }
@@ -660,13 +677,14 @@ impl<'a> Parser<'a> {
                     }
                     let end = self.expect_punct(Punct::RParen);
                     if has_named && has_positional {
-                        self.diags.error(
-                            start.merge(end),
-                            "cannot mix positional and named patterns",
-                        );
+                        self.diags
+                            .error(start.merge(end), "cannot mix positional and named patterns");
                     }
                     if has_named {
-                        PatternKind::Struct { name: ident, fields }
+                        PatternKind::Struct {
+                            name: ident,
+                            fields,
+                        }
                     } else {
                         PatternKind::EnumVariant { name: ident, args }
                     }
@@ -705,13 +723,14 @@ impl<'a> Parser<'a> {
                     }
                     let end = self.expect_punct(Punct::RParen);
                     if has_named && has_positional {
-                        self.diags.error(
-                            start.merge(end),
-                            "cannot mix positional and named patterns",
-                        );
+                        self.diags
+                            .error(start.merge(end), "cannot mix positional and named patterns");
                     }
                     if has_named {
-                        PatternKind::Struct { name: ident, fields }
+                        PatternKind::Struct {
+                            name: ident,
+                            fields,
+                        }
                     } else {
                         PatternKind::EnumVariant { name: ident, args }
                     }
@@ -1233,7 +1252,8 @@ impl<'a> Parser<'a> {
                 InterpSegment::Expr { src, offset } => {
                     let expr_span = Span::new(offset, offset + src.len());
                     if src.trim().is_empty() {
-                        self.diags.error(expr_span, "empty interpolation expression");
+                        self.diags
+                            .error(expr_span, "empty interpolation expression");
                         parts.push(InterpPart::Expr(Expr {
                             kind: ExprKind::Literal(Literal::Null),
                             span: expr_span,
@@ -1664,7 +1684,9 @@ impl<'a> Parser<'a> {
 
     fn peek(&self) -> &Token {
         self.tokens.get(self.pos).unwrap_or_else(|| {
-            self.tokens.last().expect("token stream should end with Eof")
+            self.tokens
+                .last()
+                .expect("token stream should end with Eof")
         })
     }
 

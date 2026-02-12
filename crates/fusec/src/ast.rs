@@ -41,10 +41,22 @@ pub struct ImportDecl {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ImportSpec {
-    Module { name: Ident },
-    ModuleFrom { name: Ident, path: StringLit },
-    NamedFrom { names: Vec<Ident>, path: StringLit },
-    AliasFrom { name: Ident, alias: Ident, path: StringLit },
+    Module {
+        name: Ident,
+    },
+    ModuleFrom {
+        name: Ident,
+        path: StringLit,
+    },
+    NamedFrom {
+        names: Vec<Ident>,
+        path: StringLit,
+    },
+    AliasFrom {
+        name: Ident,
+        alias: Ident,
+        path: StringLit,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -285,13 +285,14 @@ The AST matches `crates/fusec/src/ast.rs`:
 
 ### Base types
 
-* `Int`, `Float`, `Bool`, `String`, `Bytes`
+* `Int`, `Float`, `Bool`, `String`, `Bytes`, `Html`
 * `Id` (non-empty string)
 * `Email` (string validated by a simple `user@host` check)
 * `Error` (built-in error base)
 * `List<T>`, `Map<K,V>`, `Option<T>`, `Result<T,E>`
 * Runtime constraint: `Map<K,V>` requires `K = String`.
 * Runtime detail: `Bytes` values are raw bytes; JSON/config/CLI boundaries use base64 text.
+* Runtime detail: `Html` values are runtime HTML trees built via `html.*` builtins.
 * User-defined `type` and `enum` are nominal.
 
 Reserved namespace:
@@ -393,4 +394,6 @@ Runtime binding + error mapping are described in `runtime.md`.
 * Enum variants only support tuple payloads (no named payload fields).
 * `a..b` yields a numeric list (inclusive) when evaluated; descending ranges error.
 * DB builtins support parameter binding and a minimal query builder (`db.from` / `query.*`).
+* HTML builtins are available (`html.text`, `html.raw`, `html.node`, `html.render`).
+* HTTP handlers returning `Html` are rendered with `Content-Type: text/html; charset=utf-8`.
 * `native` currently reuses VM runtime semantics while compiler/codegen work is still in progress, with a Cranelift JIT fast-path for direct Int/Bool arithmetic/control-flow function calls.

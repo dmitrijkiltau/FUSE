@@ -45,6 +45,7 @@ impl<'a> Checker<'a> {
         env.insert_builtin("assert");
         env.insert_builtin("serve");
         env.insert_builtin_with_ty("task", Ty::External("task".to_string()));
+        env.insert_builtin_with_ty("html", Ty::External("html".to_string()));
         env.insert_builtin("errors");
         Self {
             module_id,
@@ -707,11 +708,58 @@ impl<'a> Checker<'a> {
             "db" => self.lookup_db_member(name),
             "query" => self.lookup_query_member(name),
             "task" => self.lookup_task_member(name),
+            "html" => self.lookup_html_member(name),
             _ => {
                 self.diags.error(
                     name.span,
                     format!("{} has no field {}", external, name.name),
                 );
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn lookup_html_member(&mut self, name: &crate::ast::Ident) -> Ty {
+        match name.name.as_str() {
+            "text" | "raw" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "value".to_string(),
+                    ty: Ty::String,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::Html),
+            }),
+            "node" => Ty::Fn(FnSig {
+                params: vec![
+                    ParamSig {
+                        name: "name".to_string(),
+                        ty: Ty::String,
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "attrs".to_string(),
+                        ty: Ty::Map(Box::new(Ty::String), Box::new(Ty::String)),
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "children".to_string(),
+                        ty: Ty::List(Box::new(Ty::Html)),
+                        has_default: false,
+                    },
+                ],
+                ret: Box::new(Ty::Html),
+            }),
+            "render" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "value".to_string(),
+                    ty: Ty::Html,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::String),
+            }),
+            _ => {
+                self.diags
+                    .error(name.span, format!("unknown html method {}", name.name));
                 Ty::Unknown
             }
         }
@@ -1323,6 +1371,7 @@ impl<'a> Checker<'a> {
             "Bool" => Ty::Bool,
             "String" => Ty::String,
             "Bytes" => Ty::Bytes,
+            "Html" => Ty::Html,
             "Id" => Ty::Id,
             "Email" => Ty::Email,
             "Error" => Ty::Error,
@@ -1580,11 +1629,7 @@ impl<'a> Checker<'a> {
                 if let Some(current) = &self.current_return {
                     self.collect_result_errors(current, &mut errs);
                 }
-                if errs.is_empty() {
-                    None
-                } else {
-                    Some(errs)
-                }
+                if errs.is_empty() { None } else { Some(errs) }
             }
             Some(Ty::Unknown) => None,
             Some(other) => {

@@ -187,7 +187,9 @@ impl<'a> Parser<'a> {
         }
         let slice = std::str::from_utf8(&self.bytes[start..self.pos])
             .map_err(|_| "invalid number".to_string())?;
-        let value = slice.parse::<f64>().map_err(|_| "invalid number".to_string())?;
+        let value = slice
+            .parse::<f64>()
+            .map_err(|_| "invalid number".to_string())?;
         Ok(JsonValue::Number(value))
     }
 
@@ -230,7 +232,9 @@ impl<'a> Parser<'a> {
     fn parse_hex4(&mut self) -> Result<u32, String> {
         let mut value: u32 = 0;
         for _ in 0..4 {
-            let ch = self.bump().ok_or_else(|| "invalid unicode escape".to_string())?;
+            let ch = self
+                .bump()
+                .ok_or_else(|| "invalid unicode escape".to_string())?;
             value = value * 16
                 + match ch {
                     b'0'..=b'9' => (ch - b'0') as u32,

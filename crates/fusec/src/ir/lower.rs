@@ -93,7 +93,10 @@ struct LoopContext {
 }
 
 enum AssignStep<'a> {
-    Field { name: String, optional: bool },
+    Field {
+        name: String,
+        optional: bool,
+    },
     Index {
         index: &'a Expr,
         slot: usize,
@@ -341,7 +344,7 @@ impl<'a> Lowerer<'a> {
                     name: "body".to_string(),
                     span: Span::default(),
                 };
-            builder.declare_param(&ident);
+                builder.declare_param(&ident);
             }
             builder.lower_block(&route.body);
             builder.ensure_return();
@@ -691,7 +694,9 @@ impl FuncBuilder {
                                 }
                                 if !is_last {
                                     self.emit(Instr::Dup);
-                                    self.emit(Instr::GetField { field: name.clone() });
+                                    self.emit(Instr::GetField {
+                                        field: name.clone(),
+                                    });
                                 }
                             }
                             AssignStep::Index {
@@ -719,9 +724,13 @@ impl FuncBuilder {
                     match last {
                         AssignStep::Field { name, .. } => {
                             self.lower_expr(expr);
-                            self.emit(Instr::SetField { field: name.clone() });
+                            self.emit(Instr::SetField {
+                                field: name.clone(),
+                            });
                         }
-                        AssignStep::Index { slot: index_slot, .. } => {
+                        AssignStep::Index {
+                            slot: index_slot, ..
+                        } => {
                             self.emit(Instr::LoadLocal(*index_slot));
                             self.lower_expr(expr);
                             self.emit(Instr::SetIndex);
@@ -731,9 +740,13 @@ impl FuncBuilder {
                         for step in steps[..steps.len() - 1].iter().rev() {
                             match step {
                                 AssignStep::Field { name, .. } => {
-                                    self.emit(Instr::SetField { field: name.clone() });
+                                    self.emit(Instr::SetField {
+                                        field: name.clone(),
+                                    });
                                 }
-                                AssignStep::Index { slot: index_slot, .. } => {
+                                AssignStep::Index {
+                                    slot: index_slot, ..
+                                } => {
                                     self.emit(Instr::LoadLocal(*index_slot));
                                     self.emit(Instr::SetIndex);
                                 }
@@ -743,7 +756,9 @@ impl FuncBuilder {
                     self.emit(Instr::StoreLocal(slot));
                     self.emit(Instr::Push(Const::Unit));
                 }
-                _ => self.errors.push("unsupported assignment target".to_string()),
+                _ => self
+                    .errors
+                    .push("unsupported assignment target".to_string()),
             },
             StmtKind::Return { expr } => {
                 if let Some(expr) = expr {
@@ -967,7 +982,8 @@ impl FuncBuilder {
 
     fn lower_continue(&mut self) {
         if self.loop_stack.is_empty() {
-            self.errors.push("continue used outside of loop".to_string());
+            self.errors
+                .push("continue used outside of loop".to_string());
             self.emit(Instr::Push(Const::Unit));
             return;
         }
@@ -1073,118 +1089,120 @@ impl FuncBuilder {
                     UnaryOp::Not => self.emit(Instr::Not),
                 }
             }
-            ExprKind::Call { callee, args } => {
-                match &callee.kind {
-                    ExprKind::Ident(ident) => {
-                        if self.builtin_names.contains(&ident.name) {
-                            for arg in args {
-                                self.lower_expr(&arg.value);
-                            }
-                            self.emit(Instr::Call {
-                                name: ident.name.clone(),
-                                argc: args.len(),
-                                kind: CallKind::Builtin,
-                            });
-                        } else if let Some(decl) = self.fn_decls.get(&ident.name).cloned() {
-                            self.lower_call_with_defaults(&ident.name, &decl, args);
-                        } else {
-                            for arg in args {
-                                self.lower_expr(&arg.value);
-                            }
-                            self.emit(Instr::Call {
-                                name: ident.name.clone(),
-                                argc: args.len(),
-                                kind: CallKind::Function,
-                            });
+            ExprKind::Call { callee, args } => match &callee.kind {
+                ExprKind::Ident(ident) => {
+                    if self.builtin_names.contains(&ident.name) {
+                        for arg in args {
+                            self.lower_expr(&arg.value);
                         }
+                        self.emit(Instr::Call {
+                            name: ident.name.clone(),
+                            argc: args.len(),
+                            kind: CallKind::Builtin,
+                        });
+                    } else if let Some(decl) = self.fn_decls.get(&ident.name).cloned() {
+                        self.lower_call_with_defaults(&ident.name, &decl, args);
+                    } else {
+                        for arg in args {
+                            self.lower_expr(&arg.value);
+                        }
+                        self.emit(Instr::Call {
+                            name: ident.name.clone(),
+                            argc: args.len(),
+                            kind: CallKind::Function,
+                        });
                     }
-                    ExprKind::Member { base, name } => {
-                        if let ExprKind::Ident(ident) = &base.kind {
-                            if ident.name == "db" || ident.name == "task" || ident.name == "json" {
-                                for arg in args {
-                                    self.lower_expr(&arg.value);
-                                }
-                                self.emit(Instr::Call {
-                                    name: format!("{}.{}", ident.name, name.name),
-                                    argc: args.len(),
-                                    kind: CallKind::Builtin,
-                                });
-                                return;
-                            }
-                        }
-                        if is_query_method(&name.name) {
-                            self.lower_expr(base);
+                }
+                ExprKind::Member { base, name } => {
+                    if let ExprKind::Ident(ident) = &base.kind {
+                        if ident.name == "db"
+                            || ident.name == "task"
+                            || ident.name == "json"
+                            || ident.name == "html"
+                        {
                             for arg in args {
                                 self.lower_expr(&arg.value);
                             }
                             self.emit(Instr::Call {
-                                name: format!("query.{}", name.name),
-                                argc: args.len() + 1,
+                                name: format!("{}.{}", ident.name, name.name),
+                                argc: args.len(),
                                 kind: CallKind::Builtin,
                             });
                             return;
                         }
-                        if let ExprKind::Ident(module_ident) = &base.kind {
+                    }
+                    if is_query_method(&name.name) {
+                        self.lower_expr(base);
+                        for arg in args {
+                            self.lower_expr(&arg.value);
+                        }
+                        self.emit(Instr::Call {
+                            name: format!("query.{}", name.name),
+                            argc: args.len() + 1,
+                            kind: CallKind::Builtin,
+                        });
+                        return;
+                    }
+                    if let ExprKind::Ident(module_ident) = &base.kind {
+                        if let Some(module) = self.modules.get(&module_ident.name) {
+                            if module.exports.functions.contains(&name.name) {
+                                for arg in args {
+                                    self.lower_expr(&arg.value);
+                                }
+                                self.emit(Instr::Call {
+                                    name: name.name.clone(),
+                                    argc: args.len(),
+                                    kind: CallKind::Function,
+                                });
+                                return;
+                            }
+                        }
+                    }
+                    if let ExprKind::Member {
+                        base: inner_base,
+                        name: inner_name,
+                    } = &base.kind
+                    {
+                        if let ExprKind::Ident(module_ident) = &inner_base.kind {
                             if let Some(module) = self.modules.get(&module_ident.name) {
-                                if module.exports.functions.contains(&name.name) {
+                                if module.exports.enums.contains(&inner_name.name) {
                                     for arg in args {
                                         self.lower_expr(&arg.value);
                                     }
-                                    self.emit(Instr::Call {
-                                        name: name.name.clone(),
+                                    self.emit(Instr::MakeEnum {
+                                        name: inner_name.name.clone(),
+                                        variant: name.name.clone(),
                                         argc: args.len(),
-                                        kind: CallKind::Function,
                                     });
                                     return;
                                 }
                             }
                         }
-                        if let ExprKind::Member {
-                            base: inner_base,
-                            name: inner_name,
-                        } = &base.kind
-                        {
-                            if let ExprKind::Ident(module_ident) = &inner_base.kind {
-                                if let Some(module) = self.modules.get(&module_ident.name) {
-                                    if module.exports.enums.contains(&inner_name.name) {
-                                        for arg in args {
-                                            self.lower_expr(&arg.value);
-                                        }
-                                        self.emit(Instr::MakeEnum {
-                                            name: inner_name.name.clone(),
-                                            variant: name.name.clone(),
-                                            argc: args.len(),
-                                        });
-                                        return;
-                                    }
-                                }
+                    }
+                    if let ExprKind::Ident(enum_name) = &base.kind {
+                        if self.enum_names.contains(&enum_name.name) {
+                            for arg in args {
+                                self.lower_expr(&arg.value);
                             }
-                        }
-                        if let ExprKind::Ident(enum_name) = &base.kind {
-                            if self.enum_names.contains(&enum_name.name) {
-                                for arg in args {
-                                    self.lower_expr(&arg.value);
-                                }
-                                self.emit(Instr::MakeEnum {
-                                    name: enum_name.name.clone(),
-                                    variant: name.name.clone(),
-                                    argc: args.len(),
-                                });
-                            } else {
-                                self.errors
-                                    .push("call target not supported in VM yet".to_string());
-                            }
+                            self.emit(Instr::MakeEnum {
+                                name: enum_name.name.clone(),
+                                variant: name.name.clone(),
+                                argc: args.len(),
+                            });
                         } else {
                             self.errors
                                 .push("call target not supported in VM yet".to_string());
                         }
-                    }
-                    _ => {
+                    } else {
                         self.errors
                             .push("call target not supported in VM yet".to_string());
                     }
                 }
-            }
+                _ => {
+                    self.errors
+                        .push("call target not supported in VM yet".to_string());
+                }
+            },
             ExprKind::Member { base, name } => {
                 if let ExprKind::Member {
                     base: inner_base,
@@ -1374,7 +1392,12 @@ impl FuncBuilder {
         }
     }
 
-    fn lower_call_with_defaults(&mut self, name: &str, decl: &FnDecl, args: &[crate::ast::CallArg]) {
+    fn lower_call_with_defaults(
+        &mut self,
+        name: &str,
+        decl: &FnDecl,
+        args: &[crate::ast::CallArg],
+    ) {
         let param_count = decl.params.len();
         if args.is_empty() && param_count == 0 {
             self.emit(Instr::Call {
@@ -1432,8 +1455,7 @@ impl FuncBuilder {
                     param_for_arg.push(None);
                 }
                 _ => {
-                    self.errors
-                        .push(format!("too many arguments for {}", name));
+                    self.errors.push(format!("too many arguments for {}", name));
                     param_for_arg.push(None);
                 }
             }
@@ -1468,10 +1490,8 @@ impl FuncBuilder {
                     self.emit(Instr::StoreLocal(param_slots[idx]));
                     assigned[idx] = true;
                 } else {
-                    self.errors.push(format!(
-                        "missing argument {} for {}",
-                        param.name.name, name
-                    ));
+                    self.errors
+                        .push(format!("missing argument {} for {}", param.name.name, name));
                     self.emit(Instr::Push(Const::Null));
                     self.emit(Instr::StoreLocal(param_slots[idx]));
                 }

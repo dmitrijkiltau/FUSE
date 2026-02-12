@@ -23,7 +23,10 @@ fn native_object_emits_bytes() {
     let program = compile_registry(&registry).expect("failed to compile native program");
     let artifact =
         emit_object_for_app(&program, None).expect("failed to emit native object artifact");
-    assert!(!artifact.object.is_empty(), "expected non-empty object bytes");
+    assert!(
+        !artifact.object.is_empty(),
+        "expected non-empty object bytes"
+    );
     assert!(
         !artifact.entry_symbol.is_empty(),
         "expected entry symbol for emitted object"
