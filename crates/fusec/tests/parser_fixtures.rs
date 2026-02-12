@@ -148,3 +148,24 @@ fn create_note(id: Id, title: String, content: String):
 "#;
     assert_parse_ok(src);
 }
+
+#[test]
+fn parses_html_block_calls() {
+    let src = r#"
+fn div(attrs: Map<String, String>, children: List<Html>) -> Html:
+  return html.node("div", attrs, children)
+
+fn h1(attrs: Map<String, String>, children: List<Html>) -> Html:
+  return html.node("h1", attrs, children)
+
+fn text(value: String) -> Html:
+  return html.text(value)
+
+fn page() -> Html:
+  let card = div():
+    h1():
+      text("Hello")
+  return card
+"#;
+    assert_parse_ok(src);
+}

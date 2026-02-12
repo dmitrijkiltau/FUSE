@@ -182,6 +182,9 @@ NamedArgs      := Ident "=" Expr { "," Ident "=" Expr }
 ListLit        := "[" [ Expr { "," Expr } ] "]"
 MapLit         := "{" [ Expr ":" Expr { "," Expr ":" Expr } ] "}"
 SpawnExpr      := "spawn" ":" NEWLINE Block
+
+HtmlBlockSuffix := ":" NEWLINE INDENT HtmlChildStmt* DEDENT
+HtmlChildStmt   := Expr NEWLINE
 ```
 
 Patterns:
@@ -197,6 +200,10 @@ Notes:
 
 * `StructLit` is chosen when an identifier call contains named arguments.
 * `spawn` is an expression whose block provides its own newline.
+* `HtmlBlockSuffix` is enabled only in statement value positions (`let`/`var` RHS, `return` expr,
+  assignment RHS, expression statements). It is parsed only for call expressions and lowered to a call
+  with block-sugar args (`{}` attrs if omitted, plus `List<Html>` children).
+* HTML block children must be expression statements; no implicit string-to-`Html` coercion is added.
 * Postfix chains can continue across line breaks when the next token is a postfix continuation
   (`(`, `.`, `[`, `?`, `?!`), so long call/member/index chains can be wrapped line-by-line.
 * Call argument lists allow line breaks and trailing commas before `)`.
@@ -258,7 +265,7 @@ The AST matches `crates/fusec/src/ast.rs`:
 * `Ident`
 * `Binary(op, left, right)`
 * `Unary(op, expr)`
-* `Call(callee, args)`
+* `Call(callee, args)` where args are `CallArg { name, value, is_block_sugar }`
 * `Member(base, name)`
 * `OptionalMember(base, name)`
 * `StructLit(name, fields)`

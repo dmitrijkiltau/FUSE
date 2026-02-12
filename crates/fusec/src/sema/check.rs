@@ -346,11 +346,18 @@ impl<'a> Checker<'a> {
                 self.check_binary(expr.span, op, left_ty, right_ty)
             }
             ExprKind::Call { callee, args } => {
+                let uses_html_block = args.iter().any(|arg| arg.is_block_sugar);
                 if let ExprKind::Member { base, name } = &callee.kind {
                     if let ExprKind::Ident(ident) = &base.kind {
                         if ident.name == "db"
                             && matches!(name.name.as_str(), "exec" | "query" | "one")
                         {
+                            if uses_html_block {
+                                self.diags.error(
+                                    expr.span,
+                                    "html block form requires a function that returns Html",
+                                );
+                            }
                             if args.len() < 1 || args.len() > 2 {
                                 self.diags.error(expr.span, "db.* expects 1 or 2 arguments");
                             }
@@ -390,6 +397,14 @@ impl<'a> Checker<'a> {
                 let callee_ty = self.check_expr(callee);
                 match callee_ty {
                     Ty::Fn(sig) => {
+                        if uses_html_block
+                            && !matches!(sig.ret.as_ref(), Ty::Html | Ty::Unknown)
+                        {
+                            self.diags.error(
+                                expr.span,
+                                "html block form requires a function that returns Html",
+                            );
+                        }
                         for arg in args {
                             if arg.name.is_some() {
                                 self.diags.error(

@@ -78,6 +78,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * generics for `List<T>`, `Map<K,V>`, `Result<T,E>`, `Option<T>`
 * `migration` declarations
 * `spawn` / `await` / `box` concurrency
+* HTML block call DSL (`div(): ...`) lowered to explicit attrs + `List<Html>` children for Html-returning calls
 
 **Runtime / "boilerplate killer" (implemented)**
 

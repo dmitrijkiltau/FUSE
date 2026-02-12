@@ -153,3 +153,38 @@ fn main():
 "#;
     assert_diags(src, &[]);
 }
+
+#[test]
+fn html_block_requires_html_return_type() {
+    let src = r#"
+fn text(value: String) -> Html:
+  return html.text(value)
+
+fn bad(attrs: Map<String, String>, children: List<Html>) -> String:
+  return "nope"
+
+fn main():
+  bad():
+    text("x")
+"#;
+    assert_diags(
+        src,
+        &["Error: html block form requires a function that returns Html"],
+    );
+}
+
+#[test]
+fn html_block_children_must_be_html() {
+    let src = r#"
+fn div(attrs: Map<String, String>, children: List<Html>) -> Html:
+  return html.node("div", attrs, children)
+
+fn page() -> Html:
+  return div():
+    "hello"
+"#;
+    assert_diags(
+        src,
+        &["Error: type mismatch: expected List<Html>, found List<String>"],
+    );
+}

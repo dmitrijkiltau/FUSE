@@ -139,6 +139,38 @@ app "html":
 }
 
 #[test]
+fn html_block_dsl_renders_across_backends() {
+    let program = r#"
+fn div(attrs: Map<String, String>, children: List<Html>) -> Html:
+  return html.node("div", attrs, children)
+
+fn h1(attrs: Map<String, String>, children: List<Html>) -> Html:
+  return html.node("h1", attrs, children)
+
+fn text(value: String) -> Html:
+  return html.text(value)
+
+app "html":
+  let view = div():
+    h1():
+      text("Hello")
+  print(html.render(view))
+"#;
+
+    let expected = r#"<div><h1>Hello</h1></div>"#;
+    for backend in ["ast", "vm", "native"] {
+        let output = run_program(backend, program);
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(stdout.trim(), expected, "{backend} stdout");
+    }
+}
+
+#[test]
 fn html_http_response_sets_text_html_content_type() {
     let program = r#"
 config App:

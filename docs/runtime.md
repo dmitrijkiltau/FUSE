@@ -255,6 +255,8 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * `serve(port)` starts the HTTP server on `FUSE_HOST:port`.
 * `task.id/done/cancel` operate on spawned tasks (see Tasks below).
 * `html.text(String)`, `html.raw(String)`, `html.node(String, Map<String,String>, List<Html>)`, `html.render(Html)`.
+* HTML block call syntax (`div(): ...`) is compile-time sugar lowered to normal calls with explicit
+  attrs + `List<Html>` children; runtime behavior is unchanged.
 
 ## Database (SQLite only)
 

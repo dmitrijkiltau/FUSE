@@ -57,7 +57,7 @@ No string auto-coercion.
 
 # PHASE 2 — Block DSL (Scoped)
 
-Status: PENDING
+Status: DONE
 
 Syntax allowed:
 

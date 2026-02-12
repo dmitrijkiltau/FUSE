@@ -316,6 +316,8 @@ pub struct CallArg {
     pub name: Option<Ident>,
     pub value: Expr,
     pub span: Span,
+    #[serde(default)]
+    pub is_block_sugar: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

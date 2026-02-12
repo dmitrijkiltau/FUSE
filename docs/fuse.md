@@ -33,6 +33,8 @@ Config, JSON, validation, and HTTP routing are built into the runtime so you don
 * Enums are `enum`.
 * String interpolation uses `${expr}` inside double quotes.
 * Long call/member chains and call arguments can be split across lines.
+* HTML block DSL sugar is supported for call expressions:
+  `div(): ...` lowers to `div({}, [...])` and is restricted to calls that return `Html`.
 
 ### Hello World (app + optional CLI)
 
@@ -67,6 +69,7 @@ What the runtime does today:
 * Default values applied during struct construction, JSON decoding, and config loading.
 * `Bytes` are stored as raw bytes at runtime and use base64 text at JSON/config/CLI boundaries.
 * `Html` is a runtime tree type built via `html.text/raw/node`; `html.render` turns it into `String`.
+* HTML block form is compile-time sugar over `List<Html>` children; no implicit string-to-`Html` coercion.
 
 ---
 

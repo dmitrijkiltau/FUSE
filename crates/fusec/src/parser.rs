@@ -480,7 +480,7 @@ impl<'a> Parser<'a> {
                     None
                 };
                 self.expect_punct(Punct::Assign);
-                let expr = self.parse_expr();
+                let expr = self.parse_expr_with_html_block();
                 StmtKind::Let { name, ty, expr }
             }
             TokenKind::Keyword(Keyword::Var) => {
@@ -492,7 +492,7 @@ impl<'a> Parser<'a> {
                     None
                 };
                 self.expect_punct(Punct::Assign);
-                let expr = self.parse_expr();
+                let expr = self.parse_expr_with_html_block();
                 StmtKind::Var { name, ty, expr }
             }
             TokenKind::Keyword(Keyword::Return) => {
@@ -500,7 +500,7 @@ impl<'a> Parser<'a> {
                 let expr = if self.at_newline() {
                     None
                 } else {
-                    Some(self.parse_expr())
+                    Some(self.parse_expr_with_html_block())
                 };
                 StmtKind::Return { expr }
             }
@@ -519,27 +519,32 @@ impl<'a> Parser<'a> {
             _ => {
                 let expr = self.parse_expr();
                 if self.eat_punct(Punct::Assign).is_some() {
-                    let value = self.parse_expr();
+                    let value = self.parse_expr_with_html_block();
                     StmtKind::Assign {
                         target: expr,
                         expr: value,
                     }
                 } else {
+                    let expr = self.parse_html_block_suffix(expr);
                     StmtKind::Expr(expr)
                 }
             }
         };
-        let spawn_expr = |expr: &Expr| matches!(expr.kind, ExprKind::Spawn { .. });
+        let block_expr = |expr: &Expr| match &expr.kind {
+            ExprKind::Spawn { .. } => true,
+            ExprKind::Call { args, .. } => args.iter().any(|arg| arg.is_block_sugar),
+            _ => false,
+        };
         let needs_newline = match &kind {
             StmtKind::If { .. }
             | StmtKind::Match { .. }
             | StmtKind::For { .. }
             | StmtKind::While { .. } => false,
-            StmtKind::Expr(expr) => !spawn_expr(expr),
-            StmtKind::Let { expr, .. } => !spawn_expr(expr),
-            StmtKind::Var { expr, .. } => !spawn_expr(expr),
-            StmtKind::Assign { expr, .. } => !spawn_expr(expr),
-            StmtKind::Return { expr } => expr.as_ref().map(spawn_expr).map(|v| !v).unwrap_or(true),
+            StmtKind::Expr(expr) => !block_expr(expr),
+            StmtKind::Let { expr, .. } => !block_expr(expr),
+            StmtKind::Var { expr, .. } => !block_expr(expr),
+            StmtKind::Assign { expr, .. } => !block_expr(expr),
+            StmtKind::Return { expr } => expr.as_ref().map(block_expr).map(|v| !v).unwrap_or(true),
             _ => true,
         };
         if needs_newline {
@@ -551,6 +556,72 @@ impl<'a> Parser<'a> {
         Stmt {
             kind,
             span: start.merge(end),
+        }
+    }
+
+    fn parse_expr_with_html_block(&mut self) -> Expr {
+        let expr = self.parse_expr();
+        self.parse_html_block_suffix(expr)
+    }
+
+    fn parse_html_block_suffix(&mut self, expr: Expr) -> Expr {
+        if !self.at_punct(Punct::Colon) || !matches!(self.peek_kind_n(1), TokenKind::Newline) {
+            return expr;
+        }
+        let colon = self.expect_punct(Punct::Colon);
+        let block = self.parse_block();
+        match expr.kind {
+            ExprKind::Call { callee, mut args } => {
+                if args.len() > 1 {
+                    self.diags.error(
+                        expr.span.merge(colon),
+                        "html block call accepts at most one explicit attrs argument",
+                    );
+                }
+                if args.is_empty() {
+                    let attrs = Expr {
+                        kind: ExprKind::MapLit(Vec::new()),
+                        span: block.span,
+                    };
+                    args.push(CallArg {
+                        name: None,
+                        value: attrs,
+                        span: block.span,
+                        is_block_sugar: true,
+                    });
+                }
+                let mut children = Vec::new();
+                for stmt in block.stmts {
+                    match stmt.kind {
+                        StmtKind::Expr(child) => children.push(child),
+                        _ => {
+                            self.diags
+                                .error(stmt.span, "html block children must be expressions");
+                        }
+                    }
+                }
+                let children_expr = Expr {
+                    kind: ExprKind::ListLit(children),
+                    span: block.span,
+                };
+                args.push(CallArg {
+                    name: None,
+                    value: children_expr,
+                    span: block.span,
+                    is_block_sugar: true,
+                });
+                Expr {
+                    kind: ExprKind::Call { callee, args },
+                    span: expr.span.merge(block.span),
+                }
+            }
+            _ => {
+                self.diags.error(
+                    expr.span.merge(colon),
+                    "html block form requires a function call",
+                );
+                expr
+            }
         }
     }
 
@@ -1317,6 +1388,7 @@ impl<'a> Parser<'a> {
                 name,
                 value,
                 span: start.merge(end),
+                is_block_sugar: false,
             });
             self.consume_newlines();
             if self.eat_punct(Punct::Comma).is_none() {
