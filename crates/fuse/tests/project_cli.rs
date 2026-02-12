@@ -276,3 +276,124 @@ fi
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn build_runs_before_build_hook_when_configured() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let manifest = r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[assets.hooks]
+before_build = "fuse-hook-test"
+"#;
+    fs::write(dir.join("fuse.toml"), manifest).expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    )
+    .expect("write main.fuse");
+
+    let marker = dir.join("hook.marker");
+    let bin_dir = dir.join("bin");
+    fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let hook_path = bin_dir.join("fuse-hook-test");
+    fs::write(
+        &hook_path,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+printf 'ran\n' > "$HOOK_MARKER"
+"#,
+    )
+    .expect("write hook");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&hook_path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&hook_path, perms).expect("chmod hook");
+    }
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let mut cmd = Command::new(exe);
+    cmd.arg("build").arg("--manifest-path").arg(&dir);
+    let path = std::env::var("PATH").unwrap_or_default();
+    cmd.env("PATH", format!("{}:{}", bin_dir.display(), path));
+    cmd.env("HOOK_MARKER", marker.to_string_lossy().to_string());
+    let output = cmd.output().expect("run fuse build");
+    if !output.status.success() {
+        panic!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    assert!(marker.exists(), "expected {}", marker.display());
+    let content = fs::read_to_string(&marker).expect("read marker");
+    assert_eq!(content.trim(), "ran");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_fails_when_before_build_hook_fails() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let manifest = r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[assets.hooks]
+before_build = "fuse-hook-fail"
+"#;
+    fs::write(dir.join("fuse.toml"), manifest).expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    )
+    .expect("write main.fuse");
+
+    let bin_dir = dir.join("bin");
+    fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let hook_path = bin_dir.join("fuse-hook-fail");
+    fs::write(
+        &hook_path,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "hook exploded" >&2
+exit 42
+"#,
+    )
+    .expect("write hook");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&hook_path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&hook_path, perms).expect("chmod hook");
+    }
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let mut cmd = Command::new(exe);
+    cmd.arg("build").arg("--manifest-path").arg(&dir);
+    let path = std::env::var("PATH").unwrap_or_default();
+    cmd.env("PATH", format!("{}:{}", bin_dir.display(), path));
+    let output = cmd.output().expect("run fuse build");
+    assert!(!output.status.success(), "build unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("asset hook error: before_build failed"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("hook exploded"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}

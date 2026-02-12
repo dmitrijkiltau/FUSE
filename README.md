@@ -67,6 +67,7 @@ Set `[serve].openapi_ui = true` to expose the OpenAPI UI for normal `fuse run`.
 Set `[assets]` (`scss`, `css`, optional `watch`, optional `hash`) to run external `sass` during
 `fuse build` and on changes in `fuse dev`. With `hash = true`, use `asset("css/app.css")` in Fuse
 code to resolve logical paths to hashed public URLs.
+Set `[assets.hooks].before_build` to run an external command once before `fuse build`.
 
 Build artifacts and caches:
 

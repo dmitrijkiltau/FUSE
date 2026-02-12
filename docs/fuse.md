@@ -196,6 +196,9 @@ css = "public/css"
 watch = true
 hash = true
 
+[assets.hooks]
+before_build = "npm run build"
+
 [dependencies]
 Auth = { git = "https://github.com/org/auth.fuse", tag = "v0.3.1" }
 Utils = { path = "../utils" }
@@ -213,6 +216,7 @@ When `[assets]` is configured, `fuse build` runs external `sass` to compile SCSS
 CSS path, and `fuse dev` reruns that compilation on watched changes. With `hash = true`, compiled CSS
 is renamed to content-hashed filenames and a manifest is emitted at `.fuse/assets-manifest.json`.
 Use `asset("css/app.css")` in Html helpers to resolve logical paths to hashed public URLs.
+If `[assets.hooks].before_build` is set, `fuse build` runs that command once before build checks.
 `fuse check` semantically checks the package module graph starting at `package.entry`;
 `fuse fmt` formats that same module graph.
 

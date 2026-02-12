@@ -257,7 +257,7 @@ Implemented behavior in this repo:
 
 # PHASE 8 — Asset Hooks
 
-Status: PENDING
+Status: DONE
 
 Allow external tool integration.
 
@@ -277,6 +277,12 @@ This enables:
 * any custom pipeline
 
 Without FUSE owning JS ecosystem.
+
+Implemented behavior in this repo:
+
+* `[assets.hooks].before_build` runs once at the start of `fuse build` (before check/compile steps).
+* Hook command runs in the manifest directory and inherits environment variables.
+* Non-zero exits fail the build with hook stderr/stdout surfaced as `asset hook error`.
 
 ---
 
@@ -302,7 +308,7 @@ Add server-side inline SVG support with deterministic resolution.
 ## API:
 
 ```
-  svg.inline(name: String) -> Html
+svg.inline(name: String) -> Html
 ```
 
 ## Resolution Rules

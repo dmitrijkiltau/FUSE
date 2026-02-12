@@ -75,6 +75,13 @@ struct AssetsConfig {
     css: Option<String>,
     watch: Option<bool>,
     hash: Option<bool>,
+    #[serde(default)]
+    hooks: Option<AssetHooksConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AssetHooksConfig {
+    before_build: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -681,6 +688,54 @@ fn manifest_base_dir(manifest_dir: Option<&Path>) -> Result<PathBuf, String> {
     match manifest_dir {
         Some(dir) => Ok(dir.to_path_buf()),
         None => env::current_dir().map_err(|err| format!("cwd error: {err}")),
+    }
+}
+
+fn run_before_build_hook(manifest: Option<&Manifest>, manifest_dir: Option<&Path>) -> Result<(), String> {
+    let Some(command) = manifest
+        .and_then(|m| m.assets.as_ref())
+        .and_then(|assets| assets.hooks.as_ref())
+        .and_then(|hooks| hooks.before_build.as_deref())
+    else {
+        return Ok(());
+    };
+    let command = command.trim();
+    if command.is_empty() {
+        return Ok(());
+    }
+    let base = manifest_base_dir(manifest_dir)?;
+    let mut cmd = shell_command(command);
+    cmd.current_dir(&base);
+    let output = cmd
+        .output()
+        .map_err(|err| format!("asset hook error: failed to run before_build hook: {err}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = if !stderr.trim().is_empty() {
+        stderr.trim().to_string()
+    } else if !stdout.trim().is_empty() {
+        stdout.trim().to_string()
+    } else {
+        format!("exit status {}", output.status)
+    };
+    Err(format!("asset hook error: before_build failed: {detail}"))
+}
+
+fn shell_command(command: &str) -> ProcessCommand {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = ProcessCommand::new("cmd");
+        cmd.arg("/C").arg(command);
+        cmd
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = ProcessCommand::new("sh");
+        cmd.arg("-lc").arg(command);
+        cmd
     }
 }
 
@@ -1475,6 +1530,10 @@ fn run_build(
             return 1;
         }
         return 0;
+    }
+    if let Err(err) = run_before_build_hook(manifest, manifest_dir) {
+        eprintln!("{err}");
+        return 1;
     }
     let mut check_args = Vec::new();
     check_args.push("--check".to_string());
