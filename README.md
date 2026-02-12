@@ -64,6 +64,8 @@ Build distributable binaries:
 `fuse` reads `fuse.toml` (current directory or `--manifest-path`) and uses
 `package.entry` for `fuse dev` / `fuse run` / `fuse test`.
 Set `[serve].openapi_ui = true` to expose the OpenAPI UI for normal `fuse run`.
+Set `[assets]` (`scss`, `css`, optional `watch`) to run external `sass` during `fuse build`
+and on changes in `fuse dev`.
 
 Build artifacts and caches:
 

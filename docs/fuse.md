@@ -190,6 +190,11 @@ native_bin = "build/app"
 openapi_ui = true
 openapi_path = "/docs"
 
+[assets]
+scss = "assets/scss"
+css = "public/css"
+watch = true
+
 [dependencies]
 Auth = { git = "https://github.com/org/auth.fuse", tag = "v0.3.1" }
 Utils = { path = "../utils" }
@@ -203,6 +208,8 @@ at that path (native backend; config loading uses `FUSE_CONFIG` + env overrides)
 OpenAPI UI serving is enabled automatically in `fuse dev` (route defaults to `/docs`) and is
 available for `fuse run` when `[serve].openapi_ui = true`. The spec is generated ahead-of-time by
 the CLI and served from a file (`no runtime spec generation`).
+When `[assets]` is configured, `fuse build` runs external `sass` to compile SCSS into the configured
+CSS path, and `fuse dev` reruns that compilation on watched changes.
 `fuse check` semantically checks the package module graph starting at `package.entry`;
 `fuse fmt` formats that same module graph.
 

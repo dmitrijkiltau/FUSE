@@ -69,7 +69,9 @@ struct ServeConfig {
 #[derive(Debug, Deserialize)]
 struct AssetsConfig {
     scss: Option<String>,
+    css: Option<String>,
     watch: Option<bool>,
+    hash: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -476,6 +478,10 @@ fn run_dev(
     let ws_url = reload.ws_url();
     eprintln!("[dev] live reload websocket: {ws_url}");
 
+    if let Err(err) = run_asset_pipeline(manifest, manifest_dir) {
+        eprintln!("[dev] {err}");
+    }
+
     let mut snapshot = build_dev_snapshot(entry, manifest, manifest_dir, deps);
     let mut child = match spawn_dev_child(entry, manifest_dir, app, backend, &ws_url) {
         Ok(child) => Some(child),
@@ -516,6 +522,9 @@ fn run_dev(
 
         snapshot = next_snapshot;
         eprintln!("[dev] change detected, restarting...");
+        if let Err(err) = run_asset_pipeline(manifest, manifest_dir) {
+            eprintln!("[dev] {err}");
+        }
         child_exit_reported = false;
         if let Some(mut proc) = child.take() {
             let _ = proc.kill();
@@ -663,6 +672,88 @@ fn resolve_manifest_relative_path(base: &Path, path: &str) -> PathBuf {
     } else {
         base.join(path)
     }
+}
+
+fn run_asset_pipeline(manifest: Option<&Manifest>, manifest_dir: Option<&Path>) -> Result<(), String> {
+    let Some(assets) = manifest.and_then(|m| m.assets.as_ref()) else {
+        return Ok(());
+    };
+    let Some(scss) = assets.scss.as_ref() else {
+        return Ok(());
+    };
+    let _hash_requested = assets.hash.unwrap_or(false);
+    let base = match manifest_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => env::current_dir().map_err(|err| format!("cwd error: {err}"))?,
+    };
+    let source = resolve_manifest_relative_path(&base, scss);
+    if !source.exists() {
+        return Err(format!("assets.scss path does not exist: {}", source.display()));
+    }
+    let css = assets.css.as_deref().unwrap_or("public/css");
+    let destination = resolve_manifest_relative_path(&base, css);
+    let mapping = resolve_sass_mapping(&source, &destination)?;
+    if let Some(parent) = mapping.output.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+    }
+    let output = ProcessCommand::new("sass")
+        .arg("--no-source-map")
+        .arg(&mapping.arg)
+        .output()
+        .map_err(|err| format!("failed to run sass (install dart-sass): {err}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let mut msg = String::new();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stderr.trim().is_empty() {
+        msg.push_str(stderr.trim());
+    } else if !stdout.trim().is_empty() {
+        msg.push_str(stdout.trim());
+    } else {
+        msg.push_str("sass failed");
+    }
+    Err(format!("asset pipeline error: {msg}"))
+}
+
+struct SassMapping {
+    arg: String,
+    output: PathBuf,
+}
+
+fn resolve_sass_mapping(source: &Path, destination: &Path) -> Result<SassMapping, String> {
+    if source.is_dir() {
+        fs::create_dir_all(destination)
+            .map_err(|err| format!("failed to create {}: {err}", destination.display()))?;
+        return Ok(SassMapping {
+            arg: format!("{}:{}", source.display(), destination.display()),
+            output: destination.to_path_buf(),
+        });
+    }
+    if !source.is_file() {
+        return Err(format!("assets.scss path must be a file or directory: {}", source.display()));
+    }
+    let output = if destination.exists() && destination.is_dir() {
+        destination.join(scss_output_name(source))
+    } else if destination.extension().is_none() {
+        destination.join(scss_output_name(source))
+    } else {
+        destination.to_path_buf()
+    };
+    Ok(SassMapping {
+        arg: format!("{}:{}", source.display(), output.display()),
+        output,
+    })
+}
+
+fn scss_output_name(source: &Path) -> String {
+    let stem = source
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("app");
+    format!("{stem}.css")
 }
 
 struct ReloadHub {
@@ -1154,6 +1245,10 @@ fn run_build(
     let code = fusec::cli::run_with_deps(check_args, Some(deps));
     if code != 0 {
         return code;
+    }
+    if let Err(err) = run_asset_pipeline(manifest, manifest_dir) {
+        eprintln!("{err}");
+        return 1;
     }
     let artifacts = match compile_artifacts(entry, deps) {
         Ok(artifacts) => artifacts,

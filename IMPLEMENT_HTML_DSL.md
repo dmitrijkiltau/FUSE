@@ -187,7 +187,7 @@ No reactive model.
 
 # PHASE 6 — Asset Pipeline (Minimal & Honest)
 
-Status: PENDING
+Status: DONE
 
 This is orchestration, not bundling.
 
@@ -216,6 +216,9 @@ Build:
 * Rewrite asset references
 
 No internal SCSS parser.
+
+Current implementation note: SCSS orchestration is implemented via external `sass`
+for `fuse build` and `fuse dev`; hashed outputs remain in PHASE 7.
 
 ---
 
