@@ -101,7 +101,7 @@ This keeps DSL domain-limited.
 
 # PHASE 3 — Dev Server + Live Reload
 
-Status: PENDING
+Status: DONE
 
 Command:
 

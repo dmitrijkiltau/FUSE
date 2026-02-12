@@ -1,16 +1,20 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::env;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
+use std::process::{Child, Command as ProcessCommand};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 const USAGE: &str = r#"usage: fuse <command> [options] [file] [-- <program args>]
 
 commands:
+  dev       Run package entrypoint with live reload (watch mode)
   run       Run the package entrypoint
   test      Run tests in the package
   build     Run package checks (and optional build steps)
@@ -35,6 +39,8 @@ struct Manifest {
     #[serde(default)]
     serve: Option<ServeConfig>,
     #[serde(default)]
+    assets: Option<AssetsConfig>,
+    #[serde(default)]
     dependencies: BTreeMap<String, DependencySpec>,
 }
 
@@ -56,6 +62,12 @@ struct BuildConfig {
 struct ServeConfig {
     static_dir: Option<String>,
     static_index: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AssetsConfig {
+    scss: Option<String>,
+    watch: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -129,6 +141,7 @@ struct CommonArgs {
 }
 
 enum Command {
+    Dev,
     Run,
     Test,
     Build,
@@ -177,6 +190,7 @@ fn run(args: Vec<String>) -> i32 {
     }
     let (cmd, rest) = args.split_first().unwrap();
     let command = match cmd.as_str() {
+        "dev" => Command::Dev,
         "run" => Command::Run,
         "test" => Command::Test,
         "build" => Command::Build,
@@ -273,6 +287,14 @@ fn run(args: Vec<String>) -> i32 {
     };
 
     match command {
+        Command::Dev => run_dev(
+            &entry,
+            manifest.as_ref(),
+            manifest_dir.as_deref(),
+            &deps,
+            app.as_deref(),
+            backend,
+        ),
         Command::Run => {
             apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
             let mut args = Vec::new();
@@ -337,6 +359,441 @@ fn run(args: Vec<String>) -> i32 {
             fusec::cli::run_with_deps(args, Some(&deps))
         }
     }
+}
+
+fn run_dev(
+    entry: &Path,
+    manifest: Option<&Manifest>,
+    manifest_dir: Option<&Path>,
+    deps: &HashMap<String, PathBuf>,
+    app: Option<&str>,
+    backend: Option<RunBackend>,
+) -> i32 {
+    let reload = match ReloadHub::start() {
+        Ok(reload) => reload,
+        Err(err) => {
+            eprintln!("dev error: {err}");
+            return 1;
+        }
+    };
+    let ws_url = reload.ws_url();
+    eprintln!("[dev] live reload websocket: {ws_url}");
+
+    let mut snapshot = build_dev_snapshot(entry, manifest, manifest_dir, deps);
+    let mut child = match spawn_dev_child(entry, manifest_dir, app, backend, &ws_url) {
+        Ok(child) => Some(child),
+        Err(err) => {
+            eprintln!("{err}");
+            None
+        }
+    };
+    let mut child_exit_reported = false;
+
+    loop {
+        thread::sleep(Duration::from_millis(300));
+
+        if let Some(proc) = child.as_mut() {
+            match proc.try_wait() {
+                Ok(Some(status)) => {
+                    if !child_exit_reported {
+                        eprintln!("[dev] app exited ({status}); waiting for changes...");
+                        child_exit_reported = true;
+                    }
+                    child = None;
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    if !child_exit_reported {
+                        eprintln!("[dev] failed to poll app process: {err}");
+                        child_exit_reported = true;
+                    }
+                    child = None;
+                }
+            }
+        }
+
+        let next_snapshot = build_dev_snapshot(entry, manifest, manifest_dir, deps);
+        if next_snapshot == snapshot {
+            continue;
+        }
+
+        snapshot = next_snapshot;
+        eprintln!("[dev] change detected, restarting...");
+        child_exit_reported = false;
+        if let Some(mut proc) = child.take() {
+            let _ = proc.kill();
+            let _ = proc.wait();
+        }
+        match spawn_dev_child(entry, manifest_dir, app, backend, &ws_url) {
+            Ok(proc) => {
+                child = Some(proc);
+                reload.broadcast_reload();
+            }
+            Err(err) => {
+                eprintln!("{err}");
+            }
+        }
+    }
+}
+
+fn spawn_dev_child(
+    entry: &Path,
+    manifest_dir: Option<&Path>,
+    app: Option<&str>,
+    backend: Option<RunBackend>,
+    ws_url: &str,
+) -> Result<Child, String> {
+    let exe = env::current_exe().map_err(|err| format!("dev error: current exe: {err}"))?;
+    let mut cmd = ProcessCommand::new(exe);
+    cmd.arg("run");
+    if let Some(dir) = manifest_dir {
+        cmd.arg("--manifest-path");
+        cmd.arg(dir);
+    }
+    cmd.arg("--file");
+    cmd.arg(entry);
+    if let Some(name) = app {
+        cmd.arg("--app");
+        cmd.arg(name);
+    }
+    if let Some(backend) = backend {
+        cmd.arg("--backend");
+        cmd.arg(backend.as_str());
+    }
+    cmd.env("FUSE_DEV_RELOAD_WS_URL", ws_url);
+    cmd.spawn()
+        .map_err(|err| format!("dev error: failed to start app: {err}"))
+}
+
+#[derive(Clone, Default, Eq, PartialEq)]
+struct DevSnapshot {
+    files: BTreeMap<PathBuf, Option<FileStamp>>,
+}
+
+fn build_dev_snapshot(
+    entry: &Path,
+    manifest: Option<&Manifest>,
+    manifest_dir: Option<&Path>,
+    deps: &HashMap<String, PathBuf>,
+) -> DevSnapshot {
+    let files = collect_dev_watch_files(entry, manifest, manifest_dir, deps);
+    let mut stamps = BTreeMap::new();
+    for file in files {
+        stamps.insert(file.clone(), file_stamp(&file).ok());
+    }
+    DevSnapshot { files: stamps }
+}
+
+fn collect_dev_watch_files(
+    entry: &Path,
+    manifest: Option<&Manifest>,
+    manifest_dir: Option<&Path>,
+    deps: &HashMap<String, PathBuf>,
+) -> BTreeSet<PathBuf> {
+    let mut out = collect_module_files_for_dev(entry, deps);
+    if out.is_empty() {
+        out.insert(entry.to_path_buf());
+        if let Some(base) = manifest_dir.or_else(|| entry.parent()) {
+            collect_files_by_extension(base, &["fuse"], &mut out);
+        }
+    }
+    if let Some(base) = manifest_dir.or_else(|| entry.parent()) {
+        if let Some(assets) = manifest.and_then(|m| m.assets.as_ref()) {
+            if assets.watch != Some(false) {
+                if let Some(scss) = assets.scss.as_ref() {
+                    let path = resolve_manifest_relative_path(base, scss);
+                    if path.is_dir() {
+                        collect_files_by_extension(&path, &["scss", "sass"], &mut out);
+                    } else if path.is_file() {
+                        out.insert(path);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn collect_module_files_for_dev(entry: &Path, deps: &HashMap<String, PathBuf>) -> BTreeSet<PathBuf> {
+    let mut out = BTreeSet::new();
+    let src = match fs::read_to_string(entry) {
+        Ok(src) => src,
+        Err(_) => return out,
+    };
+    let (registry, _diags) = fusec::load_program_with_modules_and_deps(entry, &src, deps);
+    for unit in registry.modules.values() {
+        if unit.path.exists() {
+            out.insert(unit.path.clone());
+        }
+    }
+    out
+}
+
+fn collect_files_by_extension(root: &Path, exts: &[&str], out: &mut BTreeSet<PathBuf>) {
+    let mut dirs = VecDeque::new();
+    dirs.push_back(root.to_path_buf());
+    while let Some(dir) = dirs.pop_front() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let skip = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| matches!(name, ".git" | ".fuse" | "target"))
+                    .unwrap_or(false);
+                if !skip {
+                    dirs.push_back(path);
+                }
+                continue;
+            }
+            let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+            if exts.iter().any(|candidate| ext.eq_ignore_ascii_case(candidate)) {
+                out.insert(path);
+            }
+        }
+    }
+}
+
+fn resolve_manifest_relative_path(base: &Path, path: &str) -> PathBuf {
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    }
+}
+
+struct ReloadHub {
+    addr: String,
+    clients: Arc<Mutex<Vec<TcpStream>>>,
+}
+
+impl ReloadHub {
+    fn start() -> Result<Self, String> {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .map_err(|err| format!("failed to bind reload websocket: {err}"))?;
+        let addr = listener
+            .local_addr()
+            .map_err(|err| format!("failed to read reload websocket address: {err}"))?;
+        let clients = Arc::new(Mutex::new(Vec::new()));
+        let thread_clients = Arc::clone(&clients);
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                handle_reload_client(stream, &thread_clients);
+            }
+        });
+        Ok(Self {
+            addr: addr.to_string(),
+            clients,
+        })
+    }
+
+    fn ws_url(&self) -> String {
+        format!("ws://{}/__reload", self.addr)
+    }
+
+    fn broadcast_reload(&self) {
+        let frame = websocket_text_frame("reload");
+        let mut clients = match self.clients.lock() {
+            Ok(clients) => clients,
+            Err(_) => return,
+        };
+        let mut idx = 0usize;
+        while idx < clients.len() {
+            if clients[idx].write_all(&frame).is_err() {
+                clients.remove(idx);
+            } else {
+                idx += 1;
+            }
+        }
+    }
+}
+
+fn handle_reload_client(mut stream: TcpStream, clients: &Arc<Mutex<Vec<TcpStream>>>) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let header = match read_http_header(&mut stream) {
+        Ok(header) => header,
+        Err(_) => return,
+    };
+    let header = String::from_utf8_lossy(&header);
+    let mut lines = header.split("\r\n");
+    let request_line = lines.next().unwrap_or("");
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("");
+    if method != "GET" || !path.starts_with("/__reload") {
+        let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+        return;
+    }
+    let mut upgrade = false;
+    let mut connection_upgrade = false;
+    let mut ws_key = None::<String>;
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            let name = name.trim().to_ascii_lowercase();
+            let value = value.trim();
+            match name.as_str() {
+                "upgrade" if value.eq_ignore_ascii_case("websocket") => {
+                    upgrade = true;
+                }
+                "connection" if value.to_ascii_lowercase().contains("upgrade") => {
+                    connection_upgrade = true;
+                }
+                "sec-websocket-key" => {
+                    ws_key = Some(value.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+    let Some(ws_key) = ws_key else {
+        let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+        return;
+    };
+    if !upgrade || !connection_upgrade {
+        let _ = stream.write_all(b"HTTP/1.1 426 Upgrade Required\r\nContent-Length: 0\r\n\r\n");
+        return;
+    }
+    let accept = websocket_accept_value(&ws_key);
+    let response = format!(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+    );
+    if stream.write_all(response.as_bytes()).is_err() {
+        return;
+    }
+    let _ = stream.set_read_timeout(None);
+    let _ = stream.set_nonblocking(true);
+    if let Ok(mut guard) = clients.lock() {
+        guard.push(stream);
+    }
+}
+
+fn read_http_header(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+    let mut buffer = Vec::new();
+    let mut temp = [0u8; 1024];
+    loop {
+        let read = stream.read(&mut temp)?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&temp[..read]);
+        if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+        if buffer.len() >= 16 * 1024 {
+            break;
+        }
+    }
+    Ok(buffer)
+}
+
+fn websocket_accept_value(key: &str) -> String {
+    let mut combined = String::new();
+    combined.push_str(key.trim());
+    combined.push_str("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    let digest = sha1_digest(combined.as_bytes());
+    fuse_rt::bytes::encode_base64(&digest)
+}
+
+fn websocket_text_frame(payload: &str) -> Vec<u8> {
+    let bytes = payload.as_bytes();
+    let mut frame = Vec::with_capacity(bytes.len() + 10);
+    frame.push(0x81);
+    match bytes.len() {
+        len if len <= 125 => frame.push(len as u8),
+        len if len <= u16::MAX as usize => {
+            frame.push(126);
+            frame.extend_from_slice(&(len as u16).to_be_bytes());
+        }
+        len => {
+            frame.push(127);
+            frame.extend_from_slice(&(len as u64).to_be_bytes());
+        }
+    }
+    frame.extend_from_slice(bytes);
+    frame
+}
+
+fn sha1_digest(input: &[u8]) -> [u8; 20] {
+    let mut h0: u32 = 0x6745_2301;
+    let mut h1: u32 = 0xEFCD_AB89;
+    let mut h2: u32 = 0x98BA_DCFE;
+    let mut h3: u32 = 0x1032_5476;
+    let mut h4: u32 = 0xC3D2_E1F0;
+
+    let mut data = input.to_vec();
+    data.push(0x80);
+    while (data.len() % 64) != 56 {
+        data.push(0);
+    }
+    let bit_len = (input.len() as u64) * 8;
+    data.extend_from_slice(&bit_len.to_be_bytes());
+
+    for chunk in data.chunks(64) {
+        let mut words = [0u32; 80];
+        for (i, word) in words.iter_mut().enumerate().take(16) {
+            let base = i * 4;
+            *word = u32::from_be_bytes([
+                chunk[base],
+                chunk[base + 1],
+                chunk[base + 2],
+                chunk[base + 3],
+            ]);
+        }
+        for i in 16..80 {
+            words[i] = (words[i - 3] ^ words[i - 8] ^ words[i - 14] ^ words[i - 16]).rotate_left(1);
+        }
+
+        let mut a = h0;
+        let mut b = h1;
+        let mut c = h2;
+        let mut d = h3;
+        let mut e = h4;
+
+        for (i, word) in words.iter().enumerate() {
+            let (f, k) = if i < 20 {
+                ((b & c) | ((!b) & d), 0x5A82_7999)
+            } else if i < 40 {
+                (b ^ c ^ d, 0x6ED9_EBA1)
+            } else if i < 60 {
+                ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC)
+            } else {
+                (b ^ c ^ d, 0xCA62_C1D6)
+            };
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*word);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+
+        h0 = h0.wrapping_add(a);
+        h1 = h1.wrapping_add(b);
+        h2 = h2.wrapping_add(c);
+        h3 = h3.wrapping_add(d);
+        h4 = h4.wrapping_add(e);
+    }
+
+    let mut out = [0u8; 20];
+    out[0..4].copy_from_slice(&h0.to_be_bytes());
+    out[4..8].copy_from_slice(&h1.to_be_bytes());
+    out[8..12].copy_from_slice(&h2.to_be_bytes());
+    out[12..16].copy_from_slice(&h3.to_be_bytes());
+    out[16..20].copy_from_slice(&h4.to_be_bytes());
+    out
 }
 
 fn apply_serve_env(manifest: Option<&Manifest>, manifest_dir: Option<&Path>) {
@@ -1206,6 +1663,7 @@ fn ir_meta_is_valid(meta: &IrMeta) -> bool {
     true
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
 struct FileStamp {
     modified_secs: u64,
     modified_nanos: u32,

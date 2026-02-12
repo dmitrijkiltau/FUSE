@@ -25,6 +25,12 @@ Run a package (uses `fuse.toml`):
 ./scripts/fuse run --manifest-path examples/notes-api
 ```
 
+Run package in watch mode with live reload:
+
+```
+./scripts/fuse dev --manifest-path examples/notes-api
+```
+
 Start the LSP:
 
 ```
@@ -54,7 +60,7 @@ Build distributable binaries:
 ## Package tooling
 
 `fuse` reads `fuse.toml` (current directory or `--manifest-path`) and uses
-`package.entry` for `fuse run` / `fuse test`.
+`package.entry` for `fuse dev` / `fuse run` / `fuse test`.
 
 Build artifacts and caches:
 

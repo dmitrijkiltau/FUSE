@@ -98,7 +98,8 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * formatter via `fusec --fmt`
 * OpenAPI 3.0 generation via `fusec --openapi`
 * `fusec` flags: `--check`, `--run`, `--migrate`, `--test`, `--openapi`, `--backend` (`ast|vm|native`), `--app`
-* package manifest (`fuse.toml`) + `fuse run/test/build`
+* package manifest (`fuse.toml`) + `fuse dev/run/test/build`
+* dev server watch mode (`fuse dev`) with restart-on-change and HTML live-reload script injection
 * project-wide CLI ergonomics: `fuse check`/`fuse fmt` over the package module graph + file-aware multi-file parse/sema spans
 * dependency fetching + `fuse.lock`
 * IR cache for fast `fuse run` (`.fuse/build/program.ir`)

@@ -292,6 +292,7 @@ name = "fuse"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "fuse-rt",
  "fusec",
  "serde",
  "toml",

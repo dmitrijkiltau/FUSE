@@ -8,6 +8,7 @@ usage() {
 usage: scripts/fuse <command> [args...]
 
 commands:
+  dev      Run package in watch mode (fuse dev)
   run      Run a Fuse package (fuse run)
   test     Run package tests (fuse test)
   build    Build the package (fuse build)
@@ -19,6 +20,7 @@ commands:
 
 examples:
   scripts/fuse run examples/cli_hello.fuse
+  scripts/fuse dev examples/notes-api
   scripts/fuse test examples/project_demo.fuse
   scripts/fuse build
   scripts/fuse build --clean
@@ -36,7 +38,7 @@ fi
 cmd="$1"
 shift
 
-if [[ "$cmd" =~ ^(run|test|build|check|fmt|openapi|migrate)$ ]]; then
+if [[ "$cmd" =~ ^(dev|run|test|build|check|fmt|openapi|migrate)$ ]]; then
   has_manifest=0
   skip_next=0
   for arg in "$@"; do
@@ -110,7 +112,7 @@ if [[ "$cmd" =~ ^(run|test|build|check|fmt|openapi|migrate)$ ]]; then
 fi
 
 case "$cmd" in
-  run|test|build|check|fmt|openapi|migrate)
+  dev|run|test|build|check|fmt|openapi|migrate)
     exec "$ROOT/scripts/cargo_env.sh" cargo run -p fuse -- "$cmd" "$@"
     ;;
   lsp)

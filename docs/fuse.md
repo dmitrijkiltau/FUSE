@@ -150,7 +150,7 @@ The runtime currently handles:
 * HTTP routing + error JSON mapping
 * CLI flag binding for `fn main` when running `fusec --run <file> -- <args>`
 * OpenAPI 3.0 generation via `fusec --openapi` (services, schemas, refined types, error responses)
-* package tooling (`fuse.toml`, `fuse run/test/build`)
+* package tooling (`fuse.toml`, `fuse dev/run/test/build`)
 
 Today, `native` keeps VM-compatible semantics, with an initial Cranelift JIT fast-path for
 direct Int/Bool arithmetic/control-flow function calls. Unsupported instructions
@@ -177,7 +177,9 @@ Auth = { git = "https://github.com/org/auth.fuse", tag = "v0.3.1" }
 Utils = { path = "../utils" }
 ```
 
-`fuse run` and `fuse test` use `package.entry`. `fuse build` runs checks and emits OpenAPI
+`fuse run` and `fuse test` use `package.entry`. `fuse dev` runs `fuse run` in watch mode and
+restarts on `.fuse` changes (plus `[assets].scss` when configured), injecting a minimal live-reload script into
+HTML responses. `fuse build` runs checks and emits OpenAPI
 if `build.openapi` is set. If `build.native_bin` is set, it links a standalone native binary
 at that path (native backend; config loading uses `FUSE_CONFIG` + env overrides).
 `fuse check` semantically checks the package module graph starting at `package.entry`;

@@ -89,19 +89,30 @@ fn send_http_request_with_retry(port: u16, request: &str) -> HttpResponse {
 }
 
 fn run_http_program(backend: &str, source: &str, port: u16) -> HttpResponse {
+    run_http_program_with_env(backend, source, port, &[])
+}
+
+fn run_http_program_with_env(
+    backend: &str,
+    source: &str,
+    port: u16,
+    extra_env: &[(String, String)],
+) -> HttpResponse {
     let program_path = write_temp_file("fuse_html_http", "fuse", source);
     let exe = env!("CARGO_BIN_EXE_fusec");
-    let child = Command::new(exe)
-        .arg("--run")
+    let mut cmd = Command::new(exe);
+    cmd.arg("--run")
         .arg("--backend")
         .arg(backend)
         .arg(&program_path)
         .env("APP_PORT", port.to_string())
         .env("FUSE_MAX_REQUESTS", "1")
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to start server");
+        .stderr(Stdio::piped());
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+    let child = cmd.spawn().expect("failed to start server");
 
     let request = format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
     let response = send_http_request_with_retry(port, &request);
@@ -202,5 +213,37 @@ app "docs":
             "{backend} content-type"
         );
         assert_eq!(response.body.trim(), "<h1>Hi</h1>", "{backend} body");
+    }
+}
+
+#[test]
+fn html_http_injects_live_reload_script_when_enabled() {
+    let program = r#"
+config App:
+  port: Int = 3000
+
+service Docs at "/":
+  get "/" -> Html:
+    return html.node("h1", {}, [html.text("Hi")])
+
+app "docs":
+  serve(App.port)
+"#;
+
+    let ws_url = "ws://127.0.0.1:35555/__reload".to_string();
+    let extra_env = vec![("FUSE_DEV_RELOAD_WS_URL".to_string(), ws_url.clone())];
+    for backend in ["ast", "vm", "native"] {
+        let port = find_free_port();
+        let response = run_http_program_with_env(backend, program, port, &extra_env);
+        assert!(
+            response.body.contains("data-fuse-live-reload"),
+            "{backend} body: {}",
+            response.body
+        );
+        assert!(
+            response.body.contains(&ws_url),
+            "{backend} body: {}",
+            response.body
+        );
     }
 }

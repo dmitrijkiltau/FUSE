@@ -723,7 +723,7 @@ impl<'a> NativeVm<'a> {
             }
             Value::ResultOk(ok) => {
                 if html_response {
-                    let body = self.render_html_value(ok.as_ref())?;
+                    let body = self.maybe_inject_live_reload_html(self.render_html_value(ok.as_ref())?);
                     Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
                 } else {
                     let json = self.value_to_json(&ok);
@@ -732,7 +732,7 @@ impl<'a> NativeVm<'a> {
             }
             other => {
                 if html_response {
-                    let body = self.render_html_value(&other)?;
+                    let body = self.maybe_inject_live_reload_html(self.render_html_value(&other)?);
                     Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
                 } else {
                     let json = self.value_to_json(&other);
@@ -768,7 +768,7 @@ impl<'a> NativeVm<'a> {
         if !full.is_file() {
             return None;
         }
-        let body = fs::read_to_string(&full).ok()?;
+        let mut body = fs::read_to_string(&full).ok()?;
         let content_type = match full.extension().and_then(|ext| ext.to_str()) {
             Some("html") => "text/html; charset=utf-8",
             Some("css") => "text/css; charset=utf-8",
@@ -776,6 +776,9 @@ impl<'a> NativeVm<'a> {
             Some("json") => "application/json; charset=utf-8",
             _ => "text/plain; charset=utf-8",
         };
+        if content_type.starts_with("text/html") {
+            body = self.maybe_inject_live_reload_html(body);
+        }
         Some(self.http_response_with_type(200, body, content_type))
     }
 
@@ -928,6 +931,26 @@ impl<'a> NativeVm<'a> {
             "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         )
+    }
+
+    fn maybe_inject_live_reload_html(&self, mut body: String) -> String {
+        let ws_url = match std::env::var("FUSE_DEV_RELOAD_WS_URL") {
+            Ok(url) if !url.trim().is_empty() => url,
+            _ => return body,
+        };
+        if body.contains("data-fuse-live-reload") {
+            return body;
+        }
+        let ws_url = escape_js_single_quoted(&ws_url);
+        let script = format!(
+            "<script data-fuse-live-reload>(function(){{var url='{ws_url}';var retry=500;function connect(){{var ws=new WebSocket(url);ws.onopen=function(){{retry=500;}};ws.onmessage=function(){{window.location.reload();}};ws.onclose=function(){{setTimeout(connect,retry);retry=Math.min(retry*2,3000);}};ws.onerror=function(){{ws.close();}};}}connect();}})();</script>"
+        );
+        if let Some(index) = body.rfind("</body>") {
+            body.insert_str(index, &script);
+        } else {
+            body.push_str(&script);
+        }
+        body
     }
 
     fn http_error_response(&self, err: NativeError) -> String {
@@ -2937,4 +2960,18 @@ fn parse_route_param(segment: &str) -> Option<(String, String)> {
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn escape_js_single_quoted(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }

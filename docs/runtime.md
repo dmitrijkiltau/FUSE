@@ -243,6 +243,7 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * `FUSE_HOST` (default `127.0.0.1`) controls bind host.
 * `FUSE_SERVICE` selects the service when multiple are declared.
 * `FUSE_MAX_REQUESTS` stops the server after N requests (useful for tests).
+* `FUSE_DEV_RELOAD_WS_URL` enables dev HTML script injection (`WebSocket` auto-reload client to `/__reload`).
 
 ## Builtins (current)
 
