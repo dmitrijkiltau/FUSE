@@ -28,6 +28,7 @@ pub enum Value {
     Float(f64),
     Bool(bool),
     String(String),
+    Bytes(Vec<u8>),
     Null,
     List(Vec<Value>),
     Map(HashMap<String, Value>),
@@ -178,6 +179,7 @@ impl Value {
             Value::Float(v) => v.to_string(),
             Value::Bool(v) => v.to_string(),
             Value::String(v) => v.clone(),
+            Value::Bytes(v) => rt_bytes::encode_base64(&v),
             Value::Null => "null".to_string(),
             Value::List(items) => {
                 let text = items
@@ -2739,6 +2741,15 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
             },
+            (Value::Bytes(a), Value::Bytes(b)) => match op {
+                BinaryOp::Eq => a == b,
+                BinaryOp::NotEq => a != b,
+                _ => {
+                    return Err(ExecError::Runtime(
+                        "unsupported bytes comparison".to_string(),
+                    ));
+                }
+            },
             _ => {
                 return Err(ExecError::Runtime(
                     "unsupported comparison operands".to_string(),
@@ -2993,9 +3004,9 @@ impl<'a> Interpreter<'a> {
             },
             "String" | "Id" | "Email" => Ok(Value::String(raw.to_string())),
             "Bytes" => {
-                rt_bytes::decode_base64(raw)
+                let bytes = rt_bytes::decode_base64(raw)
                     .map_err(|msg| ExecError::Runtime(format!("invalid Bytes (base64): {msg}")))?;
-                Ok(Value::String(raw.to_string()))
+                Ok(Value::Bytes(bytes))
             }
             _ => Err(ExecError::Runtime(format!(
                 "env override not supported for type {name}"
@@ -3199,14 +3210,7 @@ impl<'a> Interpreter<'a> {
                     }
                 },
                 "Bytes" => match value {
-                    Value::String(v) => {
-                        rt_bytes::decode_base64(&v).map_err(|msg| {
-                            ExecError::Error(self.validation_error_value(
-                                path,
-                                "invalid_value",
-                                format!("invalid Bytes (base64): {msg}"),
-                            ))
-                        })?;
+                    Value::Bytes(_) => {
                         return Ok(());
                     }
                     _ => {
@@ -3242,6 +3246,7 @@ impl<'a> Interpreter<'a> {
             Value::Float(_) => "Float".to_string(),
             Value::Bool(_) => "Bool".to_string(),
             Value::String(_) => "String".to_string(),
+            Value::Bytes(_) => "Bytes".to_string(),
             Value::Null => "Null".to_string(),
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
@@ -3266,6 +3271,7 @@ impl<'a> Interpreter<'a> {
             Value::Float(v) => rt_json::JsonValue::Number(v),
             Value::Bool(v) => rt_json::JsonValue::Bool(v),
             Value::String(v) => rt_json::JsonValue::String(v.clone()),
+            Value::Bytes(v) => rt_json::JsonValue::String(rt_bytes::encode_base64(&v)),
             Value::Null => rt_json::JsonValue::Null,
             Value::List(items) => {
                 rt_json::JsonValue::Array(items.iter().map(|v| self.value_to_json(v)).collect())
@@ -3527,14 +3533,14 @@ impl<'a> Interpreter<'a> {
             },
             "Bytes" => match json {
                 rt_json::JsonValue::String(v) => {
-                    rt_bytes::decode_base64(&v).map_err(|msg| {
+                    let bytes = rt_bytes::decode_base64(&v).map_err(|msg| {
                         ExecError::Error(self.validation_error_value(
                             path,
                             "invalid_value",
                             format!("invalid Bytes (base64): {msg}"),
                         ))
                     })?;
-                    Value::String(v.clone())
+                    Value::Bytes(bytes)
                 }
                 _ => {
                     return Err(ExecError::Error(self.validation_error_value(

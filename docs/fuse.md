@@ -65,6 +65,7 @@ What the runtime does today:
 * JSON encode/decode for structs and enums.
 * Validation for refined types (ranges, Email).
 * Default values applied during struct construction, JSON decoding, and config loading.
+* `Bytes` are stored as raw bytes at runtime and use base64 text at JSON/config/CLI boundaries.
 
 ---
 

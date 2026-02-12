@@ -20,6 +20,7 @@ pub enum NativeTag {
 #[derive(Clone, Debug)]
 pub enum HeapValue {
     String(String),
+    Bytes(Vec<u8>),
     List(Vec<NativeValue>),
     Map(std::collections::HashMap<String, NativeValue>),
     Iterator(NativeIterator),
@@ -206,7 +207,7 @@ impl NativeHeap {
 
     fn mark_children(&self, value: &HeapValue, marks: &mut [bool], stack: &mut Vec<u64>) {
         match value {
-            HeapValue::String(_) => {}
+            HeapValue::String(_) | HeapValue::Bytes(_) => {}
             HeapValue::List(items) => {
                 for item in items {
                     self.mark_native_value(item, marks, stack);
@@ -310,6 +311,14 @@ impl NativeValue {
         }
     }
 
+    pub fn bytes(value: Vec<u8>, heap: &mut NativeHeap) -> Self {
+        let handle = heap.insert(HeapValue::Bytes(value));
+        Self {
+            tag: NativeTag::Heap,
+            payload: handle,
+        }
+    }
+
     pub fn intern_string(value: String, heap: &mut NativeHeap) -> Self {
         let handle = heap.intern_string(value);
         Self {
@@ -406,6 +415,7 @@ impl NativeValue {
             Value::Float(v) => Some(Self::float(*v)),
             Value::Null => Some(Self::null()),
             Value::String(v) => Some(Self::string(v.clone(), heap)),
+            Value::Bytes(v) => Some(Self::bytes(v.clone(), heap)),
             Value::List(values) => {
                 let mut out = Vec::with_capacity(values.len());
                 for value in values {
@@ -508,6 +518,7 @@ impl NativeValue {
             NativeTag::Null => Some(Value::Null),
             NativeTag::Heap => match heap.get(self.payload)? {
                 HeapValue::String(value) => Some(Value::String(value.clone())),
+                HeapValue::Bytes(value) => Some(Value::Bytes(value.clone())),
                 HeapValue::List(values) => {
                     let mut out = Vec::with_capacity(values.len());
                     for value in values {

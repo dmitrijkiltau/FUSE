@@ -26,7 +26,9 @@ use crate::native::value::{
 };
 use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram};
 
-use fuse_rt::{config as rt_config, json as rt_json, validate as rt_validate};
+use fuse_rt::{
+    bytes as rt_bytes, config as rt_config, json as rt_json, validate as rt_validate,
+};
 
 use super::NativeVm;
 
@@ -864,6 +866,7 @@ fn value_to_json(value: &Value) -> rt_json::JsonValue {
         Value::Float(v) => rt_json::JsonValue::Number(v),
         Value::Bool(v) => rt_json::JsonValue::Bool(v),
         Value::String(v) => rt_json::JsonValue::String(v.clone()),
+        Value::Bytes(v) => rt_json::JsonValue::String(rt_bytes::encode_base64(&v)),
         Value::Null => rt_json::JsonValue::Null,
         Value::List(items) => {
             rt_json::JsonValue::Array(items.iter().map(|v| value_to_json(v)).collect())
@@ -959,6 +962,7 @@ fn value_type_name(value: &Value) -> String {
         Value::Float(_) => "Float".to_string(),
         Value::Bool(_) => "Bool".to_string(),
         Value::String(_) => "String".to_string(),
+        Value::Bytes(_) => "Bytes".to_string(),
         Value::Null => "Null".to_string(),
         Value::List(_) => "List".to_string(),
         Value::Map(_) => "Map".to_string(),
@@ -1202,7 +1206,7 @@ fn validate_simple(value: &Value, name: &str, path: &str) -> ValidateResult {
                 }
             },
             "Bytes" => {
-                if matches!(value, Value::String(_)) {
+                if matches!(value, Value::Bytes(_)) {
                     return ValidateResult::Ok;
                 }
                 return ValidateResult::Error(validation_error_value(
@@ -6076,6 +6080,7 @@ fn return_kind(ty: &TypeRef, program: &IrProgram) -> Option<ReturnKind> {
         TypeRefKind::Simple(name) if name.name == "Float" => Some(ReturnKind::Float),
         TypeRefKind::Simple(name) if name.name == "Unit" => Some(ReturnKind::Value),
         TypeRefKind::Simple(name) if name.name == "String" => Some(ReturnKind::Heap),
+        TypeRefKind::Simple(name) if name.name == "Bytes" => Some(ReturnKind::Heap),
         TypeRefKind::Simple(name) if program.types.contains_key(&name.name) => {
             Some(ReturnKind::Heap)
         }
@@ -6088,6 +6093,7 @@ fn return_kind(ty: &TypeRef, program: &IrProgram) -> Option<ReturnKind> {
             TypeRefKind::Refined { base, .. } if base.name == "Float" => Some(ReturnKind::Float),
             TypeRefKind::Refined { base, .. } if base.name == "Unit" => Some(ReturnKind::Value),
             TypeRefKind::Refined { base, .. } if base.name == "String" => Some(ReturnKind::Heap),
+            TypeRefKind::Refined { base, .. } if base.name == "Bytes" => Some(ReturnKind::Heap),
         TypeRefKind::Refined { base, .. } if program.types.contains_key(&base.name) => {
             Some(ReturnKind::Heap)
         }
@@ -6140,6 +6146,7 @@ fn jit_kind_for_name(name: &str, program: &IrProgram) -> JitType {
         "Float" => JitType::Float,
         "Unit" => JitType::Unit,
         "String" => JitType::Heap,
+        "Bytes" => JitType::Heap,
         _ if program.types.contains_key(name) => JitType::Struct,
         _ if program.enums.contains_key(name) => JitType::Enum,
         _ => JitType::Value,
@@ -6160,6 +6167,7 @@ fn value_kind(value: &Value) -> Option<JitType> {
         Value::Float(_) => Some(JitType::Float),
         Value::Null
         | Value::String(_)
+        | Value::Bytes(_)
         | Value::List(_)
         | Value::Map(_)
         | Value::Struct { .. }

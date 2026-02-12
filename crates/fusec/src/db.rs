@@ -251,6 +251,7 @@ fn param_to_sql(param: &Value) -> Result<SqlValue, String> {
         Value::Float(v) => Ok(SqlValue::Real(v)),
         Value::Bool(v) => Ok(SqlValue::Integer(if v { 1 } else { 0 })),
         Value::String(v) => Ok(SqlValue::Text(v)),
+        Value::Bytes(v) => Ok(SqlValue::Blob(v)),
         Value::Boxed(inner) => param_to_sql(&inner.borrow()),
         Value::ResultOk(inner) => param_to_sql(&inner),
         Value::ResultErr(inner) => param_to_sql(&inner),
@@ -267,7 +268,8 @@ fn validate_param_value(value: &Value) -> Result<(), String> {
         | Value::Int(_)
         | Value::Float(_)
         | Value::Bool(_)
-        | Value::String(_) => Ok(()),
+        | Value::String(_)
+        | Value::Bytes(_) => Ok(()),
         Value::Boxed(inner) => validate_param_value(&inner.borrow()),
         Value::ResultOk(inner) => validate_param_value(&inner),
         Value::ResultErr(inner) => validate_param_value(&inner),
@@ -386,14 +388,6 @@ fn value_from_ref(value: ValueRef<'_>) -> Value {
         ValueRef::Text(bytes) => {
             Value::String(String::from_utf8_lossy(bytes).to_string())
         }
-        ValueRef::Blob(bytes) => Value::String(bytes_to_hex(bytes)),
+        ValueRef::Blob(bytes) => Value::Bytes(bytes.to_vec()),
     }
-}
-
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push_str(&format!("{:02x}", byte));
-    }
-    out
 }
