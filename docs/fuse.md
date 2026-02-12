@@ -130,6 +130,20 @@ The runtime currently handles:
 * `Html` route responses with `Content-Type: text/html; charset=utf-8`
 * mapping `Result` errors to HTTP statuses
 
+### HTMX-friendly pattern (no special runtime integration)
+
+```fuse
+type NoteInput:
+  title: String(1..80)
+
+service Notes at "/api":
+  post "/notes" body NoteInput -> Html:
+    return html.node("li", {"class": "note-row"}, [html.text(body.title)])
+```
+
+This is the intended pattern for server-driven fragment swaps: return `Html` directly from
+mutating routes, keep normal HTTP status/error behavior, and avoid introducing a client-side model.
+
 ---
 
 ## What works today (MVP)

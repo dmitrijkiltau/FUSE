@@ -163,7 +163,7 @@ Production:
 
 # PHASE 5 — HTMX-Friendly Patterns
 
-Status: PENDING
+Status: DONE
 
 No HTMX runtime integration.
 Just patterns:

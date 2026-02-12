@@ -237,6 +237,7 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * If a route return type is `Html` (or `Result<Html, E>` on success), the response body is rendered once and sent with `Content-Type: text/html; charset=utf-8`.
 * `Result` errors are mapped using the status rules above.
 * Unsupported HTTP methods return `405` with `internal_error` JSON.
+* There is no HTMX-specific runtime mode: HTMX-style flows are built by returning `Html` fragments from routes.
 
 ### Environment knobs
 

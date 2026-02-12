@@ -320,3 +320,48 @@ app "docs":
 
     let _ = fs::remove_file(openapi_path);
 }
+
+#[test]
+fn html_fragment_post_route_supports_server_driven_swaps() {
+    let program = r#"
+config App:
+  port: Int = 3000
+
+type NoteInput:
+  title: String(1..80)
+
+service Notes at "/api":
+  post "/notes" body NoteInput -> Html:
+    return html.node("li", {"class": "note-row"}, [html.text(body.title)])
+
+app "notes":
+  serve(App.port)
+"#;
+    let payload = r#"{"title":"Ship it"}"#;
+    let request = format!(
+        "POST /api/notes HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        payload.len(),
+        payload
+    );
+
+    for backend in ["ast", "vm", "native"] {
+        let port = find_free_port();
+        let responses = run_http_program_with_env_requests(backend, program, port, &[], &[&request]);
+        let response = &responses[0];
+        assert_eq!(response.status, 200, "{backend} status");
+        let content_type = response
+            .headers
+            .get("content-type")
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            content_type, "text/html; charset=utf-8",
+            "{backend} content-type"
+        );
+        assert_eq!(
+            response.body.trim(),
+            r#"<li class="note-row">Ship it</li>"#,
+            "{backend} body"
+        );
+    }
+}
