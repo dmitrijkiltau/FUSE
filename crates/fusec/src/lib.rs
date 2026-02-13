@@ -3,6 +3,7 @@ pub mod cli;
 pub mod db;
 pub mod diag;
 pub mod format;
+pub mod html_tags;
 pub mod interp;
 pub mod ir;
 pub mod lexer;

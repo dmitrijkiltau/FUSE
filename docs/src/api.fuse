@@ -1,6 +1,11 @@
-service DocsApi at "/api":
-  get "/health" -> Map<String, String>:
+import Ui from "./ui"
+
+service DocsApi at "/":
+  get "/" -> Html:
+    return Ui.docs_page()
+
+  get "/api/health" -> Map<String, String>:
     return {"status": "ok", "service": "docs"}
 
-  get "/specs" -> List<String>:
+  get "/api/specs" -> List<String>:
     return ["fuse.md", "fls.md", "runtime.md", "scope.md"]

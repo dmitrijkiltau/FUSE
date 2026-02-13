@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    Block, Expr, ExprKind, Item, Literal, Pattern, PatternKind, Program, RouteDecl, Stmt, StmtKind,
+    Block, CallArg, Expr, ExprKind, Item, Literal, Pattern, PatternKind, Program, RouteDecl, Stmt,
+    StmtKind,
 };
 use crate::diag::Diagnostics;
+use crate::html_tags::{self, HtmlTagKind};
 use crate::loader::{ModuleId, ModuleLink, ModuleMap};
 use crate::span::Span;
 
@@ -359,6 +361,11 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Call { callee, args } => {
                 let uses_html_block = args.iter().any(|arg| arg.is_block_sugar);
+                if let ExprKind::Ident(ident) = &callee.kind {
+                    if self.should_use_html_tag_builtin(&ident.name) {
+                        return self.check_html_tag_call(expr.span, &ident.name, args);
+                    }
+                }
                 if let ExprKind::Member { base, name } = &callee.kind {
                     if let ExprKind::Ident(ident) = &base.kind {
                         if ident.name == "db"
@@ -1916,6 +1923,67 @@ impl<'a> Checker<'a> {
             }
         }
         out
+    }
+
+    fn should_use_html_tag_builtin(&mut self, name: &str) -> bool {
+        if html_tags::tag_kind(name).is_none() {
+            return false;
+        }
+        if name != "html" && self.env.lookup(name).is_some() {
+            return false;
+        }
+        if self.import_items.contains_key(name) {
+            return false;
+        }
+        self.fn_sig_in(self.module_id, name).is_none()
+    }
+
+    fn check_html_tag_call(&mut self, span: Span, tag: &str, args: &[CallArg]) -> Ty {
+        let Some(kind) = html_tags::tag_kind(tag) else {
+            return Ty::Unknown;
+        };
+        for arg in args {
+            if arg.name.is_some() {
+                self.diags.error(
+                    arg.span,
+                    "named arguments are not supported for function calls",
+                );
+            }
+        }
+        let max = match kind {
+            HtmlTagKind::Normal => 2usize,
+            HtmlTagKind::Void => 1usize,
+        };
+        if args.len() > max {
+            self.diags.error(
+                span,
+                format!("expected at most {} arguments, got {}", max, args.len()),
+            );
+        }
+        if let Some(attrs) = args.get(0) {
+            let attrs_ty = self.check_expr(&attrs.value);
+            let expected_attrs = Ty::Map(Box::new(Ty::String), Box::new(Ty::String));
+            if !self.is_assignable(&attrs_ty, &expected_attrs) {
+                self.type_mismatch(attrs.span, &expected_attrs, &attrs_ty);
+            }
+        }
+        if let Some(children) = args.get(1) {
+            if matches!(kind, HtmlTagKind::Void) {
+                self.diags.error(
+                    children.span,
+                    format!("void html tag {} does not accept children", tag),
+                );
+            }
+            let children_ty = self.check_expr(&children.value);
+            let expected_children = Ty::List(Box::new(Ty::Html));
+            if !self.is_assignable(&children_ty, &expected_children) {
+                self.type_mismatch(children.span, &expected_children, &children_ty);
+            }
+        }
+        for arg in args.iter().skip(2) {
+            let _ = self.check_expr(&arg.value);
+        }
+        Ty::Html
     }
 }
 

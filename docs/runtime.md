@@ -266,6 +266,7 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * `asset(path: String) -> String` resolves to a hashed/static public URL when `FUSE_ASSET_MAP` is set.
 * `serve(port)` starts the HTTP server on `FUSE_HOST:port`.
 * `task.id/done/cancel` operate on spawned tasks (see Tasks below).
+* HTML tag builtins (for example `html`, `head`, `body`, `div`, `meta`, `button`) construct `Html` values.
 * `html.text(String)`, `html.raw(String)`, `html.node(String, Map<String,String>, List<Html>)`, `html.render(Html)`.
 * `svg.inline(path: String) -> Html` loads raw SVG from the configured SVG directory.
 * HTML block call syntax (`div(): ...`) is compile-time sugar lowered to normal calls with explicit

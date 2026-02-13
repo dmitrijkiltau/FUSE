@@ -226,19 +226,10 @@ app "html":
 #[test]
 fn html_block_dsl_renders_across_backends() {
     let program = r#"
-fn div(attrs: Map<String, String>, children: List<Html>) -> Html:
-  return html.node("div", attrs, children)
-
-fn h1(attrs: Map<String, String>, children: List<Html>) -> Html:
-  return html.node("h1", attrs, children)
-
-fn text(value: String) -> Html:
-  return html.text(value)
-
 app "html":
   let view = div():
     h1():
-      text("Hello")
+      html.text("Hello")
   print(html.render(view))
 "#;
 

@@ -299,7 +299,7 @@ The AST matches `crates/fusec/src/ast.rs`:
 * `List<T>`, `Map<K,V>`, `Option<T>`, `Result<T,E>`
 * Runtime constraint: `Map<K,V>` requires `K = String`.
 * Runtime detail: `Bytes` values are raw bytes; JSON/config/CLI boundaries use base64 text.
-* Runtime detail: `Html` values are runtime HTML trees built via `html.*` builtins.
+* Runtime detail: `Html` values are runtime HTML trees built via tag builtins (`div`, `head`, `meta`, ...) and `html.*` builtins.
 * User-defined `type` and `enum` are nominal.
 
 Reserved namespace:
@@ -401,7 +401,7 @@ Runtime binding + error mapping are described in `runtime.md`.
 * Enum variants only support tuple payloads (no named payload fields).
 * `a..b` yields a numeric list (inclusive) when evaluated; descending ranges error.
 * DB builtins support parameter binding and a minimal query builder (`db.from` / `query.*`).
-* HTML builtins are available (`html.text`, `html.raw`, `html.node`, `html.render`).
+* HTML tag builtins are available (`html`, `head`, `body`, `div`, `meta`, ...), plus low-level `html.text`, `html.raw`, `html.node`, `html.render`.
 * `asset(path)` resolves logical static paths to public URLs (including hashed outputs when configured).
 * `svg.inline(path)` loads raw SVG as `Html` from `assets/svg` (or `FUSE_SVG_DIR`).
 * HTTP handlers returning `Html` are rendered with `Content-Type: text/html; charset=utf-8`.

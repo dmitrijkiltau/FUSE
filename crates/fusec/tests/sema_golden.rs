@@ -188,3 +188,19 @@ fn page() -> Html:
         &["Error: type mismatch: expected List<Html>, found List<String>"],
     );
 }
+
+#[test]
+fn void_html_tags_reject_children() {
+    let src = r#"
+fn page() -> Html:
+  return meta():
+    html.text("x")
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: expected at most 1 arguments, got 2",
+            "Error: void html tag meta does not accept children",
+        ],
+    );
+}

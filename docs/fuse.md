@@ -68,7 +68,8 @@ What the runtime does today:
 * Validation for refined types (ranges, Email).
 * Default values applied during struct construction, JSON decoding, and config loading.
 * `Bytes` are stored as raw bytes at runtime and use base64 text at JSON/config/CLI boundaries.
-* `Html` is a runtime tree type built via `html.text/raw/node`; `html.render` turns it into `String`.
+* `Html` is a runtime tree type built via HTML tag builtins (for example `div`, `meta`, `nav`)
+  or `html.text/raw/node`; `html.render` turns it into `String`.
 * `svg.inline(path)` loads raw SVG from `assets/svg` (or `FUSE_SVG_DIR`) as `Html`.
 * HTML block form is compile-time sugar over `List<Html>` children; no implicit string-to-`Html` coercion.
 
@@ -139,7 +140,8 @@ type NoteInput:
 
 service Notes at "/api":
   post "/notes" body NoteInput -> Html:
-    return html.node("li", {"class": "note-row"}, [html.text(body.title)])
+    return li({"class": "note-row"}):
+      html.text(body.title)
 ```
 
 This is the intended pattern for server-driven fragment swaps: return `Html` directly from
@@ -153,7 +155,7 @@ mutating routes, keep normal HTTP status/error behavior, and avoid introducing a
 * AST interpreter, VM, and native backend (`--backend native`, still evolving)
 * `import` module loading (namespaced modules + named imports)
 * module-qualified type references in type positions (`Foo.User`, `Foo.Config`)
-* Built-ins: `print(...)`, `log(...)`, `db.exec/query/one`, `db.from`/`query.*`, `assert(...)`, `env(...)`, `asset(path)`, `serve(...)`, `task.id/done/cancel`, `html.text/raw/node/render`, `svg.inline`
+* Built-ins: `print(...)`, `log(...)`, `db.exec/query/one`, `db.from`/`query.*`, `assert(...)`, `env(...)`, `asset(path)`, `serve(...)`, `task.id/done/cancel`, HTML tag functions (for example `html`, `head`, `div`, `meta`, `button`), `html.text/raw/node/render`, `svg.inline`
 * SQLite-backed DB access with parameter binding + query builder (`db.from`/`query.*`) + migrations (`migration` + `fusec --migrate`)
 * tests via `test "name":` + `fusec --test` (AST backend)
 * `spawn`/`await`/`box` concurrency

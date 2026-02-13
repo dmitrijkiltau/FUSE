@@ -89,7 +89,7 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * HTTP request binding + response encoding (JSON by default, `Html` routes emit `text/html`)
 * HTMX-friendly server-driven fragments via normal `Html` route returns (no dedicated HTMX runtime)
 * error JSON + HTTP status mapping
-* builtins: `print`, `log`, `db.exec/query/one/from`, `query.*`, `assert`, `env`, `asset`, `serve`, `task.id`, `task.done`, `task.cancel`, `html.text/raw/node/render`, `svg.inline`
+* builtins: `print`, `log`, `db.exec/query/one/from`, `query.*`, `assert`, `env`, `asset`, `serve`, `task.id`, `task.done`, `task.cancel`, HTML tag functions (`html`, `head`, `div`, `meta`, ...), `html.text/raw/node/render`, `svg.inline`
 * SQLite-backed DB access + migrations via `fusec --migrate`
 * CLI arg binding for `fn main` when running with program args
 

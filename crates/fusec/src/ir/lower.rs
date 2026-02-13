@@ -6,6 +6,7 @@ use crate::ast::{
     AppDecl, BinaryOp, Block, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item, Literal, Pattern,
     PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, UnaryOp,
 };
+use crate::html_tags::{self, HtmlTagKind};
 use crate::loader::{ModuleMap, ModuleRegistry};
 use crate::span::Span;
 
@@ -82,6 +83,7 @@ struct Lowerer<'a> {
     config_names: HashSet<String>,
     enum_names: HashSet<String>,
     enum_variant_names: HashSet<String>,
+    imported_names: HashSet<String>,
     builtin_names: HashSet<String>,
     default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
 }
@@ -109,6 +111,7 @@ impl<'a> Lowerer<'a> {
         let mut config_names = HashSet::new();
         let mut enum_names = HashSet::new();
         let mut enum_variant_names = HashSet::new();
+        let mut imported_names = HashSet::new();
         let mut fn_decls = HashMap::new();
         for item in &program.items {
             if let Item::Config(cfg) = item {
@@ -120,6 +123,21 @@ impl<'a> Lowerer<'a> {
                 }
             } else if let Item::Fn(decl) = item {
                 fn_decls.insert(decl.name.name.clone(), decl.clone());
+            } else if let Item::Import(decl) = item {
+                match &decl.spec {
+                    crate::ast::ImportSpec::Module { name }
+                    | crate::ast::ImportSpec::ModuleFrom { name, .. } => {
+                        imported_names.insert(name.name.clone());
+                    }
+                    crate::ast::ImportSpec::NamedFrom { names, .. } => {
+                        for name in names {
+                            imported_names.insert(name.name.clone());
+                        }
+                    }
+                    crate::ast::ImportSpec::AliasFrom { alias, .. } => {
+                        imported_names.insert(alias.name.clone());
+                    }
+                }
             }
         }
         let builtin_names = ["print", "env", "serve", "log", "assert", "asset", "svg"]
@@ -140,6 +158,7 @@ impl<'a> Lowerer<'a> {
             config_names,
             enum_names,
             enum_variant_names,
+            imported_names,
             builtin_names,
             default_helpers: Rc::new(RefCell::new(HashMap::new())),
         }
@@ -177,6 +196,7 @@ impl<'a> Lowerer<'a> {
             &self.config_names,
             &self.enum_names,
             &self.enum_variant_names,
+            &self.imported_names,
             &self.builtin_names,
             self.modules,
             self.fn_decls.clone(),
@@ -202,6 +222,7 @@ impl<'a> Lowerer<'a> {
             &self.config_names,
             &self.enum_names,
             &self.enum_variant_names,
+            &self.imported_names,
             &self.builtin_names,
             self.modules,
             self.fn_decls.clone(),
@@ -227,6 +248,7 @@ impl<'a> Lowerer<'a> {
                 &self.config_names,
                 &self.enum_names,
                 &self.enum_variant_names,
+                &self.imported_names,
                 &self.builtin_names,
                 self.modules,
                 self.fn_decls.clone(),
@@ -266,6 +288,7 @@ impl<'a> Lowerer<'a> {
                     &self.config_names,
                     &self.enum_names,
                     &self.enum_variant_names,
+                    &self.imported_names,
                     &self.builtin_names,
                     self.modules,
                     self.fn_decls.clone(),
@@ -327,6 +350,7 @@ impl<'a> Lowerer<'a> {
                 &self.config_names,
                 &self.enum_names,
                 &self.enum_variant_names,
+                &self.imported_names,
                 &self.builtin_names,
                 self.modules,
                 self.fn_decls.clone(),
@@ -435,6 +459,7 @@ struct FuncBuilder {
     config_names: HashSet<String>,
     enum_names: HashSet<String>,
     enum_variant_names: HashSet<String>,
+    imported_names: HashSet<String>,
     builtin_names: HashSet<String>,
     modules: ModuleMap,
     loop_stack: Vec<LoopContext>,
@@ -449,6 +474,7 @@ impl FuncBuilder {
         config_names: &HashSet<String>,
         enum_names: &HashSet<String>,
         enum_variant_names: &HashSet<String>,
+        imported_names: &HashSet<String>,
         builtin_names: &HashSet<String>,
         modules: &ModuleMap,
         fn_decls: Rc<HashMap<String, FnDecl>>,
@@ -467,6 +493,7 @@ impl FuncBuilder {
             config_names: config_names.clone(),
             enum_names: enum_names.clone(),
             enum_variant_names: enum_variant_names.clone(),
+            imported_names: imported_names.clone(),
             builtin_names: builtin_names.clone(),
             modules: modules.clone(),
             loop_stack: Vec::new(),
@@ -1091,6 +1118,10 @@ impl FuncBuilder {
             }
             ExprKind::Call { callee, args } => match &callee.kind {
                 ExprKind::Ident(ident) => {
+                    if self.should_use_html_tag_builtin(&ident.name) {
+                        self.lower_html_tag_builtin_call(&ident.name, args);
+                        return;
+                    }
                     if self.builtin_names.contains(&ident.name) {
                         for arg in args {
                             self.lower_expr(&arg.value);
@@ -1357,6 +1388,7 @@ impl FuncBuilder {
                     &self.config_names,
                     &self.enum_names,
                     &self.enum_variant_names,
+                    &self.imported_names,
                     &self.builtin_names,
                     &self.modules,
                     self.fn_decls.clone(),
@@ -1391,6 +1423,64 @@ impl FuncBuilder {
                 self.emit(Instr::Await);
             }
         }
+    }
+
+    fn should_use_html_tag_builtin(&self, name: &str) -> bool {
+        if html_tags::tag_kind(name).is_none() {
+            return false;
+        }
+        !self.fn_decls.contains_key(name) && !self.imported_names.contains(name)
+    }
+
+    fn lower_html_tag_builtin_call(&mut self, tag: &str, args: &[crate::ast::CallArg]) {
+        let Some(kind) = html_tags::tag_kind(tag) else {
+            self.errors
+                .push(format!("unknown html tag builtin {}", tag));
+            return;
+        };
+        let max = match kind {
+            HtmlTagKind::Normal => 2usize,
+            HtmlTagKind::Void => 1usize,
+        };
+        if args.len() > max {
+            self.errors.push(format!(
+                "html tag {} expects at most {} arguments, got {}",
+                tag,
+                max,
+                args.len()
+            ));
+        }
+        for arg in args {
+            if arg.name.is_some() {
+                self.errors.push(
+                    "named arguments are not supported for function calls".to_string(),
+                );
+            }
+        }
+        self.emit(Instr::Push(Const::String(tag.to_string())));
+        if let Some(attrs) = args.get(0) {
+            self.lower_expr(&attrs.value);
+        } else {
+            self.emit(Instr::MakeMap { len: 0 });
+        }
+        if matches!(kind, HtmlTagKind::Normal) {
+            if let Some(children) = args.get(1) {
+                self.lower_expr(&children.value);
+            } else {
+                self.emit(Instr::MakeList { len: 0 });
+            }
+        } else {
+            if args.get(1).is_some() {
+                self.errors
+                    .push(format!("void html tag {} does not accept children", tag));
+            }
+            self.emit(Instr::MakeList { len: 0 });
+        }
+        self.emit(Instr::Call {
+            name: "html.node".to_string(),
+            argc: 3,
+            kind: CallKind::Builtin,
+        });
     }
 
     fn lower_call_with_defaults(
@@ -1530,6 +1620,7 @@ impl FuncBuilder {
             &self.config_names,
             &self.enum_names,
             &self.enum_variant_names,
+            &self.imported_names,
             &self.builtin_names,
             &self.modules,
             self.fn_decls.clone(),

@@ -15,6 +15,7 @@ use crate::ast::{
     Expr, ExprKind, HttpVerb, Ident, Literal, Pattern, PatternKind, TypeRef, TypeRefKind, UnaryOp,
 };
 use crate::db::Db;
+use crate::html_tags::{self, HtmlTagKind};
 use crate::interp::{Task, TaskResult, Value, format_error_value};
 use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram, Service, ServiceRoute};
 use crate::span::Span;
@@ -741,6 +742,9 @@ impl<'a> Vm<'a> {
 
     fn eval_builtin(&mut self, name: &str, args: Vec<Value>) -> VmResult<Value> {
         let args: Vec<Value> = args.into_iter().map(|val| val.unboxed()).collect();
+        if html_tags::is_html_tag(name) {
+            return self.eval_html_tag_builtin(name, &args);
+        }
         match name {
             "print" => {
                 let text = args.get(0).map(|v| v.to_string_value()).unwrap_or_default();
@@ -1294,6 +1298,74 @@ impl<'a> Vm<'a> {
             }
             _ => Err(VmError::Runtime(format!("unknown builtin {name}"))),
         }
+    }
+
+    fn eval_html_tag_builtin(&self, name: &str, args: &[Value]) -> VmResult<Value> {
+        let Some(kind) = html_tags::tag_kind(name) else {
+            return Err(VmError::Runtime(format!("unknown builtin {name}")));
+        };
+        let max = match kind {
+            HtmlTagKind::Normal => 2usize,
+            HtmlTagKind::Void => 1usize,
+        };
+        if args.len() > max {
+            return Err(VmError::Runtime(format!(
+                "{} expects at most {} arguments",
+                name, max
+            )));
+        }
+        let attrs = match args.get(0) {
+            Some(Value::Map(map)) => {
+                let mut attrs = HashMap::with_capacity(map.len());
+                for (key, value) in map {
+                    let Value::String(text) = value else {
+                        return Err(VmError::Runtime(format!(
+                            "{} attrs must be Map<String, String>",
+                            name
+                        )));
+                    };
+                    attrs.insert(key.clone(), text.clone());
+                }
+                attrs
+            }
+            Some(_) => {
+                return Err(VmError::Runtime(format!(
+                    "{} expects attrs as Map<String, String>",
+                    name
+                )));
+            }
+            None => HashMap::new(),
+        };
+        let children = match kind {
+            HtmlTagKind::Void => Vec::new(),
+            HtmlTagKind::Normal => match args.get(1) {
+                Some(Value::List(items)) => {
+                    let mut children = Vec::with_capacity(items.len());
+                    for item in items {
+                        let Value::Html(node) = item else {
+                            return Err(VmError::Runtime(format!(
+                                "{} children must be List<Html>",
+                                name
+                            )));
+                        };
+                        children.push(node.clone());
+                    }
+                    children
+                }
+                Some(_) => {
+                    return Err(VmError::Runtime(format!(
+                        "{} expects children as List<Html>",
+                        name
+                    )));
+                }
+                None => Vec::new(),
+            },
+        };
+        Ok(Value::Html(crate::interp::HtmlNode::Element {
+            tag: name.to_string(),
+            attrs,
+            children,
+        }))
     }
 
     fn eval_range(&self, start: &Value, end: &Value) -> VmResult<Value> {
