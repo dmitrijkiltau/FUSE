@@ -1,18 +1,19 @@
-# FUSE Syntax and Types
+# Language Tour
 
-This page is a practical reference for writing valid FUSE code.
+This guide teaches the FUSE language by example.
 
 ---
 
-## Tokens and blocks
+## 1) Declarations and blocks
 
-- identifiers: `[A-Za-z_][A-Za-z0-9_]*`
-- strings are double-quoted and support `${expr}` interpolation
-- comments: `#` line comments, `##` doc comments
-- blocks are introduced with `:` and controlled by indentation
-- tabs are illegal; use spaces
+FUSE uses indentation-based blocks and explicit declarations:
 
-Example:
+- `fn` for functions
+- `type` for structs
+- `enum` for variants
+- `config` for typed settings
+- `service` for HTTP endpoints
+- `app` for runnable entry blocks
 
 ```fuse
 fn greet(name: String) -> String:
@@ -21,22 +22,16 @@ fn greet(name: String) -> String:
   return "hi ${name}"
 ```
 
-See also: [Expressions and control flow](#expressions-and-control-flow), [Language Guide](fuse.md).
-
 ---
 
-## Expressions and control flow
+## 2) Core expressions
 
-FUSE supports:
+Common expression features:
 
-- arithmetic/comparison/logical operators
-- null coalescing (`??`)
-- optional access (`?.`, `?[idx]`)
-- bang-chain (`?!`) for option/result conversion
-- `if`, `match`, `for`, `while`, `break`, `continue`
-- `spawn`, `await`, and `box`
-
-Example `match`:
+- null coalescing: `x ?? fallback`
+- optional access: `obj?.field`, `arr?[idx]`
+- error conversion: `expr ?! err`
+- control flow: `if`, `match`, `for`, `while`
 
 ```fuse
 enum Status:
@@ -49,36 +44,28 @@ fn describe(s: Status) -> String:
     Done(msg) -> msg
 ```
 
-See also: [Runtime Guide](runtime.md), [Error handling and status mapping](runtime.md#error-handling-and-status-mapping).
+If you want the runtime meaning of these error and control-flow forms in HTTP services, jump to [Build + Operate](runtime.md#2-error-handling-and-status-mapping).
 
 ---
 
-## Types and declarations
-
-Core declarations:
-
-- `type` for structs
-- `enum` for tagged variants
-- `fn` for functions
-- `config` for typed settings
-- `service` for HTTP endpoints
-- `app` for executable entry blocks
-
-Type features:
+## 3) Type patterns you will use every day
 
 - optionals: `T?`
 - results: `T!` and `T!E`
-- generics: `List<T>`, `Map<K,V>`, `Result<T,E>`
-- refinements: `String(1..80)`, `Int(0..130)`, `Float(0.0..1.0)`
-- derivations: `type Public = User without password`
+- collections: `List<T>`, `Map<K,V>`
+- refined primitives: `String(1..80)`, `Int(0..130)`
+- derivations: `type PublicUser = User without password`
 
-See also: [Boundary behavior](runtime.md#boundary-behavior), [Scope and roadmap](scope.md).
+```fuse
+type User:
+  email: Email
+  name: String(1..80)
+  age: Int(0..130) = 18
+```
 
 ---
 
-## Imports and modules
-
-Import forms:
+## 4) Modules and imports
 
 ```fuse
 import Foo
@@ -91,15 +78,13 @@ Guidelines:
 
 - module imports are qualified (`Foo.value`, `Foo.Type`)
 - named imports bring selected names into local scope
-- type references may be module-qualified (`Foo.User`)
-
-See also: [Language Guide](fuse.md), [Runtime Guide](runtime.md).
+- types can be module-qualified (`Foo.User`)
 
 ---
 
-## Services and routes
+## 5) Service signatures
 
-Route declarations are typed at the signature level:
+Routes are typed at declaration time:
 
 ```fuse
 service Api at "/api":
@@ -110,6 +95,6 @@ service Api at "/api":
     return create_user(body)
 ```
 
-Use `Html` return types for server-rendered fragments when needed.
+`body` introduces typed JSON input, and return types define output contracts.
 
-See also: [HTTP Behavior](runtime.md#http-behavior), [Language Guide](fuse.md).
+Next step: build this into a runnable package with [Start Here](fuse.md), then verify runtime behavior in [Build + Operate](runtime.md).

@@ -1,110 +1,91 @@
-# FUSE Runtime Guide
+# Build + Operate
 
-This page documents runtime behavior that matters when shipping FUSE applications.
+This guide covers how FUSE applications behave at runtime.
 
 ---
 
-## Boundary behavior
+## 1) Boundary behavior you can rely on
 
-FUSE applies type contracts at boundaries:
+FUSE applies type contracts when data crosses boundaries:
 
+- HTTP body and route params
+- config values (`env` > config file > defaults)
+- CLI flag binding for `fn main`
 - struct construction
-- HTTP body and route-parameter binding
-- config loading (`env` > config file > defaults)
-- CLI flag binding to `fn main`
 
-Supported boundary shapes include:
-
-- scalars (`Int`, `Float`, `Bool`, `String`, `Id`, `Email`, `Bytes`)
-- `Option<T>`
-- structured values via JSON text for `List<T>`, `Map<String,V>`, structs, enums
-
-`Bytes` use base64 text at JSON/config/CLI boundaries.
-
-See also: [Syntax and Types](fls.md), [Language Guide](fuse.md).
+Supported shapes include scalars, `Option<T>`, and structured values via JSON text for lists/maps/structs/enums.
 
 ---
 
-## Error handling and status mapping
+## 2) Error handling and status mapping
 
-FUSE supports explicit result types:
+Use typed results:
 
-- `T!` (`Result<T, Error>`)
-- `T!E` (`Result<T, E>`)
-- `expr ?! err` to convert option/result failures to typed errors
+- `T!` for default error base
+- `T!E` for explicit error type
+- `expr ?! err` for option/result conversion
 
-For HTTP services, `std.Error.*` names map to status codes and standardized JSON error payloads.
+In HTTP services, `std.Error.*` names map to status codes and standardized error JSON.
 
-Common mappings:
+Typical mappings:
 
 - `std.Error.Validation` -> `400`
 - `std.Error.NotFound` -> `404`
 - `std.Error.Conflict` -> `409`
-- unknown error type -> `500`
+- unknown error types -> `500`
 
-See also: [Language Guide](fuse.md), [Services and routes](fls.md#services-and-routes).
+Need a quick refresh on route/type syntax before wiring errors? Jump to [Language Tour](fls.md#5-service-signatures).
 
 ---
 
-## HTTP behavior
+## 3) HTTP behavior
 
-Service runtime behavior:
+At runtime:
 
-- typed path params from route patterns (for example `{id: Id}`)
-- `body` keyword binds typed JSON request body
-- JSON responses by default (`application/json`)
-- `Html` success responses rendered as `text/html; charset=utf-8`
+- typed path params are parsed from route templates
+- `body` binds typed JSON payloads
+- success responses default to `application/json`
+- `Html` successes render as `text/html; charset=utf-8`
 
-Useful environment variables:
+Useful runtime environment knobs:
 
 - `FUSE_HOST`
 - `FUSE_SERVICE`
 - `FUSE_MAX_REQUESTS`
 - `FUSE_OPENAPI_JSON_PATH`, `FUSE_OPENAPI_UI_PATH`
 
-See also: [Language Guide](fuse.md), [OpenAPI page](/openapi).
-
 ---
 
-## Builtins and data access
+## 4) Builtins, DB, and migration flow
 
 Common builtins:
 
 - `print`, `log`, `assert`, `env`
-- `serve`
-- `asset` and `svg.inline`
-- HTML builders (`div`, `html.text`, `html.render`, ...)
-- DB access (`db.exec`, `db.query`, `db.one`, `db.from`)
+- `serve`, `asset`, `svg.inline`
+- HTML helpers (`div`, `html.text`, `html.render`, ...)
+- DB helpers (`db.exec`, `db.query`, `db.one`, `db.from`)
 
-Database notes:
+Current DB path is SQLite-focused.
 
-- SQLite only in current implementation
-- positional parameter binding via `?`
-- query builder supports `where`, `order_by`, `limit`, `one`, `all`
+Schema lifecycle:
 
-Migrations and tests:
-
-- `migration` blocks via `fusec --migrate`
-- `test` blocks via `fusec --test`
-
-See also: [Scope and roadmap](scope.md), [Syntax and Types](fls.md).
+- `migration` blocks run via `fusec --migrate`
+- `test` blocks run via `fusec --test`
 
 ---
 
-## Concurrency, loops, and logging
+## 5) Concurrency, loops, and logging
 
-Runtime control-flow features:
+Runtime control primitives:
 
-- `spawn`/`await` task model
+- `spawn` / `await`
 - `box` shared mutable cell
-- `for` and `while`
-- list/map indexing and assignment
-- inclusive ranges (`a..b`)
+- `for`, `while`, indexing, and range expressions (`a..b`)
 
-Logging:
+Logging patterns:
 
 - `log("message")`
 - `log("warn", "message")`
-- structured logs when extra data arguments are present
+- structured output with extra data arguments
 
-See also: [Syntax and Types](fls.md#expressions-and-control-flow), [Scope and roadmap](scope.md).
+If you are deciding whether current capabilities and constraints match your production needs, continue with [Limits + Roadmap](scope.md).

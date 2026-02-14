@@ -1,13 +1,12 @@
-# FUSE Language Guide
+# Start Here: Your First FUSE Service
 
-FUSE is a small, strict language for CLI apps and HTTP services.
-This guide focuses on writing and shipping FUSE code.
+This guide gets you from zero to a running FUSE HTTP service.
 
 ---
 
-## Quick start
+## Step 1: Create a package
 
-Create a package with `fuse.toml`:
+Create `fuse.toml`:
 
 ```toml
 [package]
@@ -16,7 +15,7 @@ app = "Api"
 backend = "vm"
 ```
 
-Define a program in `src/main.fuse`:
+Create `src/main.fuse`:
 
 ```fuse
 config App:
@@ -34,62 +33,51 @@ app "Api":
   serve(App.port)
 ```
 
-Run it with `fuse run`.
+Run it:
 
-See also: [Syntax and Types](fls.md), [Runtime Guide](runtime.md).
+```bash
+fuse run .
+```
+
+Next step: if this is your first FUSE file, continue to [Language Tour](fls.md) to learn the syntax you just used.
 
 ---
 
-## Core language model
+## Step 2: Understand what just happened
 
-FUSE keeps a narrow, explicit core:
+In one file, you defined:
 
-- indentation-based blocks (spaces only)
-- declarations: `fn`, `type`, `enum`, `config`, `service`, `app`
-- immutable `let`, mutable `var`
-- first-class option/result types (`T?`, `T!`, `T!E`)
-- refined primitives (`String(1..80)`, `Int(0..130)`)
+- config loading (`config App`)
+- validated request schema (`type UserCreate`)
+- typed route contract (`post ... body UserCreate -> UserCreate`)
+- executable app entry (`app "Api"`)
 
-Errors are explicit and typed:
+FUSE uses the same types for validation, parsing, and response encoding.
+
+---
+
+## Step 3: Add typed error handling
 
 ```fuse
 type std.Error.NotFound:
   message: String
 
-fn get_user(id: Id) -> User!std.Error.NotFound:
+fn load_user(id: Id) -> User!std.Error.NotFound:
   let user = find_user(id) ?! std.Error.NotFound(message="User not found")
   return user
 ```
 
-See also: [Error handling and status mapping](runtime.md#error-handling-and-status-mapping), [Syntax and Types](fls.md).
+Use `T?`, `T!`, and `?!` to keep failure paths explicit and typed.
 
 ---
 
-## Services and boundaries
+## Step 4: Daily workflow
 
-Services are contract-first: type signatures drive parsing, validation, and response encoding.
+During development:
 
-- route params are typed (`{id: Id}`)
-- `body` binds typed JSON request body
-- return `Html` for server-rendered fragments/pages
-- return `Result` for typed failures
+- `fuse check` for semantic checks
+- `fuse dev` for watch + live reload
+- `fuse test` for `test` blocks
+- `fuse build` for build artifacts (including OpenAPI when configured)
 
-You define contracts once; the runtime enforces them at HTTP, config, and CLI boundaries.
-
-See also: [Boundary behavior](runtime.md#boundary-behavior), [Services and routes](fls.md#services-and-routes).
-
----
-
-## Day-to-day workflow
-
-Common commands:
-
-- `fuse check` - semantic checks
-- `fuse run` - run selected app
-- `fuse dev` - run with watch + live reload
-- `fuse test` - run `test` blocks
-- `fuse build` - build artifacts (OpenAPI, optional native outputs)
-
-Use `fusec --openapi` or package build settings to generate OpenAPI from service/type declarations.
-
-See also: [Scope and roadmap](scope.md), [Runtime Guide](runtime.md).
+If you are ready to run and debug real services, go to [Build + Operate](runtime.md). If you are evaluating fit and tradeoffs, continue with [Limits + Roadmap](scope.md).

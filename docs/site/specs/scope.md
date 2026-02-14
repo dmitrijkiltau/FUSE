@@ -1,65 +1,55 @@
-# FUSE Scope and Roadmap
+# Limits + Roadmap
 
-This page sets expectations for FUSE users: what it targets now, and what is intentionally out of scope.
+This guide sets expectations for teams adopting FUSE.
 
 ---
 
-## What FUSE targets
+## 1) What FUSE is optimized for
 
-FUSE is optimized for:
+Today FUSE targets:
 
 - CLI applications
 - HTTP services
 - contract-first development with typed boundaries
 
-Primary developer benefits:
+Key value proposition:
 
-- validation from types
-- first-class config loading
-- consistent JSON and HTTP behavior
-- generated OpenAPI from service/type declarations
-
-See also: [Language Guide](fuse.md), [Runtime Guide](runtime.md).
+- one set of types drives validation, JSON binding, and API behavior
 
 ---
 
-## Current capability baseline
+## 2) Stable capability baseline
 
-You can rely on:
+You can build production-style services with:
 
 - core language features (`fn`, `type`, `enum`, `match`, loops, imports)
-- service/config/app declarations
-- package workflow (`fuse check/run/dev/test/build`)
+- typed `service`, `config`, and `app` declarations
+- package tooling (`fuse check/run/dev/test/build`)
 - AST, VM, and native backend path
-- builtins for HTTP, HTML rendering, logging, assets, and SQLite access
-
-See also: [Syntax and Types](fls.md), [Runtime Guide](runtime.md).
 
 ---
 
-## Known constraints
+## 3) Current constraints to plan around
 
-Current limitations to account for:
+Current constraints include:
 
-- SQLite-only DB runtime
-- no full ORM/query language
-- task model is still evolving
-- native backend remains under active iteration
+- SQLite-focused DB runtime
+- no full ORM/query abstraction layer
+- evolving task/concurrency model
+- native backend still under active iteration
 
-Model your project around the stable language/runtime contracts first.
-
-See also: [Builtins and Data Access](runtime.md#builtins-and-data-access), [Concurrency, Loops, and Logging](runtime.md#concurrency-loops-and-logging).
+Adopt with explicit boundaries and clear upgrade paths in mind.
 
 ---
 
-## Explicit non-goals
+## 4) Explicit non-goals
 
 FUSE is not currently trying to be:
 
-- a macro-heavy metaprogramming platform
+- a macro-heavy metaprogramming ecosystem
 - an "everything async by default" runtime
-- a language with broad custom operator mechanics
+- a language centered on custom operator mechanics
 
-Design direction favors clarity, explicitness, and predictable boundaries.
+Direction is deliberately pragmatic: strict core, explicit contracts, predictable behavior.
 
-See also: [Language Guide](fuse.md), [Syntax and Types](fls.md).
+Need implementation details before committing architecture decisions? Review [Build + Operate](runtime.md) and then run through [Start Here](fuse.md) with your target service shape.

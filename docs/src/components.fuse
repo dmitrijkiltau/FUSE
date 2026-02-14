@@ -43,17 +43,17 @@ fn topbar(current_section: String, show_sidebar: Bool) -> Html:
         svg.inline("docs-mark")
         span(): "FUSE"
       nav({"class": "topnav", "aria-label": "Main navigation"}):
-        nav_link("/specs/fuse", "Specs", current_section == "specs")
+        nav_link("/specs/fuse", "Guides", current_section == "specs")
         nav_link("/openapi", "API", current_section == "openapi")
       sidebar_toggle(show_sidebar)
 
 fn spec_sidebar(active_slug: String) -> Html:
-  return aside({"class": "sidebar", "id": "sidebar", "aria-label": "Specs navigation"}):
+  return aside({"class": "sidebar", "id": "sidebar", "aria-label": "Guides navigation"}):
     nav(class="sidebar-nav"):
-      sidebar_link("/specs/fuse", "Language", active_slug == "fuse")
-      sidebar_link("/specs/fls", "Specification", active_slug == "fls")
-      sidebar_link("/specs/runtime", "Runtime", active_slug == "runtime")
-      sidebar_link("/specs/scope", "Scope", active_slug == "scope")
+      sidebar_link("/specs/fuse", "Start Here", active_slug == "fuse")
+      sidebar_link("/specs/fls", "Language Tour", active_slug == "fls")
+      sidebar_link("/specs/runtime", "Build + Operate", active_slug == "runtime")
+      sidebar_link("/specs/scope", "Limits + Roadmap", active_slug == "scope")
     div(class="toc", id="toc")
 
 fn maybe_sidebar(show_sidebar: Bool, active_slug: String) -> Html:
@@ -138,17 +138,20 @@ fn home_page() -> Html:
           p(): "Define types once. Get validation, JSON encoding, OpenAPI docs, and error handling for free."
 
     section(class="quick-links"):
-      h2(): "Documentation"
+      h2(): "Learning Path"
       div(class="card-grid"):
         a(href="/specs/fuse", class="card"):
-          h3(): "Language Guide"
-          p(): "Core concepts, syntax, and features of FUSE."
+          h3(): "Start Here"
+          p(): "Build your first service and understand the core workflow."
         a(href="/specs/fls", class="card"):
-          h3(): "Specification"
-          p(): "Formal grammar, AST model, and type system."
+          h3(): "Language Tour"
+          p(): "Learn syntax and type features through practical examples."
         a(href="/specs/runtime", class="card"):
-          h3(): "Runtime"
-          p(): "Builtins, database, HTTP binding, and concurrency."
+          h3(): "Build + Operate"
+          p(): "Run services, handle errors, and use runtime builtins."
+        a(href="/specs/scope", class="card"):
+          h3(): "Limits + Roadmap"
+          p(): "Know current constraints and where the project is heading."
         a(href="/openapi", class="card"):
           h3(): "API Reference"
           p(): "Interactive OpenAPI documentation."

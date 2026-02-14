@@ -7,16 +7,16 @@ service DocsApi at "/":
 
   # Spec pages - each spec has its own route
   get "/specs/fuse" -> Html:
-    return Components.spec_page("fuse", "Language")
+    return Components.spec_page("fuse", "Start Here")
 
   get "/specs/fls" -> Html:
-    return Components.spec_page("fls", "Specification")
+    return Components.spec_page("fls", "Language Tour")
 
   get "/specs/runtime" -> Html:
-    return Components.spec_page("runtime", "Runtime")
+    return Components.spec_page("runtime", "Build + Operate")
 
   get "/specs/scope" -> Html:
-    return Components.spec_page("scope", "Scope")
+    return Components.spec_page("scope", "Limits + Roadmap")
 
   # OpenAPI page
   get "/openapi" -> Html:
@@ -28,8 +28,8 @@ service DocsApi at "/":
 
   get "/api/specs" -> List<Map<String, String>>:
     return [
-      {"slug": "fuse", "label": "Language", "file": "site/specs/fuse.md"},
-      {"slug": "fls", "label": "Specification", "file": "site/specs/fls.md"},
-      {"slug": "runtime", "label": "Runtime", "file": "site/specs/runtime.md"},
-      {"slug": "scope", "label": "Scope", "file": "site/specs/scope.md"}
+      {"slug": "fuse", "label": "Start Here", "file": "site/specs/fuse.md"},
+      {"slug": "fls", "label": "Language Tour", "file": "site/specs/fls.md"},
+      {"slug": "runtime", "label": "Build + Operate", "file": "site/specs/runtime.md"},
+      {"slug": "scope", "label": "Limits + Roadmap", "file": "site/specs/scope.md"}
     ]
