@@ -152,9 +152,6 @@ fn home_page() -> Html:
         a(href="/specs/scope", class="card"):
           h3(): "Limits + Roadmap"
           p(): "Know current constraints and where the project is heading."
-        a(href="/openapi", class="card"):
-          h3(): "API Reference"
-          p(): "Interactive OpenAPI documentation."
 
     section(class="examples"):
       h2(): "Examples"
