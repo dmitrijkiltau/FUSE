@@ -3,6 +3,8 @@
 This document describes the behavior of the AST interpreter, VM, and native backend path in this repo. It is deliberately
 conservative: anything not listed here is either unsupported or not implemented yet.
 
+---
+
 ## Backends
 
 * **AST interpreter**: executes the parsed AST directly.
@@ -15,6 +17,8 @@ Most runtime behavior is shared, with a few differences called out below.
 Native backend note:
 
 * If native compilation/execution fails for a function, the run fails (no automatic backend fallback).
+
+---
 
 ## Error model
 
@@ -82,6 +86,8 @@ Status mapping uses the error name first, then `std.Error.status` if present:
 * If `expr` is `Result<T, E>` and is `Err`, replace the error with `err`.
 * If `expr ?!` omits `err`, `Option` uses a default error, and `Result` propagates the existing error.
 
+---
+
 ## Validation model
 
 Validation is applied at runtime in these places:
@@ -116,6 +122,8 @@ Other refinements (regex, custom predicates) are not implemented.
 
 * `Id` is a non-empty string.
 * `Email` uses a simple `local@domain` check with a `.` in the domain.
+
+---
 
 ## JSON encoding/decoding
 
@@ -160,6 +168,8 @@ Rules:
 `Bytes` use base64 text at JSON/config/CLI boundaries. Runtime values are stored as raw bytes.
 `Html` values are runtime trees (`Element`, `Text`, `Raw`) and are not parsed from config/env/CLI.
 
+---
+
 ## Config loading
 
 Config values are resolved in this order:
@@ -202,6 +212,8 @@ Compatibility notes:
 * `Bytes` must be valid base64 text; invalid base64 is a validation error.
 * For structured values, parse failures (invalid JSON/type mismatch/unknown field) surface as validation errors on the target field path.
 
+---
+
 ## CLI binding
 
 CLI binding is enabled when you pass program arguments after the file name (or after `--`):
@@ -226,6 +238,8 @@ Rules:
 For `Bytes`, CLI values must be base64 text.
 
 Validation errors are printed as JSON on stderr and usually exit with code 2.
+
+---
 
 ## HTTP runtime
 
@@ -255,6 +269,8 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * `FUSE_VITE_PROXY_URL` enables fallback proxying of unknown HTTP routes to a Vite dev server (`http://host:port[/base]`).
 * `FUSE_SVG_DIR` overrides the SVG base directory used by `svg.inline` (default `assets/svg`).
 
+---
+
 ## Builtins (current)
 
 * `print(value)` prints a stringified value to stdout.
@@ -272,6 +288,8 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * HTML block call syntax (`div(): ...`) is compile-time sugar lowered to normal calls with explicit
   attrs + `List<Html>` children; bare string literals in Html block children lower to `html.text(...)`.
 * Html tag attribute shorthand (`div(class="hero")`) is compile-time sugar lowered to attrs maps.
+
+---
 
 ## Database (SQLite only)
 
@@ -326,6 +344,8 @@ Value mapping:
 
 Connection pooling is not implemented.
 
+---
+
 ## Migrations
 
 `migration <name>:` declares a migration block. Run them with:
@@ -342,6 +362,8 @@ Rules:
 * Only “up” migrations exist today (no down/rollback).
 * Migrations are executed by the AST interpreter.
 
+---
+
 ## Tests
 
 `test "name":` declares a test block. Run tests with:
@@ -356,6 +378,8 @@ Rules:
 * They run in ascending order by test name.
 * Tests are executed by the AST interpreter.
 * Failures are reported and the process exits non-zero.
+
+---
 
 ## Concurrency
 
@@ -378,11 +402,15 @@ With today's eager execution model, spawned tasks complete immediately, so `task
 expressions; assigning to a boxed binding updates the shared cell. Passing a box into `spawn`
 shares state across tasks.
 
+---
+
 ## Loops
 
 `for` iterates over `List<T>` values and `Map<K, V>` values (iterates the map values).
 
 `break` exits the nearest loop, and `continue` skips to the next iteration.
+
+---
 
 ## Indexing
 
@@ -398,6 +426,8 @@ Assignment targets allow:
 
 Optional access in assignment targets (e.g. `foo?.bar = x`, `items?[0] = x`) errors if the base is `null`.
 
+---
+
 ## Ranges
 
 `a..b` evaluates to a `List` of numbers from `a` to `b` (inclusive).
@@ -405,6 +435,8 @@ Optional access in assignment targets (e.g. `foo?.bar = x`, `items?[0] = x`) err
 * Only numeric bounds are allowed.
 * If `a > b`, the range raises a runtime error.
 * Float ranges step by `1.0` (for example, `1.5..3.5` yields `[1.5, 2.5, 3.5]`).
+
+---
 
 ## Logging
 
