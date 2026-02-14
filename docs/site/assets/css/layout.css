@@ -511,6 +511,60 @@
     }
   }
 
+  & section {
+    margin-bottom: 2.5rem;
+
+    & h2 {
+      margin-top: 0;
+      margin-bottom: 1rem;
+      padding-top: 0;
+    }
+  }
+
+  & .quick-start {
+    & .code-example {
+      margin-bottom: 1.5rem;
+
+      & h3 {
+        margin: 0 0 0.75rem;
+        font-size: 1rem;
+        color: var(--text-secondary);
+      }
+
+      & pre {
+        margin: 0;
+      }
+    }
+  }
+
+  & .features {
+    & .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: var(--gap);
+    }
+
+    & .feature {
+      padding: 1.25rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel-alt);
+
+      & h3 {
+        margin: 0 0 0.5rem;
+        font-size: 1rem;
+        color: var(--text);
+      }
+
+      & p {
+        margin: 0;
+        font-size: 0.9rem;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+    }
+  }
+
   & .quick-links h2 {
     margin-bottom: 1rem;
   }
@@ -544,6 +598,58 @@
       margin: 0;
       font-size: 0.9rem;
       color: var(--muted);
+    }
+  }
+
+  & .examples {
+    & .example-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: var(--gap);
+    }
+
+    & .example {
+      & h4 {
+        margin: 0 0 0.5rem;
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: var(--text-secondary);
+      }
+
+      & pre {
+        margin: 0;
+        font-size: 0.82rem;
+      }
+    }
+  }
+
+  & .commands {
+    & .command-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    & .command {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.75rem 1rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: var(--panel-alt);
+
+      & code {
+        font-family: var(--mono);
+        font-weight: 600;
+        color: var(--accent);
+        white-space: nowrap;
+      }
+
+      & span {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
     }
   }
 }
@@ -646,6 +752,20 @@
       & .subtitle {
         font-size: 1rem;
       }
+    }
+
+    & .feature-grid {
+      grid-template-columns: 1fr;
+    }
+
+    & .example-grid {
+      grid-template-columns: 1fr;
+    }
+
+    & .command {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.25rem;
     }
   }
 }

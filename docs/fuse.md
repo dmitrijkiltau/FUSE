@@ -14,7 +14,6 @@ Primary references while working in this codebase:
 - `fls.md` is the source of truth for language syntax and static semantics (lexer, grammar, AST shape, type system, module rules).
 - `runtime.md` is the source of truth for runtime semantics (validation, JSON/config/CLI/HTTP binding, errors, builtins, DB, task model).
 - `scope.md` defines constraints, roadmap priorities, and explicit non-goals.
-- `README.md` covers install/build workflow and day-to-day commands.
 
 If a detail appears in multiple docs, treat `fls.md` as authoritative for syntax/static rules and `runtime.md` as authoritative for runtime behavior.
 
