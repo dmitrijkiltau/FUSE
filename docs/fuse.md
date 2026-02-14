@@ -17,6 +17,8 @@ Primary references while working in this codebase:
 
 If a detail appears in multiple docs, treat `fls.md` as authoritative for syntax/static rules and `runtime.md` as authoritative for runtime behavior.
 
+See also: [What FUSE optimizes for](#what-fuse-optimizes-for), [Guiding idea](#guiding-idea).
+
 ---
 
 ## What FUSE optimizes for
@@ -41,6 +43,8 @@ Runtime surfaces are built in and consistent across backends:
 ### 3) One source of truth per concern
 
 You describe contracts in FUSE types and route signatures. The runtime applies those contracts at boundaries instead of requiring repeated glue code.
+
+See also: [Quick taste](#quick-taste), [Formal language specification](fls.md), [Runtime semantics](runtime.md).
 
 ---
 
@@ -76,6 +80,8 @@ app "users":
 
 For detailed route binding and error/status behavior, see `runtime.md`.
 
+See also: [Runtime semantics](runtime.md), [Formal language specification](fls.md), [Package workflow (summary)](#package-workflow-summary).
+
 ---
 
 ## Current implementation (summary)
@@ -93,6 +99,8 @@ Detailed capability matrices and caveats live in:
 
 - `runtime.md` for execution behavior
 - `scope.md` for current scope vs planned work
+
+See also: [Package workflow (summary)](#package-workflow-summary), [Runtime semantics](runtime.md), [Scope + constraints](scope.md).
 
 ---
 
@@ -117,6 +125,8 @@ backend = "native"
 
 `fuse.toml` supports additional build/serve/assets/dependency settings. See `README.md` for command details and examples.
 
+See also: [Current implementation (summary)](#current-implementation-summary), [Runtime semantics](runtime.md), [Scope + constraints](scope.md).
+
 ---
 
 ## Guiding idea
@@ -124,3 +134,5 @@ backend = "native"
 FUSE is not trying to invent new syntax. The differentiator is a consistent contract at boundaries: types, validation, and transport behavior are aligned by default.
 
 For the formal spec, start at `fls.md`. For concrete runtime behavior, start at `runtime.md`.
+
+See also: [Formal language specification](fls.md), [Runtime semantics](runtime.md), [Scope + constraints](scope.md).

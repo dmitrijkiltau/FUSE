@@ -69,6 +69,140 @@ function ensureUniqueId(candidate, used) {
   return id;
 }
 
+// Split HTML content by <hr> into sections
+function splitIntoSections(html) {
+  // Parse HTML into a temporary container
+  const temp = document.createElement("div");
+  temp.innerHTML = html;
+  
+  const sections = [];
+  let currentSection = [];
+  
+  for (const node of Array.from(temp.childNodes)) {
+    if (node.nodeName === "HR") {
+      if (currentSection.length > 0) {
+        sections.push(currentSection);
+        currentSection = [];
+      }
+    } else {
+      currentSection.push(node);
+    }
+  }
+  
+  // Add final section
+  if (currentSection.length > 0) {
+    sections.push(currentSection);
+  }
+  
+  return sections;
+}
+
+// Find first h1 or h2 in a list of nodes
+function findFirstHeading(nodes) {
+  for (const node of nodes) {
+    if (node.nodeName === "H1" || node.nodeName === "H2") {
+      return node;
+    }
+  }
+  return null;
+}
+
+// Transform "See also:" paragraphs into button groups
+function transformSeeAlso(container) {
+  for (const p of container.querySelectorAll("p")) {
+    const text = p.textContent || "";
+    if (!text.startsWith("See also:")) continue;
+    
+    const links = p.querySelectorAll("a");
+    if (links.length === 0) continue;
+    
+    // Create button group
+    const wrapper = document.createElement("div");
+    wrapper.className = "see-also";
+    
+    const label = document.createElement("span");
+    label.className = "see-also-label";
+    label.textContent = "See also";
+    wrapper.appendChild(label);
+    
+    const buttons = document.createElement("div");
+    buttons.className = "see-also-buttons";
+    
+    for (const link of links) {
+      const btn = document.createElement("a");
+      btn.href = link.href;
+      btn.className = "see-also-btn";
+      btn.textContent = link.textContent;
+      buttons.appendChild(btn);
+    }
+    
+    wrapper.appendChild(buttons);
+    p.replaceWith(wrapper);
+  }
+}
+
+// Transform .md links to docs site URLs
+function transformMdLinks(container) {
+  const specRoutes = {
+    "fuse.md": "/specs/fuse",
+    "fls.md": "/specs/fls",
+    "runtime.md": "/specs/runtime",
+    "scope.md": "/specs/scope",
+  };
+
+  for (const link of container.querySelectorAll("a[href]")) {
+    const href = link.getAttribute("href") || "";
+    
+    // Check for .md file references
+    for (const [mdFile, route] of Object.entries(specRoutes)) {
+      // Match patterns like "fls.md", "fls.md#section", "./fls.md", etc.
+      const patterns = [
+        new RegExp(`^${mdFile}(#.*)?$`),
+        new RegExp(`^\\.\/${mdFile}(#.*)?$`),
+        new RegExp(`\\/${mdFile}(#.*)?$`),
+      ];
+      
+      for (const pattern of patterns) {
+        const match = href.match(pattern);
+        if (match) {
+          const hash = match[1] || "";
+          link.setAttribute("href", route + hash);
+          break;
+        }
+      }
+    }
+  }
+}
+
+// Build section cards from split content
+function buildSectionCards(sections, usedIds) {
+  const container = document.createElement("div");
+  container.className = "spec-sections";
+  
+  for (const sectionNodes of sections) {
+    const card = document.createElement("section");
+    card.className = "spec-section";
+    
+    // Find first heading to use as ID
+    const heading = findFirstHeading(sectionNodes);
+    if (heading) {
+      const headingText = heading.textContent || "";
+      const candidate = slugify(headingText);
+      const id = ensureUniqueId(candidate, usedIds);
+      card.id = id;
+    }
+    
+    // Append all nodes to the card
+    for (const node of sectionNodes) {
+      card.appendChild(node.cloneNode(true));
+    }
+    
+    container.appendChild(card);
+  }
+  
+  return container;
+}
+
 // Add copy link buttons to headings
 function addHeadingLinks(container) {
   const used = new Set();
@@ -199,7 +333,21 @@ async function loadSpec(slug, container) {
     if (!response.ok) throw new Error(`Failed to load ${path}`);
     
     const markdown = await response.text();
-    container.innerHTML = marked.parse(markdown);
+    const html = marked.parse(markdown);
+    
+    // Split into sections by <hr> and build cards
+    const usedIds = new Set();
+    const sections = splitIntoSections(html);
+    const sectionsContainer = buildSectionCards(sections, usedIds);
+    
+    container.innerHTML = "";
+    container.appendChild(sectionsContainer);
+    
+    // Transform .md links to docs site URLs
+    transformMdLinks(container);
+    
+    // Transform "See also:" paragraphs into button groups
+    transformSeeAlso(container);
     
     highlightCode(container);
     addHeadingLinks(container);

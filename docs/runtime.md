@@ -25,6 +25,8 @@ This document does not re-specify:
 - AST shape details
 - project planning/roadmap
 
+See also: [Formal language specification](fls.md), [Scope + constraints](scope.md).
+
 ---
 
 ## Backends
@@ -39,6 +41,8 @@ Most runtime behavior is shared across backends.
 Native backend note:
 
 - If native compilation/execution fails for a function, the run fails (no automatic backend fallback).
+
+See also: [Scope + constraints](scope.md), [Priority roadmap](scope.md#priority-roadmap).
 
 ---
 
@@ -106,6 +110,8 @@ Status mapping uses the error name first, then `std.Error.status` if present:
 - If `expr` is `Option<T>` and is `None`, return `Err(err)`.
 - If `expr` is `Result<T, E>` and is `Err`, replace the error with `err`.
 - If `expr ?!` omits `err`, `Option` uses a default error, and `Result` propagates the existing error.
+
+See also: [Boundary model](#boundary-model), [Type system (current static model)](fls.md#type-system-current-static-model).
 
 ---
 
@@ -286,6 +292,8 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 - `FUSE_ASSET_MAP` provides logical-path -> public-URL mappings for `asset(path)`
 - `FUSE_VITE_PROXY_URL` enables fallback proxying of unknown routes to Vite dev server
 - `FUSE_SVG_DIR` overrides SVG base directory for `svg.inline`
+
+See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [Services and declaration syntax](fls.md#services-and-declaration-syntax).
 
 ---
 
@@ -473,3 +481,5 @@ Structured logging:
 - `log("info", "message", data)` emits JSON:
   `{"level":"info","message":"message","data":<json>}`
 - if multiple data values are provided, `data` is a JSON array
+
+See also: [Boundary model](#boundary-model), [Scope + constraints](scope.md), [FUSE overview](fuse.md).

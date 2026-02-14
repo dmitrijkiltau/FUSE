@@ -46,6 +46,8 @@ Rationale:
 - strong ecosystem for compiler + tooling infrastructure
 - distributable single-binary tooling path
 
+See also: [Runtime semantics](runtime.md), [FUSE overview](fuse.md).
+
 ---
 
 ## Current boundary (what this repo is aiming to deliver)
@@ -58,6 +60,8 @@ FUSE is currently scoped as a strict, typed language with integrated boundary/ru
 - service-oriented package workflow (`fuse check/run/dev/test/build`)
 
 Detailed behavior is intentionally kept out of this doc and lives in `fls.md` and `runtime.md`.
+
+See also: [Formal language specification](fls.md), [Runtime semantics](runtime.md#runtime-surface-and-ownership).
 
 ---
 
@@ -76,6 +80,8 @@ Likely future candidates (not committed MVP scope):
 - expanded database/runtime ergonomics
 - stronger packaging/dependency workflows
 
+See also: [Backends](runtime.md#backends), [Builtins and runtime subsystems](runtime.md#builtins-and-runtime-subsystems).
+
 ---
 
 ## Non-goals (explicit)
@@ -86,3 +92,5 @@ Likely future candidates (not committed MVP scope):
 - custom operator overloading
 - multiple inheritance at MVP
 - "everything async by default"
+
+See also: [Guiding idea](fuse.md#guiding-idea), [FUSE overview](fuse.md).

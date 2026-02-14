@@ -23,6 +23,8 @@ Not covered here:
 - runtime boundary binding rules
 - backend execution details and builtins behavior
 
+See also: [Lexing + indentation rules](#lexing--indentation-rules), [Runtime semantics](runtime.md).
+
 ---
 
 ## Lexing + indentation rules
@@ -76,6 +78,8 @@ INDENT/DEDENT algorithm (formal-ish):
 
 - Line comment: `# ...`
 - Doc comment: `## ...` attaches to the next declaration
+
+See also: [Grammar (EBNF-ish)](#grammar-ebnf-ish), [AST model (structural spec)](#ast-model-structural-spec).
 
 ---
 
@@ -243,6 +247,8 @@ Notes:
   (`if flag: x = 1`).
 - `HtmlBlockSuffix` also supports an inline single child expression (`span(): "FUSE"`).
 
+See also: [AST model (structural spec)](#ast-model-structural-spec), [Type system (current static model)](#type-system-current-static-model), [Runtime semantics](runtime.md).
+
 ---
 
 ## AST model (structural spec)
@@ -322,6 +328,8 @@ Patterns:
 - `EnumVariant(name, args...)`
 - `Struct(name, fields...)`
 
+See also: [Grammar (EBNF-ish)](#grammar-ebnf-ish), [Type system (current static model)](#type-system-current-static-model).
+
 ---
 
 ## Type system (current static model)
@@ -381,6 +389,8 @@ with listed fields removed. Field types/defaults are preserved for retained fiel
 
 Base types can be module-qualified (`Foo.User`). Unknown base types or fields are errors.
 
+See also: [Imports and modules (current)](#imports-and-modules-current), [Runtime semantics](runtime.md), [Scope + constraints](scope.md).
+
 ---
 
 ## Imports and modules (current)
@@ -403,6 +413,8 @@ Notes:
 - module-qualified type references are valid in type positions (`Foo.User`, `Foo.Config`)
 - dependency modules use `dep:` import paths (for example, `dep:Auth/lib`)
 
+See also: [Services and declaration syntax](#services-and-declaration-syntax), [FUSE overview](fuse.md).
+
 ---
 
 ## Services and declaration syntax
@@ -422,3 +434,5 @@ post "/users" body UserCreate -> User:
 ```
 
 Binding/encoding/error semantics for routes are runtime behavior and are defined in `runtime.md`.
+
+See also: [Runtime semantics](runtime.md), [Error model](runtime.md#error-model), [Boundary model](runtime.md#boundary-model).
