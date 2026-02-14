@@ -6789,14 +6789,13 @@ fn analyze_types(
                     let result_kind = match kind {
                         CallKind::Builtin => {
                             match name.as_str() {
-                                "print" | "log" | "env" | "serve" | "assert" | "asset" | "range"
-                                | "task.id" | "task.done" | "task.cancel" | "db.exec"
+                                "print" | "log" | "env" | "serve" | "assert" | "asset"
+                                | "range" | "task.id" | "task.done" | "task.cancel" | "db.exec"
                                 | "db.query" | "db.one" | "db.from" | "query.select"
                                 | "query.where" | "query.order_by" | "query.limit"
                                 | "query.one" | "query.all" | "query.exec" | "query.sql"
                                 | "query.params" | "json.encode" | "json.decode" | "html.text"
-                                | "html.raw" | "html.node" | "html.render"
-                                | "svg.inline" => {}
+                                | "html.raw" | "html.node" | "html.render" | "svg.inline" => {}
                                 _ => return None,
                             }
                             match name.as_str() {

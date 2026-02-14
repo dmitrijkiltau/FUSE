@@ -827,7 +827,9 @@ impl<'a> Vm<'a> {
                     Some(Value::String(path)) => path,
                     _ => return Err(VmError::Runtime("asset expects a string path".to_string())),
                 };
-                Ok(Value::String(crate::runtime_assets::resolve_asset_href(path)))
+                Ok(Value::String(crate::runtime_assets::resolve_asset_href(
+                    path,
+                )))
             }
             "html.text" => {
                 if args.len() != 1 {
@@ -925,7 +927,9 @@ impl<'a> Vm<'a> {
             }
             "svg.inline" => {
                 if args.len() != 1 {
-                    return Err(VmError::Runtime("svg.inline expects 1 argument".to_string()));
+                    return Err(VmError::Runtime(
+                        "svg.inline expects 1 argument".to_string(),
+                    ));
                 }
                 let name = match args.get(0) {
                     Some(Value::String(name)) => name,
@@ -1521,7 +1525,8 @@ impl<'a> Vm<'a> {
             }
             Value::ResultOk(ok) => {
                 if html_response {
-                    let body = self.maybe_inject_live_reload_html(self.render_html_value(ok.as_ref())?);
+                    let body =
+                        self.maybe_inject_live_reload_html(self.render_html_value(ok.as_ref())?);
                     Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
                 } else {
                     let json = self.value_to_json(&ok);
@@ -1607,7 +1612,12 @@ impl<'a> Vm<'a> {
         if path == spec_route {
             let body = match fs::read_to_string(&spec_path) {
                 Ok(body) => body,
-                Err(err) => return Some(self.http_response(500, self.internal_error_json(&format!("failed to read openapi spec: {err}")))),
+                Err(err) => {
+                    return Some(self.http_response(
+                        500,
+                        self.internal_error_json(&format!("failed to read openapi spec: {err}")),
+                    ));
+                }
             };
             return Some(self.http_response_with_type(
                 200,

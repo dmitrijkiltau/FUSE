@@ -126,24 +126,8 @@ pub const HTML_NORMAL_TAGS: &[&str] = &[
 ];
 
 pub const HTML_VOID_TAGS: &[&str] = &[
-    "area",
-    "base",
-    "basefont",
-    "br",
-    "col",
-    "embed",
-    "hr",
-    "image",
-    "img",
-    "input",
-    "isindex",
-    "keygen",
-    "link",
-    "meta",
-    "param",
-    "source",
-    "track",
-    "wbr",
+    "area", "base", "basefont", "br", "col", "embed", "hr", "image", "img", "input", "isindex",
+    "keygen", "link", "meta", "param", "source", "track", "wbr",
 ];
 
 pub fn all_html_tags() -> impl Iterator<Item = &'static str> {
@@ -165,4 +149,12 @@ pub fn tag_kind(name: &str) -> Option<HtmlTagKind> {
 
 pub fn is_html_tag(name: &str) -> bool {
     tag_kind(name).is_some()
+}
+
+pub fn normalize_attr_name(name: &str) -> String {
+    if name.contains('_') {
+        name.replace('_', "-")
+    } else {
+        name.to_string()
+    }
 }

@@ -639,7 +639,10 @@ fn collect_dev_watch_files(
     out
 }
 
-fn collect_module_files_for_dev(entry: &Path, deps: &HashMap<String, PathBuf>) -> BTreeSet<PathBuf> {
+fn collect_module_files_for_dev(
+    entry: &Path,
+    deps: &HashMap<String, PathBuf>,
+) -> BTreeSet<PathBuf> {
     let mut out = BTreeSet::new();
     let src = match fs::read_to_string(entry) {
         Ok(src) => src,
@@ -676,7 +679,10 @@ fn collect_files_by_extension(root: &Path, exts: &[&str], out: &mut BTreeSet<Pat
                 continue;
             }
             let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
-            if exts.iter().any(|candidate| ext.eq_ignore_ascii_case(candidate)) {
+            if exts
+                .iter()
+                .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+            {
                 out.insert(path);
             }
         }
@@ -699,7 +705,10 @@ fn manifest_base_dir(manifest_dir: Option<&Path>) -> Result<PathBuf, String> {
     }
 }
 
-fn run_before_build_hook(manifest: Option<&Manifest>, manifest_dir: Option<&Path>) -> Result<(), String> {
+fn run_before_build_hook(
+    manifest: Option<&Manifest>,
+    manifest_dir: Option<&Path>,
+) -> Result<(), String> {
     let Some(command) = manifest
         .and_then(|m| m.assets.as_ref())
         .and_then(|assets| assets.hooks.as_ref())
@@ -747,7 +756,10 @@ fn shell_command(command: &str) -> ProcessCommand {
     }
 }
 
-fn run_asset_pipeline(manifest: Option<&Manifest>, manifest_dir: Option<&Path>) -> Result<(), String> {
+fn run_asset_pipeline(
+    manifest: Option<&Manifest>,
+    manifest_dir: Option<&Path>,
+) -> Result<(), String> {
     let base = manifest_base_dir(manifest_dir)?;
     let Some(assets) = manifest.and_then(|m| m.assets.as_ref()) else {
         clear_asset_manifest_for_base(&base)?;
@@ -760,7 +772,10 @@ fn run_asset_pipeline(manifest: Option<&Manifest>, manifest_dir: Option<&Path>) 
     let hash_requested = assets.hash.unwrap_or(false);
     let source = resolve_manifest_relative_path(&base, scss);
     if !source.exists() {
-        return Err(format!("assets.scss path does not exist: {}", source.display()));
+        return Err(format!(
+            "assets.scss path does not exist: {}",
+            source.display()
+        ));
     }
     let css = assets.css.as_deref().unwrap_or("public/css");
     let destination = resolve_manifest_relative_path(&base, css);
@@ -819,7 +834,10 @@ fn resolve_sass_mapping(source: &Path, destination: &Path) -> Result<SassMapping
         });
     }
     if !source.is_file() {
-        return Err(format!("assets.scss path must be a file or directory: {}", source.display()));
+        return Err(format!(
+            "assets.scss path must be a file or directory: {}",
+            source.display()
+        ));
     }
     let output = if destination.exists() && destination.is_dir() {
         destination.join(scss_output_name(source))
@@ -849,7 +867,8 @@ fn asset_manifest_path(base: &Path) -> PathBuf {
 fn clear_asset_manifest_for_base(base: &Path) -> Result<(), String> {
     let path = asset_manifest_path(base);
     if path.exists() {
-        fs::remove_file(&path).map_err(|err| format!("failed to remove {}: {err}", path.display()))?;
+        fs::remove_file(&path)
+            .map_err(|err| format!("failed to remove {}: {err}", path.display()))?;
     }
     unsafe {
         env::remove_var(FUSE_ASSET_MAP_ENV);
@@ -857,7 +876,10 @@ fn clear_asset_manifest_for_base(base: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn write_asset_manifest_for_base(base: &Path, map: &BTreeMap<String, String>) -> Result<(), String> {
+fn write_asset_manifest_for_base(
+    base: &Path,
+    map: &BTreeMap<String, String>,
+) -> Result<(), String> {
     if map.is_empty() {
         return clear_asset_manifest_for_base(base);
     }
@@ -872,7 +894,8 @@ fn write_asset_manifest_for_base(base: &Path, map: &BTreeMap<String, String>) ->
         fs::create_dir_all(parent)
             .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
     }
-    fs::write(&path, &encoded).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    fs::write(&path, &encoded)
+        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     unsafe {
         env::set_var(FUSE_ASSET_MAP_ENV, encoded);
     }
@@ -906,7 +929,8 @@ fn collect_css_outputs(root: &Path) -> Vec<PathBuf> {
 }
 
 fn hash_css_file(path: &Path) -> Result<PathBuf, String> {
-    let bytes = fs::read(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    let bytes =
+        fs::read(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
     let stem = path
         .file_stem()
         .and_then(|name| name.to_str())
@@ -996,7 +1020,10 @@ fn path_to_forward_slashes(path: &Path) -> String {
 }
 
 fn normalize_asset_key(raw: &str) -> String {
-    raw.trim().replace('\\', "/").trim_start_matches('/').to_string()
+    raw.trim()
+        .replace('\\', "/")
+        .trim_start_matches('/')
+        .to_string()
 }
 
 fn is_hashed_css_path(path: &Path) -> bool {

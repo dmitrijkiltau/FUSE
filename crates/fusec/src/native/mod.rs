@@ -729,7 +729,8 @@ impl<'a> NativeVm<'a> {
             }
             Value::ResultOk(ok) => {
                 if html_response {
-                    let body = self.maybe_inject_live_reload_html(self.render_html_value(ok.as_ref())?);
+                    let body =
+                        self.maybe_inject_live_reload_html(self.render_html_value(ok.as_ref())?);
                     Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
                 } else {
                     let json = self.value_to_json(&ok);
@@ -815,7 +816,12 @@ impl<'a> NativeVm<'a> {
         if path == spec_route {
             let body = match fs::read_to_string(&spec_path) {
                 Ok(body) => body,
-                Err(err) => return Some(self.http_response(500, self.internal_error_json(&format!("failed to read openapi spec: {err}")))),
+                Err(err) => {
+                    return Some(self.http_response(
+                        500,
+                        self.internal_error_json(&format!("failed to read openapi spec: {err}")),
+                    ));
+                }
             };
             return Some(self.http_response_with_type(
                 200,

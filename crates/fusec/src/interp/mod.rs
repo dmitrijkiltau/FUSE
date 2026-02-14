@@ -1181,6 +1181,11 @@ impl<'a> Interpreter<'a> {
                 }
             }
             ExprKind::Call { callee, args } => {
+                if let ExprKind::Ident(ident) = &callee.kind {
+                    if self.should_use_html_tag_builtin(&ident.name) {
+                        return self.eval_html_tag_call_expr(&ident.name, args);
+                    }
+                }
                 if let ExprKind::Member { base, name } = &callee.kind {
                     let mut arg_vals = Vec::new();
                     for arg in args {
@@ -1354,20 +1359,70 @@ impl<'a> Interpreter<'a> {
             return Ok(Value::Config(name.to_string()));
         }
         match name {
-            "print"
-            | "env"
-            | "serve"
-            | "log"
-            | "db"
-            | "assert"
-            | "asset"
-            | "task"
-            | "json"
-            | "html"
-            | "svg" => Ok(Value::Builtin(name.to_string())),
+            "print" | "env" | "serve" | "log" | "db" | "assert" | "asset" | "task" | "json"
+            | "html" | "svg" => Ok(Value::Builtin(name.to_string())),
             _ if html_tags::is_html_tag(name) => Ok(Value::Builtin(name.to_string())),
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),
         }
+    }
+
+    fn should_use_html_tag_builtin(&self, name: &str) -> bool {
+        if !html_tags::is_html_tag(name) {
+            return false;
+        }
+        if self.env.get(name).is_some() {
+            return false;
+        }
+        if self.functions.contains_key(name) || self.config_decls.contains_key(name) {
+            return false;
+        }
+        true
+    }
+
+    fn eval_html_tag_call_expr(
+        &mut self,
+        name: &str,
+        args: &[crate::ast::CallArg],
+    ) -> ExecResult<Value> {
+        let has_named = args.iter().any(|arg| arg.name.is_some());
+        if !has_named {
+            let mut values = Vec::with_capacity(args.len());
+            for arg in args {
+                values.push(self.eval_expr(&arg.value)?);
+            }
+            return self.eval_builtin(name, values);
+        }
+
+        let mut attrs: HashMap<String, Value> = HashMap::new();
+        let mut child: Option<Value> = None;
+        for arg in args {
+            if let Some(attr_name) = &arg.name {
+                let value = self.eval_expr(&arg.value)?.unboxed();
+                let Value::String(text) = value else {
+                    return Err(ExecError::Runtime(
+                        "html attribute shorthand only supports string values".to_string(),
+                    ));
+                };
+                attrs.insert(
+                    html_tags::normalize_attr_name(&attr_name.name),
+                    Value::String(text),
+                );
+                continue;
+            }
+            if arg.is_block_sugar && child.is_none() {
+                child = Some(self.eval_expr(&arg.value)?);
+                continue;
+            }
+            return Err(ExecError::Runtime(
+                "cannot mix html attribute shorthand with positional arguments".to_string(),
+            ));
+        }
+
+        let mut canonical = vec![Value::Map(attrs)];
+        if let Some(child) = child {
+            canonical.push(child);
+        }
+        self.eval_builtin(name, canonical)
     }
 
     fn eval_call(&mut self, callee: Value, args: Vec<Value>) -> ExecResult<Value> {
@@ -1488,7 +1543,9 @@ impl<'a> Interpreter<'a> {
                         ));
                     }
                 };
-                Ok(Value::String(crate::runtime_assets::resolve_asset_href(path)))
+                Ok(Value::String(crate::runtime_assets::resolve_asset_href(
+                    path,
+                )))
             }
             "html.text" => {
                 if args.len() != 1 {
@@ -1594,7 +1651,9 @@ impl<'a> Interpreter<'a> {
             }
             "svg.inline" => {
                 if args.len() != 1 {
-                    return Err(ExecError::Runtime("svg.inline expects 1 argument".to_string()));
+                    return Err(ExecError::Runtime(
+                        "svg.inline expects 1 argument".to_string(),
+                    ));
                 }
                 let name = match args.get(0) {
                     Some(Value::String(name)) => name,
@@ -2231,7 +2290,8 @@ impl<'a> Interpreter<'a> {
             }
             Value::ResultOk(ok) => {
                 if html_response {
-                    let body = self.maybe_inject_live_reload_html(self.render_html_value(ok.as_ref())?);
+                    let body =
+                        self.maybe_inject_live_reload_html(self.render_html_value(ok.as_ref())?);
                     Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
                 } else {
                     let json = self.value_to_json(&ok);
@@ -2317,7 +2377,12 @@ impl<'a> Interpreter<'a> {
         if path == spec_route {
             let body = match fs::read_to_string(&spec_path) {
                 Ok(body) => body,
-                Err(err) => return Some(self.http_response(500, self.internal_error_json(&format!("failed to read openapi spec: {err}")))),
+                Err(err) => {
+                    return Some(self.http_response(
+                        500,
+                        self.internal_error_json(&format!("failed to read openapi spec: {err}")),
+                    ));
+                }
             };
             return Some(self.http_response_with_type(
                 200,

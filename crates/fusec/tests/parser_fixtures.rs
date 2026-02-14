@@ -169,3 +169,63 @@ fn page() -> Html:
 "#;
     assert_parse_ok(src);
 }
+
+#[test]
+fn parses_html_attr_shorthand_and_string_children() {
+    let src = r#"
+fn page(title: String) -> Html:
+  let card = div(class="card"):
+    "Hello"
+    title
+  return card
+"#;
+    assert_parse_ok(src);
+}
+
+#[test]
+fn parses_inline_if_assignment() {
+    let src = r#"
+fn main(flag: Bool):
+  var class_name = "nav-link"
+  if flag: class_name = "nav-link is-active"
+"#;
+    assert_parse_ok(src);
+}
+
+#[test]
+fn parses_inline_html_block_child() {
+    let src = r#"
+fn page() -> Html:
+  return span(): "FUSE"
+"#;
+    assert_parse_ok(src);
+}
+
+#[test]
+fn parses_multiline_function_signature() {
+    let src = r#"
+fn page_shell(
+  page_title: String,
+  current_section: String,
+  active_slug: String,
+  show_sidebar: Bool,
+  content: Html,
+) -> Html:
+  return content
+"#;
+    assert_parse_ok(src);
+}
+
+#[test]
+fn parses_named_call_args_without_commas_on_new_lines() {
+    let src = r#"
+fn page() -> Html:
+  return button(
+    class="panel-overlay"
+    id="panel-overlay"
+    type="button"
+    hidden="hidden"
+  )
+"#;
+    assert_parse_ok(src);
+}

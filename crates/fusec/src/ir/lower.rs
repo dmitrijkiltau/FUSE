@@ -1438,6 +1438,63 @@ impl FuncBuilder {
                 .push(format!("unknown html tag builtin {}", tag));
             return;
         };
+        let has_named = args.iter().any(|arg| arg.name.is_some());
+        if has_named {
+            let mut named_attrs: Vec<(String, String)> = Vec::new();
+            let mut child_arg: Option<&crate::ast::CallArg> = None;
+            for arg in args {
+                if let Some(name) = &arg.name {
+                    match &arg.value.kind {
+                        ExprKind::Literal(Literal::String(value)) => {
+                            named_attrs
+                                .push((html_tags::normalize_attr_name(&name.name), value.clone()));
+                        }
+                        _ => {
+                            self.errors.push(
+                                "html attribute shorthand only supports string literals"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    continue;
+                }
+                if arg.is_block_sugar && child_arg.is_none() {
+                    child_arg = Some(arg);
+                    continue;
+                }
+                self.errors.push(
+                    "cannot mix html attribute shorthand with positional arguments".to_string(),
+                );
+            }
+            self.emit(Instr::Push(Const::String(tag.to_string())));
+            for (key, value) in &named_attrs {
+                self.emit(Instr::Push(Const::String(key.clone())));
+                self.emit(Instr::Push(Const::String(value.clone())));
+            }
+            self.emit(Instr::MakeMap {
+                len: named_attrs.len(),
+            });
+            if matches!(kind, HtmlTagKind::Normal) {
+                if let Some(children) = child_arg {
+                    self.lower_expr(&children.value);
+                } else {
+                    self.emit(Instr::MakeList { len: 0 });
+                }
+            } else {
+                if child_arg.is_some() {
+                    self.errors
+                        .push(format!("void html tag {} does not accept children", tag));
+                }
+                self.emit(Instr::MakeList { len: 0 });
+            }
+            self.emit(Instr::Call {
+                name: "html.node".to_string(),
+                argc: 3,
+                kind: CallKind::Builtin,
+            });
+            return;
+        }
+
         let max = match kind {
             HtmlTagKind::Normal => 2usize,
             HtmlTagKind::Void => 1usize,
@@ -1449,13 +1506,6 @@ impl FuncBuilder {
                 max,
                 args.len()
             ));
-        }
-        for arg in args {
-            if arg.name.is_some() {
-                self.errors.push(
-                    "named arguments are not supported for function calls".to_string(),
-                );
-            }
         }
         self.emit(Instr::Push(Const::String(tag.to_string())));
         if let Some(attrs) = args.get(0) {

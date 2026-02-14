@@ -32,7 +32,10 @@ fn split_suffix(raw: &str) -> (&str, &str) {
 }
 
 fn normalize_asset_key(raw: &str) -> String {
-    raw.trim().replace('\\', "/").trim_start_matches('/').to_string()
+    raw.trim()
+        .replace('\\', "/")
+        .trim_start_matches('/')
+        .to_string()
 }
 
 fn asset_map_lookup(key: &str) -> Option<String> {

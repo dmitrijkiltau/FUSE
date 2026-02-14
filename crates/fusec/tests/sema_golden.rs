@@ -179,13 +179,48 @@ fn html_block_children_must_be_html() {
 fn div(attrs: Map<String, String>, children: List<Html>) -> Html:
   return html.node("div", attrs, children)
 
-fn page() -> Html:
+fn page(name: String) -> Html:
   return div():
-    "hello"
+    name
 "#;
     assert_diags(
         src,
         &["Error: type mismatch: expected List<Html>, found List<String>"],
+    );
+}
+
+#[test]
+fn html_tag_string_literal_children_are_lowered() {
+    let src = r#"
+fn page() -> Html:
+  return div(class="hero"):
+    "hello"
+"#;
+    assert_diags(src, &[]);
+}
+
+#[test]
+fn html_tag_attr_shorthand_rejects_non_literal_values() {
+    let src = r#"
+fn page(name: String) -> Html:
+  return div(class=name):
+    "hello"
+"#;
+    assert_diags(
+        src,
+        &["Error: html attribute shorthand only supports string literals"],
+    );
+}
+
+#[test]
+fn html_tag_attr_shorthand_rejects_mixing_positional() {
+    let src = r#"
+fn page() -> Html:
+  return div({"class": "hero"}, id="main")
+"#;
+    assert_diags(
+        src,
+        &["Error: cannot mix html attribute shorthand with positional arguments"],
     );
 }
 

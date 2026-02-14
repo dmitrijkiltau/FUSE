@@ -87,8 +87,8 @@ FieldDecl      := Ident ":" TypeRef [ "=" Expr ] NEWLINE
 EnumDecl       := "enum" Ident ":" NEWLINE INDENT { EnumVariant } DEDENT
 EnumVariant    := Ident [ "(" TypeRef { "," TypeRef } ")" ] NEWLINE
 
-FnDecl         := "fn" Ident "(" [ ParamList ] ")" [ "->" TypeRef ] ":" NEWLINE Block
-ParamList      := Param { "," Param }
+FnDecl         := "fn" Ident "(" NEWLINE* [ ParamList [ "," ] ] NEWLINE* ")" [ "->" TypeRef ] ":" NEWLINE Block
+ParamList      := Param { "," NEWLINE* Param }
 Param          := Ident ":" TypeRef [ "=" Expr ]
 
 Block          := INDENT { Stmt } DEDENT
@@ -112,7 +112,9 @@ LValue         := Ident | Member | OptionalMember | Index | OptionalIndex
 ReturnStmt     := "return" [ Expr ] NEWLINE
 ExprStmt       := Expr NEWLINE | SpawnExpr
 
-IfStmt         := "if" Expr ":" NEWLINE Block { "else" "if" Expr ":" NEWLINE Block } [ "else" ":" NEWLINE Block ]
+IfStmt         := "if" Expr ":" IfBody { "else" "if" Expr ":" IfBody } [ "else" ":" IfBody ]
+IfBody         := NEWLINE Block | InlineStmt
+InlineStmt     := Stmt
 MatchStmt      := "match" Expr ":" NEWLINE INDENT { MatchCase } DEDENT
 MatchCase      := Pattern ( "->" Expr NEWLINE | ":" NEWLINE Block )
                 # `Pattern -> Expr` is sugar for `Pattern: return Expr`
@@ -183,7 +185,7 @@ ListLit        := "[" [ Expr { "," Expr } ] "]"
 MapLit         := "{" [ Expr ":" Expr { "," Expr ":" Expr } ] "}"
 SpawnExpr      := "spawn" ":" NEWLINE Block
 
-HtmlBlockSuffix := ":" NEWLINE INDENT HtmlChildStmt* DEDENT
+HtmlBlockSuffix := ":" ( NEWLINE INDENT HtmlChildStmt* DEDENT | Expr )
 HtmlChildStmt   := Expr NEWLINE
 ```
 
@@ -203,10 +205,21 @@ Notes:
 * `HtmlBlockSuffix` is enabled only in statement value positions (`let`/`var` RHS, `return` expr,
   assignment RHS, expression statements). It is parsed only for call expressions and lowered to a call
   with block-sugar args (`{}` attrs if omitted, plus `List<Html>` children).
-* HTML block children must be expression statements; no implicit string-to-`Html` coercion is added.
+* HTML block children must be expression statements; bare string literals in Html blocks are lowered to
+  `html.text(...)`, while non-literal expressions are not coerced.
+* Html tag calls accept attribute shorthand (`div(class="hero")`) with string literals only; it lowers
+  to a standard attrs map argument (`div({"class": "hero"})`).
+* Named call args can use keyword names (`type="button"`, `for="x"`), and named args may omit commas
+  when separated by layout (`button(class="x" id="y")` split across lines).
+* In Html attribute shorthand, `_` in attribute names is normalized to `-`
+  (`aria_label` -> `aria-label`, `data_view` -> `data-view`).
 * Postfix chains can continue across line breaks when the next token is a postfix continuation
   (`(`, `.`, `[`, `?`, `?!`), so long call/member/index chains can be wrapped line-by-line.
 * Call argument lists allow line breaks and trailing commas before `)`.
+* Function parameter lists allow line breaks and a trailing comma before `)`.
+* `if` / `else if` / `else` bodies can use either a normal indented block or an inline single statement
+  (`if flag: x = 1`).
+* `HtmlBlockSuffix` also supports an inline single child expression (`span(): "FUSE"`).
 
 ---
 

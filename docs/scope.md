@@ -79,6 +79,8 @@ The current implementation is a Rust interpreter + VM, so it runs wherever the h
 * `migration` declarations
 * `spawn` / `await` / `box` concurrency
 * HTML block call DSL (`div(): ...`) lowered to explicit attrs + `List<Html>` children for Html-returning calls
+* Html-block string-literal children auto-lower to `html.text(...)`
+* Html tag attribute shorthand (`div(class="hero")`) lowers to attrs maps (string literal values only)
 
 **Runtime / "boilerplate killer" (implemented)**
 

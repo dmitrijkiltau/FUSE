@@ -416,9 +416,7 @@ impl<'a> Checker<'a> {
                 let callee_ty = self.check_expr(callee);
                 match callee_ty {
                     Ty::Fn(sig) => {
-                        if uses_html_block
-                            && !matches!(sig.ret.as_ref(), Ty::Html | Ty::Unknown)
-                        {
+                        if uses_html_block && !matches!(sig.ret.as_ref(), Ty::Html | Ty::Unknown) {
                             self.diags.error(
                                 expr.span,
                                 "html block form requires a function that returns Html",
@@ -1942,14 +1940,46 @@ impl<'a> Checker<'a> {
         let Some(kind) = html_tags::tag_kind(tag) else {
             return Ty::Unknown;
         };
-        for arg in args {
-            if arg.name.is_some() {
+        let has_named = args.iter().any(|arg| arg.name.is_some());
+        if has_named {
+            let mut child_arg: Option<&CallArg> = None;
+            for arg in args {
+                if arg.name.is_some() {
+                    if !matches!(&arg.value.kind, ExprKind::Literal(Literal::String(_))) {
+                        self.diags.error(
+                            arg.span,
+                            "html attribute shorthand only supports string literals",
+                        );
+                    }
+                    let _ = self.check_expr(&arg.value);
+                    continue;
+                }
+                if arg.is_block_sugar && child_arg.is_none() {
+                    child_arg = Some(arg);
+                    continue;
+                }
                 self.diags.error(
                     arg.span,
-                    "named arguments are not supported for function calls",
+                    "cannot mix html attribute shorthand with positional arguments",
                 );
+                let _ = self.check_expr(&arg.value);
             }
+            if let Some(children) = child_arg {
+                if matches!(kind, HtmlTagKind::Void) {
+                    self.diags.error(
+                        children.span,
+                        format!("void html tag {} does not accept children", tag),
+                    );
+                }
+                let children_ty = self.check_expr(&children.value);
+                let expected_children = Ty::List(Box::new(Ty::Html));
+                if !self.is_assignable(&children_ty, &expected_children) {
+                    self.type_mismatch(children.span, &expected_children, &children_ty);
+                }
+            }
+            return Ty::Html;
         }
+
         let max = match kind {
             HtmlTagKind::Normal => 2usize,
             HtmlTagKind::Void => 1usize,

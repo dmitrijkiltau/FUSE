@@ -56,6 +56,11 @@ Common package features:
 
 Use `asset("css/app.css")` to resolve logical asset paths to hashed URLs, and
 `svg.inline("icons/name")` to inline SVG from `assets/svg` (or `FUSE_SVG_DIR`) as `Html`.
+Html tag builtins are available directly (`div`, `section`, `meta`, ...), with block DSL sugar
+(`div(): ...`), string-literal child lowering (`"x"` -> `html.text("x")` in Html blocks), and
+attribute shorthand (`div(class="hero", type="button")` -> attrs map). Named args can also be
+written one-per-line without commas. Underscores in shorthand names are normalized to dashes
+(`aria_label` -> `aria-label`, `data_view` -> `data-view`).
 
 Build artifacts and caches:
 

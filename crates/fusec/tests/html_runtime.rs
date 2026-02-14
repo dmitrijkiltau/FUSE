@@ -247,6 +247,55 @@ app "html":
 }
 
 #[test]
+fn html_tag_sugar_renders_across_backends() {
+    let program = r#"
+app "html":
+  let view = div(class="card"):
+    "Hello"
+  print(html.render(view))
+"#;
+
+    let expected = r#"<div class="card">Hello</div>"#;
+    for backend in ["ast", "vm", "native"] {
+        let output = run_program(backend, program);
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(stdout.trim(), expected, "{backend} stdout");
+    }
+}
+
+#[test]
+fn html_tag_attr_underscore_maps_to_hyphen() {
+    let program = r#"
+app "html":
+  let view = button(
+    type="button"
+    aria_label="Close navigation"
+    data_view="openapi"
+  ):
+    "Open"
+  print(html.render(view))
+"#;
+
+    let expected =
+        r#"<button aria-label="Close navigation" data-view="openapi" type="button">Open</button>"#;
+    for backend in ["ast", "vm", "native"] {
+        let output = run_program(backend, program);
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(stdout.trim(), expected, "{backend} stdout");
+    }
+}
+
+#[test]
 fn asset_builtin_resolves_hashed_paths_across_backends() {
     let program = r#"
 app "asset":
@@ -479,7 +528,11 @@ app "docs":
             responses[0].body
         );
         assert_eq!(responses[1].status, 200, "{backend} json status");
-        assert_eq!(responses[1].body.trim(), openapi_json, "{backend} json body");
+        assert_eq!(
+            responses[1].body.trim(),
+            openapi_json,
+            "{backend} json body"
+        );
     }
 
     let _ = fs::remove_file(openapi_path);
@@ -510,7 +563,8 @@ app "notes":
 
     for backend in ["ast", "vm", "native"] {
         let port = find_free_port();
-        let responses = run_http_program_with_env_requests(backend, program, port, &[], &[&request]);
+        let responses =
+            run_http_program_with_env_requests(backend, program, port, &[], &[&request]);
         let response = &responses[0];
         assert_eq!(response.status, 200, "{backend} status");
         let content_type = response

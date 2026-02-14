@@ -33,8 +33,17 @@ Config, JSON, validation, and HTTP routing are built into the runtime so you don
 * Enums are `enum`.
 * String interpolation uses `${expr}` inside double quotes.
 * Long call/member chains and call arguments can be split across lines.
+* Function parameter lists can be split across lines (trailing comma allowed).
+* `if`/`else` can use an inline single-statement body (`if cond: x = 1`) or a normal indented block.
 * HTML block DSL sugar is supported for call expressions:
   `div(): ...` lowers to `div({}, [...])` and is restricted to calls that return `Html`.
+  Inline single-child form is also supported (`span(): "FUSE"`).
+  Inside Html blocks, bare string literals are lowered to `html.text(...)`.
+* Html tag calls support attribute shorthand with string literals:
+  `div(class="hero", id="main", type="button")` lowers to
+  `div({"class": "hero", "id": "main", "type": "button"})`.
+  Named args can also be written one-per-line without commas.
+  Attribute names normalize `_` to `-` (`aria_label` -> `aria-label`, `data_view` -> `data-view`).
 
 ### Hello World (app + optional CLI)
 
@@ -71,7 +80,8 @@ What the runtime does today:
 * `Html` is a runtime tree type built via HTML tag builtins (for example `div`, `meta`, `nav`)
   or `html.text/raw/node`; `html.render` turns it into `String`.
 * `svg.inline(path)` loads raw SVG from `assets/svg` (or `FUSE_SVG_DIR`) as `Html`.
-* HTML block form is compile-time sugar over `List<Html>` children; no implicit string-to-`Html` coercion.
+* HTML block form is compile-time sugar over `List<Html>` children.
+  Bare string literals in Html block children auto-wrap as `html.text(...)`; other expressions stay explicit.
 
 ---
 

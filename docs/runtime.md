@@ -270,7 +270,8 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 * `html.text(String)`, `html.raw(String)`, `html.node(String, Map<String,String>, List<Html>)`, `html.render(Html)`.
 * `svg.inline(path: String) -> Html` loads raw SVG from the configured SVG directory.
 * HTML block call syntax (`div(): ...`) is compile-time sugar lowered to normal calls with explicit
-  attrs + `List<Html>` children; runtime behavior is unchanged.
+  attrs + `List<Html>` children; bare string literals in Html block children lower to `html.text(...)`.
+* Html tag attribute shorthand (`div(class="hero")`) is compile-time sugar lowered to attrs maps.
 
 ## Database (SQLite only)
 

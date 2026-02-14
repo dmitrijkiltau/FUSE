@@ -115,7 +115,11 @@ app "Demo":
 
     let scss_dir = dir.join("assets").join("scss");
     fs::create_dir_all(&scss_dir).expect("create scss dir");
-    fs::write(scss_dir.join("app.scss"), "$c: #fff;\nbody { color: $c; }\n").expect("write scss");
+    fs::write(
+        scss_dir.join("app.scss"),
+        "$c: #fff;\nbody { color: $c; }\n",
+    )
+    .expect("write scss");
 
     let bin_dir = dir.join("bin");
     fs::create_dir_all(&bin_dir).expect("create bin dir");
@@ -196,7 +200,11 @@ app "Demo":
 
     let scss_dir = dir.join("assets").join("scss");
     fs::create_dir_all(&scss_dir).expect("create scss dir");
-    fs::write(scss_dir.join("app.scss"), "$c: #fff;\nbody { color: $c; }\n").expect("write scss");
+    fs::write(
+        scss_dir.join("app.scss"),
+        "$c: #fff;\nbody { color: $c; }\n",
+    )
+    .expect("write scss");
 
     let bin_dir = dir.join("bin");
     fs::create_dir_all(&bin_dir).expect("create bin dir");
@@ -267,7 +275,10 @@ fi
 
     let manifest_path = dir.join(".fuse").join("assets-manifest.json");
     let asset_manifest = fs::read_to_string(&manifest_path).expect("read asset manifest");
-    assert!(asset_manifest.contains("\"css/app.css\""), "manifest: {asset_manifest}");
+    assert!(
+        asset_manifest.contains("\"css/app.css\""),
+        "manifest: {asset_manifest}"
+    );
     let expected_hashed_href = format!("\"/css/{hashed_name}\"");
     assert!(
         asset_manifest.contains(&expected_hashed_href),

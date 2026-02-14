@@ -1,11 +1,35 @@
-import Ui from "./ui"
+import Components from "./components"
 
 service DocsApi at "/":
+  # Home page
   get "/" -> Html:
-    return Ui.docs_page()
+    return Components.home_page()
 
+  # Spec pages - each spec has its own route
+  get "/specs/fuse" -> Html:
+    return Components.spec_page("fuse", "Language")
+
+  get "/specs/fls" -> Html:
+    return Components.spec_page("fls", "Specification")
+
+  get "/specs/runtime" -> Html:
+    return Components.spec_page("runtime", "Runtime")
+
+  get "/specs/scope" -> Html:
+    return Components.spec_page("scope", "Scope")
+
+  # OpenAPI page
+  get "/openapi" -> Html:
+    return Components.openapi_page()
+
+  # API endpoints
   get "/api/health" -> Map<String, String>:
     return {"status": "ok", "service": "docs"}
 
-  get "/api/specs" -> List<String>:
-    return ["fuse.md", "fls.md", "runtime.md", "scope.md"]
+  get "/api/specs" -> List<Map<String, String>>:
+    return [
+      {"slug": "fuse", "label": "Language", "file": "fuse.md"},
+      {"slug": "fls", "label": "Specification", "file": "fls.md"},
+      {"slug": "runtime", "label": "Runtime", "file": "runtime.md"},
+      {"slug": "scope", "label": "Scope", "file": "scope.md"}
+    ]

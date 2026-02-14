@@ -88,5 +88,6 @@ fn read_svg(path: &PathBuf) -> Result<String, String> {
     if !path.is_file() {
         return Err(format!("svg.inline missing file: {}", path.display()));
     }
-    fs::read_to_string(path).map_err(|err| format!("svg.inline failed to read {}: {err}", path.display()))
+    fs::read_to_string(path)
+        .map_err(|err| format!("svg.inline failed to read {}: {err}", path.display()))
 }
