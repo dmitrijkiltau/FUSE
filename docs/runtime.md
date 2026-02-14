@@ -1,22 +1,44 @@
 # Runtime semantics (current implementation)
 
-This document describes the behavior of the AST interpreter, VM, and native backend path in this repo. It is deliberately
-conservative: anything not listed here is either unsupported or not implemented yet.
+This document is the canonical source for runtime behavior in this repo.
+It describes the AST interpreter, VM, and native backend path semantics.
+
+Companion references:
+
+- `fls.md` defines syntax and static-semantics guarantees.
+- `scope.md` captures roadmap direction and non-goals.
+
+---
+
+## Runtime surface and ownership
+
+This document owns:
+
+- backend execution behavior
+- runtime error/status/JSON rendering behavior
+- boundary behavior (validation, JSON, config, CLI, HTTP)
+- builtins, DB access, migrations/tests execution, task model, logging
+
+This document does not re-specify:
+
+- grammar or parsing rules
+- AST shape details
+- project planning/roadmap
 
 ---
 
 ## Backends
 
-* **AST interpreter**: executes the parsed AST directly.
-* **VM**: lowers to bytecode and executes the VM.
-* **Native**: uses a compiled native image (`program.native`) and VM-compatible runtime semantics,
+- **AST interpreter**: executes parsed AST directly.
+- **VM**: lowers to bytecode and executes the VM.
+- **Native**: uses a compiled native image (`program.native`) and VM-compatible runtime semantics,
   with a Cranelift JIT fast-path for direct function execution.
 
-Most runtime behavior is shared, with a few differences called out below.
+Most runtime behavior is shared across backends.
 
 Native backend note:
 
-* If native compilation/execution fails for a function, the run fails (no automatic backend fallback).
+- If native compilation/execution fails for a function, the run fails (no automatic backend fallback).
 
 ---
 
@@ -24,24 +46,24 @@ Native backend note:
 
 ### Recognized error names
 
-The runtime recognizes a small set of error struct names when formatting error JSON and mapping
-HTTP statuses. These live under a reserved namespace:
+The runtime recognizes a small set of error struct names for standardized HTTP status mapping
+and error JSON formatting. These live under a reserved namespace:
 
-* `std.Error.Validation`
-* `std.Error`
-* `std.Error.BadRequest`
-* `std.Error.Unauthorized`
-* `std.Error.Forbidden`
-* `std.Error.NotFound`
-* `std.Error.Conflict`
+- `std.Error.Validation`
+- `std.Error`
+- `std.Error.BadRequest`
+- `std.Error.Unauthorized`
+- `std.Error.Forbidden`
+- `std.Error.NotFound`
+- `std.Error.Conflict`
 
-Names outside `std.Error.*` do not participate in HTTP status mapping or error JSON formatting.
+Names outside `std.Error.*` do not participate in this standardized mapping/formatting behavior.
 
 ### Error JSON shape
 
 Errors are rendered as JSON with a single `error` object:
 
-```
+```json
 {
   "error": {
     "code": "validation_error",
@@ -55,136 +77,132 @@ Errors are rendered as JSON with a single `error` object:
 
 Rules:
 
-* `std.Error.Validation` uses `message` and `fields` (list of structs with `path`, `code`, `message`).
-* `std.Error` uses `code` and `message`. Other fields are ignored for JSON output.
-* `std.Error.BadRequest`, `std.Error.Unauthorized`, `std.Error.Forbidden`, `std.Error.NotFound`,
-  `std.Error.Conflict` use their `message` field if
-  present, otherwise a default message.
-* Any other error value renders as `internal_error`.
+- `std.Error.Validation` uses `message` and `fields` (list of structs with `path`, `code`, `message`).
+- `std.Error` uses `code` and `message`. Other fields are ignored for JSON output.
+- `std.Error.BadRequest`, `std.Error.Unauthorized`, `std.Error.Forbidden`, `std.Error.NotFound`,
+  `std.Error.Conflict` use their `message` field if present, otherwise a default message.
+- Any other error value renders as `internal_error`.
 
 ### HTTP status mapping
 
 Status mapping uses the error name first, then `std.Error.status` if present:
 
-* `std.Error.Validation` -> 400
-* `std.Error.BadRequest` -> 400
-* `std.Error.Unauthorized` -> 401
-* `std.Error.Forbidden` -> 403
-* `std.Error.NotFound` -> 404
-* `std.Error.Conflict` -> 409
-* `std.Error` with `status: Int` -> that status
-* anything else -> 500
+- `std.Error.Validation` -> 400
+- `std.Error.BadRequest` -> 400
+- `std.Error.Unauthorized` -> 401
+- `std.Error.Forbidden` -> 403
+- `std.Error.NotFound` -> 404
+- `std.Error.Conflict` -> 409
+- `std.Error` with `status: Int` -> that status
+- anything else -> 500
 
 ### Result types + `?!`
 
-* `T!` is `Result<T, Error>` (the built-in error base).
-* `T!E` is `Result<T, E>`.
+- `T!` is `Result<T, Error>`.
+- `T!E` is `Result<T, E>`.
 
 `expr ?! err` rules:
 
-* If `expr` is `Option<T>` and is `None`, return `Err(err)`.
-* If `expr` is `Result<T, E>` and is `Err`, replace the error with `err`.
-* If `expr ?!` omits `err`, `Option` uses a default error, and `Result` propagates the existing error.
+- If `expr` is `Option<T>` and is `None`, return `Err(err)`.
+- If `expr` is `Result<T, E>` and is `Err`, replace the error with `err`.
+- If `expr ?!` omits `err`, `Option` uses a default error, and `Result` propagates the existing error.
 
 ---
 
-## Validation model
+## Boundary model
+
+### Validation
 
 Validation is applied at runtime in these places:
 
-* Struct literal construction (`Type(...)`)
-* JSON decode for HTTP body
-* Config loading
-* CLI flag binding
-* Route parameter parsing
+- struct literal construction (`Type(...)`)
+- JSON decode for HTTP body
+- config loading
+- CLI flag binding
+- route parameter parsing
 
 There is no global "validate on assignment" mode.
 
-### Default values
+#### Default values
 
 Defaults are applied before validation:
 
-* Missing field with default -> default is used.
-* Missing optional field -> `null`.
-* Explicit `null` stays `null` (even if a default exists).
+- missing field with default -> default is used
+- missing optional field -> `null`
+- explicit `null` stays `null` (even if a default exists)
 
-### Built-in refinements
+#### Built-in refinements
 
 Refinements are range-based only:
 
-* `String(1..80)` length constraint
-* `Int(0..130)` numeric range
-* `Float(0.0..1.0)` numeric range
+- `String(1..80)` length constraint
+- `Int(0..130)` numeric range
+- `Float(0.0..1.0)` numeric range
 
-Other refinements (regex, custom predicates) are not implemented.
+Other refinement styles (regex/custom predicates) are not implemented.
 
-### `Id` and `Email`
+#### `Id` and `Email`
 
-* `Id` is a non-empty string.
-* `Email` uses a simple `local@domain` check with a `.` in the domain.
+- `Id` is a non-empty string.
+- `Email` uses a simple `local@domain` check with a `.` in the domain.
 
----
+### JSON encoding/decoding
 
-## JSON encoding/decoding
+#### Structs
 
-### Structs
+- encode to JSON objects with declared field names
+- all fields are included (including defaults)
+- `null` represents optional empty value
 
-* Encode to JSON objects with declared field names.
-* All fields are included (including defaults).
-* `null` represents an optional `None`.
+#### Struct decoding
 
-### Struct decoding
+- missing field with default -> default value
+- missing field with no default -> error
+- optional fields accept missing or `null`
+- unknown fields -> error
 
-* Missing field with default -> default value.
-* Missing field with no default -> error.
-* Optional fields accept missing or `null`.
-* Unknown fields -> error.
-
-### Enums
+#### Enums
 
 Enums use a tagged object format:
 
-```
+```json
 { "type": "Variant", "data": ... }
 ```
 
 Rules:
 
-* No payload: omit `data`.
-* Single payload: `data` is the value.
-* Multiple payloads: `data` is an array.
+- no payload: omit `data`
+- single payload: `data` is the value
+- multiple payloads: `data` is an array
 
-### Built-in types and generics
+#### Built-in types and generics
 
-* `String`, `Id`, `Email` -> JSON string.
-* `Bytes` -> JSON base64 string (standard alphabet with `=` padding).
-* `Html` -> JSON string via `html.render(...)` output.
-* `Bool`, `Int`, `Float` -> JSON number/bool.
-* `List<T>` -> JSON array.
-* `Map<K,V>` -> JSON object. At runtime, `Map<K,V>` requires `K = String`; non-string keys are rejected.
-* User-defined `struct` and `enum` are supported using the same validation rules as struct literals.
-* `Result<T,E>` is **not** supported in JSON decoding.
+- `String`, `Id`, `Email` -> JSON string
+- `Bytes` -> JSON base64 string (standard alphabet with `=` padding)
+- `Html` -> JSON string via `html.render(...)` output
+- `Bool`, `Int`, `Float` -> JSON number/bool
+- `List<T>` -> JSON array
+- `Map<K,V>` -> JSON object (runtime requires `K = String`)
+- user-defined `struct` and `enum` decode with same validation model as struct literals
+- `Result<T,E>` is not supported in JSON decoding
 
-`Bytes` use base64 text at JSON/config/CLI boundaries. Runtime values are stored as raw bytes.
-`Html` values are runtime trees (`Element`, `Text`, `Raw`) and are not parsed from config/env/CLI.
+`Bytes` use base64 text at JSON/config/CLI boundaries. Runtime values are raw bytes.
+`Html` values are runtime trees and are not parsed from config/env/CLI.
 
----
+### Config loading
 
-## Config loading
+Config values resolve in this order:
 
-Config values are resolved in this order:
+1. environment variables (override config file)
+2. config file (default `config.toml`, overridable via `FUSE_CONFIG`)
+3. default expressions
 
-1. Environment variables (override config file)
-2. Config file (default `config.toml`, overridable via `FUSE_CONFIG`)
-3. Default expressions
-
-The `fuse` CLI also loads a `.env` file from the package directory (if present) and
-injects any missing environment variables before this resolution. Existing environment
-variables are never overridden by `.env`.
+The `fuse` CLI also loads `.env` from the package directory (if present) and injects any missing
+variables before this resolution. Existing environment variables are never overridden by `.env`.
 
 Config file format is a minimal TOML-like subset:
 
-```
+```toml
 [App]
 port = 3000
 dbUrl = "sqlite://app.db"
@@ -192,276 +210,266 @@ dbUrl = "sqlite://app.db"
 
 Notes:
 
-* Only section headers and `key = value` pairs are supported.
-* Values are parsed as strings (with basic `"` escapes) and then converted using the same rules as env vars.
+- only section headers and `key = value` pairs are supported
+- values are parsed as strings (with basic `"` escapes), then converted using env-var conversion rules
 
-Env override naming is derived from config and field names:
+Env override naming derives from config and field names:
 
-* `App.port` -> `APP_PORT`
-* `dbUrl` -> `DB_URL`
-* Hyphens become underscores, and camelCase is split into `SNAKE_CASE`.
+- `App.port` -> `APP_PORT`
+- `dbUrl` -> `DB_URL`
+- hyphens become underscores; camelCase splits to `SNAKE_CASE`
 
-Type support for config values (env and file values) has levels:
+Type support levels for config values (env and file values):
 
-* **Full**: scalars (`Int`, `Float`, `Bool`, `String`, `Id`, `Email`, `Bytes`) and `Option<T>`.
-* **Structured via JSON text**: `List<T>`, `Map<String,V>`, user-defined `struct`, user-defined `enum` (decoded from a JSON string payload and then validated recursively).
-* **Rejected**: `Html`, `Map<K,V>` where `K != String`, and `Result<T,E>`.
+- **Full**: scalars (`Int`, `Float`, `Bool`, `String`, `Id`, `Email`, `Bytes`) and `Option<T>`.
+- **Structured via JSON text**: `List<T>`, `Map<String,V>`, user-defined `struct`, user-defined `enum`.
+- **Rejected**: `Html`, `Map<K,V>` where `K != String`, `Result<T,E>`.
 
 Compatibility notes:
 
-* `Bytes` must be valid base64 text; invalid base64 is a validation error.
-* For structured values, parse failures (invalid JSON/type mismatch/unknown field) surface as validation errors on the target field path.
+- `Bytes` must be valid base64 text; invalid base64 is a validation error.
+- for structured values, parse failures (invalid JSON/type mismatch/unknown field) surface as
+  validation errors on the target field path.
 
----
+### CLI binding
 
-## CLI binding
+CLI binding is enabled when program args are passed after the file (or after `--`):
 
-CLI binding is enabled when you pass program arguments after the file name (or after `--`):
-
-```
+```bash
 fusec --run file.fuse -- --name=Codex
 ```
 
 Rules:
 
-* Flags only (no positional arguments).
-* `--flag value` and `--flag=value` are supported.
-* `--flag` sets a `Bool` to `true`, `--no-flag` sets it to `false`.
-* Unknown flags are validation errors.
-* Support levels mirror config/env parsing:
-  * **Full**: scalar types and `Option<T>`.
-  * **Structured via JSON text**: `List<T>`, `Map<String,V>`, user-defined `struct`, user-defined `enum`.
-  * **Rejected**: `Html`, `Map<K,V>` with non-`String` keys and `Result<T,E>`.
-* Multiple values for the same flag are rejected.
-* CLI binding calls `fn main` directly (the `app` block is ignored when program args are present).
+- flags only (no positional arguments)
+- `--flag value` and `--flag=value` are supported
+- `--flag` sets `Bool` to `true`; `--no-flag` sets it to `false`
+- unknown flags are validation errors
+- multiple values for the same flag are rejected
+- binding calls `fn main` directly; `app` block is ignored when program args are present
+
+Type support levels mirror config/env parsing:
+
+- **Full**: scalar types and `Option<T>`.
+- **Structured via JSON text**: `List<T>`, `Map<String,V>`, user-defined `struct`, user-defined `enum`.
+- **Rejected**: `Html`, `Map<K,V>` with non-`String` keys, `Result<T,E>`.
 
 For `Bytes`, CLI values must be base64 text.
 
 Validation errors are printed as JSON on stderr and usually exit with code 2.
 
----
+### HTTP runtime
 
-## HTTP runtime
+#### Routing
 
-### Routing
+- paths are split on `/` and matched segment-by-segment
+- route params use `{name: Type}` and must occupy the whole segment
+- params parse with env-like scalar/optional/refined rules
+- `body` introduces a JSON request body bound to `body` in the handler
 
-* Paths are split on `/` and matched segment-by-segment.
-* Route params use `{name: Type}` and must occupy the whole segment.
-* Params are parsed with the same rules as env parsing (simple types + optional/refined).
-* `body` introduces a JSON request body and is bound to the name `body` in the handler.
+#### Response
 
-### Response
+- successful values encode as JSON with `Content-Type: application/json` by default
+- if route return type is `Html` (or `Result<Html, E>` on success), response is rendered once with
+  `Content-Type: text/html; charset=utf-8`
+- `Result` errors are mapped using the status rules above
+- unsupported HTTP methods return `405` with `internal_error` JSON
+- no HTMX-specific runtime mode: HTMX-style flows are ordinary `Html` route returns
 
-* Successful values encode as JSON with `Content-Type: application/json` by default.
-* If a route return type is `Html` (or `Result<Html, E>` on success), the response body is rendered once and sent with `Content-Type: text/html; charset=utf-8`.
-* `Result` errors are mapped using the status rules above.
-* Unsupported HTTP methods return `405` with `internal_error` JSON.
-* There is no HTMX-specific runtime mode: HTMX-style flows are built by returning `Html` fragments from routes.
+#### Environment knobs
 
-### Environment knobs
-
-* `FUSE_HOST` (default `127.0.0.1`) controls bind host.
-* `FUSE_SERVICE` selects the service when multiple are declared.
-* `FUSE_MAX_REQUESTS` stops the server after N requests (useful for tests).
-* `FUSE_DEV_RELOAD_WS_URL` enables dev HTML script injection (`WebSocket` auto-reload client to `/__reload`).
-* `FUSE_OPENAPI_JSON_PATH` + `FUSE_OPENAPI_UI_PATH` enable built-in OpenAPI UI serving (`GET <path>` and `<path>/openapi.json`).
-* `FUSE_ASSET_MAP` provides logical-path -> public-URL mappings for `asset(path)` (JSON object).
-* `FUSE_VITE_PROXY_URL` enables fallback proxying of unknown HTTP routes to a Vite dev server (`http://host:port[/base]`).
-* `FUSE_SVG_DIR` overrides the SVG base directory used by `svg.inline` (default `assets/svg`).
-
----
-
-## Builtins (current)
-
-* `print(value)` prints a stringified value to stdout.
-* `log(...)` writes a log line to stderr (see Logging below).
-* `db.exec/query/one` execute SQL against the configured database (see Database below).
-* `db.from(table)` builds a parameterized query (see Database below).
-* `assert(cond, message?)` throws a runtime error when `cond` is false.
-* `env(name: String) -> String?` returns an env var or `null`.
-* `asset(path: String) -> String` resolves to a hashed/static public URL when `FUSE_ASSET_MAP` is set.
-* `serve(port)` starts the HTTP server on `FUSE_HOST:port`.
-* `task.id/done/cancel` operate on spawned tasks (see Tasks below).
-* HTML tag builtins (for example `html`, `head`, `body`, `div`, `meta`, `button`) construct `Html` values.
-* `html.text(String)`, `html.raw(String)`, `html.node(String, Map<String,String>, List<Html>)`, `html.render(Html)`.
-* `svg.inline(path: String) -> Html` loads raw SVG from the configured SVG directory.
-* HTML block call syntax (`div(): ...`) is compile-time sugar lowered to normal calls with explicit
-  attrs + `List<Html>` children; bare string literals in Html block children lower to `html.text(...)`.
-* Html tag attribute shorthand (`div(class="hero")`) is compile-time sugar lowered to attrs maps.
+- `FUSE_HOST` (default `127.0.0.1`) controls bind host
+- `FUSE_SERVICE` selects service when multiple are declared
+- `FUSE_MAX_REQUESTS` stops server after N requests (useful for tests)
+- `FUSE_DEV_RELOAD_WS_URL` enables dev HTML script injection (`/__reload` client)
+- `FUSE_OPENAPI_JSON_PATH` + `FUSE_OPENAPI_UI_PATH` enable built-in OpenAPI UI serving
+- `FUSE_ASSET_MAP` provides logical-path -> public-URL mappings for `asset(path)`
+- `FUSE_VITE_PROXY_URL` enables fallback proxying of unknown routes to Vite dev server
+- `FUSE_SVG_DIR` overrides SVG base directory for `svg.inline`
 
 ---
 
-## Database (SQLite only)
+## Builtins and runtime subsystems
+
+### Builtins (current)
+
+- `print(value)` prints stringified value to stdout
+- `log(...)` writes log lines to stderr (see Logging)
+- `db.exec/query/one` execute SQL against configured DB
+- `db.from(table)` builds parameterized queries
+- `assert(cond, message?)` throws runtime error when `cond` is false
+- `env(name: String) -> String?` returns env var or `null`
+- `asset(path: String) -> String` resolves to hashed/static public URL when asset map is configured
+- `serve(port)` starts HTTP server on `FUSE_HOST:port`
+- `task.id/done/cancel` operate on spawned tasks
+- HTML tag builtins (`html`, `head`, `body`, `div`, `meta`, `button`, ...)
+- `html.text`, `html.raw`, `html.node`, `html.render`
+- `svg.inline(path: String) -> Html`
+
+Compile-time sugar affecting HTML builtins:
+
+- HTML block syntax (`div(): ...`) lowers to normal calls with explicit attrs + `List<Html>` children
+- bare string literals in HTML blocks lower to `html.text(...)`
+- attribute shorthand (`div(class="hero")`) lowers to attrs maps
+
+### Database (SQLite only)
 
 Database access is intentionally minimal and currently uses SQLite via a single connection.
 
-Configuration:
+Configuration sources:
 
-* `FUSE_DB_URL` (preferred) or `DATABASE_URL`
-* `App.dbUrl` if config has been loaded
+- `FUSE_DB_URL` (preferred) or `DATABASE_URL`
+- `App.dbUrl` if config has been loaded
 
 URL format:
 
-* `sqlite://path` or `sqlite:path`
+- `sqlite://path` or `sqlite:path`
 
 Builtins:
 
-* `db.exec(sql, params?)` executes a SQL batch (no return value).
-* `db.query(sql, params?)` returns `List<Map<String, Value>>` (column names -> values).
-* `db.one(sql, params?)` returns the first row as a map, or `null`.
-* `db.from(table)` returns a `Query` builder.
+- `db.exec(sql, params?)` executes SQL batch (no return value)
+- `db.query(sql, params?)` returns `List<Map<String, Value>>`
+- `db.one(sql, params?)` returns first row map or `null`
+- `db.from(table)` returns `Query` builder
 
-Query builder (all methods return a new `Query`):
+Query builder methods (immutable style; each returns a new `Query`):
 
-* `Query.select(columns)` sets the column projection (default is `*`).
-* `Query.where(column, op, value)` adds a filter.
-* `Query.order_by(column, dir)` sets ordering (`asc`/`desc`).
-* `Query.limit(n)` sets a limit (must be `>= 0`).
-* `Query.one()` returns the first row or `null`.
-* `Query.all()` returns all rows.
-* `Query.exec()` executes the query (no return value).
-* `Query.sql()` and `Query.params()` expose the generated SQL/params for debugging.
+- `Query.select(columns)`
+- `Query.where(column, op, value)`
+- `Query.order_by(column, dir)` where `dir` is `asc`/`desc`
+- `Query.limit(n)` where `n >= 0`
+- `Query.one()`
+- `Query.all()`
+- `Query.exec()`
+- `Query.sql()` and `Query.params()` for inspection/debugging
 
 Parameter binding:
 
-* SQL uses positional `?` placeholders and a `List` of params.
-* Supported param types: `null`, `Int`, `Float`, `Bool`, `String`, `Bytes` (boxed/results are unwrapped).
-* `in` expects a non-empty list and expands to `IN (?, ?, ...)`.
+- SQL uses positional `?` placeholders with `List` params
+- supported param types: `null`, `Int`, `Float`, `Bool`, `String`, `Bytes`
+  (boxed/results are unwrapped)
+- `in` expects non-empty list and expands to `IN (?, ?, ...)`
 
 Identifier constraints:
 
-* Table/column names must be identifiers (`col` or `table.col`).
-* `where` operators: `=`, `!=`, `<`, `<=`, `>`, `>=`, `like`, `in` (case-insensitive).
-* `order_by` direction: `asc` or `desc`.
+- table/column names must be identifiers (`col` or `table.col`)
+- `where` operators: `=`, `!=`, `<`, `<=`, `>`, `>=`, `like`, `in` (case-insensitive)
+- `order_by` direction: `asc` or `desc`
 
 Value mapping:
 
-* `NULL` -> `null`
-* integers -> `Int`
-* reals -> `Float`
-* text -> `String`
-* blobs -> `Bytes`
+- `NULL` -> `null`
+- integers -> `Int`
+- reals -> `Float`
+- text -> `String`
+- blobs -> `Bytes`
 
 Connection pooling is not implemented.
 
----
+### Migrations
 
-## Migrations
+`migration <name>:` declares a migration block.
 
-`migration <name>:` declares a migration block. Run them with:
+Run migrations with:
 
-```
+```bash
 fusec --migrate path/to/file.fuse
 ```
 
 Rules:
 
-* Migrations are collected from all loaded modules.
-* They run in ascending order by migration name.
-* Applied migrations are tracked in `__fuse_migrations`.
-* Only “up” migrations exist today (no down/rollback).
-* Migrations are executed by the AST interpreter.
+- migrations are collected from all loaded modules
+- run order is ascending by migration name
+- applied migrations are tracked in `__fuse_migrations`
+- only up migrations exist today (no down/rollback)
+- migrations execute via AST interpreter
 
----
+### Tests
 
-## Tests
+`test "name":` declares a test block.
 
-`test "name":` declares a test block. Run tests with:
+Run tests with:
 
-```
+```bash
 fusec --test path/to/file.fuse
 ```
 
 Rules:
 
-* Tests are collected from all loaded modules.
-* They run in ascending order by test name.
-* Tests are executed by the AST interpreter.
-* Failures are reported and the process exits non-zero.
+- tests are collected from all loaded modules
+- run order is ascending by test name
+- tests execute via AST interpreter
+- failures report non-zero exit
 
----
+### Concurrency
 
-## Concurrency
-
-`spawn:` creates a task and returns `Task<T>` where `T` is the block result. Tasks execute eagerly
-today (no parallelism), but errors are captured and surfaced when awaited.
+`spawn:` creates a task and returns `Task<T>` where `T` is block result.
+Tasks execute eagerly today (no true parallelism), but errors are captured and surfaced on `await`.
 
 `await expr` waits on a task and yields its result.
 
-Tasks are currently opaque runtime values: there is no exposed task identity, status inspection,
-or lifecycle control beyond a minimal task API:
+Task API:
 
-* `task.id(t: Task<T>) -> Id` returns a stable task identity.
-* `task.done(t: Task<T>) -> Bool` returns completion state.
-* `task.cancel(t: Task<T>) -> Bool` attempts cancellation.
+- `task.id(t: Task<T>) -> Id`
+- `task.done(t: Task<T>) -> Bool`
+- `task.cancel(t: Task<T>) -> Bool`
 
-With today's eager execution model, spawned tasks complete immediately, so `task.done` is usually
-`true` and `task.cancel` usually returns `false`.
+With eager execution, spawned tasks usually complete immediately; `task.done` is usually `true`
+and `task.cancel` usually returns `false`.
 
 `box expr` creates a shared mutable cell. Boxed values are transparently dereferenced in most
-expressions; assigning to a boxed binding updates the shared cell. Passing a box into `spawn`
-shares state across tasks.
+expressions; assigning boxed bindings updates shared cell state. Passing a box into `spawn` shares state.
 
----
+### Loops
 
-## Loops
+- `for` iterates over `List<T>` and `Map<K, V>` values (map iteration yields values)
+- `break` exits nearest loop
+- `continue` skips to next iteration
 
-`for` iterates over `List<T>` values and `Map<K, V>` values (iterates the map values).
+### Indexing
 
-`break` exits the nearest loop, and `continue` skips to the next iteration.
-
----
-
-## Indexing
-
-`list[idx]` reads a list element. `idx` must be an `Int` and within bounds.
-Out-of-bounds indexes raise a runtime error (no auto-extend).
-
-`map[key]` reads a map element. Missing keys return `null`.
+- `list[idx]` reads list element; `idx` must be in-bounds `Int`
+- out-of-bounds list access raises runtime error
+- `map[key]` reads map element; missing key yields `null`
 
 Assignment targets allow:
 
-* `list[idx] = value` (bounds-checked).
-* `map[key] = value` (insert or overwrite).
+- `list[idx] = value` (bounds-checked)
+- `map[key] = value` (insert/overwrite)
 
-Optional access in assignment targets (e.g. `foo?.bar = x`, `items?[0] = x`) errors if the base is `null`.
+Optional access in assignment targets (for example `foo?.bar = x`, `items?[0] = x`) errors when base is `null`.
 
----
+### Ranges
 
-## Ranges
+`a..b` evaluates to inclusive numeric `List`.
 
-`a..b` evaluates to a `List` of numbers from `a` to `b` (inclusive).
+- only numeric bounds are allowed
+- if `a > b`, runtime error
+- float ranges step by `1.0` (for example `1.5..3.5` -> `[1.5, 2.5, 3.5]`)
 
-* Only numeric bounds are allowed.
-* If `a > b`, the range raises a runtime error.
-* Float ranges step by `1.0` (for example, `1.5..3.5` yields `[1.5, 2.5, 3.5]`).
+### Logging
 
----
-
-## Logging
-
-`log` is a lightweight builtin for runtime logging. It is intentionally minimal and shared by
-all runtime backends.
+`log` is a minimal runtime logging builtin shared by all backends.
 
 Usage:
 
-* `log("message")` logs at `INFO`.
-* `log("warn", "message")` logs at `WARN`.
-* If there are 2+ args and the first is a known level (`trace`, `debug`, `info`, `warn`, `error`),
-  it is treated as the level; the rest are stringified and joined with spaces.
-* If there is at least one extra argument after the message, `log` emits JSON (see below).
+- `log("message")` logs at `INFO`
+- `log("warn", "message")` logs at `WARN`
+- if there are 2+ args and first arg is known level (`trace`, `debug`, `info`, `warn`, `error`),
+  it is treated as level; the rest are stringified and joined with spaces
+- if there is at least one extra argument after the message, `log` emits JSON
 
-Output format:
+Output:
 
-* `[LEVEL] message` to stderr.
-* JSON logs are emitted as a single line to stderr.
+- `[LEVEL] message` to stderr
+- JSON logs are emitted as a single stderr line
 
 Filtering:
 
-* `FUSE_LOG` sets the minimum level (default `info`).
+- `FUSE_LOG` sets minimum level (default `info`)
 
 Structured logging:
 
-* `log("info", "message", data)` emits JSON:
+- `log("info", "message", data)` emits JSON:
   `{"level":"info","message":"message","data":<json>}`
-* If multiple data values are provided, `data` is a JSON array.
+- if multiple data values are provided, `data` is a JSON array

@@ -1,127 +1,88 @@
 # Scope + constraints
 
-This document reflects the current scope in this repo and what is planned next.
+This document defines project boundaries: what FUSE targets, what it intentionally does not target,
+and where near-term effort is going.
+
+Companion references for implementation work:
+
+- `fuse.md` gives the product-level overview
+- `fls.md` specifies language and static-semantics details
+- `runtime.md` specifies execution/runtime behavior
 
 ---
 
-## Target platforms
+## Constraints
 
-**Intended runtime targets:**
+### Target platforms
 
-* **Linux x64/arm64**
-* **macOS arm64/x64**
-* **Windows x64**
+Primary runtime targets:
 
-The current implementation is a Rust interpreter + VM, so it runs wherever the host binary runs.
+- Linux (`x64`, `arm64`)
+- macOS (`arm64`, `x64`)
+- Windows (`x64`)
 
-**Runtime modes (supported):**
+Current implementation is Rust-based and runs wherever the host toolchain binaries run.
 
-* **CLI apps**
-* **HTTP services** (builtin server/runtime)
+### Runtime modes
 
-**Later (non-MVP):**
+Supported:
 
-* WASM (nice, but not in MVP)
-* Embedded (no)
-* Mobile (no)
+- CLI apps
+- HTTP services (built-in server/runtime)
 
----
+Not in MVP target:
 
-## Host implementation language
+- WASM deployment
+- embedded targets
+- mobile targets
 
-**Rust**.
+### Host implementation language
 
-* Great for writing compilers/runtimes.
-* Safe concurrency.
-* Distributable single-binary toolchain.
-* Good ecosystem for parsing, LSP, and codegen.
+Rust is the implementation language for compiler/runtime/tooling.
 
----
+Rationale:
 
-## Execution model
-
-**Current:**
-
-* AST interpreter backend
-* Bytecode + VM backend
-* `native` backend path (`--backend native`) backed by compiled IR image + VM-compatible runtime semantics
-* Native includes a Cranelift JIT slice for direct function execution; backend remains under active iteration
-
-**Planned:**
-
-* True native codegen (Cranelift/LLVM TBD)
-* Faster `fuse run` loop from native machine-code artifacts (beyond current IR/native image cache)
-* Concurrency API maturity: task identity, cancellation hooks, and structured-concurrency semantics
+- safety and predictable performance
+- strong ecosystem for compiler + tooling infrastructure
+- distributable single-binary tooling path
 
 ---
 
-## Feature scope
+## Current boundary (what this repo is aiming to deliver)
 
-**Language core (implemented)**
+FUSE is currently scoped as a strict, typed language with integrated boundary/runtime tooling for:
 
-* `let` / `var`
-* `fn`
-* `type` structs
-* `without` type derivations
-* `enum`
-* `import` (namespaced module imports + named imports for local scope)
-* module-qualified type references in type positions (`Foo.User`)
-* `config`, `service`, `app`
-* `test` declarations
-* `if` / `else`, `match` (struct/enum/Option/Result patterns)
-* `for` / `while` / `break` / `continue`
-* string interpolation via `${expr}` (escape `$` as `\$`)
-* optionals (`T?`)
-* fallible results (`T!E` or `T!` with default error)
-* refined types on primitives (`String(1..80)`, `Int(0..130)`)
-* range expressions (`a..b`) produce numeric lists
-* generics for `List<T>`, `Map<K,V>`, `Result<T,E>`, `Option<T>`
-* `migration` declarations
-* `spawn` / `await` / `box` concurrency
-* HTML block call DSL (`div(): ...`) lowered to explicit attrs + `List<Html>` children for Html-returning calls
-* Html-block string-literal children auto-lower to `html.text(...)`
-* Html tag attribute shorthand (`div(class="hero")`) lowers to attrs maps (string literal values only)
+- language authoring (`fn`, `type`, `enum`, modules/imports, services/config/apps)
+- backend execution across AST/VM/native path with aligned semantics
+- runtime boundary handling (validation, JSON/config/CLI/HTTP binding, error mapping)
+- service-oriented package workflow (`fuse check/run/dev/test/build`)
 
-**Runtime / "boilerplate killer" (implemented)**
-
-* JSON encode/decode for structs/enums
-* validation derived from refined types
-* config loading (env > config file > defaults)
-* config/env/CLI parsing supports scalar types + `Option`, and structured values (`List`/`Map<String,_>`/struct/enum) via JSON text payloads
-* HTTP request binding + response encoding (JSON by default, `Html` routes emit `text/html`)
-* HTMX-friendly server-driven fragments via normal `Html` route returns (no dedicated HTMX runtime)
-* error JSON + HTTP status mapping
-* builtins: `print`, `log`, `db.exec/query/one/from`, `query.*`, `assert`, `env`, `asset`, `serve`, `task.id`, `task.done`, `task.cancel`, HTML tag functions (`html`, `head`, `div`, `meta`, ...), `html.text/raw/node/render`, `svg.inline`
-* SQLite-backed DB access + migrations via `fusec --migrate`
-* CLI arg binding for `fn main` when running with program args
-
-**Tooling (implemented)**
-
-* parser + semantic analysis
-* formatter via `fusec --fmt`
-* OpenAPI 3.0 generation via `fusec --openapi`
-* `fusec` flags: `--check`, `--run`, `--migrate`, `--test`, `--openapi`, `--backend` (`ast|vm|native`), `--app`
-* package manifest (`fuse.toml`) + `fuse dev/run/test/build`
-* dev server watch mode (`fuse dev`) with restart-on-change and HTML live-reload script injection
-* OpenAPI UI auto-serve in dev (`/docs` by default) and opt-in for `fuse run`
-* asset pipeline orchestration (`[assets]` + external `sass`) in `fuse build` and `fuse dev`
-* hashed static outputs (`[assets].hash = true`) + runtime `asset(path)` helper backed by `.fuse/assets-manifest.json`
-* external asset hooks (`[assets.hooks].before_build`) for pre-build tool integration
-* optional Vite integration (`[vite]`): dev unknown-route proxy + production `dist` static default
-* project-wide CLI ergonomics: `fuse check`/`fuse fmt` over the package module graph + file-aware multi-file parse/sema spans
-* dependency fetching + `fuse.lock`
-* IR cache for fast `fuse run` (`.fuse/build/program.ir`)
-* native image cache (`.fuse/build/program.native`) for `--backend native`
-* native perf smoke check (`scripts/native_perf_check.sh`, optional budgets)
-* LSP: diagnostics, formatting, go-to-definition, hover (Markdown docstrings), rename, workspace symbols, project-wide defs/refs, find references, call hierarchy, code actions (missing import, qualify symbol, organize imports), semantic tokens, inlay hints (types/params)
+Detailed behavior is intentionally kept out of this doc and lives in `fls.md` and `runtime.md`.
 
 ---
 
-## Non-goals (explicitly)
+## Priority roadmap
 
-* Full ORM / query language
-* Macro system
-* Metaprogramming beyond basic derives (at first)
-* Custom operator overloads
-* Multiple inheritance / traits at MVP (interfaces later, maybe)
-* "Everything async by default" (no, we like sleep)
+Near-term priorities:
+
+1. Native backend maturity and predictability
+2. Faster run/build iteration from cached/native artifacts
+3. Concurrency model evolution beyond eager task execution
+4. Tooling quality for multi-file projects (diagnostics, refactors, discoverability)
+
+Likely future candidates (not committed MVP scope):
+
+- richer interface/abstraction mechanisms
+- expanded database/runtime ergonomics
+- stronger packaging/dependency workflows
+
+---
+
+## Non-goals (explicit)
+
+- full ORM / heavyweight query language
+- macro system
+- broad metaprogramming beyond basic derivation forms
+- custom operator overloading
+- multiple inheritance at MVP
+- "everything async by default"

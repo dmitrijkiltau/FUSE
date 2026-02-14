@@ -1,7 +1,27 @@
-# Formal language specification (current parser)
+# Formal language specification (parser + semantic analysis)
 
-This document mirrors the parser + semantic analysis in `crates/fusec`. Where runtime support is
-incomplete, the notes call it out explicitly.
+This document tracks the parser and semantic analysis implemented in `crates/fusec`.
+It is the canonical source for lexical rules, grammar, AST structure, and static type semantics.
+
+Runtime behavior (validation timing, HTTP status mapping, config/CLI parsing, DB/task execution)
+is intentionally documented in `runtime.md`.
+
+---
+
+## Scope of this document
+
+Covered here:
+
+- lexing and indentation rules
+- grammar and parse-level sugar
+- AST model shape
+- static type model and module/import resolution
+
+Not covered here:
+
+- runtime value encoding/decoding behavior
+- runtime boundary binding rules
+- backend execution details and builtins behavior
 
 ---
 
@@ -9,59 +29,61 @@ incomplete, the notes call it out explicitly.
 
 ### Tokens
 
-* Identifiers: `[A-Za-z_][A-Za-z0-9_]*`
-* Keywords:
+- Identifiers: `[A-Za-z_][A-Za-z0-9_]*`
+- Keywords:
   `app, service, at, get, post, put, patch, delete, fn, type, enum, let, var, return, if, else,
   match, for, in, while, break, continue, import, from, as, config, migration, table, test,
   body, and, or, without, spawn, await, box`
-* Literals:
-  * integers (`123`)
-  * floats (`3.14`)
-  * strings (`"hello"`)
-  * booleans (`true`, `false`)
-  * `null`
-* Punctuation/operators:
+- Literals:
+  - integers (`123`)
+  - floats (`3.14`)
+  - strings (`"hello"`)
+  - booleans (`true`, `false`)
+  - `null`
+- Punctuation/operators:
   `(` `)` `[` `]` `{` `}` `,` `:` `.` `..` `->` `=>` `=` `==` `!=` `<` `<=` `>` `>=`
   `+` `-` `*` `/` `%` `?` `!` `??` `?!`
 
 ### Strings + interpolation
 
-* Double-quoted strings only (no multiline strings).
-* Escapes: `\n`, `\t`, `\r`, `\\`, `\"`. Unknown escapes pass through (`\$` produces `$`).
-* Interpolation: `${expr}` inside double quotes.
+- Double-quoted strings only (no multiline strings).
+- Escapes: `\n`, `\t`, `\r`, `\\`, `\"`. Unknown escapes pass through (`\$` produces `$`).
+- Interpolation: `${expr}` inside double quotes.
 
 ### Significant indentation
 
-FUSE uses Python-style block structure but with stricter rules.
+FUSE uses Python-style block structure with strict space rules.
 
-* Indentation is measured in **spaces only** (tabs are illegal).
-* Indent width is not fixed, but **must be consistent within a file**.
-* A block starts after `:` at end of line.
-* New indentation level must be strictly greater than previous.
-* Dedent closes blocks until indentation matches a previous level.
-* Empty lines ignored.
-* Lines inside parentheses/brackets/braces ignore indentation semantics (implicit line joining).
+- Indentation is measured in spaces only (tabs are illegal).
+- Indent width is not fixed, but must be consistent within a file.
+- A block starts after `:` at end of line.
+- New indentation level must be strictly greater than previous.
+- Dedent closes blocks until indentation matches a previous level.
+- Empty lines are ignored.
+- Lines inside parentheses/brackets/braces ignore indentation semantics (implicit line joining).
 
-**INDENT/DEDENT algorithm (formal-ish):**
+INDENT/DEDENT algorithm (formal-ish):
 
-* Maintain a stack `indents` starting with `[0]`
-* For each logical line not inside `()[]{}`:
-
-  * Let `col` be count of leading spaces
-  * If `col > top(indents)`: emit `INDENT`, push `col`
-  * If `col < top(indents)`: while `col < top(indents)` emit `DEDENT`, pop; error if `col != top(indents)` after popping
-  * Else: continue
+- Maintain a stack `indents` starting with `[0]`.
+- For each logical line not inside `()[]{}`:
+  - Let `col` be count of leading spaces.
+  - If `col > top(indents)`: emit `INDENT`, push `col`.
+  - If `col < top(indents)`: while `col < top(indents)` emit `DEDENT`, pop;
+    error if `col != top(indents)` after popping.
+  - Else: continue.
 
 ### Comments
 
-* Line comment: `# ...`
-* Doc comment: `## ...` attaches to the next declaration
+- Line comment: `# ...`
+- Doc comment: `## ...` attaches to the next declaration
+
+---
 
 ## Grammar (EBNF-ish)
 
 Top level:
 
-```
+```ebnf
 Program        := { TopDecl }
 
 TopDecl        := ImportDecl
@@ -136,7 +158,7 @@ TestDecl       := "test" StringLit ":" NEWLINE Block
 
 Types:
 
-```
+```ebnf
 TypeRef        := TypeAtom { "?" | "!" [ TypeRef ] }
 TypeAtom       := TypeName
                 | TypeName "<" TypeRef { "," TypeRef } ">"
@@ -146,7 +168,7 @@ TypeName       := Ident { "." Ident }
 
 Expressions:
 
-```
+```ebnf
 Expr           := CoalesceExpr
 CoalesceExpr   := OrExpr { "??" OrExpr }
 OrExpr         := AndExpr { "or" AndExpr }
@@ -191,7 +213,7 @@ HtmlChildStmt   := Expr NEWLINE
 
 Patterns:
 
-```
+```ebnf
 Pattern        := "_" | Literal | Ident [ "(" PatternArgs ")" ]
 PatternArgs    := Pattern { "," Pattern }
                | PatternField { "," PatternField }
@@ -200,222 +222,203 @@ PatternField   := Ident "=" Pattern
 
 Notes:
 
-* `StructLit` is chosen when an identifier call contains named arguments.
-* `spawn` is an expression whose block provides its own newline.
-* `HtmlBlockSuffix` is enabled only in statement value positions (`let`/`var` RHS, `return` expr,
+- `StructLit` is chosen when an identifier call contains named arguments.
+- `spawn` is an expression whose block provides its own newline.
+- `HtmlBlockSuffix` is enabled only in statement value positions (`let`/`var` RHS, `return` expr,
   assignment RHS, expression statements). It is parsed only for call expressions and lowered to a call
   with block-sugar args (`{}` attrs if omitted, plus `List<Html>` children).
-* HTML block children must be expression statements; bare string literals in Html blocks are lowered to
+- HTML block children must be expression statements; bare string literals in HTML blocks are lowered to
   `html.text(...)`, while non-literal expressions are not coerced.
-* Html tag calls accept attribute shorthand (`div(class="hero")`) with string literals only; it lowers
+- HTML tag calls accept attribute shorthand (`div(class="hero")`) with string literals only; it lowers
   to a standard attrs map argument (`div({"class": "hero"})`).
-* Named call args can use keyword names (`type="button"`, `for="x"`), and named args may omit commas
+- Named call args can use keyword names (`type="button"`, `for="x"`), and named args may omit commas
   when separated by layout (`button(class="x" id="y")` split across lines).
-* In Html attribute shorthand, `_` in attribute names is normalized to `-`
+- In HTML attribute shorthand, `_` in attribute names is normalized to `-`
   (`aria_label` -> `aria-label`, `data_view` -> `data-view`).
-* Postfix chains can continue across line breaks when the next token is a postfix continuation
+- Postfix chains can continue across line breaks when the next token is a postfix continuation
   (`(`, `.`, `[`, `?`, `?!`), so long call/member/index chains can be wrapped line-by-line.
-* Call argument lists allow line breaks and trailing commas before `)`.
-* Function parameter lists allow line breaks and a trailing comma before `)`.
-* `if` / `else if` / `else` bodies can use either a normal indented block or an inline single statement
+- Call argument lists allow line breaks and trailing commas before `)`.
+- Function parameter lists allow line breaks and a trailing comma before `)`.
+- `if` / `else if` / `else` bodies can use either a normal indented block or an inline single statement
   (`if flag: x = 1`).
-* `HtmlBlockSuffix` also supports an inline single child expression (`span(): "FUSE"`).
+- `HtmlBlockSuffix` also supports an inline single child expression (`span(): "FUSE"`).
 
 ---
 
 ## AST model (structural spec)
 
-The AST matches `crates/fusec/src/ast.rs`:
+The AST shape matches `crates/fusec/src/ast.rs`.
 
-**Program**
+Program:
 
-* `items: Vec<Item>`
+- `Program { items: Vec<Item> }`
 
-**Item**
+Items:
 
-* `Import(ImportDecl)`
-* `Type(TypeDecl)`
-* `Enum(EnumDecl)`
-* `Fn(FnDecl)`
-* `Service(ServiceDecl)`
-* `Config(ConfigDecl)`
-* `App(AppDecl)`
-* `Migration(MigrationDecl)`
-* `Test(TestDecl)`
+- `Import(ImportDecl)`
+- `Type(TypeDecl)`
+- `Enum(EnumDecl)`
+- `Fn(FnDecl)`
+- `Service(ServiceDecl)`
+- `Config(ConfigDecl)`
+- `App(AppDecl)`
+- `Migration(MigrationDecl)`
+- `Test(TestDecl)`
 
-**Decls**
+Declarations:
 
-* `TypeDecl { name, fields, derive, doc }`
-* `TypeDerive { base, without }`
-* `FieldDecl { name, ty, default }`
-* `EnumDecl { name, variants, doc }`
-* `EnumVariant { name, payload }`
-* `FnDecl { name, params, ret, body, doc }`
-* `ServiceDecl { name, base_path, routes, doc }`
-* `RouteDecl { verb, path, body_type, ret_type, body }`
-* `ConfigDecl { name, fields, doc }`
-* `ConfigField { name, ty, value }`
-* `AppDecl { name, body, doc }`
-* `MigrationDecl { header, body, doc }`
-* `TestDecl { name, body, doc }`
+- `TypeDecl { name, fields, derive, doc }`
+- `TypeDerive { base, without }`
+- `FieldDecl { name, ty, default }`
+- `EnumDecl { name, variants, doc }`
+- `EnumVariant { name, payload }`
+- `FnDecl { name, params, ret, body, doc }`
+- `ServiceDecl { name, base_path, routes, doc }`
+- `RouteDecl { verb, path, body_type, ret_type, body }`
+- `ConfigDecl { name, fields, doc }`
+- `ConfigField { name, ty, value }`
+- `AppDecl { name, body, doc }`
+- `MigrationDecl { header, body, doc }`
+- `TestDecl { name, body, doc }`
 
-**Stmt**
+Statements:
 
-* `Let { name, ty, expr }`
-* `Var { name, ty, expr }`
-* `Assign { target, expr }`
-* `Return { expr }`
-* `If { cond, then_block, else_if, else_block }`
-* `Match { expr, cases }`
-* `For { pat, iter, block }`
-* `While { cond, block }`
-* `Expr(expr)`
-* `Break`, `Continue`
+- `Let { name, ty, expr }`
+- `Var { name, ty, expr }`
+- `Assign { target, expr }`
+- `Return { expr }`
+- `If { cond, then_block, else_if, else_block }`
+- `Match { expr, cases }`
+- `For { pat, iter, block }`
+- `While { cond, block }`
+- `Expr(expr)`
+- `Break`
+- `Continue`
 
-**Expr**
+Expressions:
 
-* `Literal`
-* `Ident`
-* `Binary(op, left, right)`
-* `Unary(op, expr)`
-* `Call(callee, args)` where args are `CallArg { name, value, is_block_sugar }`
-* `Member(base, name)`
-* `OptionalMember(base, name)`
-* `StructLit(name, fields)`
-* `ListLit(items)`
-* `MapLit(pairs)`
-* `InterpString(parts)`
-* `Coalesce(left, right)`
-* `BangChain(expr, error?)`
-* `Spawn(block)`
-* `Await(expr)`
-* `Box(expr)`
+- `Literal`
+- `Ident`
+- `Binary(op, left, right)`
+- `Unary(op, expr)`
+- `Call(callee, args)` where args are `CallArg { name, value, is_block_sugar }`
+- `Member(base, name)`
+- `OptionalMember(base, name)`
+- `StructLit(name, fields)`
+- `ListLit(items)`
+- `MapLit(pairs)`
+- `InterpString(parts)`
+- `Coalesce(left, right)`
+- `BangChain(expr, error?)`
+- `Spawn(block)`
+- `Await(expr)`
+- `Box(expr)`
 
-**Pattern**
+Patterns:
 
-* `Wildcard`
-* `Literal`
-* `Ident`
-* `EnumVariant(name, args...)`
-* `Struct(name, fields...)`
+- `Wildcard`
+- `Literal`
+- `Ident`
+- `EnumVariant(name, args...)`
+- `Struct(name, fields...)`
 
 ---
 
-## Type system (current)
+## Type system (current static model)
 
 ### Base types
 
-* `Int`, `Float`, `Bool`, `String`, `Bytes`, `Html`
-* `Id` (non-empty string)
-* `Email` (string validated by a simple `user@host` check)
-* `Error` (built-in error base)
-* `List<T>`, `Map<K,V>`, `Option<T>`, `Result<T,E>`
-* Runtime constraint: `Map<K,V>` requires `K = String`.
-* Runtime detail: `Bytes` values are raw bytes; JSON/config/CLI boundaries use base64 text.
-* Runtime detail: `Html` values are runtime HTML trees built via tag builtins (`div`, `head`, `meta`, ...) and `html.*` builtins.
-* User-defined `type` and `enum` are nominal.
+- `Int`, `Float`, `Bool`, `String`, `Bytes`, `Html`
+- `Id`, `Email`
+- `Error`
+- `List<T>`, `Map<K,V>`, `Option<T>`, `Result<T,E>`
+- user-defined `type` and `enum` are nominal
 
 Reserved namespace:
 
-* `std.Error.*` is reserved for runtime error mapping/JSON rendering.
+- `std.Error.*` is reserved for standardized runtime error behavior.
 
 ### Optionals (`T?`)
 
-* `T?` is `Option<T>`.
-* `null` represents `None`.
-* `x ?? y` returns `x` unless it is `null`, otherwise `y`.
-* `x?.field` returns `null` if `x` is `null`, otherwise the field value.
-* `Some` / `None` are valid match patterns.
+- `T?` desugars to `Option<T>`.
+- `null` is the optional empty value.
+- `x ?? y` is null-coalescing.
+- `x?.field` and `x?[idx]` are optional access forms.
+- `Some` / `None` are valid match patterns.
 
 ### Results (`T!` / `T!E`)
 
-* `T!` means `Result<T, Error>`.
-* `T!E` means `Result<T, E>`.
-* `expr ?! err` converts `Option`/`Result` to a typed error.
-* `expr ?!` uses a default error for `Option` and propagates the existing error for `Result`.
+- `T!` desugars to `Result<T, Error>`.
+- `T!E` desugars to `Result<T, E>`.
+- `expr ?! err` applies bang-chain error conversion.
+- `expr ?!` uses default/propagated error behavior (runtime details in `runtime.md`).
 
 ### Refined types
 
-Refinements attach range predicates to a base type:
+Refinements attach predicates to primitive base types in type positions:
 
-* `String(1..80)` length constraint
-* `Int(0..130)` numeric range
-* `Float(0.0..1.0)` numeric range
+- `String(1..80)`
+- `Int(0..130)`
+- `Float(0.0..1.0)`
 
-Runtime expects range literals or a `..` expression inside the refinement. Other refinements
-(like regex) are not implemented yet.
+Current implementation supports range-based refinement forms.
 
 ### Type inference
 
-* Local inference for `let`/`var`.
-* Function parameter types are required.
-* Function return type is optional.
+- local inference for `let` / `var`
+- function parameter types are required
+- function return type is optional
 
 ### Structural vs nominal
 
-* User-defined `type` and `enum` are nominal.
-* Anonymous record types do not exist in the current grammar.
+- user-defined `type` and `enum` are nominal
+- anonymous record types are not part of the current grammar
 
 ### Type derivations (`without`)
 
-`type PublicUser = User without password, secret` creates a new nominal type by copying
-fields from the base `type` and removing the listed fields. Field types and defaults are
-preserved. Base types can be module-qualified (`Foo.User`). Unknown base types or fields
-are errors.
+`type PublicUser = User without password, secret` creates a new nominal type derived from `User`
+with listed fields removed. Field types/defaults are preserved for retained fields.
+
+Base types can be module-qualified (`Foo.User`). Unknown base types or fields are errors.
 
 ---
 
 ## Imports and modules (current)
 
-`import` declarations are resolved at load time. Module imports register a module alias for
-qualified access (`Foo.bar`, `Foo.Config.field`, `Foo.Enum.Variant`). Named imports bring specific
-items into the local scope.
+`import` declarations are resolved at load time.
+
+- Module imports register an alias for qualified access (`Foo.bar`, `Foo.Config.field`, `Foo.Enum.Variant`).
+- Named imports bring specific items into local scope.
 
 Resolution rules:
 
-* `import Foo` loads `Foo.fuse` from the current file's directory.
-* `import X from "path"` loads `path` relative to the current file; `.fuse` is added if missing.
-* `import {A, B} from "path"` loads the module and brings only `A` and `B` into scope.
+- `import Foo` loads `Foo.fuse` from the current file directory.
+- `import X from "path"` loads `path` relative to current file; `.fuse` is added if missing.
+- `import {A, B} from "path"` loads module and imports listed names into local scope.
 
 Notes:
 
-* Module imports do not add names to the local scope; use `Foo.bar` for access.
-* Named imports (`import {A, B} from "path"`) do not create a module alias.
-* Module-qualified access only exposes items declared in that module (named imports are local).
-* Module-qualified type references are allowed in type positions (`Foo.User`, `Foo.Config`).
-* Names are still globally unique across loaded modules.
-* Dependency modules are imported with `dep:` prefixes (for example, `dep:Auth/lib`).
+- module imports do not automatically import all members into local scope
+- named imports do not create a module alias
+- module-qualified type references are valid in type positions (`Foo.User`, `Foo.Config`)
+- dependency modules use `dep:` import paths (for example, `dep:Auth/lib`)
 
 ---
 
-## Services and binding (summary)
+## Services and declaration syntax
 
-Route syntax uses typed path params inside the string literal, for example:
-`get "/users/{id: Id}" -> User: ...`
+Route syntax uses typed path params inside the route string, for example:
+
+```fuse
+get "/users/{id: Id}" -> User:
+  ...
+```
 
 The `body` keyword introduces the request body type:
-`post "/users" body UserCreate -> User: ...`
 
-Runtime binding + error mapping are described in `runtime.md`.
+```fuse
+post "/users" body UserCreate -> User:
+  ...
+```
 
----
-
-## Runtime support notes (current)
-
-* `migration` blocks run via `fusec --migrate` (AST backend only).
-* `test` blocks run via `fusec --test` (AST backend only).
-* `for`/`while`/`break`/`continue` run in AST, VM, and native backends.
-* `spawn`/`await` run in AST, VM, and native backends (tasks execute eagerly today).
-* `Task<T>` values are opaque runtime values with a minimal task API.
-* Minimal task API is available: `task.id`, `task.done`, and `task.cancel`.
-* With eager execution today, tasks are usually already done and `task.cancel` usually returns `false`.
-* `box` creates a shared cell; boxed values are transparently dereferenced in most expressions.
-* Assignment targets include identifiers, struct fields, and list/map indexing; optional access in assignments errors on null.
-* Enum variants only support tuple payloads (no named payload fields).
-* `a..b` yields a numeric list (inclusive) when evaluated; descending ranges error.
-* DB builtins support parameter binding and a minimal query builder (`db.from` / `query.*`).
-* HTML tag builtins are available (`html`, `head`, `body`, `div`, `meta`, ...), plus low-level `html.text`, `html.raw`, `html.node`, `html.render`.
-* `asset(path)` resolves logical static paths to public URLs (including hashed outputs when configured).
-* `svg.inline(path)` loads raw SVG as `Html` from `assets/svg` (or `FUSE_SVG_DIR`).
-* HTTP handlers returning `Html` are rendered with `Content-Type: text/html; charset=utf-8`.
-* `native` targets VM-compatible runtime semantics and includes a Cranelift JIT fast-path for direct function execution.
+Binding/encoding/error semantics for routes are runtime behavior and are defined in `runtime.md`.
