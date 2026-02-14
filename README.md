@@ -110,12 +110,12 @@ Build distributable binaries:
 - `crates/fusec` - compiler, parser/sema, VM, native runtime/JIT, LSP
 - `crates/fuse` - package-oriented CLI wrapper around `fusec`
 - `examples/` - sample programs/packages
-- `docs/` - language/runtime/scope documentation
+- `docs/` - docs site package (UI, assets, and docs app)
 - `tools/vscode` - VS Code extension assets
 
 ## Specs
 
-- `docs/fuse.md` - product overview + package tooling
-- `docs/fls.md` - formal language specification
-- `docs/runtime.md` - runtime semantics and builtin behavior
-- `docs/scope.md` - implemented scope and non-goals
+- `fuse.md` - project overview + package tooling
+- `fls.md` - formal language specification
+- `runtime.md` - runtime semantics and builtin behavior
+- `scope.md` - project scope and non-goals

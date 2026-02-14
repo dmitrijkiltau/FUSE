@@ -28,8 +28,8 @@ service DocsApi at "/":
 
   get "/api/specs" -> List<Map<String, String>>:
     return [
-      {"slug": "fuse", "label": "Language", "file": "fuse.md"},
-      {"slug": "fls", "label": "Specification", "file": "fls.md"},
-      {"slug": "runtime", "label": "Runtime", "file": "runtime.md"},
-      {"slug": "scope", "label": "Scope", "file": "scope.md"}
+      {"slug": "fuse", "label": "Language", "file": "site/specs/fuse.md"},
+      {"slug": "fls", "label": "Specification", "file": "site/specs/fls.md"},
+      {"slug": "runtime", "label": "Runtime", "file": "site/specs/runtime.md"},
+      {"slug": "scope", "label": "Scope", "file": "site/specs/scope.md"}
     ]

@@ -10,9 +10,9 @@
 
 - Keep language specs/docs in sync when semantics or tooling change:
   - `README.md`
-  - `docs/fuse.md`
-  - `docs/fls.md`
-  - `docs/scope.md`
-  - `docs/runtime.md`
+  - `fuse.md`
+  - `fls.md`
+  - `scope.md`
+  - `runtime.md`
 - Parser fixtures live in `crates/fusec/tests/parser_fixtures.rs`.
 - Semantic analysis golden tests live in `crates/fusec/tests/sema_golden.rs`.

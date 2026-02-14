@@ -316,10 +316,10 @@ function generateToc(container, tocEl) {
 // Load and render markdown spec
 async function loadSpec(slug, container) {
   const specMap = {
-    fuse: "/fuse.md",
-    fls: "/fls.md",
-    runtime: "/runtime.md",
-    scope: "/scope.md",
+    fuse: "/site/specs/fuse.md",
+    fls: "/site/specs/fls.md",
+    runtime: "/site/specs/runtime.md",
+    scope: "/site/specs/scope.md",
   };
 
   const path = specMap[slug];
