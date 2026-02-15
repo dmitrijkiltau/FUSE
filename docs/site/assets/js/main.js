@@ -144,10 +144,7 @@ function transformSeeAlso(container) {
 // Transform .md links to docs site URLs
 function transformMdLinks(container) {
   const specRoutes = {
-    "fuse.md": "/specs/fuse",
-    "fls.md": "/specs/fls",
-    "runtime.md": "/specs/runtime",
-    "scope.md": "/specs/scope",
+    "reference.md": "/specs/reference",
   };
 
   for (const link of container.querySelectorAll("a[href]")) {
@@ -316,10 +313,7 @@ function generateToc(container, tocEl) {
 // Load and render markdown spec
 async function loadSpec(slug, container) {
   const specMap = {
-    fuse: "/site/specs/fuse.md",
-    fls: "/site/specs/fls.md",
-    runtime: "/site/specs/runtime.md",
-    scope: "/site/specs/scope.md",
+    reference: "/site/specs/reference.md",
   };
 
   const path = specMap[slug];

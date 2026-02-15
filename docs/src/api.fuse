@@ -5,18 +5,9 @@ service DocsApi at "/":
   get "/" -> Html:
     return Components.home_page()
 
-  # Spec pages - each spec has its own route
-  get "/specs/fuse" -> Html:
-    return Components.spec_page("fuse", "Start Here")
-
-  get "/specs/fls" -> Html:
-    return Components.spec_page("fls", "Language Tour")
-
-  get "/specs/runtime" -> Html:
-    return Components.spec_page("runtime", "Build + Operate")
-
-  get "/specs/scope" -> Html:
-    return Components.spec_page("scope", "Limits + Roadmap")
+  # Canonical reference page
+  get "/specs/reference" -> Html:
+    return Components.spec_page("reference", "Developer Reference")
 
   # OpenAPI page
   get "/openapi" -> Html:
@@ -28,8 +19,5 @@ service DocsApi at "/":
 
   get "/api/specs" -> List<Map<String, String>>:
     return [
-      {"slug": "fuse", "label": "Start Here", "file": "site/specs/fuse.md"},
-      {"slug": "fls", "label": "Language Tour", "file": "site/specs/fls.md"},
-      {"slug": "runtime", "label": "Build + Operate", "file": "site/specs/runtime.md"},
-      {"slug": "scope", "label": "Limits + Roadmap", "file": "site/specs/scope.md"}
+      {"slug": "reference", "label": "Developer Reference", "file": "site/specs/reference.md"}
     ]

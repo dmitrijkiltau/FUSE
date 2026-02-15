@@ -2,10 +2,7 @@ import { marked } from "../libs/marked_16.3.0_esm.min.js";
 import defineFuseLanguage from "./highlight-fuse.js";
 
 const SPECS = [
-  { id: "fuse", title: "Start Here", path: "/site/specs/fuse.md" },
-  { id: "fls", title: "Language Tour", path: "/site/specs/fls.md" },
-  { id: "runtime", title: "Build + Operate", path: "/site/specs/runtime.md" },
-  { id: "scope", title: "Limits + Roadmap", path: "/site/specs/scope.md" },
+  { id: "reference", title: "Developer Reference", path: "/site/specs/reference.md" },
 ];
 
 let highlightInitialized = false;
