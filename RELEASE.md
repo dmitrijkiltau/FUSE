@@ -26,9 +26,10 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
 2. Update `CHANGELOG.md`:
    - Move relevant items from `Unreleased` into the new version section.
 3. Run smoke checks:
+   - `./scripts/authority_parity.sh` (explicit semantic-authority gate)
    - `./scripts/release_smoke.sh`
-   - Covers `fusec` + `fuse` test suites, release-mode compile checks, package build cache checks,
-     and AST/VM/native backend smoke runs.
+   - Covers authority/parity gates, `fusec` + `fuse` test suites, release-mode compile checks,
+     package build cache checks, and AST/VM/native backend smoke runs.
 4. Verify package UX manually (optional but recommended):
    - `./scripts/fuse build`
    - `./scripts/fuse run examples/project_demo.fuse`

@@ -43,6 +43,14 @@ This plan assumes breaking changes are acceptable.
     - `validate_value`
   - Interpreter, VM, Native VM, and ConfigEvaluator now delegate these paths to shared runtime-types logic.
   - Native JIT validation now delegates to shared runtime-types logic via a host adapter.
+- M4.1 backend-local helper cleanup: completed.
+  - Removed now-unused backend-local decode/validate/env helper wrappers.
+  - Kept backend execution paths on shared runtime-types semantics.
+- M5 documentation and CI/release gates: completed.
+  - Added explicit semantic-authority contract sections in `fuse.md` and `runtime.md`.
+  - Added `scripts/authority_parity.sh` semantic-authority gate.
+  - Wired `scripts/release_smoke.sh` to run authority gate before broader smoke checks.
+  - Documented gate usage in `README.md` and `RELEASE.md`.
 
 ## Findings (Current Drift)
 
@@ -50,11 +58,9 @@ This plan assumes breaking changes are acceptable.
    - Parse/decode/validate behavior is now delegated by AST/VM/Native/ConfigEvaluator/JIT validation.
    - Risk of semantic drift in those paths is substantially reduced.
 
-2. Cleanup follow-up remains.
-   - Some backend-local helper methods are now dead code (legacy wrappers no longer on hot paths).
-   - Recommended next pass:
-     - remove unused legacy decode/validate/env helper methods from backends,
-     - keep only wrappers + shared runtime-types authority.
+2. Remaining operational risk is process, not architecture.
+   - Semantic drift is now gated by `scripts/authority_parity.sh`.
+   - Releases are protected by `scripts/release_smoke.sh` running that gate first.
 
 ## Target Architecture
 

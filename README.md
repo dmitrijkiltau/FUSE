@@ -95,6 +95,12 @@ Default test command:
 ./scripts/cargo_env.sh cargo test -p fusec
 ```
 
+Run AST semantic authority/parity gates:
+
+```
+./scripts/authority_parity.sh
+```
+
 Run all `fuse` CLI tests:
 
 ```
@@ -106,6 +112,8 @@ Release smoke checks:
 ```
 ./scripts/release_smoke.sh
 ```
+
+`release_smoke.sh` runs `authority_parity.sh` first and fails on any AST/VM/native semantic parity regression.
 
 Build distributable binaries:
 

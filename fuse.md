@@ -105,22 +105,26 @@ See also: [Package workflow (summary)](#package-workflow-summary), [Runtime sema
 
 ---
 
-## Semantic pipeline
+## Semantic authority contract
 
 FUSE follows a single semantic authority model:
 
-- AST defines language semantics.
-- VM and native are execution strategies.
+- parser + frontend canonicalization define language semantics
+- canonical AST is the semantic program
+- VM and native are execution strategies over canonical forms
+- backend-specific reinterpretation of source syntax is a correctness bug
 
 Pipeline:
 
 1. source parses into AST
-2. syntax sugar is lowered on AST forms (for example HTML block children and string-child lowering)
-3. VM/native lower from that canonical AST-derived representation
-4. backends execute equivalent semantics
+2. frontend canonicalization lowers syntax sugar on AST forms (for example HTML block children and string-child lowering)
+3. semantic checks run on canonical AST
+4. VM/native lower or execute canonical forms with equivalent behavior
 
-This is why backend parity tests are treated as release gates: no backend is allowed to reinterpret
-language rules differently.
+Authority/parity release gates:
+
+- `./scripts/authority_parity.sh` (explicit semantic-authority suite)
+- `./scripts/release_smoke.sh` (includes authority parity + full smoke checks)
 
 See also: [Backends](runtime.md#backends), [Runtime surface and ownership](runtime.md#runtime-surface-and-ownership).
 
