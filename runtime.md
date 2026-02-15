@@ -38,11 +38,13 @@ See also: [Formal language specification](fls.md), [Scope + constraints](scope.m
 
 Most runtime behavior is shared across backends.
 
-Semantic authority rule:
+Semantic authority contract:
 
-- AST forms and AST-level lowering define language semantics.
-- VM and native are execution strategies over canonical lowered forms.
-- backend-specific reinterpretation of syntax is considered a bug.
+- parser + frontend canonicalization define language semantics
+- canonical AST/lowered forms are the semantic program seen by all backends
+- VM and native are execution strategies over that canonical program
+- backend-specific reinterpretation of source syntax is considered a bug
+- shared runtime semantics (call binding, decode/validate/JSON conversion) are centralized and consumed by AST/VM/native paths
 
 Canonical relationship:
 

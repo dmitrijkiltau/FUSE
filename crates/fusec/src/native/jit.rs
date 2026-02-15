@@ -24,7 +24,7 @@ use crate::refinement::{
     NumberLiteral, RefinementConstraint, base_is_string_like, parse_constraints,
 };
 
-use fuse_rt::{bytes as rt_bytes, config as rt_config, json as rt_json, validate as rt_validate};
+use fuse_rt::{config as rt_config, json as rt_json, validate as rt_validate};
 
 use super::NativeVm;
 
@@ -952,153 +952,19 @@ fn min_log_level() -> LogLevel {
 }
 
 fn value_to_json(value: &Value) -> rt_json::JsonValue {
-    match value.unboxed() {
-        Value::Unit => rt_json::JsonValue::Null,
-        Value::Int(v) => rt_json::JsonValue::Number(v as f64),
-        Value::Float(v) => rt_json::JsonValue::Number(v),
-        Value::Bool(v) => rt_json::JsonValue::Bool(v),
-        Value::String(v) => rt_json::JsonValue::String(v.clone()),
-        Value::Bytes(v) => rt_json::JsonValue::String(rt_bytes::encode_base64(&v)),
-        Value::Html(node) => rt_json::JsonValue::String(node.render_to_string()),
-        Value::Null => rt_json::JsonValue::Null,
-        Value::List(items) => {
-            rt_json::JsonValue::Array(items.iter().map(|v| value_to_json(v)).collect())
-        }
-        Value::Map(items) => {
-            let mut out = BTreeMap::new();
-            for (key, value) in items {
-                out.insert(key.clone(), value_to_json(&value));
-            }
-            rt_json::JsonValue::Object(out)
-        }
-        Value::Boxed(_) => rt_json::JsonValue::String("<box>".to_string()),
-        Value::Query(_) => rt_json::JsonValue::String("<query>".to_string()),
-        Value::Task(_) => rt_json::JsonValue::String("<task>".to_string()),
-        Value::Iterator(_) => rt_json::JsonValue::String("<iterator>".to_string()),
-        Value::Struct { fields, .. } => {
-            let mut out = BTreeMap::new();
-            for (key, value) in fields {
-                out.insert(key.clone(), value_to_json(&value));
-            }
-            rt_json::JsonValue::Object(out)
-        }
-        Value::Enum {
-            variant, payload, ..
-        } => {
-            let mut out = BTreeMap::new();
-            out.insert(
-                "type".to_string(),
-                rt_json::JsonValue::String(variant.clone()),
-            );
-            match payload.len() {
-                0 => {}
-                1 => {
-                    out.insert("data".to_string(), value_to_json(&payload[0]));
-                }
-                _ => {
-                    let items = payload.iter().map(|v| value_to_json(v)).collect();
-                    out.insert("data".to_string(), rt_json::JsonValue::Array(items));
-                }
-            }
-            rt_json::JsonValue::Object(out)
-        }
-        Value::ResultOk(value) => value_to_json(value.as_ref()),
-        Value::ResultErr(value) => value_to_json(value.as_ref()),
-        Value::Config(name) => rt_json::JsonValue::String(name.clone()),
-        Value::Function(func) => {
-            rt_json::JsonValue::String(format!("{}::{}", func.module_id, func.name))
-        }
-        Value::Builtin(name) => rt_json::JsonValue::String(name.clone()),
-        Value::EnumCtor { name, variant } => {
-            rt_json::JsonValue::String(format!("{name}.{variant}"))
-        }
-    }
+    crate::runtime_types::value_to_json(value)
 }
 
 fn json_to_value(json: &rt_json::JsonValue) -> Value {
-    match json {
-        rt_json::JsonValue::Null => Value::Null,
-        rt_json::JsonValue::Bool(v) => Value::Bool(*v),
-        rt_json::JsonValue::Number(n) => {
-            if n.fract() == 0.0 {
-                Value::Int(*n as i64)
-            } else {
-                Value::Float(*n)
-            }
-        }
-        rt_json::JsonValue::String(v) => Value::String(v.clone()),
-        rt_json::JsonValue::Array(items) => {
-            Value::List(items.iter().map(|item| json_to_value(item)).collect())
-        }
-        rt_json::JsonValue::Object(items) => {
-            let mut out = HashMap::new();
-            for (key, value) in items {
-                out.insert(key.clone(), json_to_value(value));
-            }
-            Value::Map(out)
-        }
-    }
-}
-
-fn split_type_name(name: &str) -> (Option<&str>, &str) {
-    if name.starts_with("std.") {
-        return (None, name);
-    }
-    match name.split_once('.') {
-        Some((module, rest)) if !module.is_empty() && !rest.is_empty() => (Some(module), rest),
-        _ => (None, name),
-    }
+    crate::runtime_types::json_to_value(json)
 }
 
 fn value_type_name(value: &Value) -> String {
-    match value.unboxed() {
-        Value::Unit => "Unit".to_string(),
-        Value::Int(_) => "Int".to_string(),
-        Value::Float(_) => "Float".to_string(),
-        Value::Bool(_) => "Bool".to_string(),
-        Value::String(_) => "String".to_string(),
-        Value::Bytes(_) => "Bytes".to_string(),
-        Value::Html(_) => "Html".to_string(),
-        Value::Null => "Null".to_string(),
-        Value::List(_) => "List".to_string(),
-        Value::Map(_) => "Map".to_string(),
-        Value::Task(_) => "Task".to_string(),
-        Value::Iterator(_) => "Iterator".to_string(),
-        Value::Struct { name, .. } => name.clone(),
-        Value::Enum { name, .. } => name.clone(),
-        Value::EnumCtor { name, .. } => name.clone(),
-        Value::ResultOk(_) | Value::ResultErr(_) => "Result".to_string(),
-        Value::Config(_) => "Config".to_string(),
-        Value::Function(_) => "Function".to_string(),
-        Value::Builtin(_) => "Builtin".to_string(),
-        Value::Boxed(_) => "Box".to_string(),
-        Value::Query(_) => "Query".to_string(),
-    }
-}
-
-fn validation_field_value(path: &str, code: &str, message: impl Into<String>) -> Value {
-    let mut fields = HashMap::new();
-    fields.insert("path".to_string(), Value::String(path.to_string()));
-    fields.insert("code".to_string(), Value::String(code.to_string()));
-    fields.insert("message".to_string(), Value::String(message.into()));
-    Value::Struct {
-        name: "ValidationField".to_string(),
-        fields,
-    }
+    crate::runtime_types::value_type_name(value)
 }
 
 fn validation_error_value(path: &str, code: &str, message: impl Into<String>) -> Value {
-    let field = validation_field_value(path, code, message);
-    let mut fields = HashMap::new();
-    fields.insert(
-        "message".to_string(),
-        Value::String("validation failed".to_string()),
-    );
-    fields.insert("fields".to_string(), Value::List(vec![field]));
-    Value::Struct {
-        name: "std.Error.Validation".to_string(),
-        fields,
-    }
+    crate::runtime_types::validation_error_value(path, code, message)
 }
 
 enum ValidateResult {
@@ -1107,230 +973,72 @@ enum ValidateResult {
     Runtime(String),
 }
 
-fn validate_value(value: &Value, ty: &TypeRef, path: &str) -> ValidateResult {
-    let value = value.unboxed();
-    match &ty.kind {
-        TypeRefKind::Optional(inner) => {
-            if matches!(value, Value::Null) {
-                ValidateResult::Ok
-            } else {
-                validate_value(&value, inner, path)
-            }
+struct JitValidateHost;
+
+impl crate::runtime_types::RuntimeTypeHost for JitValidateHost {
+    type Error = ValidateResult;
+
+    fn runtime_error(&self, message: String) -> Self::Error {
+        ValidateResult::Runtime(message)
+    }
+
+    fn validation_error(&self, path: &str, code: &str, message: String) -> Self::Error {
+        ValidateResult::Error(validation_error_value(path, code, message))
+    }
+
+    fn has_struct_type(&self, _name: &str) -> bool {
+        false
+    }
+
+    fn has_enum_type(&self, _name: &str) -> bool {
+        false
+    }
+
+    fn decode_struct_type_json(
+        &mut self,
+        _json: &rt_json::JsonValue,
+        _name: &str,
+        path: &str,
+    ) -> Result<Value, Self::Error> {
+        Err(self.validation_error(
+            path,
+            "invalid_value",
+            "JIT JSON struct decode is not supported in this context".to_string(),
+        ))
+    }
+
+    fn decode_enum_type_json(
+        &mut self,
+        _json: &rt_json::JsonValue,
+        _name: &str,
+        path: &str,
+    ) -> Result<Value, Self::Error> {
+        Err(self.validation_error(
+            path,
+            "invalid_value",
+            "JIT JSON enum decode is not supported in this context".to_string(),
+        ))
+    }
+
+    fn check_refined_value(
+        &mut self,
+        value: &Value,
+        base: &str,
+        args: &[Expr],
+        path: &str,
+    ) -> Result<(), Self::Error> {
+        match check_refined(value, base, args, path) {
+            ValidateResult::Ok => Ok(()),
+            other => Err(other),
         }
-        TypeRefKind::Result { ok, err } => match value {
-            Value::ResultOk(inner) => validate_value(&inner, ok, path),
-            Value::ResultErr(inner) => {
-                if let Some(err_ty) = err {
-                    validate_value(&inner, err_ty, path)
-                } else {
-                    ValidateResult::Ok
-                }
-            }
-            _ => ValidateResult::Error(validation_error_value(
-                path,
-                "type_mismatch",
-                format!("expected Result, got {}", value_type_name(&value)),
-            )),
-        },
-        TypeRefKind::Refined { base, args } => match validate_simple(&value, &base.name, path) {
-            ValidateResult::Ok => check_refined(&value, &base.name, args, path),
-            other => other,
-        },
-        TypeRefKind::Simple(ident) => validate_simple(&value, &ident.name, path),
-        TypeRefKind::Generic { base, args } => match base.name.as_str() {
-            "Option" => {
-                if args.len() != 1 {
-                    return ValidateResult::Runtime("Option expects 1 type argument".to_string());
-                }
-                if matches!(value, Value::Null) {
-                    ValidateResult::Ok
-                } else {
-                    validate_value(&value, &args[0], path)
-                }
-            }
-            "Result" => {
-                if args.len() != 2 {
-                    return ValidateResult::Runtime("Result expects 2 type arguments".to_string());
-                }
-                match value {
-                    Value::ResultOk(inner) => validate_value(&inner, &args[0], path),
-                    Value::ResultErr(inner) => validate_value(&inner, &args[1], path),
-                    _ => ValidateResult::Error(validation_error_value(
-                        path,
-                        "type_mismatch",
-                        format!("expected Result, got {}", value_type_name(&value)),
-                    )),
-                }
-            }
-            "List" => {
-                if args.len() != 1 {
-                    return ValidateResult::Runtime("List expects 1 type argument".to_string());
-                }
-                match value {
-                    Value::List(items) => {
-                        for (idx, item) in items.iter().enumerate() {
-                            let item_path = format!("{path}[{idx}]");
-                            match validate_value(item, &args[0], &item_path) {
-                                ValidateResult::Ok => {}
-                                other => return other,
-                            }
-                        }
-                        ValidateResult::Ok
-                    }
-                    _ => ValidateResult::Error(validation_error_value(
-                        path,
-                        "type_mismatch",
-                        format!("expected List, got {}", value_type_name(&value)),
-                    )),
-                }
-            }
-            "Map" => {
-                if args.len() != 2 {
-                    return ValidateResult::Runtime("Map expects 2 type arguments".to_string());
-                }
-                match value {
-                    Value::Map(items) => {
-                        for (key, val) in items.iter() {
-                            let key_value = Value::String(key.clone());
-                            let key_path = format!("{path}.{key}");
-                            match validate_value(&key_value, &args[0], &key_path) {
-                                ValidateResult::Ok => {}
-                                other => return other,
-                            }
-                            match validate_value(val, &args[1], &key_path) {
-                                ValidateResult::Ok => {}
-                                other => return other,
-                            }
-                        }
-                        ValidateResult::Ok
-                    }
-                    _ => ValidateResult::Error(validation_error_value(
-                        path,
-                        "type_mismatch",
-                        format!("expected Map, got {}", value_type_name(&value)),
-                    )),
-                }
-            }
-            _ => ValidateResult::Runtime(format!("validation not supported for {}", base.name)),
-        },
     }
 }
 
-fn validate_simple(value: &Value, name: &str, path: &str) -> ValidateResult {
-    let value = value.unboxed();
-    let type_name = value_type_name(&value);
-    let (module, simple_name) = split_type_name(name);
-    if module.is_none() {
-        match simple_name {
-            "Int" => {
-                if matches!(value, Value::Int(_)) {
-                    return ValidateResult::Ok;
-                }
-                return ValidateResult::Error(validation_error_value(
-                    path,
-                    "type_mismatch",
-                    format!("expected Int, got {type_name}"),
-                ));
-            }
-            "Float" => {
-                if matches!(value, Value::Float(_)) {
-                    return ValidateResult::Ok;
-                }
-                return ValidateResult::Error(validation_error_value(
-                    path,
-                    "type_mismatch",
-                    format!("expected Float, got {type_name}"),
-                ));
-            }
-            "Bool" => {
-                if matches!(value, Value::Bool(_)) {
-                    return ValidateResult::Ok;
-                }
-                return ValidateResult::Error(validation_error_value(
-                    path,
-                    "type_mismatch",
-                    format!("expected Bool, got {type_name}"),
-                ));
-            }
-            "String" => {
-                if matches!(value, Value::String(_)) {
-                    return ValidateResult::Ok;
-                }
-                return ValidateResult::Error(validation_error_value(
-                    path,
-                    "type_mismatch",
-                    format!("expected String, got {type_name}"),
-                ));
-            }
-            "Id" => match value {
-                Value::String(s) if !s.is_empty() => return ValidateResult::Ok,
-                Value::String(_) => {
-                    return ValidateResult::Error(validation_error_value(
-                        path,
-                        "invalid_value",
-                        "expected non-empty Id".to_string(),
-                    ));
-                }
-                _ => {
-                    return ValidateResult::Error(validation_error_value(
-                        path,
-                        "type_mismatch",
-                        format!("expected Id, got {type_name}"),
-                    ));
-                }
-            },
-            "Email" => match value {
-                Value::String(s) if rt_validate::is_email(&s) => return ValidateResult::Ok,
-                Value::String(_) => {
-                    return ValidateResult::Error(validation_error_value(
-                        path,
-                        "invalid_value",
-                        "invalid email address".to_string(),
-                    ));
-                }
-                _ => {
-                    return ValidateResult::Error(validation_error_value(
-                        path,
-                        "type_mismatch",
-                        format!("expected Email, got {type_name}"),
-                    ));
-                }
-            },
-            "Bytes" => {
-                if matches!(value, Value::Bytes(_)) {
-                    return ValidateResult::Ok;
-                }
-                return ValidateResult::Error(validation_error_value(
-                    path,
-                    "type_mismatch",
-                    format!("expected Bytes, got {type_name}"),
-                ));
-            }
-            "Html" => {
-                if matches!(value, Value::Html(_)) {
-                    return ValidateResult::Ok;
-                }
-                return ValidateResult::Error(validation_error_value(
-                    path,
-                    "type_mismatch",
-                    format!("expected Html, got {type_name}"),
-                ));
-            }
-            _ => {}
-        }
-    }
-    match value {
-        Value::Struct {
-            name: struct_name, ..
-        } if struct_name == simple_name => ValidateResult::Ok,
-        Value::Enum {
-            name: enum_name, ..
-        } if enum_name == simple_name => ValidateResult::Ok,
-        _ => ValidateResult::Error(validation_error_value(
-            path,
-            "type_mismatch",
-            format!("expected {name}, got {type_name}"),
-        )),
+fn validate_value(value: &Value, ty: &TypeRef, path: &str) -> ValidateResult {
+    let mut host = JitValidateHost;
+    match crate::runtime_types::validate_value(&mut host, value, ty, path) {
+        Ok(()) => ValidateResult::Ok,
+        Err(err) => err,
     }
 }
 

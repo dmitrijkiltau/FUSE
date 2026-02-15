@@ -5,6 +5,8 @@ use crate::ast::{
     StmtKind,
 };
 use crate::diag::Diagnostics;
+use crate::frontend::html_shorthand::{CanonicalizationPhase, validate_named_args_for_phase};
+use crate::frontend::html_tag_builtin::should_use_html_tag_builtin;
 use crate::html_tags::{self, HtmlTagKind};
 use crate::loader::{ModuleId, ModuleLink, ModuleMap};
 use crate::refinement::{
@@ -2064,16 +2066,13 @@ impl<'a> Checker<'a> {
     }
 
     fn should_use_html_tag_builtin(&mut self, name: &str) -> bool {
-        if html_tags::tag_kind(name).is_none() {
-            return false;
-        }
-        if name != "html" && self.env.lookup(name).is_some() {
-            return false;
-        }
-        if self.import_items.contains_key(name) {
-            return false;
-        }
-        self.fn_sig_in(self.module_id, name).is_none()
+        should_use_html_tag_builtin(
+            name,
+            name != "html" && self.env.lookup(name).is_some(),
+            self.fn_sig_in(self.module_id, name).is_some(),
+            self.config_info(name).is_some(),
+            self.import_items.contains_key(name),
+        )
     }
 
     fn check_html_tag_call(&mut self, span: Span, tag: &str, args: &[CallArg]) -> Ty {
@@ -2082,40 +2081,11 @@ impl<'a> Checker<'a> {
         };
         let has_named = args.iter().any(|arg| arg.name.is_some());
         if has_named {
-            let mut child_arg: Option<&CallArg> = None;
             for arg in args {
-                if arg.name.is_some() {
-                    if !matches!(&arg.value.kind, ExprKind::Literal(Literal::String(_))) {
-                        self.diags.error(
-                            arg.span,
-                            "html attribute shorthand only supports string literals",
-                        );
-                    }
-                    let _ = self.check_expr(&arg.value);
-                    continue;
-                }
-                if arg.is_block_sugar && child_arg.is_none() {
-                    child_arg = Some(arg);
-                    continue;
-                }
-                self.diags.error(
-                    arg.span,
-                    "cannot mix html attribute shorthand with positional arguments",
-                );
                 let _ = self.check_expr(&arg.value);
             }
-            if let Some(children) = child_arg {
-                if matches!(kind, HtmlTagKind::Void) {
-                    self.diags.error(
-                        children.span,
-                        format!("void html tag {} does not accept children", tag),
-                    );
-                }
-                let children_ty = self.check_expr(&children.value);
-                let expected_children = Ty::List(Box::new(Ty::Html));
-                if !self.is_assignable(&children_ty, &expected_children) {
-                    self.type_mismatch(children.span, &expected_children, &children_ty);
-                }
+            if let Some(message) = self.validate_html_tag_named_args(args) {
+                self.diags.error(span, message);
             }
             return Ty::Html;
         }
@@ -2154,6 +2124,10 @@ impl<'a> Checker<'a> {
             let _ = self.check_expr(&arg.value);
         }
         Ty::Html
+    }
+
+    fn validate_html_tag_named_args(&self, args: &[CallArg]) -> Option<&'static str> {
+        validate_named_args_for_phase(args, CanonicalizationPhase::TypeCheck)
     }
 }
 

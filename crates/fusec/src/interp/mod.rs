@@ -18,7 +18,12 @@ use crate::ast::{
     RouteDecl, ServiceDecl, Stmt, StmtKind, StructField, TestDecl, TypeDecl, TypeRef, TypeRefKind,
     UnaryOp,
 };
+use crate::callbind::{
+    CallArgSpec, CallBindError, ParamBinding, ParamSpec, bind_call_args, bind_positional_args,
+};
 use crate::db::{DEFAULT_DB_POOL_SIZE, Db, Query, parse_db_pool_size, parse_db_pool_size_value};
+use crate::frontend::html_shorthand::{CanonicalizationPhase, validate_named_args_for_phase};
+use crate::frontend::html_tag_builtin::should_use_html_tag_builtin;
 use crate::html_tags::{self, HtmlTagKind};
 use crate::loader::{ModuleId, ModuleLink, ModuleMap, ModuleRegistry};
 use crate::refinement::{
@@ -346,13 +351,7 @@ fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
 }
 
 fn split_type_name(name: &str) -> (Option<&str>, &str) {
-    if name.starts_with("std.") {
-        return (None, name);
-    }
-    match name.split_once('.') {
-        Some((module, rest)) if !module.is_empty() && !rest.is_empty() => (Some(module), rest),
-        _ => (None, name),
-    }
+    crate::runtime_types::split_type_name(name)
 }
 
 fn is_html_type_name(name: &str) -> bool {
@@ -478,7 +477,7 @@ fn extract_validation_fields(value: Option<&Value>) -> Vec<rt_error::ValidationF
 }
 
 #[derive(Debug)]
-enum ExecError {
+pub(crate) enum ExecError {
     Runtime(String),
     Return(Value),
     Error(Value),
@@ -580,6 +579,56 @@ pub struct TestOutcome {
     pub name: String,
     pub ok: bool,
     pub message: Option<String>,
+}
+
+impl<'a> crate::runtime_types::RuntimeTypeHost for Interpreter<'a> {
+    type Error = ExecError;
+
+    fn runtime_error(&self, message: String) -> Self::Error {
+        ExecError::Runtime(message)
+    }
+
+    fn validation_error(&self, path: &str, code: &str, message: String) -> Self::Error {
+        ExecError::Error(crate::runtime_types::validation_error_value(
+            path, code, message,
+        ))
+    }
+
+    fn has_struct_type(&self, name: &str) -> bool {
+        self.types.contains_key(name)
+    }
+
+    fn has_enum_type(&self, name: &str) -> bool {
+        self.enums.contains_key(name)
+    }
+
+    fn decode_struct_type_json(
+        &mut self,
+        json: &rt_json::JsonValue,
+        name: &str,
+        path: &str,
+    ) -> Result<Value, Self::Error> {
+        Interpreter::decode_struct_json(self, json, name, path)
+    }
+
+    fn decode_enum_type_json(
+        &mut self,
+        json: &rt_json::JsonValue,
+        name: &str,
+        path: &str,
+    ) -> Result<Value, Self::Error> {
+        Interpreter::decode_enum_json(self, json, name, path)
+    }
+
+    fn check_refined_value(
+        &mut self,
+        value: &Value,
+        base: &str,
+        args: &[Expr],
+        path: &str,
+    ) -> Result<(), Self::Error> {
+        Interpreter::check_refined(self, value, base, args, path)
+    }
 }
 
 impl<'a> Interpreter<'a> {
@@ -915,38 +964,61 @@ impl<'a> Interpreter<'a> {
         };
         let prev_module = self.current_module;
         self.current_module = func_ref.module_id;
-        self.env.push();
-        let mut ordered = Vec::with_capacity(decl.params.len());
-        for param in &decl.params {
-            let value = if let Some(value) = args.get(&param.name.name) {
-                value.clone()
-            } else if let Some(default) = &param.default {
-                match self.eval_expr(default) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        self.env.pop();
-                        self.current_module = prev_module;
-                        return Err(self.render_exec_error(err));
-                    }
+        let out = (|| -> Result<Vec<Value>, String> {
+            self.env.push();
+            let result = (|| -> Result<Vec<Value>, String> {
+                let param_specs: Vec<ParamSpec<'_>> = decl
+                    .params
+                    .iter()
+                    .map(|param| ParamSpec {
+                        name: &param.name.name,
+                        has_default: param.default.is_some() || self.is_optional_type(&param.ty),
+                    })
+                    .collect();
+                let arg_specs: Vec<CallArgSpec<'_>> = args
+                    .keys()
+                    .map(|name| CallArgSpec {
+                        name: Some(name.as_str()),
+                    })
+                    .collect();
+                let (plan, bind_errors) = bind_call_args(&param_specs, &arg_specs);
+                if let Some(err) = bind_errors.first() {
+                    return Err(self.format_named_call_bind_error(err));
                 }
-            } else if self.is_optional_type(&param.ty) {
-                Value::Null
-            } else {
-                self.env.pop();
-                self.current_module = prev_module;
-                return Err(format!("missing argument {}", param.name.name));
-            };
-            if let Err(err) = self.validate_value(&value, &param.ty, &param.name.name) {
-                self.env.pop();
-                self.current_module = prev_module;
-                return Err(self.render_exec_error(err));
-            }
-            self.env.insert(&param.name.name, value.clone());
-            ordered.push(value);
-        }
-        self.env.pop();
+
+                let mut ordered = Vec::with_capacity(decl.params.len());
+                for (idx, param) in decl.params.iter().enumerate() {
+                    let value = match plan.param_bindings.get(idx) {
+                        Some(ParamBinding::Arg(_)) => args
+                            .get(&param.name.name)
+                            .cloned()
+                            .expect("bound named argument should exist"),
+                        Some(ParamBinding::Default) => {
+                            if let Some(default) = &param.default {
+                                self.eval_expr(default)
+                                    .map_err(|err| self.render_exec_error(err))?
+                            } else if self.is_optional_type(&param.ty) {
+                                Value::Null
+                            } else {
+                                return Err(format!("missing argument {}", param.name.name));
+                            }
+                        }
+                        Some(ParamBinding::MissingRequired) | None => {
+                            return Err(format!("missing argument {}", param.name.name));
+                        }
+                    };
+                    self.validate_value(&value, &param.ty, &param.name.name)
+                        .map_err(|err| self.render_exec_error(err))?;
+                    self.env.insert(&param.name.name, value.clone());
+                    ordered.push(value);
+                }
+                Ok(ordered)
+            })();
+            self.env.pop();
+            result
+        })();
         self.current_module = prev_module;
-        Ok(ordered)
+        out
     }
 
     pub fn call_function_with_named_args(
@@ -973,39 +1045,73 @@ impl<'a> Interpreter<'a> {
         };
         let prev_module = self.current_module;
         self.current_module = func_ref.module_id;
-        self.env.push();
-        for param in &decl.params {
-            let value = if let Some(value) = args.get(&param.name.name) {
-                value.clone()
-            } else if let Some(default) = &param.default {
-                match self.eval_expr(default) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        self.env.pop();
-                        return Err(self.render_exec_error(err));
-                    }
+        let out = (|| -> Result<Value, String> {
+            self.env.push();
+            let result = (|| -> Result<Value, String> {
+                let param_specs: Vec<ParamSpec<'_>> = decl
+                    .params
+                    .iter()
+                    .map(|param| ParamSpec {
+                        name: &param.name.name,
+                        has_default: param.default.is_some() || self.is_optional_type(&param.ty),
+                    })
+                    .collect();
+                let arg_specs: Vec<CallArgSpec<'_>> = args
+                    .keys()
+                    .map(|name| CallArgSpec {
+                        name: Some(name.as_str()),
+                    })
+                    .collect();
+                let (plan, bind_errors) = bind_call_args(&param_specs, &arg_specs);
+                if let Some(err) = bind_errors.first() {
+                    return Err(self.format_named_call_bind_error(err));
                 }
-            } else if self.is_optional_type(&param.ty) {
-                Value::Null
-            } else {
-                self.env.pop();
-                return Err(format!("missing argument {}", param.name.name));
-            };
-            if let Err(err) = self.validate_value(&value, &param.ty, &param.name.name) {
-                self.env.pop();
-                return Err(self.render_exec_error(err));
-            }
-            self.env.insert(&param.name.name, value);
-        }
-        let result = self.eval_block(&decl.body);
-        self.env.pop();
-        let out = match result {
-            Ok(value) => Ok(value),
-            Err(ExecError::Return(value)) => Ok(value),
-            Err(err) => Err(self.render_exec_error(err)),
-        };
+
+                for (idx, param) in decl.params.iter().enumerate() {
+                    let value = match plan.param_bindings.get(idx) {
+                        Some(ParamBinding::Arg(_)) => args
+                            .get(&param.name.name)
+                            .cloned()
+                            .expect("bound named argument should exist"),
+                        Some(ParamBinding::Default) => {
+                            if let Some(default) = &param.default {
+                                self.eval_expr(default)
+                                    .map_err(|err| self.render_exec_error(err))?
+                            } else if self.is_optional_type(&param.ty) {
+                                Value::Null
+                            } else {
+                                return Err(format!("missing argument {}", param.name.name));
+                            }
+                        }
+                        Some(ParamBinding::MissingRequired) | None => {
+                            return Err(format!("missing argument {}", param.name.name));
+                        }
+                    };
+                    self.validate_value(&value, &param.ty, &param.name.name)
+                        .map_err(|err| self.render_exec_error(err))?;
+                    self.env.insert(&param.name.name, value);
+                }
+
+                let result = self.eval_block(&decl.body);
+                match result {
+                    Ok(value) => Ok(value),
+                    Err(ExecError::Return(value)) => Ok(value),
+                    Err(err) => Err(self.render_exec_error(err)),
+                }
+            })();
+            self.env.pop();
+            result
+        })();
         self.current_module = prev_module;
         out
+    }
+
+    fn format_named_call_bind_error(&self, err: &CallBindError) -> String {
+        match err {
+            CallBindError::UnknownArgument(name) => format!("unknown argument {}", name),
+            CallBindError::DuplicateArgument(name) => format!("duplicate argument {}", name),
+            CallBindError::TooManyArguments => "too many arguments".to_string(),
+        }
     }
 
     fn render_exec_error(&self, err: ExecError) -> String {
@@ -1263,7 +1369,14 @@ impl<'a> Interpreter<'a> {
             ExprKind::Call { callee, args } => {
                 if let ExprKind::Ident(ident) = &callee.kind {
                     if self.should_use_html_tag_builtin(&ident.name) {
-                        return self.eval_html_tag_call_expr(&ident.name, args);
+                        if let Some(message) = self.validate_html_tag_named_args(args) {
+                            return Err(ExecError::Runtime(message.to_string()));
+                        }
+                        let mut arg_vals = Vec::with_capacity(args.len());
+                        for arg in args {
+                            arg_vals.push(self.eval_expr(&arg.value)?);
+                        }
+                        return self.eval_builtin(&ident.name, arg_vals);
                     }
                 }
                 if let ExprKind::Member { base, name } = &callee.kind {
@@ -1462,65 +1575,18 @@ impl<'a> Interpreter<'a> {
     }
 
     fn should_use_html_tag_builtin(&self, name: &str) -> bool {
-        if !html_tags::is_html_tag(name) {
-            return false;
-        }
-        if self.env.get(name).is_some() {
-            return false;
-        }
-        if self
-            .resolve_function_ref(self.current_module, name)
-            .is_some()
-            || self.config_decls.contains_key(name)
-        {
-            return false;
-        }
-        true
+        should_use_html_tag_builtin(
+            name,
+            self.env.get(name).is_some(),
+            self.resolve_function_ref(self.current_module, name)
+                .is_some(),
+            self.config_decls.contains_key(name),
+            false,
+        )
     }
 
-    fn eval_html_tag_call_expr(
-        &mut self,
-        name: &str,
-        args: &[crate::ast::CallArg],
-    ) -> ExecResult<Value> {
-        let has_named = args.iter().any(|arg| arg.name.is_some());
-        if !has_named {
-            let mut values = Vec::with_capacity(args.len());
-            for arg in args {
-                values.push(self.eval_expr(&arg.value)?);
-            }
-            return self.eval_builtin(name, values);
-        }
-
-        let mut attrs: HashMap<String, Value> = HashMap::new();
-        let mut child: Option<Value> = None;
-        for arg in args {
-            if let Some(attr_name) = &arg.name {
-                let ExprKind::Literal(Literal::String(text)) = &arg.value.kind else {
-                    return Err(ExecError::Runtime(
-                        "html attribute shorthand only supports string literals".to_string(),
-                    ));
-                };
-                attrs.insert(
-                    html_tags::normalize_attr_name(&attr_name.name),
-                    Value::String(text.clone()),
-                );
-                continue;
-            }
-            if arg.is_block_sugar && child.is_none() {
-                child = Some(self.eval_expr(&arg.value)?);
-                continue;
-            }
-            return Err(ExecError::Runtime(
-                "cannot mix html attribute shorthand with positional arguments".to_string(),
-            ));
-        }
-
-        let mut canonical = vec![Value::Map(attrs)];
-        if let Some(child) = child {
-            canonical.push(child);
-        }
-        self.eval_builtin(name, canonical)
+    fn validate_html_tag_named_args(&self, args: &[crate::ast::CallArg]) -> Option<&'static str> {
+        validate_named_args_for_phase(args, CanonicalizationPhase::Execution)
     }
 
     fn eval_call(&mut self, callee: Value, args: Vec<Value>) -> ExecResult<Value> {
@@ -2228,40 +2294,75 @@ impl<'a> Interpreter<'a> {
                 )));
             }
         };
+        let param_specs: Vec<ParamSpec<'_>> = decl
+            .params
+            .iter()
+            .map(|param| ParamSpec {
+                name: &param.name.name,
+                has_default: param.default.is_some(),
+            })
+            .collect();
+        let (plan, bind_errors) = bind_positional_args(&param_specs, args.len());
+        if !bind_errors.is_empty() {
+            return Err(ExecError::Runtime(format!(
+                "invalid call to {}: expected at most {} args, got {}",
+                func.name,
+                decl.params.len(),
+                args.len()
+            )));
+        }
+
         let prev_module = self.current_module;
         self.current_module = func.module_id;
-        self.env.push();
-        for (idx, param) in decl.params.iter().enumerate() {
-            let value = if idx < args.len() {
-                args[idx].clone()
-            } else if let Some(default) = &param.default {
-                self.eval_expr(default)?
-            } else {
-                return Err(ExecError::Runtime(format!(
-                    "missing argument {}",
-                    param.name.name
-                )));
-            };
-            self.env.insert(&param.name.name, value);
-        }
-        let result = self.eval_block(&decl.body);
-        self.env.pop();
-        let out = match result {
-            Ok(value) => self.wrap_function_result(&decl.ret, value),
-            Err(ExecError::Return(value)) => self.wrap_function_result(&decl.ret, value),
-            Err(ExecError::Error(value)) => {
-                if self.is_result_type(decl.ret.as_ref()) {
-                    Ok(Value::ResultErr(Box::new(value)))
-                } else {
-                    Err(ExecError::Error(value))
+        let out = (|| -> ExecResult<Value> {
+            self.env.push();
+            let result = (|| -> ExecResult<Value> {
+                for (idx, param) in decl.params.iter().enumerate() {
+                    let value = match plan.param_bindings.get(idx) {
+                        Some(ParamBinding::Arg(arg_idx)) => args[*arg_idx].clone(),
+                        Some(ParamBinding::Default) => {
+                            if let Some(default) = &param.default {
+                                self.eval_expr(default)?
+                            } else {
+                                return Err(ExecError::Runtime(format!(
+                                    "missing argument {}",
+                                    param.name.name
+                                )));
+                            }
+                        }
+                        Some(ParamBinding::MissingRequired) | None => {
+                            return Err(ExecError::Runtime(format!(
+                                "missing argument {}",
+                                param.name.name
+                            )));
+                        }
+                    };
+                    self.env.insert(&param.name.name, value);
                 }
-            }
-            Err(ExecError::Runtime(msg)) => Err(ExecError::Runtime(msg)),
-            Err(ExecError::Break) => Err(ExecError::Runtime("break outside of loop".to_string())),
-            Err(ExecError::Continue) => {
-                Err(ExecError::Runtime("continue outside of loop".to_string()))
-            }
-        };
+
+                let result = self.eval_block(&decl.body);
+                match result {
+                    Ok(value) => self.wrap_function_result(&decl.ret, value),
+                    Err(ExecError::Return(value)) => self.wrap_function_result(&decl.ret, value),
+                    Err(ExecError::Error(value)) => {
+                        if self.is_result_type(decl.ret.as_ref()) {
+                            Ok(Value::ResultErr(Box::new(value)))
+                        } else {
+                            Err(ExecError::Error(value))
+                        }
+                    }
+                    Err(ExecError::Runtime(msg)) => Err(ExecError::Runtime(msg)),
+                    Err(ExecError::Break) => {
+                        Err(ExecError::Runtime("break outside of loop".to_string()))
+                    }
+                    Err(ExecError::Continue) => {
+                        Err(ExecError::Runtime("continue outside of loop".to_string()))
+                    }
+                }
+            })();
+            self.env.pop();
+            result
+        })();
         self.current_module = prev_module;
         out
     }
@@ -3478,440 +3579,27 @@ impl<'a> Interpreter<'a> {
     }
 
     fn parse_env_value(&mut self, ty: &TypeRef, raw: &str) -> ExecResult<Value> {
-        let raw = raw.trim();
-        match &ty.kind {
-            TypeRefKind::Optional(inner) => {
-                if raw.eq_ignore_ascii_case("null") || raw.is_empty() {
-                    Ok(Value::Null)
-                } else {
-                    self.parse_env_value(inner, raw)
-                }
-            }
-            TypeRefKind::Refined { base, .. } => self.parse_simple_env(&base.name, raw),
-            TypeRefKind::Simple(ident) => {
-                let (_, simple_name) = split_type_name(&ident.name);
-                match simple_name {
-                    "Int" | "Float" | "Bool" | "String" | "Id" | "Email" | "Bytes" | "Html" => {
-                        self.parse_simple_env(&ident.name, raw)
-                    }
-                    _ => {
-                        let json = rt_json::decode(raw).map_err(|msg| {
-                            ExecError::Runtime(format!("invalid JSON value: {msg}"))
-                        })?;
-                        self.decode_json_value(&json, ty, "$")
-                    }
-                }
-            }
-            TypeRefKind::Result { .. } => Err(ExecError::Runtime(
-                "Result is not supported for config env overrides".to_string(),
-            )),
-            TypeRefKind::Generic { base, args } => match base.name.as_str() {
-                "Option" => {
-                    if args.len() != 1 {
-                        return Err(ExecError::Runtime(
-                            "Option expects 1 type argument".to_string(),
-                        ));
-                    }
-                    if raw.eq_ignore_ascii_case("null") || raw.is_empty() {
-                        Ok(Value::Null)
-                    } else {
-                        self.parse_env_value(&args[0], raw)
-                    }
-                }
-                "Result" => Err(ExecError::Runtime(
-                    "Result is not supported for config env overrides".to_string(),
-                )),
-                "List" | "Map" => {
-                    let json = rt_json::decode(raw)
-                        .map_err(|msg| ExecError::Runtime(format!("invalid JSON value: {msg}")))?;
-                    self.decode_json_value(&json, ty, "$")
-                }
-                _ => {
-                    let json = rt_json::decode(raw)
-                        .map_err(|msg| ExecError::Runtime(format!("invalid JSON value: {msg}")))?;
-                    self.decode_json_value(&json, ty, "$")
-                }
-            },
-        }
-    }
-
-    fn parse_simple_env(&self, name: &str, raw: &str) -> ExecResult<Value> {
-        match name {
-            "Int" => raw
-                .parse::<i64>()
-                .map(Value::Int)
-                .map_err(|_| ExecError::Runtime(format!("invalid Int: {raw}"))),
-            "Float" => raw
-                .parse::<f64>()
-                .map(Value::Float)
-                .map_err(|_| ExecError::Runtime(format!("invalid Float: {raw}"))),
-            "Bool" => match raw.to_ascii_lowercase().as_str() {
-                "true" => Ok(Value::Bool(true)),
-                "false" => Ok(Value::Bool(false)),
-                _ => Err(ExecError::Runtime(format!("invalid Bool: {raw}"))),
-            },
-            "String" | "Id" | "Email" => Ok(Value::String(raw.to_string())),
-            "Bytes" => {
-                let bytes = rt_bytes::decode_base64(raw)
-                    .map_err(|msg| ExecError::Runtime(format!("invalid Bytes (base64): {msg}")))?;
-                Ok(Value::Bytes(bytes))
-            }
-            _ => Err(ExecError::Runtime(format!(
-                "env override not supported for type {name}"
-            ))),
-        }
+        crate::runtime_types::parse_env_value(self, ty, raw)
     }
 
     fn is_optional_type(&self, ty: &TypeRef) -> bool {
-        match &ty.kind {
-            TypeRefKind::Optional(_) => true,
-            TypeRefKind::Generic { base, .. } => base.name == "Option",
-            _ => false,
-        }
+        crate::runtime_types::is_optional_type(ty)
     }
 
     fn validate_value(&mut self, value: &Value, ty: &TypeRef, path: &str) -> ExecResult<()> {
-        let value = value.unboxed();
-        match &ty.kind {
-            TypeRefKind::Optional(inner) => {
-                if matches!(value, Value::Null) {
-                    Ok(())
-                } else {
-                    self.validate_value(&value, inner, path)
-                }
-            }
-            TypeRefKind::Result { ok, err } => match value {
-                Value::ResultOk(inner) => self.validate_value(&inner, ok, path),
-                Value::ResultErr(inner) => {
-                    if let Some(err_ty) = err {
-                        self.validate_value(&inner, err_ty, path)
-                    } else {
-                        Ok(())
-                    }
-                }
-                _ => Err(ExecError::Error(self.validation_error_value(
-                    path,
-                    "type_mismatch",
-                    format!("expected Result, got {}", self.value_type_name(&value)),
-                ))),
-            },
-            TypeRefKind::Refined { base, args } => {
-                self.validate_simple(&value, &base.name, path)?;
-                self.check_refined(&value, &base.name, args, path)
-            }
-            TypeRefKind::Simple(ident) => self.validate_simple(&value, &ident.name, path),
-            TypeRefKind::Generic { base, args } => match base.name.as_str() {
-                "Option" => {
-                    if args.len() != 1 {
-                        return Err(ExecError::Runtime(
-                            "Option expects 1 type argument".to_string(),
-                        ));
-                    }
-                    if matches!(value, Value::Null) {
-                        Ok(())
-                    } else {
-                        self.validate_value(&value, &args[0], path)
-                    }
-                }
-                "Result" => {
-                    if args.len() != 2 {
-                        return Err(ExecError::Runtime(
-                            "Result expects 2 type arguments".to_string(),
-                        ));
-                    }
-                    match value {
-                        Value::ResultOk(inner) => self.validate_value(&inner, &args[0], path),
-                        Value::ResultErr(inner) => self.validate_value(&inner, &args[1], path),
-                        _ => Err(ExecError::Error(self.validation_error_value(
-                            path,
-                            "type_mismatch",
-                            format!("expected Result, got {}", self.value_type_name(&value)),
-                        ))),
-                    }
-                }
-                "List" => {
-                    if args.len() != 1 {
-                        return Err(ExecError::Runtime(
-                            "List expects 1 type argument".to_string(),
-                        ));
-                    }
-                    match value {
-                        Value::List(items) => {
-                            for (idx, item) in items.iter().enumerate() {
-                                let item_path = format!("{path}[{idx}]");
-                                self.validate_value(item, &args[0], &item_path)?;
-                            }
-                            Ok(())
-                        }
-                        _ => Err(ExecError::Error(self.validation_error_value(
-                            path,
-                            "type_mismatch",
-                            format!("expected List, got {}", self.value_type_name(&value)),
-                        ))),
-                    }
-                }
-                "Map" => {
-                    if args.len() != 2 {
-                        return Err(ExecError::Runtime(
-                            "Map expects 2 type arguments".to_string(),
-                        ));
-                    }
-                    match value {
-                        Value::Map(items) => {
-                            for (key, val) in items.iter() {
-                                let key_value = Value::String(key.clone());
-                                let key_path = format!("{path}.{key}");
-                                self.validate_value(&key_value, &args[0], &key_path)?;
-                                self.validate_value(val, &args[1], &key_path)?;
-                            }
-                            Ok(())
-                        }
-                        _ => Err(ExecError::Error(self.validation_error_value(
-                            path,
-                            "type_mismatch",
-                            format!("expected Map, got {}", self.value_type_name(&value)),
-                        ))),
-                    }
-                }
-                _ => Err(ExecError::Runtime(format!(
-                    "validation not supported for {}",
-                    base.name
-                ))),
-            },
-        }
-    }
-
-    fn validate_simple(&self, value: &Value, name: &str, path: &str) -> ExecResult<()> {
-        let value = value.unboxed();
-        let type_name = self.value_type_name(&value);
-        let (module, simple_name) = split_type_name(name);
-        if module.is_none() {
-            match simple_name {
-                "Int" => {
-                    if matches!(value, Value::Int(_)) {
-                        return Ok(());
-                    }
-                    return Err(ExecError::Runtime(format!("expected Int, got {type_name}")));
-                }
-                "Float" => {
-                    if matches!(value, Value::Float(_)) {
-                        return Ok(());
-                    }
-                    return Err(ExecError::Error(self.validation_error_value(
-                        path,
-                        "type_mismatch",
-                        format!("expected Float, got {type_name}"),
-                    )));
-                }
-                "Bool" => {
-                    if matches!(value, Value::Bool(_)) {
-                        return Ok(());
-                    }
-                    return Err(ExecError::Error(self.validation_error_value(
-                        path,
-                        "type_mismatch",
-                        format!("expected Bool, got {type_name}"),
-                    )));
-                }
-                "String" => {
-                    if matches!(value, Value::String(_)) {
-                        return Ok(());
-                    }
-                    return Err(ExecError::Error(self.validation_error_value(
-                        path,
-                        "type_mismatch",
-                        format!("expected String, got {type_name}"),
-                    )));
-                }
-                "Id" => match value {
-                    Value::String(s) if !s.is_empty() => return Ok(()),
-                    Value::String(_) => {
-                        return Err(ExecError::Error(self.validation_error_value(
-                            path,
-                            "invalid_value",
-                            "expected non-empty Id".to_string(),
-                        )));
-                    }
-                    _ => {
-                        return Err(ExecError::Error(self.validation_error_value(
-                            path,
-                            "type_mismatch",
-                            format!("expected Id, got {type_name}"),
-                        )));
-                    }
-                },
-                "Email" => match value {
-                    Value::String(s) if rt_validate::is_email(&s) => return Ok(()),
-                    Value::String(_) => {
-                        return Err(ExecError::Error(self.validation_error_value(
-                            path,
-                            "invalid_value",
-                            "invalid email address".to_string(),
-                        )));
-                    }
-                    _ => {
-                        return Err(ExecError::Error(self.validation_error_value(
-                            path,
-                            "type_mismatch",
-                            format!("expected Email, got {type_name}"),
-                        )));
-                    }
-                },
-                "Bytes" => match value {
-                    Value::Bytes(_) => {
-                        return Ok(());
-                    }
-                    _ => {
-                        return Err(ExecError::Error(self.validation_error_value(
-                            path,
-                            "type_mismatch",
-                            format!("expected Bytes, got {type_name}"),
-                        )));
-                    }
-                },
-                "Html" => match value {
-                    Value::Html(_) => {
-                        return Ok(());
-                    }
-                    _ => {
-                        return Err(ExecError::Error(self.validation_error_value(
-                            path,
-                            "type_mismatch",
-                            format!("expected Html, got {type_name}"),
-                        )));
-                    }
-                },
-                _ => {}
-            }
-        }
-        match value {
-            Value::Struct {
-                name: struct_name, ..
-            } if struct_name == simple_name => Ok(()),
-            Value::Enum {
-                name: enum_name, ..
-            } if enum_name == simple_name => Ok(()),
-            _ => Err(ExecError::Error(self.validation_error_value(
-                path,
-                "type_mismatch",
-                format!("expected {name}, got {type_name}"),
-            ))),
-        }
+        crate::runtime_types::validate_value(self, value, ty, path)
     }
 
     fn value_type_name(&self, value: &Value) -> String {
-        match value.unboxed() {
-            Value::Unit => "Unit".to_string(),
-            Value::Int(_) => "Int".to_string(),
-            Value::Float(_) => "Float".to_string(),
-            Value::Bool(_) => "Bool".to_string(),
-            Value::String(_) => "String".to_string(),
-            Value::Bytes(_) => "Bytes".to_string(),
-            Value::Html(_) => "Html".to_string(),
-            Value::Null => "Null".to_string(),
-            Value::List(_) => "List".to_string(),
-            Value::Map(_) => "Map".to_string(),
-            Value::Query(_) => "Query".to_string(),
-            Value::Task(_) => "Task".to_string(),
-            Value::Iterator(_) => "Iterator".to_string(),
-            Value::Struct { name, .. } => name.clone(),
-            Value::Enum { name, .. } => name.clone(),
-            Value::EnumCtor { name, .. } => name.clone(),
-            Value::ResultOk(_) | Value::ResultErr(_) => "Result".to_string(),
-            Value::Config(_) => "Config".to_string(),
-            Value::Function(_) => "Function".to_string(),
-            Value::Builtin(_) => "Builtin".to_string(),
-            Value::Boxed(_) => "Box".to_string(),
-        }
+        crate::runtime_types::value_type_name(value)
     }
 
     fn value_to_json(&self, value: &Value) -> rt_json::JsonValue {
-        match value.unboxed() {
-            Value::Unit => rt_json::JsonValue::Null,
-            Value::Int(v) => rt_json::JsonValue::Number(v as f64),
-            Value::Float(v) => rt_json::JsonValue::Number(v),
-            Value::Bool(v) => rt_json::JsonValue::Bool(v),
-            Value::String(v) => rt_json::JsonValue::String(v.clone()),
-            Value::Bytes(v) => rt_json::JsonValue::String(rt_bytes::encode_base64(&v)),
-            Value::Html(node) => rt_json::JsonValue::String(node.render_to_string()),
-            Value::Null => rt_json::JsonValue::Null,
-            Value::List(items) => {
-                rt_json::JsonValue::Array(items.iter().map(|v| self.value_to_json(v)).collect())
-            }
-            Value::Map(items) => {
-                let mut out = BTreeMap::new();
-                for (key, value) in items {
-                    out.insert(key.clone(), self.value_to_json(&value));
-                }
-                rt_json::JsonValue::Object(out)
-            }
-            Value::Boxed(_) => rt_json::JsonValue::String("<box>".to_string()),
-            Value::Query(_) => rt_json::JsonValue::String("<query>".to_string()),
-            Value::Task(_) => rt_json::JsonValue::String("<task>".to_string()),
-            Value::Iterator(_) => rt_json::JsonValue::String("<iterator>".to_string()),
-            Value::Struct { fields, .. } => {
-                let mut out = BTreeMap::new();
-                for (key, value) in fields {
-                    out.insert(key.clone(), self.value_to_json(&value));
-                }
-                rt_json::JsonValue::Object(out)
-            }
-            Value::Enum {
-                variant, payload, ..
-            } => {
-                let mut out = BTreeMap::new();
-                out.insert(
-                    "type".to_string(),
-                    rt_json::JsonValue::String(variant.clone()),
-                );
-                match payload.len() {
-                    0 => {}
-                    1 => {
-                        out.insert("data".to_string(), self.value_to_json(&payload[0]));
-                    }
-                    _ => {
-                        let items = payload.iter().map(|v| self.value_to_json(v)).collect();
-                        out.insert("data".to_string(), rt_json::JsonValue::Array(items));
-                    }
-                }
-                rt_json::JsonValue::Object(out)
-            }
-            Value::ResultOk(value) => self.value_to_json(value.as_ref()),
-            Value::ResultErr(value) => self.value_to_json(value.as_ref()),
-            Value::Config(name) => rt_json::JsonValue::String(name.clone()),
-            Value::Function(func) => {
-                rt_json::JsonValue::String(format!("{}::{}", func.module_id, func.name))
-            }
-            Value::Builtin(name) => rt_json::JsonValue::String(name.clone()),
-            Value::EnumCtor { name, variant } => {
-                rt_json::JsonValue::String(format!("{name}.{variant}"))
-            }
-        }
+        crate::runtime_types::value_to_json(value)
     }
 
     fn json_to_value(&self, json: &rt_json::JsonValue) -> Value {
-        match json {
-            rt_json::JsonValue::Null => Value::Null,
-            rt_json::JsonValue::Bool(v) => Value::Bool(*v),
-            rt_json::JsonValue::Number(n) => {
-                if n.fract() == 0.0 {
-                    Value::Int(*n as i64)
-                } else {
-                    Value::Float(*n)
-                }
-            }
-            rt_json::JsonValue::String(v) => Value::String(v.clone()),
-            rt_json::JsonValue::Array(items) => {
-                Value::List(items.iter().map(|item| self.json_to_value(item)).collect())
-            }
-            rt_json::JsonValue::Object(items) => {
-                let mut out = HashMap::new();
-                for (key, value) in items {
-                    out.insert(key.clone(), self.json_to_value(value));
-                }
-                Value::Map(out)
-            }
-        }
+        crate::runtime_types::json_to_value(json)
     }
 
     fn decode_json_value(
@@ -3920,263 +3608,7 @@ impl<'a> Interpreter<'a> {
         ty: &TypeRef,
         path: &str,
     ) -> ExecResult<Value> {
-        let value = match &ty.kind {
-            TypeRefKind::Optional(inner) => {
-                if matches!(json, rt_json::JsonValue::Null) {
-                    Value::Null
-                } else {
-                    self.decode_json_value(json, inner, path)?
-                }
-            }
-            TypeRefKind::Refined { base, .. } => {
-                let base_ty = TypeRef {
-                    kind: TypeRefKind::Simple(base.clone()),
-                    span: ty.span,
-                };
-                let value = self.decode_json_value(json, &base_ty, path)?;
-                self.validate_value(&value, ty, path)?;
-                return Ok(value);
-            }
-            TypeRefKind::Simple(ident) => {
-                let (module, simple_name) = split_type_name(&ident.name);
-                if module.is_none() {
-                    if let Some(value) = self.decode_simple_json(json, simple_name, path)? {
-                        value
-                    } else if self.types.contains_key(simple_name) {
-                        self.decode_struct_json(json, simple_name, path)?
-                    } else if self.enums.contains_key(simple_name) {
-                        self.decode_enum_json(json, simple_name, path)?
-                    } else {
-                        return Err(ExecError::Error(self.validation_error_value(
-                            path,
-                            "type_mismatch",
-                            format!("unknown type {}", ident.name),
-                        )));
-                    }
-                } else if self.types.contains_key(simple_name) {
-                    self.decode_struct_json(json, simple_name, path)?
-                } else if self.enums.contains_key(simple_name) {
-                    self.decode_enum_json(json, simple_name, path)?
-                } else {
-                    return Err(ExecError::Error(self.validation_error_value(
-                        path,
-                        "type_mismatch",
-                        format!("unknown type {}", ident.name),
-                    )));
-                }
-            }
-            TypeRefKind::Result { ok, err } => {
-                return self.decode_json_result_value(json, ok, err.as_deref(), path);
-            }
-            TypeRefKind::Generic { base, args } => match base.name.as_str() {
-                "Option" => {
-                    if args.len() != 1 {
-                        return Err(ExecError::Runtime(
-                            "Option expects 1 type argument".to_string(),
-                        ));
-                    }
-                    if matches!(json, rt_json::JsonValue::Null) {
-                        Value::Null
-                    } else {
-                        self.decode_json_value(json, &args[0], path)?
-                    }
-                }
-                "Result" => {
-                    if args.len() != 2 {
-                        return Err(ExecError::Runtime(
-                            "Result expects 2 type arguments".to_string(),
-                        ));
-                    }
-                    return self.decode_json_result_value(json, &args[0], Some(&args[1]), path);
-                }
-                "List" => {
-                    if args.len() != 1 {
-                        return Err(ExecError::Runtime(
-                            "List expects 1 type argument".to_string(),
-                        ));
-                    }
-                    let rt_json::JsonValue::Array(items) = json else {
-                        return Err(ExecError::Error(self.validation_error_value(
-                            path,
-                            "type_mismatch",
-                            "expected List",
-                        )));
-                    };
-                    let mut values = Vec::with_capacity(items.len());
-                    for (idx, item) in items.iter().enumerate() {
-                        let item_path = format!("{path}[{idx}]");
-                        values.push(self.decode_json_value(item, &args[0], &item_path)?);
-                    }
-                    Value::List(values)
-                }
-                "Map" => {
-                    if args.len() != 2 {
-                        return Err(ExecError::Runtime(
-                            "Map expects 2 type arguments".to_string(),
-                        ));
-                    }
-                    let rt_json::JsonValue::Object(items) = json else {
-                        return Err(ExecError::Error(self.validation_error_value(
-                            path,
-                            "type_mismatch",
-                            "expected Map",
-                        )));
-                    };
-                    let mut values = HashMap::new();
-                    for (key, item) in items.iter() {
-                        let key_value = Value::String(key.clone());
-                        let key_path = format!("{path}.{key}");
-                        self.validate_value(&key_value, &args[0], &key_path)?;
-                        let value = self.decode_json_value(item, &args[1], &key_path)?;
-                        values.insert(key.clone(), value);
-                    }
-                    Value::Map(values)
-                }
-                _ => {
-                    return Err(ExecError::Error(self.validation_error_value(
-                        path,
-                        "type_mismatch",
-                        format!("unsupported type {}", base.name),
-                    )));
-                }
-            },
-        };
-        self.validate_value(&value, ty, path)?;
-        Ok(value)
-    }
-
-    fn decode_json_result_value(
-        &mut self,
-        json: &rt_json::JsonValue,
-        ok_ty: &TypeRef,
-        err_ty: Option<&TypeRef>,
-        path: &str,
-    ) -> ExecResult<Value> {
-        let rt_json::JsonValue::Object(map) = json else {
-            return Err(ExecError::Error(self.validation_error_value(
-                path,
-                "type_mismatch",
-                "expected Result object",
-            )));
-        };
-        let tag = map.get("type").ok_or_else(|| {
-            ExecError::Error(self.validation_error_value(
-                path,
-                "missing_field",
-                "missing Result tag",
-            ))
-        })?;
-        let rt_json::JsonValue::String(tag) = tag else {
-            return Err(ExecError::Error(self.validation_error_value(
-                &format!("{path}.type"),
-                "type_mismatch",
-                "expected Result tag string",
-            )));
-        };
-        let data = map.get("data").ok_or_else(|| {
-            ExecError::Error(self.validation_error_value(
-                path,
-                "missing_field",
-                "missing Result data",
-            ))
-        })?;
-        match tag.as_str() {
-            "Ok" => {
-                let value = self.decode_json_value(data, ok_ty, &format!("{path}.data"))?;
-                Ok(Value::ResultOk(Box::new(value)))
-            }
-            "Err" => {
-                let value = if let Some(err_ty) = err_ty {
-                    self.decode_json_value(data, err_ty, &format!("{path}.data"))?
-                } else {
-                    self.json_to_value(data)
-                };
-                Ok(Value::ResultErr(Box::new(value)))
-            }
-            _ => Err(ExecError::Error(self.validation_error_value(
-                &format!("{path}.type"),
-                "invalid_value",
-                format!("unknown Result variant {tag}"),
-            ))),
-        }
-    }
-
-    fn decode_simple_json(
-        &self,
-        json: &rt_json::JsonValue,
-        name: &str,
-        path: &str,
-    ) -> ExecResult<Option<Value>> {
-        let value = match name {
-            "Int" => match json {
-                rt_json::JsonValue::Number(n) if n.fract() == 0.0 => Value::Int(*n as i64),
-                _ => {
-                    return Err(ExecError::Error(self.validation_error_value(
-                        path,
-                        "type_mismatch",
-                        "expected Int",
-                    )));
-                }
-            },
-            "Float" => match json {
-                rt_json::JsonValue::Number(n) => Value::Float(*n),
-                _ => {
-                    return Err(ExecError::Error(self.validation_error_value(
-                        path,
-                        "type_mismatch",
-                        "expected Float",
-                    )));
-                }
-            },
-            "Bool" => match json {
-                rt_json::JsonValue::Bool(v) => Value::Bool(*v),
-                _ => {
-                    return Err(ExecError::Error(self.validation_error_value(
-                        path,
-                        "type_mismatch",
-                        "expected Bool",
-                    )));
-                }
-            },
-            "String" | "Id" | "Email" => match json {
-                rt_json::JsonValue::String(v) => Value::String(v.clone()),
-                _ => {
-                    return Err(ExecError::Error(self.validation_error_value(
-                        path,
-                        "type_mismatch",
-                        "expected String",
-                    )));
-                }
-            },
-            "Bytes" => match json {
-                rt_json::JsonValue::String(v) => {
-                    let bytes = rt_bytes::decode_base64(&v).map_err(|msg| {
-                        ExecError::Error(self.validation_error_value(
-                            path,
-                            "invalid_value",
-                            format!("invalid Bytes (base64): {msg}"),
-                        ))
-                    })?;
-                    Value::Bytes(bytes)
-                }
-                _ => {
-                    return Err(ExecError::Error(self.validation_error_value(
-                        path,
-                        "type_mismatch",
-                        "expected String",
-                    )));
-                }
-            },
-            "Html" => {
-                return Err(ExecError::Error(self.validation_error_value(
-                    path,
-                    "type_mismatch",
-                    "expected Html",
-                )));
-            }
-            _ => return Ok(None),
-        };
-        Ok(Some(value))
+        crate::runtime_types::decode_json_value(self, json, ty, path)
     }
 
     fn decode_struct_json(
@@ -4536,28 +3968,7 @@ impl<'a> Interpreter<'a> {
     }
 
     fn validation_error_value(&self, path: &str, code: &str, message: impl Into<String>) -> Value {
-        let field = self.validation_field_value(path, code, message);
-        let mut fields = HashMap::new();
-        fields.insert(
-            "message".to_string(),
-            Value::String("validation failed".to_string()),
-        );
-        fields.insert("fields".to_string(), Value::List(vec![field]));
-        Value::Struct {
-            name: "std.Error.Validation".to_string(),
-            fields,
-        }
-    }
-
-    fn validation_field_value(&self, path: &str, code: &str, message: impl Into<String>) -> Value {
-        let mut fields = HashMap::new();
-        fields.insert("path".to_string(), Value::String(path.to_string()));
-        fields.insert("code".to_string(), Value::String(code.to_string()));
-        fields.insert("message".to_string(), Value::String(message.into()));
-        Value::Struct {
-            name: "ValidationField".to_string(),
-            fields,
-        }
+        crate::runtime_types::validation_error_value(path, code, message)
     }
 
     fn default_error_value(&self, message: impl Into<String>) -> Value {

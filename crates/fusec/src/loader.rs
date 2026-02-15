@@ -147,13 +147,12 @@ pub fn load_program_with_modules_and_deps(
     let mut loader = ModuleLoader::with_deps(deps);
     let root = loader.insert_root(path, src);
     let root = root.unwrap_or(0);
-    (
-        ModuleRegistry {
-            root,
-            modules: loader.modules,
-        },
-        loader.diags.into_vec(),
-    )
+    let mut registry = ModuleRegistry {
+        root,
+        modules: loader.modules,
+    };
+    crate::frontend::canonicalize::canonicalize_registry(&mut registry);
+    (registry, loader.diags.into_vec())
 }
 
 pub fn load_program_with_modules_and_deps_and_overrides(
@@ -165,13 +164,12 @@ pub fn load_program_with_modules_and_deps_and_overrides(
     let mut loader = ModuleLoader::with_deps_and_overrides(deps, overrides);
     let root = loader.insert_root(path, src);
     let root = root.unwrap_or(0);
-    (
-        ModuleRegistry {
-            root,
-            modules: loader.modules,
-        },
-        loader.diags.into_vec(),
-    )
+    let mut registry = ModuleRegistry {
+        root,
+        modules: loader.modules,
+    };
+    crate::frontend::canonicalize::canonicalize_registry(&mut registry);
+    (registry, loader.diags.into_vec())
 }
 
 pub fn load_program(_path: &Path, src: &str) -> (Program, Vec<Diag>) {

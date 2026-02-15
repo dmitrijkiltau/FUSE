@@ -17,6 +17,7 @@ pub fn analyze_program(program: &Program) -> (Analysis, Vec<Diag>) {
     let mut diags = Diagnostics::default();
     let mut expanded = program.clone();
     expand_type_derivations(&mut expanded, &mut diags);
+    crate::frontend::canonicalize::canonicalize_program(&mut expanded);
     let symbols = symbols::collect(&expanded, &mut diags);
     let mut symbols_by_id: std::collections::HashMap<ModuleId, symbols::ModuleSymbols> =
         std::collections::HashMap::new();

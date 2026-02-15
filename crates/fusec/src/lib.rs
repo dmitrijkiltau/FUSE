@@ -1,8 +1,10 @@
 pub mod ast;
+pub mod callbind;
 pub mod cli;
 pub mod db;
 pub mod diag;
 pub mod format;
+pub mod frontend;
 pub mod html_tags;
 pub mod interp;
 pub mod ir;
@@ -14,6 +16,7 @@ pub mod parser;
 pub mod refinement;
 mod runtime_assets;
 mod runtime_svg;
+pub mod runtime_types;
 pub mod sema;
 pub mod span;
 pub mod token;
