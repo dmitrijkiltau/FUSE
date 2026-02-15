@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [0.1.0] - 2026-02-04
+## [0.1.0] - 2026-02-15
 
 ### Added
 
@@ -24,4 +24,4 @@ All notable changes to this project are documented in this file.
 
 ### Notes
 
-- Planned and partial items remain tracked in `docs/scope.md` and `docs/runtime.md`.
+- Planned and partial items remain tracked in `scope.md` and `runtime.md`.
