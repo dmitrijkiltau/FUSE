@@ -6,6 +6,9 @@ use crate::ast::{
     AppDecl, BinaryOp, Block, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item, Literal, Pattern,
     PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, TypeRef, TypeRefKind, UnaryOp,
 };
+use crate::callbind::{CallArgSpec, CallBindError, ParamBinding, ParamSpec, bind_call_args};
+use crate::frontend::html_shorthand::{CanonicalizationPhase, validate_named_args_for_phase};
+use crate::frontend::html_tag_builtin::should_use_html_tag_builtin;
 use crate::html_tags::{self, HtmlTagKind};
 use crate::loader::{ModuleId, ModuleLink, ModuleMap, ModuleRegistry};
 use crate::span::Span;
@@ -103,7 +106,9 @@ fn rewrite_predicate_name_in_refined_arg(
 
 pub fn lower_program(program: &Program, modules: &ModuleMap) -> Result<IrProgram, Vec<String>> {
     let import_items = HashMap::new();
-    let mut lowerer = Lowerer::new(program, 0, modules, &import_items);
+    let mut module_fn_decls = HashMap::new();
+    module_fn_decls.insert(0, collect_function_decls(program));
+    let mut lowerer = Lowerer::new(program, 0, modules, &import_items, Rc::new(module_fn_decls));
     lowerer.lower();
     if lowerer.errors.is_empty() {
         Ok(IrProgram {
@@ -124,8 +129,9 @@ fn lower_program_in_module(
     module_id: ModuleId,
     modules: &ModuleMap,
     import_items: &HashMap<String, ModuleLink>,
+    module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
 ) -> Result<IrProgram, Vec<String>> {
-    let mut lowerer = Lowerer::new(program, module_id, modules, import_items);
+    let mut lowerer = Lowerer::new(program, module_id, modules, import_items, module_fn_decls);
     lowerer.lower();
     if lowerer.errors.is_empty() {
         Ok(IrProgram {
@@ -142,6 +148,12 @@ fn lower_program_in_module(
 }
 
 pub fn lower_registry(registry: &ModuleRegistry) -> Result<IrProgram, Vec<String>> {
+    let mut module_fn_decls = HashMap::new();
+    for (id, unit) in &registry.modules {
+        module_fn_decls.insert(*id, collect_function_decls(&unit.program));
+    }
+    let module_fn_decls = Rc::new(module_fn_decls);
+
     let mut merged = IrProgram {
         functions: HashMap::new(),
         apps: HashMap::new(),
@@ -152,7 +164,13 @@ pub fn lower_registry(registry: &ModuleRegistry) -> Result<IrProgram, Vec<String
     };
     let mut errors = Vec::new();
     for unit in registry.modules.values() {
-        match lower_program_in_module(&unit.program, unit.id, &unit.modules, &unit.import_items) {
+        match lower_program_in_module(
+            &unit.program,
+            unit.id,
+            &unit.modules,
+            &unit.import_items,
+            module_fn_decls.clone(),
+        ) {
             Ok(ir) => {
                 merge_named("function", ir.functions, &mut merged.functions, &mut errors);
                 merge_named("app", ir.apps, &mut merged.apps, &mut errors);
@@ -177,6 +195,7 @@ struct Lowerer<'a> {
     modules: &'a ModuleMap,
     import_items: &'a HashMap<String, ModuleLink>,
     fn_decls: Rc<HashMap<String, FnDecl>>,
+    module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
     functions: HashMap<String, Function>,
     apps: HashMap<String, Function>,
     configs: HashMap<String, Config>,
@@ -216,6 +235,7 @@ impl<'a> Lowerer<'a> {
         module_id: ModuleId,
         modules: &'a ModuleMap,
         import_items: &'a HashMap<String, ModuleLink>,
+        module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
     ) -> Self {
         let mut config_names = HashSet::new();
         let mut enum_names = HashSet::new();
@@ -259,6 +279,7 @@ impl<'a> Lowerer<'a> {
             modules,
             import_items,
             fn_decls: Rc::new(fn_decls),
+            module_fn_decls,
             functions: HashMap::new(),
             apps: HashMap::new(),
             configs: HashMap::new(),
@@ -322,6 +343,7 @@ impl<'a> Lowerer<'a> {
             self.modules,
             self.import_items,
             self.fn_decls.clone(),
+            self.module_fn_decls.clone(),
             self.default_helpers.clone(),
         );
         for param in &decl.params {
@@ -350,6 +372,7 @@ impl<'a> Lowerer<'a> {
             self.modules,
             self.import_items,
             self.fn_decls.clone(),
+            self.module_fn_decls.clone(),
             self.default_helpers.clone(),
         );
         builder.lower_block(&app.body);
@@ -378,6 +401,7 @@ impl<'a> Lowerer<'a> {
                 self.modules,
                 self.import_items,
                 self.fn_decls.clone(),
+                self.module_fn_decls.clone(),
                 self.default_helpers.clone(),
             );
             builder.lower_expr(&field.value);
@@ -425,6 +449,7 @@ impl<'a> Lowerer<'a> {
                     self.modules,
                     self.import_items,
                     self.fn_decls.clone(),
+                    self.module_fn_decls.clone(),
                     self.default_helpers.clone(),
                 );
                 builder.lower_expr(expr);
@@ -510,6 +535,7 @@ impl<'a> Lowerer<'a> {
                 self.modules,
                 self.import_items,
                 self.fn_decls.clone(),
+                self.module_fn_decls.clone(),
                 self.default_helpers.clone(),
             );
             for name in &params {
@@ -614,6 +640,16 @@ fn merge_named<T>(
     }
 }
 
+fn collect_function_decls(program: &Program) -> HashMap<String, FnDecl> {
+    let mut out = HashMap::new();
+    for item in &program.items {
+        if let Item::Fn(decl) = item {
+            out.insert(decl.name.name.clone(), decl.clone());
+        }
+    }
+    out
+}
+
 struct FuncBuilder {
     module_id: ModuleId,
     name: String,
@@ -634,6 +670,7 @@ struct FuncBuilder {
     import_items: HashMap<String, ModuleLink>,
     loop_stack: Vec<LoopContext>,
     fn_decls: Rc<HashMap<String, FnDecl>>,
+    module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
     default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
 }
 
@@ -650,6 +687,7 @@ impl FuncBuilder {
         modules: &ModuleMap,
         import_items: &HashMap<String, ModuleLink>,
         fn_decls: Rc<HashMap<String, FnDecl>>,
+        module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
         default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
     ) -> Self {
         Self {
@@ -672,6 +710,7 @@ impl FuncBuilder {
             import_items: import_items.clone(),
             loop_stack: Vec::new(),
             fn_decls,
+            module_fn_decls,
             default_helpers,
         }
     }
@@ -1308,6 +1347,10 @@ impl FuncBuilder {
                     } else if let Some(decl) = self.fn_decls.get(&ident.name).cloned() {
                         let target = canonical_function_name(self.module_id, &ident.name);
                         self.lower_call_with_defaults(&target, &decl, args);
+                    } else if let Some((target, decl)) =
+                        self.resolve_imported_function_decl(&ident.name)
+                    {
+                        self.lower_call_with_defaults(&target, &decl, args);
                     } else if let Some(target) = self.resolve_imported_function_name(&ident.name) {
                         for arg in args {
                             self.lower_expr(&arg.value);
@@ -1579,6 +1622,7 @@ impl FuncBuilder {
                     &self.modules,
                     &self.import_items,
                     self.fn_decls.clone(),
+                    self.module_fn_decls.clone(),
                     self.default_helpers.clone(),
                 );
                 for (name, _) in &captured {
@@ -1613,10 +1657,13 @@ impl FuncBuilder {
     }
 
     fn should_use_html_tag_builtin(&self, name: &str) -> bool {
-        if html_tags::tag_kind(name).is_none() {
-            return false;
-        }
-        !self.fn_decls.contains_key(name) && !self.imported_names.contains(name)
+        should_use_html_tag_builtin(
+            name,
+            false,
+            self.fn_decls.contains_key(name),
+            self.config_names.contains(name),
+            self.imported_names.contains(name),
+        )
     }
 
     fn resolve_imported_function_name(&self, name: &str) -> Option<String> {
@@ -1627,66 +1674,23 @@ impl FuncBuilder {
         Some(canonical_function_name(link.id, name))
     }
 
+    fn resolve_imported_function_decl(&self, name: &str) -> Option<(String, FnDecl)> {
+        let link = self.import_items.get(name)?;
+        if !link.exports.functions.contains(name) {
+            return None;
+        }
+        let decl = self.module_fn_decls.get(&link.id)?.get(name)?.clone();
+        Some((canonical_function_name(link.id, name), decl))
+    }
+
     fn lower_html_tag_builtin_call(&mut self, tag: &str, args: &[crate::ast::CallArg]) {
         let Some(kind) = html_tags::tag_kind(tag) else {
             self.errors
                 .push(format!("unknown html tag builtin {}", tag));
             return;
         };
-        let has_named = args.iter().any(|arg| arg.name.is_some());
-        if has_named {
-            let mut named_attrs: Vec<(String, String)> = Vec::new();
-            let mut child_arg: Option<&crate::ast::CallArg> = None;
-            for arg in args {
-                if let Some(name) = &arg.name {
-                    match &arg.value.kind {
-                        ExprKind::Literal(Literal::String(value)) => {
-                            named_attrs
-                                .push((html_tags::normalize_attr_name(&name.name), value.clone()));
-                        }
-                        _ => {
-                            self.errors.push(
-                                "html attribute shorthand only supports string literals"
-                                    .to_string(),
-                            );
-                        }
-                    }
-                    continue;
-                }
-                if arg.is_block_sugar && child_arg.is_none() {
-                    child_arg = Some(arg);
-                    continue;
-                }
-                self.errors.push(
-                    "cannot mix html attribute shorthand with positional arguments".to_string(),
-                );
-            }
-            self.emit(Instr::Push(Const::String(tag.to_string())));
-            for (key, value) in &named_attrs {
-                self.emit(Instr::Push(Const::String(key.clone())));
-                self.emit(Instr::Push(Const::String(value.clone())));
-            }
-            self.emit(Instr::MakeMap {
-                len: named_attrs.len(),
-            });
-            if matches!(kind, HtmlTagKind::Normal) {
-                if let Some(children) = child_arg {
-                    self.lower_expr(&children.value);
-                } else {
-                    self.emit(Instr::MakeList { len: 0 });
-                }
-            } else {
-                if child_arg.is_some() {
-                    self.errors
-                        .push(format!("void html tag {} does not accept children", tag));
-                }
-                self.emit(Instr::MakeList { len: 0 });
-            }
-            self.emit(Instr::Call {
-                name: "html.node".to_string(),
-                argc: 3,
-                kind: CallKind::Builtin,
-            });
+        if let Some(message) = self.validate_html_tag_named_args(args) {
+            self.errors.push(message.to_string());
             return;
         }
 
@@ -1728,6 +1732,10 @@ impl FuncBuilder {
         });
     }
 
+    fn validate_html_tag_named_args(&self, args: &[crate::ast::CallArg]) -> Option<&'static str> {
+        validate_named_args_for_phase(args, CanonicalizationPhase::Lowering)
+    }
+
     fn lower_call_with_defaults(
         &mut self,
         name: &str,
@@ -1758,41 +1766,33 @@ impl FuncBuilder {
             return;
         }
 
-        let mut param_for_arg: Vec<Option<usize>> = Vec::with_capacity(args.len());
-        let mut assigned = vec![false; param_count];
-        let mut next_pos = 0usize;
-        for arg in args {
-            let idx = if let Some(arg_name) = &arg.name {
-                decl.params
-                    .iter()
-                    .position(|param| param.name.name == arg_name.name)
-            } else {
-                while next_pos < param_count && assigned[next_pos] {
-                    next_pos += 1;
+        let param_specs: Vec<ParamSpec<'_>> = decl
+            .params
+            .iter()
+            .map(|param| ParamSpec {
+                name: &param.name.name,
+                has_default: param.default.is_some(),
+            })
+            .collect();
+        let arg_specs: Vec<CallArgSpec<'_>> = args
+            .iter()
+            .map(|arg| CallArgSpec {
+                name: arg.name.as_ref().map(|ident| ident.name.as_str()),
+            })
+            .collect();
+        let (plan, bind_errors) = bind_call_args(&param_specs, &arg_specs);
+        for err in bind_errors {
+            match err {
+                CallBindError::UnknownArgument(arg) => {
+                    self.errors
+                        .push(format!("unknown argument {} for {}", arg, name));
                 }
-                if next_pos < param_count {
-                    let idx = next_pos;
-                    next_pos += 1;
-                    Some(idx)
-                } else {
-                    None
+                CallBindError::DuplicateArgument(param) => {
+                    self.errors
+                        .push(format!("duplicate argument {} for {}", param, name));
                 }
-            };
-            match idx {
-                Some(idx) if idx < param_count && !assigned[idx] => {
-                    assigned[idx] = true;
-                    param_for_arg.push(Some(idx));
-                }
-                Some(idx) if idx < param_count => {
-                    self.errors.push(format!(
-                        "duplicate argument {} for {}",
-                        decl.params[idx].name.name, name
-                    ));
-                    param_for_arg.push(None);
-                }
-                _ => {
+                CallBindError::TooManyArguments => {
                     self.errors.push(format!("too many arguments for {}", name));
-                    param_for_arg.push(None);
                 }
             }
         }
@@ -1802,7 +1802,7 @@ impl FuncBuilder {
             param_slots.push(self.declare_temp());
         }
 
-        for (arg, slot_idx) in args.iter().zip(param_for_arg.iter()) {
+        for (arg, slot_idx) in args.iter().zip(plan.arg_to_param.iter()) {
             self.lower_expr(&arg.value);
             if let Some(idx) = slot_idx {
                 self.emit(Instr::StoreLocal(param_slots[*idx]));
@@ -1812,8 +1812,9 @@ impl FuncBuilder {
         }
 
         for (idx, param) in decl.params.iter().enumerate() {
-            if !assigned[idx] {
-                if let Some(_default) = &param.default {
+            match plan.param_bindings.get(idx) {
+                Some(ParamBinding::Arg(_)) => {}
+                Some(ParamBinding::Default) => {
                     let helper = self.ensure_default_helper(name, idx, decl, param);
                     for prev in 0..idx {
                         self.emit(Instr::LoadLocal(param_slots[prev]));
@@ -1824,8 +1825,8 @@ impl FuncBuilder {
                         kind: CallKind::Function,
                     });
                     self.emit(Instr::StoreLocal(param_slots[idx]));
-                    assigned[idx] = true;
-                } else {
+                }
+                Some(ParamBinding::MissingRequired) | None => {
                     self.errors
                         .push(format!("missing argument {} for {}", param.name.name, name));
                     self.emit(Instr::Push(Const::Null));
@@ -1876,6 +1877,7 @@ impl FuncBuilder {
             &self.modules,
             &self.import_items,
             self.fn_decls.clone(),
+            self.module_fn_decls.clone(),
             self.default_helpers.clone(),
         );
         for param in decl.params.iter().take(param_index) {
