@@ -1,0 +1,38 @@
+import { topbar } from "./topbar.fuse"
+import { maybe_sidebar } from "./sidebar.fuse"
+
+fn head_meta(page_title: String) -> Html:
+  return head():
+    meta(charset="utf-8")
+    meta(name="viewport", content="width=device-width, initial-scale=1")
+    meta(name="description", content="FUSE language documentation - specs, runtime, and API reference")
+    title(): html.text(page_title)
+    link({"rel": "stylesheet", "href": asset("site/assets/css/styles.css")})
+
+fn page_shell(
+  page_title: String,
+  current_section: String,
+  active_slug: String,
+  show_sidebar: Bool,
+  content: Html
+) -> Html:
+  var grid_class = "content-grid"
+  if show_sidebar:
+    grid_class = "content-grid has-sidebar"
+  return html(lang="en"):
+    head_meta(page_title)
+    body():
+      div(class="app-shell"):
+        topbar(current_section, show_sidebar)
+        div({"class": grid_class}):
+          maybe_sidebar(show_sidebar, active_slug)
+          button(
+            class="panel-overlay"
+            id="panel-overlay"
+            type="button"
+            aria_label="Close navigation"
+            hidden="hidden"
+          )
+          main({"class": "panel", "id": "content"}): content
+      script({"src": asset("site/assets/js/libs/highlight_11.11.1.min.js")})
+      script({"type": "module", "src": asset("site/assets/js/main.js")})

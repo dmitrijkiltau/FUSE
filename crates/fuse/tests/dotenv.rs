@@ -46,10 +46,7 @@ app "Demo":
         .expect("run fuse");
 
     if !output.status.success() {
-        panic!(
-            "stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        panic!("stderr: {}", String::from_utf8_lossy(&output.stderr));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "4242");
@@ -83,10 +80,7 @@ app "Demo":
         .expect("run fuse");
 
     if !output.status.success() {
-        panic!(
-            "stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        panic!("stderr: {}", String::from_utf8_lossy(&output.stderr));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "ok");

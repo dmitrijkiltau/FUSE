@@ -59,10 +59,7 @@ fn native_bang_error_smoke() {
     }
 
     let pass_ok = vm
-        .call_function(
-            "bang_passthrough",
-            vec![Value::String("alive".to_string())],
-        )
+        .call_function("bang_passthrough", vec![Value::String("alive".to_string())])
         .expect("native bang_passthrough ok failed");
     match pass_ok {
         Value::ResultOk(inner) => match inner.as_ref() {

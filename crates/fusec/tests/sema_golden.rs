@@ -153,3 +153,131 @@ fn main():
 "#;
     assert_diags(src, &[]);
 }
+
+#[test]
+fn html_block_requires_html_return_type() {
+    let src = r#"
+fn text(value: String) -> Html:
+  return html.text(value)
+
+fn bad(attrs: Map<String, String>, children: List<Html>) -> String:
+  return "nope"
+
+fn main():
+  bad():
+    text("x")
+"#;
+    assert_diags(
+        src,
+        &["Error: html block form requires a function that returns Html"],
+    );
+}
+
+#[test]
+fn html_block_children_must_be_html() {
+    let src = r#"
+fn div(attrs: Map<String, String>, children: List<Html>) -> Html:
+  return html.node("div", attrs, children)
+
+fn page(name: String) -> Html:
+  return div():
+    name
+"#;
+    assert_diags(
+        src,
+        &["Error: type mismatch: expected List<Html>, found List<String>"],
+    );
+}
+
+#[test]
+fn html_tag_string_literal_children_are_lowered() {
+    let src = r#"
+fn page() -> Html:
+  return div(class="hero"):
+    "hello"
+"#;
+    assert_diags(src, &[]);
+}
+
+#[test]
+fn html_tag_attr_shorthand_rejects_non_literal_values() {
+    let src = r#"
+fn page(name: String) -> Html:
+  return div(class=name):
+    "hello"
+"#;
+    assert_diags(
+        src,
+        &["Error: html attribute shorthand only supports string literals"],
+    );
+}
+
+#[test]
+fn html_tag_attr_shorthand_rejects_mixing_positional() {
+    let src = r#"
+fn page() -> Html:
+  return div({"class": "hero"}, id="main")
+"#;
+    assert_diags(
+        src,
+        &["Error: cannot mix html attribute shorthand with positional arguments"],
+    );
+}
+
+#[test]
+fn void_html_tags_reject_children() {
+    let src = r#"
+fn page() -> Html:
+  return meta():
+    html.text("x")
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: expected at most 1 arguments, got 2",
+            "Error: void html tag meta does not accept children",
+        ],
+    );
+}
+
+#[test]
+fn refined_predicate_requires_existing_function() {
+    let src = r#"
+type Input:
+  slug: String(predicate(is_slug))
+"#;
+    assert_diags(
+        src,
+        &["Error: unknown predicate function is_slug in current module/import scope"],
+    );
+}
+
+#[test]
+fn refined_predicate_checks_signature() {
+    let src = r#"
+fn is_slug(value: Int) -> Int:
+  return value
+
+type Input:
+  slug: String(predicate(is_slug))
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: predicate is_slug must return Bool, found Int",
+            "Error: predicate is_slug parameter type mismatch: expected String, found Int",
+        ],
+    );
+}
+
+#[test]
+fn refined_regex_requires_string_like_base() {
+    let src = r#"
+type Input:
+  age: Int(regex("^[0-9]+$"))
+"#;
+    assert_diags(
+        src,
+        &["Error: regex() constraint is only supported for string-like refined bases, found Int"],
+    );
+}

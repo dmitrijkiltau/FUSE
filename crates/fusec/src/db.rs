@@ -1,12 +1,21 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use rusqlite::types::{Value as SqlValue, ValueRef};
-use rusqlite::{params_from_iter, Connection, Params};
+use rusqlite::{Connection, Params, params_from_iter};
 
 use crate::interp::Value;
 
 pub struct Db {
-    conn: Connection,
+    state: RefCell<DbState>,
+}
+
+pub const DEFAULT_DB_POOL_SIZE: usize = 1;
+
+struct DbState {
+    conns: Vec<Connection>,
+    next_conn_idx: usize,
+    tx_conn_idx: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -176,9 +185,26 @@ impl Query {
 
 impl Db {
     pub fn open(url: &str) -> Result<Self, String> {
+        Self::open_with_pool(url, DEFAULT_DB_POOL_SIZE)
+    }
+
+    pub fn open_with_pool(url: &str, pool_size: usize) -> Result<Self, String> {
+        if pool_size < 1 {
+            return Err("db pool size must be >= 1".to_string());
+        }
         let path = parse_sqlite_url(url)?;
-        let conn = Connection::open(path).map_err(|err| format!("db open failed: {err}"))?;
-        Ok(Self { conn })
+        let mut conns = Vec::with_capacity(pool_size);
+        for _ in 0..pool_size {
+            let conn = Connection::open(path).map_err(|err| format!("db open failed: {err}"))?;
+            conns.push(conn);
+        }
+        Ok(Self {
+            state: RefCell::new(DbState {
+                conns,
+                next_conn_idx: 0,
+                tx_conn_idx: None,
+            }),
+        })
     }
 
     pub fn exec(&self, sql: &str) -> Result<(), String> {
@@ -187,16 +213,18 @@ impl Db {
 
     pub fn exec_params(&self, sql: &str, params: &[Value]) -> Result<(), String> {
         let sql_params = params_to_sql(params)?;
-        self.conn
-            .execute(sql, params_from_iter(sql_params))
-            .map(|_| ())
-            .map_err(|err| format!("db exec failed: {err}"))
+        self.with_connection(|conn| {
+            conn.execute(sql, params_from_iter(sql_params))
+                .map(|_| ())
+                .map_err(|err| format!("db exec failed: {err}"))
+        })
     }
 
     pub fn execute<P: Params>(&self, sql: &str, params: P) -> Result<usize, String> {
-        self.conn
-            .execute(sql, params)
-            .map_err(|err| format!("db exec failed: {err}"))
+        self.with_connection(|conn| {
+            conn.execute(sql, params)
+                .map_err(|err| format!("db exec failed: {err}"))
+        })
     }
 
     pub fn query(&self, sql: &str) -> Result<Vec<HashMap<String, Value>>, String> {
@@ -209,30 +237,128 @@ impl Db {
         params: &[Value],
     ) -> Result<Vec<HashMap<String, Value>>, String> {
         let sql_params = params_to_sql(params)?;
-        let mut stmt = self
-            .conn
-            .prepare(sql)
-            .map_err(|err| format!("db query failed: {err}"))?;
-        let columns: Vec<String> = stmt
-            .column_names()
-            .iter()
-            .map(|name| name.to_string())
-            .collect();
-        let mut rows = stmt
-            .query(params_from_iter(sql_params))
-            .map_err(|err| format!("db query failed: {err}"))?;
-        let mut out = Vec::new();
-        while let Some(row) = rows.next().map_err(|err| format!("db query failed: {err}"))? {
-            let mut map = HashMap::new();
-            for (idx, name) in columns.iter().enumerate() {
-                let value = row
-                    .get_ref(idx)
-                    .map_err(|err| format!("db query failed: {err}"))?;
-                map.insert(name.clone(), value_from_ref(value));
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|err| format!("db query failed: {err}"))?;
+            let columns: Vec<String> = stmt
+                .column_names()
+                .iter()
+                .map(|name| name.to_string())
+                .collect();
+            let mut rows = stmt
+                .query(params_from_iter(sql_params))
+                .map_err(|err| format!("db query failed: {err}"))?;
+            let mut out = Vec::new();
+            while let Some(row) = rows
+                .next()
+                .map_err(|err| format!("db query failed: {err}"))?
+            {
+                let mut map = HashMap::new();
+                for (idx, name) in columns.iter().enumerate() {
+                    let value = row
+                        .get_ref(idx)
+                        .map_err(|err| format!("db query failed: {err}"))?;
+                    map.insert(name.clone(), value_from_ref(value));
+                }
+                out.push(map);
             }
-            out.push(map);
+            Ok(out)
+        })
+    }
+
+    pub fn begin_transaction(&self) -> Result<(), String> {
+        let mut state = self.state.borrow_mut();
+        if state.tx_conn_idx.is_some() {
+            return Err("db transaction already active".to_string());
         }
-        Ok(out)
+        let idx = state.take_connection_index();
+        state.conns[idx]
+            .execute("BEGIN", ())
+            .map_err(|err| format!("db exec failed: {err}"))?;
+        state.tx_conn_idx = Some(idx);
+        Ok(())
+    }
+
+    pub fn commit_transaction(&self) -> Result<(), String> {
+        let mut state = self.state.borrow_mut();
+        let idx = state
+            .tx_conn_idx
+            .ok_or_else(|| "db transaction not active".to_string())?;
+        state.conns[idx]
+            .execute("COMMIT", ())
+            .map_err(|err| format!("db exec failed: {err}"))?;
+        state.tx_conn_idx = None;
+        Ok(())
+    }
+
+    pub fn rollback_transaction(&self) -> Result<(), String> {
+        let mut state = self.state.borrow_mut();
+        let Some(idx) = state.tx_conn_idx else {
+            return Ok(());
+        };
+        let result = state.conns[idx]
+            .execute("ROLLBACK", ())
+            .map(|_| ())
+            .map_err(|err| format!("db exec failed: {err}"));
+        state.tx_conn_idx = None;
+        result
+    }
+
+    fn with_connection<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut state = self.state.borrow_mut();
+        let idx = state.connection_index();
+        let conn = &state.conns[idx];
+        f(conn)
+    }
+}
+
+impl DbState {
+    fn connection_index(&mut self) -> usize {
+        if let Some(idx) = self.tx_conn_idx {
+            return idx;
+        }
+        self.take_connection_index()
+    }
+
+    fn take_connection_index(&mut self) -> usize {
+        let idx = self.next_conn_idx % self.conns.len();
+        self.next_conn_idx = (idx + 1) % self.conns.len();
+        idx
+    }
+}
+
+fn invalid_pool_size_message(source: &str) -> String {
+    format!("invalid {source}: expected integer >= 1")
+}
+
+pub fn parse_db_pool_size(raw: &str, source: &str) -> Result<usize, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(invalid_pool_size_message(source));
+    }
+    let value: i64 = trimmed
+        .parse()
+        .map_err(|_| invalid_pool_size_message(source))?;
+    if value < 1 {
+        return Err(invalid_pool_size_message(source));
+    }
+    usize::try_from(value).map_err(|_| invalid_pool_size_message(source))
+}
+
+pub fn parse_db_pool_size_value(value: &Value, source: &str) -> Result<usize, String> {
+    match value.unboxed() {
+        Value::Int(v) => {
+            if v < 1 {
+                return Err(invalid_pool_size_message(source));
+            }
+            usize::try_from(v).map_err(|_| invalid_pool_size_message(source))
+        }
+        Value::String(raw) => parse_db_pool_size(&raw, source),
+        _ => Err(invalid_pool_size_message(source)),
     }
 }
 
@@ -385,9 +511,89 @@ fn value_from_ref(value: ValueRef<'_>) -> Value {
         ValueRef::Null => Value::Null,
         ValueRef::Integer(v) => Value::Int(v),
         ValueRef::Real(v) => Value::Float(v),
-        ValueRef::Text(bytes) => {
-            Value::String(String::from_utf8_lossy(bytes).to_string())
-        }
+        ValueRef::Text(bytes) => Value::String(String::from_utf8_lossy(bytes).to_string()),
         ValueRef::Blob(bytes) => Value::Bytes(bytes.to_vec()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_db_url(name: &str) -> String {
+        let mut path = std::env::temp_dir();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        path.push(format!("{name}_{stamp}.sqlite"));
+        format!("sqlite://{}", path.display())
+    }
+
+    fn scalar_i64(rows: &[HashMap<String, Value>], key: &str) -> i64 {
+        let value = rows.first().and_then(|row| row.get(key));
+        match value {
+            Some(Value::Int(v)) => *v,
+            _ => panic!("expected Int scalar for key {key}, got {value:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_db_pool_size_accepts_positive_integers() {
+        assert_eq!(parse_db_pool_size("1", "FUSE_DB_POOL_SIZE").unwrap(), 1);
+        assert_eq!(parse_db_pool_size("8", "FUSE_DB_POOL_SIZE").unwrap(), 8);
+        assert_eq!(parse_db_pool_size("  3  ", "FUSE_DB_POOL_SIZE").unwrap(), 3);
+    }
+
+    #[test]
+    fn parse_db_pool_size_rejects_invalid_values() {
+        for raw in ["", "0", "-1", "abc", "1.5"] {
+            let err = parse_db_pool_size(raw, "FUSE_DB_POOL_SIZE").expect_err("expected failure");
+            assert!(
+                err.contains("FUSE_DB_POOL_SIZE"),
+                "error should mention source, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_db_pool_size_value_supports_int_and_string() {
+        assert_eq!(
+            parse_db_pool_size_value(&Value::Int(2), "App.dbPoolSize").unwrap(),
+            2
+        );
+        assert_eq!(
+            parse_db_pool_size_value(&Value::String("4".to_string()), "App.dbPoolSize").unwrap(),
+            4
+        );
+        let err = parse_db_pool_size_value(&Value::Int(0), "App.dbPoolSize").unwrap_err();
+        assert!(
+            err.contains("App.dbPoolSize"),
+            "error should mention source, got: {err}"
+        );
+    }
+
+    #[test]
+    fn open_with_pool_uses_requested_size() {
+        let db = Db::open_with_pool(&temp_db_url("fuse_db_pool_size"), 3).unwrap();
+        let state = db.state.borrow();
+        assert_eq!(state.conns.len(), 3);
+    }
+
+    #[test]
+    fn transaction_scope_pins_single_connection() {
+        let db = Db::open_with_pool(&temp_db_url("fuse_db_tx_scope"), 2).unwrap();
+        db.exec("create table if not exists items (id integer)")
+            .unwrap();
+
+        db.begin_transaction().unwrap();
+        db.exec("insert into items (id) values (1)").unwrap();
+        let in_tx = db.query("select count(*) as c from items").unwrap();
+        assert_eq!(scalar_i64(&in_tx, "c"), 1);
+        db.rollback_transaction().unwrap();
+
+        let after_rollback = db.query("select count(*) as c from items").unwrap();
+        assert_eq!(scalar_i64(&after_rollback, "c"), 0);
     }
 }

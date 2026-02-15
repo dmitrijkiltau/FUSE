@@ -1,0 +1,160 @@
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HtmlTagKind {
+    Normal,
+    Void,
+}
+
+pub const HTML_NORMAL_TAGS: &[&str] = &[
+    "a",
+    "abbr",
+    "acronym",
+    "address",
+    "applet",
+    "article",
+    "aside",
+    "audio",
+    "b",
+    "bdi",
+    "bdo",
+    "big",
+    "blockquote",
+    "body",
+    "button",
+    "canvas",
+    "caption",
+    "center",
+    "cite",
+    "code",
+    "colgroup",
+    "data",
+    "datalist",
+    "dd",
+    "del",
+    "details",
+    "dfn",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "font",
+    "footer",
+    "form",
+    "frame",
+    "frameset",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "header",
+    "hgroup",
+    "html",
+    "i",
+    "iframe",
+    "ins",
+    "kbd",
+    "label",
+    "legend",
+    "li",
+    "main",
+    "map",
+    "mark",
+    "marquee",
+    "math",
+    "menu",
+    "meter",
+    "nav",
+    "noembed",
+    "noframes",
+    "noscript",
+    "object",
+    "ol",
+    "optgroup",
+    "option",
+    "output",
+    "p",
+    "picture",
+    "plaintext",
+    "pre",
+    "progress",
+    "q",
+    "rb",
+    "rp",
+    "rt",
+    "rtc",
+    "ruby",
+    "s",
+    "samp",
+    "script",
+    "search",
+    "section",
+    "select",
+    "slot",
+    "small",
+    "span",
+    "strike",
+    "strong",
+    "style",
+    "sub",
+    "summary",
+    "sup",
+    "svg",
+    "table",
+    "tbody",
+    "td",
+    "template",
+    "textarea",
+    "tfoot",
+    "th",
+    "thead",
+    "time",
+    "title",
+    "tr",
+    "tt",
+    "u",
+    "ul",
+    "var",
+    "video",
+    "xmp",
+];
+
+pub const HTML_VOID_TAGS: &[&str] = &[
+    "area", "base", "basefont", "br", "col", "embed", "hr", "image", "img", "input", "isindex",
+    "keygen", "link", "meta", "param", "source", "track", "wbr",
+];
+
+pub fn all_html_tags() -> impl Iterator<Item = &'static str> {
+    HTML_NORMAL_TAGS
+        .iter()
+        .copied()
+        .chain(HTML_VOID_TAGS.iter().copied())
+}
+
+pub fn tag_kind(name: &str) -> Option<HtmlTagKind> {
+    if HTML_VOID_TAGS.iter().any(|tag| *tag == name) {
+        return Some(HtmlTagKind::Void);
+    }
+    if HTML_NORMAL_TAGS.iter().any(|tag| *tag == name) {
+        return Some(HtmlTagKind::Normal);
+    }
+    None
+}
+
+pub fn is_html_tag(name: &str) -> bool {
+    tag_kind(name).is_some()
+}
+
+pub fn normalize_attr_name(name: &str) -> String {
+    if name.contains('_') {
+        name.replace('_', "-")
+    } else {
+        name.to_string()
+    }
+}

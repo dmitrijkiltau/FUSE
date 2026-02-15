@@ -94,10 +94,7 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
 
         if is_doc_comment {
             let comment_offset = line.len().saturating_sub(rest_trim.len());
-            let content = rest_trim
-                .trim_start_matches("##")
-                .trim_start()
-                .to_string();
+            let content = rest_trim.trim_start_matches("##").trim_start().to_string();
             tokens.push(Token {
                 kind: TokenKind::DocComment(content),
                 span: Span::new(line_start + comment_offset, line_start + line.len()),
@@ -286,7 +283,10 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
                                 }
                                 let expr_src = unescape_fragment(&line[expr_start..k]);
                                 let offset = line_start + expr_start;
-                                segments.push(InterpSegment::Expr { src: expr_src, offset });
+                                segments.push(InterpSegment::Expr {
+                                    src: expr_src,
+                                    offset,
+                                });
                                 j = k + 1;
                                 continue;
                             }
@@ -296,7 +296,10 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
                     j += c.len_utf8();
                 }
                 if !terminated {
-                    diags.error(Span::new(start, line_start + j), "unterminated string literal");
+                    diags.error(
+                        Span::new(start, line_start + j),
+                        "unterminated string literal",
+                    );
                 }
                 if has_interp {
                     if !out.is_empty() {

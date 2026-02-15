@@ -1,0 +1,6 @@
+import { page_shell } from "../components/page.fuse"
+
+fn openapi_page() -> Html:
+  let content = article(class="openapi-content", data_view="openapi"):
+    div(class="loading-state"): "Loading API documentation..."
+  return page_shell("API - FUSE Docs", "openapi", "", false, content)

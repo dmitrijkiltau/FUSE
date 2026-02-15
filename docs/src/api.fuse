@@ -1,6 +1,25 @@
-service DocsApi at "/api":
-  get "/health" -> Map<String, String>:
+import { home_page } from "./pages/home.fuse"
+import { spec_page } from "./pages/spec.fuse"
+import { openapi_page } from "./pages/openapi.fuse"
+
+service DocsApi at "/":
+  # Home page
+  get "/" -> Html:
+    return home_page()
+
+  # Canonical reference page
+  get "/specs/reference" -> Html:
+    return spec_page("reference", "Developer Reference")
+
+  # OpenAPI page
+  get "/openapi" -> Html:
+    return openapi_page()
+
+  # API endpoints
+  get "/api/health" -> Map<String, String>:
     return {"status": "ok", "service": "docs"}
 
-  get "/specs" -> List<String>:
-    return ["fuse.md", "fls.md", "runtime.md", "scope.md"]
+  get "/api/specs" -> List<Map<String, String>>:
+    return [
+      {"slug": "reference", "label": "Developer Reference", "file": "site/specs/reference.md"}
+    ]

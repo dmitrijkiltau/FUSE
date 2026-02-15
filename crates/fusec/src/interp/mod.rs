@@ -18,8 +18,18 @@ use crate::ast::{
     RouteDecl, ServiceDecl, Stmt, StmtKind, StructField, TestDecl, TypeDecl, TypeRef, TypeRefKind,
     UnaryOp,
 };
-use crate::db::{Db, Query};
-use crate::loader::{ModuleId, ModuleMap, ModuleRegistry};
+use crate::db::{DEFAULT_DB_POOL_SIZE, Db, Query, parse_db_pool_size, parse_db_pool_size_value};
+use crate::html_tags::{self, HtmlTagKind};
+use crate::loader::{ModuleId, ModuleLink, ModuleMap, ModuleRegistry};
+use crate::refinement::{
+    NumberLiteral, RefinementConstraint, base_is_string_like, parse_constraints,
+};
+
+#[derive(Clone, Debug)]
+pub struct FunctionRef {
+    pub(crate) module_id: ModuleId,
+    pub(crate) name: String,
+}
 
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -29,6 +39,7 @@ pub enum Value {
     Bool(bool),
     String(String),
     Bytes(Vec<u8>),
+    Html(HtmlNode),
     Null,
     List(Vec<Value>),
     Map(HashMap<String, Value>),
@@ -52,8 +63,59 @@ pub enum Value {
     ResultOk(Box<Value>),
     ResultErr(Box<Value>),
     Config(String),
-    Function(String),
+    Function(FunctionRef),
     Builtin(String),
+}
+
+#[derive(Clone, Debug)]
+pub enum HtmlNode {
+    Element {
+        tag: String,
+        attrs: HashMap<String, String>,
+        children: Vec<HtmlNode>,
+    },
+    Text(String),
+    Raw(String),
+}
+
+impl HtmlNode {
+    pub fn render_to_string(&self) -> String {
+        let mut out = String::new();
+        self.render_into(&mut out);
+        out
+    }
+
+    fn render_into(&self, out: &mut String) {
+        match self {
+            HtmlNode::Text(text) | HtmlNode::Raw(text) => {
+                out.push_str(text);
+            }
+            HtmlNode::Element {
+                tag,
+                attrs,
+                children,
+            } => {
+                out.push('<');
+                out.push_str(tag);
+                let mut attrs_sorted: Vec<(&String, &String)> = attrs.iter().collect();
+                attrs_sorted.sort_by(|(left, _), (right, _)| left.cmp(right));
+                for (key, value) in attrs_sorted {
+                    out.push(' ');
+                    out.push_str(key);
+                    out.push_str("=\"");
+                    out.push_str(value);
+                    out.push('"');
+                }
+                out.push('>');
+                for child in children {
+                    child.render_into(out);
+                }
+                out.push_str("</");
+                out.push_str(tag);
+                out.push('>');
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -180,6 +242,7 @@ impl Value {
             Value::Bool(v) => v.to_string(),
             Value::String(v) => v.clone(),
             Value::Bytes(v) => rt_bytes::encode_base64(&v),
+            Value::Html(node) => node.render_to_string(),
             Value::Null => "null".to_string(),
             Value::List(items) => {
                 let text = items
@@ -225,7 +288,7 @@ impl Value {
             Value::ResultOk(val) => format!("Ok({})", val.to_string_value()),
             Value::ResultErr(val) => format!("Err({})", val.to_string_value()),
             Value::Config(name) => format!("<config {name}>"),
-            Value::Function(name) => format!("<fn {name}>"),
+            Value::Function(func) => format!("<fn {}::{}>", func.module_id, func.name),
             Value::Builtin(name) => format!("<builtin {name}>"),
         }
     }
@@ -289,6 +352,24 @@ fn split_type_name(name: &str) -> (Option<&str>, &str) {
     match name.split_once('.') {
         Some((module, rest)) if !module.is_empty() && !rest.is_empty() => (Some(module), rest),
         _ => (None, name),
+    }
+}
+
+fn is_html_type_name(name: &str) -> bool {
+    let (_, simple) = split_type_name(name);
+    simple == "Html"
+}
+
+fn is_html_response_type(ty: &TypeRef) -> bool {
+    match &ty.kind {
+        TypeRefKind::Simple(ident) => is_html_type_name(&ident.name),
+        TypeRefKind::Refined { base, .. } => is_html_type_name(&base.name),
+        TypeRefKind::Optional(inner) => is_html_response_type(inner),
+        TypeRefKind::Result { ok, .. } => is_html_response_type(ok),
+        TypeRefKind::Generic { base, args } => match base.name.as_str() {
+            "Option" | "Result" => args.first().is_some_and(is_html_response_type),
+            _ => false,
+        },
     }
 }
 
@@ -468,7 +549,8 @@ pub struct Interpreter<'a> {
     env: Env,
     configs: HashMap<String, HashMap<String, Value>>,
     db: Option<Db>,
-    functions: HashMap<String, &'a FnDecl>,
+    regex_cache: HashMap<String, regex::Regex>,
+    functions: HashMap<ModuleId, HashMap<String, &'a FnDecl>>,
     apps: Vec<&'a AppDecl>,
     app_owner: HashMap<String, ModuleId>,
     services: HashMap<String, &'a ServiceDecl>,
@@ -477,7 +559,7 @@ pub struct Interpreter<'a> {
     config_decls: HashMap<String, &'a ConfigDecl>,
     enums: HashMap<String, &'a EnumDecl>,
     module_maps: HashMap<ModuleId, ModuleMap>,
-    function_owner: HashMap<String, ModuleId>,
+    module_import_items: HashMap<ModuleId, HashMap<String, ModuleLink>>,
     config_owner: HashMap<String, ModuleId>,
     current_module: ModuleId,
 }
@@ -506,8 +588,7 @@ impl<'a> Interpreter<'a> {
     }
 
     pub fn with_modules(program: &'a Program, modules: ModuleMap) -> Self {
-        let mut functions = HashMap::new();
-        let mut function_owner = HashMap::new();
+        let mut functions: HashMap<ModuleId, HashMap<String, &'a FnDecl>> = HashMap::new();
         let mut apps = Vec::new();
         let mut app_owner = HashMap::new();
         let mut services = HashMap::new();
@@ -516,11 +597,17 @@ impl<'a> Interpreter<'a> {
         let mut config_decls = HashMap::new();
         let mut config_owner = HashMap::new();
         let mut enums = HashMap::new();
+        let mut module_import_items: HashMap<ModuleId, HashMap<String, ModuleLink>> =
+            HashMap::new();
+        functions.insert(0, HashMap::new());
+        module_import_items.insert(0, HashMap::new());
         for item in &program.items {
             match item {
                 Item::Fn(decl) => {
-                    functions.insert(decl.name.name.clone(), decl);
-                    function_owner.insert(decl.name.name.clone(), 0);
+                    functions
+                        .entry(0)
+                        .or_default()
+                        .insert(decl.name.name.clone(), decl);
                 }
                 Item::App(app) => {
                     apps.push(app);
@@ -547,6 +634,7 @@ impl<'a> Interpreter<'a> {
             env: Env::new(),
             configs: HashMap::new(),
             db: None,
+            regex_cache: HashMap::new(),
             functions,
             apps,
             app_owner,
@@ -556,15 +644,14 @@ impl<'a> Interpreter<'a> {
             config_decls,
             enums,
             module_maps: HashMap::from([(0, modules)]),
-            function_owner,
+            module_import_items,
             config_owner,
             current_module: 0,
         }
     }
 
     pub fn with_registry(registry: &'a ModuleRegistry) -> Self {
-        let mut functions = HashMap::new();
-        let mut function_owner = HashMap::new();
+        let mut functions: HashMap<ModuleId, HashMap<String, &'a FnDecl>> = HashMap::new();
         let mut apps = Vec::new();
         let mut app_owner = HashMap::new();
         let mut services = HashMap::new();
@@ -574,13 +661,18 @@ impl<'a> Interpreter<'a> {
         let mut config_owner = HashMap::new();
         let mut enums = HashMap::new();
         let mut module_maps = HashMap::new();
+        let mut module_import_items: HashMap<ModuleId, HashMap<String, ModuleLink>> =
+            HashMap::new();
         for (id, unit) in &registry.modules {
             module_maps.insert(*id, unit.modules.clone());
+            module_import_items.insert(*id, unit.import_items.clone());
             for item in &unit.program.items {
                 match item {
                     Item::Fn(decl) => {
-                        functions.insert(decl.name.name.clone(), decl);
-                        function_owner.insert(decl.name.name.clone(), *id);
+                        functions
+                            .entry(*id)
+                            .or_default()
+                            .insert(decl.name.name.clone(), decl);
                     }
                     Item::App(app) => {
                         apps.push(app);
@@ -608,6 +700,7 @@ impl<'a> Interpreter<'a> {
             env: Env::new(),
             configs: HashMap::new(),
             db: None,
+            regex_cache: HashMap::new(),
             functions,
             apps,
             app_owner,
@@ -617,10 +710,41 @@ impl<'a> Interpreter<'a> {
             config_decls,
             enums,
             module_maps,
-            function_owner,
+            module_import_items,
             config_owner,
             current_module: registry.root,
         }
+    }
+
+    fn has_function_in_module(&self, module_id: ModuleId, name: &str) -> bool {
+        self.functions
+            .get(&module_id)
+            .is_some_and(|items| items.contains_key(name))
+    }
+
+    fn function_decl(&self, func: &FunctionRef) -> Option<&'a FnDecl> {
+        self.functions
+            .get(&func.module_id)
+            .and_then(|items| items.get(&func.name))
+            .copied()
+    }
+
+    fn resolve_function_ref(&self, module_id: ModuleId, name: &str) -> Option<FunctionRef> {
+        if self.has_function_in_module(module_id, name) {
+            return Some(FunctionRef {
+                module_id,
+                name: name.to_string(),
+            });
+        }
+        let import_items = self.module_import_items.get(&module_id)?;
+        let link = import_items.get(name)?;
+        if self.has_function_in_module(link.id, name) {
+            return Some(FunctionRef {
+                module_id: link.id,
+                name: name.to_string(),
+            });
+        }
+        None
     }
 
     pub fn run_app(&mut self, name: Option<&str>) -> Result<(), String> {
@@ -687,7 +811,7 @@ impl<'a> Interpreter<'a> {
                     Ok(db) => db,
                     Err(err) => return Err(self.render_exec_error(err)),
                 };
-                db.exec("BEGIN")?;
+                db.begin_transaction()?;
             }
             let prev_module = self.current_module;
             self.current_module = job.module_id;
@@ -697,13 +821,13 @@ impl<'a> Interpreter<'a> {
                 Ok(_) => {}
                 Err(ExecError::Return(_)) => {
                     if let Ok(db) = self.db_mut() {
-                        let _ = db.exec("ROLLBACK");
+                        let _ = db.rollback_transaction();
                     }
                     return Err("return not allowed in migration".to_string());
                 }
                 Err(err) => {
                     if let Ok(db) = self.db_mut() {
-                        let _ = db.exec("ROLLBACK");
+                        let _ = db.rollback_transaction();
                     }
                     return Err(self.render_exec_error(err));
                 }
@@ -713,11 +837,17 @@ impl<'a> Interpreter<'a> {
                     Ok(db) => db,
                     Err(err) => return Err(self.render_exec_error(err)),
                 };
-                db.execute(
+                if let Err(err) = db.execute(
                     "INSERT INTO __fuse_migrations (id, applied_at) VALUES (?1, CURRENT_TIMESTAMP)",
                     (&job.id,),
-                )?;
-                db.exec("COMMIT")?;
+                ) {
+                    let _ = db.rollback_transaction();
+                    return Err(err);
+                }
+                if let Err(err) = db.commit_transaction() {
+                    let _ = db.rollback_transaction();
+                    return Err(err);
+                }
             }
         }
         Ok(())
@@ -766,14 +896,25 @@ impl<'a> Interpreter<'a> {
         name: &str,
         args: &HashMap<String, Value>,
     ) -> Result<Vec<Value>, String> {
-        let decl = match self.functions.get(name) {
-            Some(decl) => *decl,
-            None => return Err(format!("unknown function {name}")),
+        let func_ref = match self.resolve_function_ref(self.current_module, name) {
+            Some(func_ref) => func_ref,
+            None => {
+                return Err(format!(
+                    "unknown function {name} in current module/import scope"
+                ));
+            }
+        };
+        let decl = match self.function_decl(&func_ref) {
+            Some(decl) => decl,
+            None => {
+                return Err(format!(
+                    "unknown function {}::{}",
+                    func_ref.module_id, func_ref.name
+                ));
+            }
         };
         let prev_module = self.current_module;
-        if let Some(owner) = self.function_owner.get(name) {
-            self.current_module = *owner;
-        }
+        self.current_module = func_ref.module_id;
         self.env.push();
         let mut ordered = Vec::with_capacity(decl.params.len());
         for param in &decl.params {
@@ -813,14 +954,25 @@ impl<'a> Interpreter<'a> {
         name: &str,
         args: &HashMap<String, Value>,
     ) -> Result<Value, String> {
-        let decl = match self.functions.get(name) {
-            Some(decl) => *decl,
-            None => return Err(format!("unknown function {name}")),
+        let func_ref = match self.resolve_function_ref(self.current_module, name) {
+            Some(func_ref) => func_ref,
+            None => {
+                return Err(format!(
+                    "unknown function {name} in current module/import scope"
+                ));
+            }
+        };
+        let decl = match self.function_decl(&func_ref) {
+            Some(decl) => decl,
+            None => {
+                return Err(format!(
+                    "unknown function {}::{}",
+                    func_ref.module_id, func_ref.name
+                ));
+            }
         };
         let prev_module = self.current_module;
-        if let Some(owner) = self.function_owner.get(name) {
-            self.current_module = *owner;
-        }
+        self.current_module = func_ref.module_id;
         self.env.push();
         for param in &decl.params {
             let value = if let Some(value) = args.get(&param.name.name) {
@@ -1109,6 +1261,11 @@ impl<'a> Interpreter<'a> {
                 }
             }
             ExprKind::Call { callee, args } => {
+                if let ExprKind::Ident(ident) = &callee.kind {
+                    if self.should_use_html_tag_builtin(&ident.name) {
+                        return self.eval_html_tag_call_expr(&ident.name, args);
+                    }
+                }
                 if let ExprKind::Member { base, name } = &callee.kind {
                     let mut arg_vals = Vec::new();
                     for arg in args {
@@ -1262,10 +1419,25 @@ impl<'a> Interpreter<'a> {
         ))
     }
 
+    fn db_pool_size(&self) -> ExecResult<usize> {
+        if let Ok(raw) = std::env::var("FUSE_DB_POOL_SIZE") {
+            return parse_db_pool_size(&raw, "FUSE_DB_POOL_SIZE").map_err(ExecError::Runtime);
+        }
+        if let Some(value) = self
+            .configs
+            .get("App")
+            .and_then(|config| config.get("dbPoolSize"))
+        {
+            return parse_db_pool_size_value(value, "App.dbPoolSize").map_err(ExecError::Runtime);
+        }
+        Ok(DEFAULT_DB_POOL_SIZE)
+    }
+
     fn db_mut(&mut self) -> ExecResult<&mut Db> {
         if self.db.is_none() {
+            let pool_size = self.db_pool_size()?;
             let url = self.db_url()?;
-            let db = Db::open(&url).map_err(ExecError::Runtime)?;
+            let db = Db::open_with_pool(&url, pool_size).map_err(ExecError::Runtime)?;
             self.db = Some(db);
         }
         Ok(self.db.as_mut().expect("db initialized"))
@@ -1275,24 +1447,87 @@ impl<'a> Interpreter<'a> {
         if let Some(val) = self.env.get(name) {
             return Ok(val);
         }
-        if self.functions.contains_key(name) {
-            return Ok(Value::Function(name.to_string()));
+        if let Some(func) = self.resolve_function_ref(self.current_module, name) {
+            return Ok(Value::Function(func));
         }
         if self.config_decls.contains_key(name) {
             return Ok(Value::Config(name.to_string()));
         }
         match name {
-            "print" | "env" | "serve" | "log" | "db" | "assert" | "task" | "json" => {
-                Ok(Value::Builtin(name.to_string()))
-            }
+            "print" | "env" | "serve" | "log" | "db" | "assert" | "asset" | "task" | "json"
+            | "html" | "svg" => Ok(Value::Builtin(name.to_string())),
+            _ if html_tags::is_html_tag(name) => Ok(Value::Builtin(name.to_string())),
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),
         }
+    }
+
+    fn should_use_html_tag_builtin(&self, name: &str) -> bool {
+        if !html_tags::is_html_tag(name) {
+            return false;
+        }
+        if self.env.get(name).is_some() {
+            return false;
+        }
+        if self
+            .resolve_function_ref(self.current_module, name)
+            .is_some()
+            || self.config_decls.contains_key(name)
+        {
+            return false;
+        }
+        true
+    }
+
+    fn eval_html_tag_call_expr(
+        &mut self,
+        name: &str,
+        args: &[crate::ast::CallArg],
+    ) -> ExecResult<Value> {
+        let has_named = args.iter().any(|arg| arg.name.is_some());
+        if !has_named {
+            let mut values = Vec::with_capacity(args.len());
+            for arg in args {
+                values.push(self.eval_expr(&arg.value)?);
+            }
+            return self.eval_builtin(name, values);
+        }
+
+        let mut attrs: HashMap<String, Value> = HashMap::new();
+        let mut child: Option<Value> = None;
+        for arg in args {
+            if let Some(attr_name) = &arg.name {
+                let value = self.eval_expr(&arg.value)?.unboxed();
+                let Value::String(text) = value else {
+                    return Err(ExecError::Runtime(
+                        "html attribute shorthand only supports string values".to_string(),
+                    ));
+                };
+                attrs.insert(
+                    html_tags::normalize_attr_name(&attr_name.name),
+                    Value::String(text),
+                );
+                continue;
+            }
+            if arg.is_block_sugar && child.is_none() {
+                child = Some(self.eval_expr(&arg.value)?);
+                continue;
+            }
+            return Err(ExecError::Runtime(
+                "cannot mix html attribute shorthand with positional arguments".to_string(),
+            ));
+        }
+
+        let mut canonical = vec![Value::Map(attrs)];
+        if let Some(child) = child {
+            canonical.push(child);
+        }
+        self.eval_builtin(name, canonical)
     }
 
     fn eval_call(&mut self, callee: Value, args: Vec<Value>) -> ExecResult<Value> {
         match callee.unboxed() {
             Value::Builtin(name) => self.eval_builtin(&name, args),
-            Value::Function(name) => self.eval_function(&name, args),
+            Value::Function(func) => self.eval_function(&func, args),
             Value::EnumCtor { name, variant } => {
                 let arity = self.enum_variant_arity(&name, &variant).ok_or_else(|| {
                     ExecError::Runtime(format!("unknown variant {name}.{variant}"))
@@ -1318,6 +1553,9 @@ impl<'a> Interpreter<'a> {
 
     fn eval_builtin(&mut self, name: &str, args: Vec<Value>) -> ExecResult<Value> {
         let args: Vec<Value> = args.into_iter().map(|val| val.unboxed()).collect();
+        if html_tags::is_html_tag(name) {
+            return self.eval_html_tag_builtin(name, &args);
+        }
         match name {
             "print" => {
                 let text = args.get(0).map(|v| v.to_string_value()).unwrap_or_default();
@@ -1391,6 +1629,141 @@ impl<'a> Interpreter<'a> {
                 let json = rt_json::decode(&text)
                     .map_err(|msg| ExecError::Runtime(format!("invalid json: {msg}")))?;
                 Ok(self.json_to_value(&json))
+            }
+            "asset" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime("asset expects 1 argument".to_string()));
+                }
+                let path = match args.get(0) {
+                    Some(Value::String(path)) => path,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "asset expects a string path".to_string(),
+                        ));
+                    }
+                };
+                Ok(Value::String(crate::runtime_assets::resolve_asset_href(
+                    path,
+                )))
+            }
+            "html.text" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "html.text expects 1 argument".to_string(),
+                    ));
+                }
+                let text = match args.get(0) {
+                    Some(Value::String(text)) => text.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime("html.text expects a String".to_string()));
+                    }
+                };
+                Ok(Value::Html(HtmlNode::Text(text)))
+            }
+            "html.raw" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "html.raw expects 1 argument".to_string(),
+                    ));
+                }
+                let text = match args.get(0) {
+                    Some(Value::String(text)) => text.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime("html.raw expects a String".to_string()));
+                    }
+                };
+                Ok(Value::Html(HtmlNode::Raw(text)))
+            }
+            "html.node" => {
+                if args.len() != 3 {
+                    return Err(ExecError::Runtime(
+                        "html.node expects 3 arguments".to_string(),
+                    ));
+                }
+                let tag = match args.get(0) {
+                    Some(Value::String(tag)) => tag.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "html.node expects a String tag".to_string(),
+                        ));
+                    }
+                };
+                let attrs = match args.get(1) {
+                    Some(Value::Map(map)) => {
+                        let mut attrs = HashMap::with_capacity(map.len());
+                        for (key, value) in map {
+                            let Value::String(text) = value else {
+                                return Err(ExecError::Runtime(
+                                    "html.node attrs must be Map<String, String>".to_string(),
+                                ));
+                            };
+                            attrs.insert(key.clone(), text.clone());
+                        }
+                        attrs
+                    }
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "html.node expects attrs as Map<String, String>".to_string(),
+                        ));
+                    }
+                };
+                let children = match args.get(2) {
+                    Some(Value::List(items)) => {
+                        let mut children = Vec::with_capacity(items.len());
+                        for item in items {
+                            let Value::Html(node) = item else {
+                                return Err(ExecError::Runtime(
+                                    "html.node children must be List<Html>".to_string(),
+                                ));
+                            };
+                            children.push(node.clone());
+                        }
+                        children
+                    }
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "html.node expects children as List<Html>".to_string(),
+                        ));
+                    }
+                };
+                Ok(Value::Html(HtmlNode::Element {
+                    tag,
+                    attrs,
+                    children,
+                }))
+            }
+            "html.render" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "html.render expects 1 argument".to_string(),
+                    ));
+                }
+                let node = match args.get(0) {
+                    Some(Value::Html(node)) => node,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "html.render expects an Html value".to_string(),
+                        ));
+                    }
+                };
+                Ok(Value::String(node.render_to_string()))
+            }
+            "svg.inline" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "svg.inline expects 1 argument".to_string(),
+                    ));
+                }
+                let name = match args.get(0) {
+                    Some(Value::String(name)) => name,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "svg.inline expects a String path".to_string(),
+                        ));
+                    }
+                };
+                let svg = crate::runtime_svg::load_svg_inline(name).map_err(ExecError::Runtime)?;
+                Ok(Value::Html(HtmlNode::Raw(svg)))
             }
             "db.exec" => {
                 if args.len() > 2 {
@@ -1778,15 +2151,86 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn eval_function(&mut self, name: &str, args: Vec<Value>) -> ExecResult<Value> {
-        let decl = match self.functions.get(name) {
-            Some(decl) => *decl,
-            None => return Err(ExecError::Runtime(format!("unknown function {name}"))),
+    fn eval_html_tag_builtin(&self, name: &str, args: &[Value]) -> ExecResult<Value> {
+        let Some(kind) = html_tags::tag_kind(name) else {
+            return Err(ExecError::Runtime(format!("unknown builtin {name}")));
+        };
+        let max = match kind {
+            HtmlTagKind::Normal => 2usize,
+            HtmlTagKind::Void => 1usize,
+        };
+        if args.len() > max {
+            return Err(ExecError::Runtime(format!(
+                "{} expects at most {} arguments",
+                name, max
+            )));
+        }
+        let attrs = match args.get(0) {
+            Some(Value::Map(map)) => {
+                let mut attrs = HashMap::with_capacity(map.len());
+                for (key, value) in map {
+                    let Value::String(text) = value else {
+                        return Err(ExecError::Runtime(format!(
+                            "{} attrs must be Map<String, String>",
+                            name
+                        )));
+                    };
+                    attrs.insert(key.clone(), text.clone());
+                }
+                attrs
+            }
+            Some(_) => {
+                return Err(ExecError::Runtime(format!(
+                    "{} expects attrs as Map<String, String>",
+                    name
+                )));
+            }
+            None => HashMap::new(),
+        };
+        let children = match kind {
+            HtmlTagKind::Void => Vec::new(),
+            HtmlTagKind::Normal => match args.get(1) {
+                Some(Value::List(items)) => {
+                    let mut children = Vec::with_capacity(items.len());
+                    for item in items {
+                        let Value::Html(node) = item else {
+                            return Err(ExecError::Runtime(format!(
+                                "{} children must be List<Html>",
+                                name
+                            )));
+                        };
+                        children.push(node.clone());
+                    }
+                    children
+                }
+                Some(_) => {
+                    return Err(ExecError::Runtime(format!(
+                        "{} expects children as List<Html>",
+                        name
+                    )));
+                }
+                None => Vec::new(),
+            },
+        };
+        Ok(Value::Html(HtmlNode::Element {
+            tag: name.to_string(),
+            attrs,
+            children,
+        }))
+    }
+
+    fn eval_function(&mut self, func: &FunctionRef, args: Vec<Value>) -> ExecResult<Value> {
+        let decl = match self.function_decl(func) {
+            Some(decl) => decl,
+            None => {
+                return Err(ExecError::Runtime(format!(
+                    "unknown function {}::{}",
+                    func.module_id, func.name
+                )));
+            }
         };
         let prev_module = self.current_module;
-        if let Some(owner) = self.function_owner.get(name) {
-            self.current_module = *owner;
-        }
+        self.current_module = func.module_id;
         self.env.push();
         for (idx, param) in decl.params.iter().enumerate() {
             let value = if idx < args.len() {
@@ -1903,12 +2347,18 @@ impl<'a> Interpreter<'a> {
             .next()
             .unwrap_or(&request.path)
             .to_string();
+        if let Some(response) = self.try_openapi_ui_response(request.method.as_str(), &path) {
+            return Ok(response);
+        }
         if let Some(response) = self.try_static_response(request.method.as_str(), &path) {
             return Ok(response);
         }
         let (route, params) = match self.match_route(service, &verb, &path)? {
             Some(result) => result,
             None => {
+                if let Some(response) = self.try_vite_proxy_response(&request) {
+                    return Ok(response);
+                }
                 let body = self.error_json_from_code("not_found", "not found");
                 return Ok(self.http_response(404, body));
             }
@@ -1933,6 +2383,7 @@ impl<'a> Interpreter<'a> {
             Ok(value) => value,
             Err(err) => return Err(err),
         };
+        let html_response = is_html_response_type(&route.ret_type);
         match value {
             Value::ResultErr(err) => {
                 let status = self.http_status_for_error_value(&err);
@@ -1940,12 +2391,23 @@ impl<'a> Interpreter<'a> {
                 Ok(self.http_response(status, json))
             }
             Value::ResultOk(ok) => {
-                let json = self.value_to_json(&ok);
-                Ok(self.http_response(200, rt_json::encode(&json)))
+                if html_response {
+                    let body =
+                        self.maybe_inject_live_reload_html(self.render_html_value(ok.as_ref())?);
+                    Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
+                } else {
+                    let json = self.value_to_json(&ok);
+                    Ok(self.http_response(200, rt_json::encode(&json)))
+                }
             }
             other => {
-                let json = self.value_to_json(&other);
-                Ok(self.http_response(200, rt_json::encode(&json)))
+                if html_response {
+                    let body = self.maybe_inject_live_reload_html(self.render_html_value(&other)?);
+                    Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
+                } else {
+                    let json = self.value_to_json(&other);
+                    Ok(self.http_response(200, rt_json::encode(&json)))
+                }
             }
         }
     }
@@ -1976,7 +2438,7 @@ impl<'a> Interpreter<'a> {
         if !full.is_file() {
             return None;
         }
-        let body = fs::read_to_string(&full).ok()?;
+        let mut body = fs::read_to_string(&full).ok()?;
         let content_type = match full.extension().and_then(|ext| ext.to_str()) {
             Some("html") => "text/html; charset=utf-8",
             Some("css") => "text/css; charset=utf-8",
@@ -1984,7 +2446,53 @@ impl<'a> Interpreter<'a> {
             Some("json") => "application/json; charset=utf-8",
             _ => "text/plain; charset=utf-8",
         };
+        if content_type.starts_with("text/html") {
+            body = self.maybe_inject_live_reload_html(body);
+        }
         Some(self.http_response_with_type(200, body, content_type))
+    }
+
+    fn try_vite_proxy_response(&self, request: &HttpRequest) -> Option<String> {
+        let base_url = std::env::var("FUSE_VITE_PROXY_URL").ok()?;
+        proxy_http_request(request, &base_url)
+    }
+
+    fn try_openapi_ui_response(&self, method: &str, path: &str) -> Option<String> {
+        if method != "GET" {
+            return None;
+        }
+        let spec_path = std::env::var("FUSE_OPENAPI_JSON_PATH").ok()?;
+        let ui_path = normalize_openapi_ui_path(
+            std::env::var("FUSE_OPENAPI_UI_PATH")
+                .ok()
+                .as_deref()
+                .unwrap_or("/docs"),
+        );
+        let path_no_slash = path.strip_suffix('/').unwrap_or(path);
+        let docs_path_no_slash = ui_path.strip_suffix('/').unwrap_or(&ui_path);
+        if path_no_slash == docs_path_no_slash {
+            let spec_url = format!("{docs_path_no_slash}/openapi.json");
+            let body = self.maybe_inject_live_reload_html(openapi_ui_html(&spec_url));
+            return Some(self.http_response_with_type(200, body, "text/html; charset=utf-8"));
+        }
+        let spec_route = format!("{docs_path_no_slash}/openapi.json");
+        if path == spec_route {
+            let body = match fs::read_to_string(&spec_path) {
+                Ok(body) => body,
+                Err(err) => {
+                    return Some(self.http_response(
+                        500,
+                        self.internal_error_json(&format!("failed to read openapi spec: {err}")),
+                    ));
+                }
+            };
+            return Some(self.http_response_with_type(
+                200,
+                body,
+                "application/json; charset=utf-8",
+            ));
+        }
+        None
     }
 
     fn eval_route(
@@ -2147,6 +2655,26 @@ impl<'a> Interpreter<'a> {
         )
     }
 
+    fn maybe_inject_live_reload_html(&self, mut body: String) -> String {
+        let ws_url = match std::env::var("FUSE_DEV_RELOAD_WS_URL") {
+            Ok(url) if !url.trim().is_empty() => url,
+            _ => return body,
+        };
+        if body.contains("data-fuse-live-reload") {
+            return body;
+        }
+        let ws_url = escape_js_single_quoted(&ws_url);
+        let script = format!(
+            "<script data-fuse-live-reload>(function(){{var url='{ws_url}';var retry=500;function connect(){{var ws=new WebSocket(url);ws.onopen=function(){{retry=500;}};ws.onmessage=function(){{window.location.reload();}};ws.onclose=function(){{setTimeout(connect,retry);retry=Math.min(retry*2,3000);}};ws.onerror=function(){{ws.close();}};}}connect();}})();</script>"
+        );
+        if let Some(index) = body.rfind("</body>") {
+            body.insert_str(index, &script);
+        } else {
+            body.push_str(&script);
+        }
+        body
+    }
+
     fn http_error_response(&self, err: ExecError) -> String {
         match err {
             ExecError::Error(value) => {
@@ -2207,6 +2735,16 @@ impl<'a> Interpreter<'a> {
         self.error_json_from_code("internal_error", message)
     }
 
+    fn render_html_value(&self, value: &Value) -> ExecResult<String> {
+        match value.unboxed() {
+            Value::Html(node) => Ok(node.render_to_string()),
+            other => Err(ExecError::Runtime(format!(
+                "expected Html response, got {}",
+                self.value_type_name(&other)
+            ))),
+        }
+    }
+
     fn wrap_function_result(&self, ret: &Option<TypeRef>, value: Value) -> ExecResult<Value> {
         if self.is_result_type(ret.as_ref()) {
             match value {
@@ -2242,6 +2780,14 @@ impl<'a> Interpreter<'a> {
             Value::Builtin(name) if name == "task" => match field {
                 "id" | "done" | "cancel" => Ok(Value::Builtin(format!("task.{field}"))),
                 _ => Err(ExecError::Runtime(format!("unknown task method {field}"))),
+            },
+            Value::Builtin(name) if name == "html" => match field {
+                "text" | "raw" | "node" | "render" => Ok(Value::Builtin(format!("html.{field}"))),
+                _ => Err(ExecError::Runtime(format!("unknown html method {field}"))),
+            },
+            Value::Builtin(name) if name == "svg" => match field {
+                "inline" => Ok(Value::Builtin(format!("svg.{field}"))),
+                _ => Err(ExecError::Runtime(format!("unknown svg method {field}"))),
             },
             Value::Config(name) => {
                 let map = self
@@ -2310,7 +2856,10 @@ impl<'a> Interpreter<'a> {
         if let ExprKind::Ident(module_ident) = &base.kind {
             if let Some(module) = module_map.and_then(|map| map.get(&module_ident.name)) {
                 if module.exports.functions.contains(field) {
-                    return Ok(Some(Value::Function(field.to_string())));
+                    return Ok(Some(Value::Function(FunctionRef {
+                        module_id: module.id,
+                        name: field.to_string(),
+                    })));
                 }
                 if module.exports.configs.contains(field) {
                     return Ok(Some(Value::Config(field.to_string())));
@@ -2943,7 +3492,7 @@ impl<'a> Interpreter<'a> {
             TypeRefKind::Simple(ident) => {
                 let (_, simple_name) = split_type_name(&ident.name);
                 match simple_name {
-                    "Int" | "Float" | "Bool" | "String" | "Id" | "Email" | "Bytes" => {
+                    "Int" | "Float" | "Bool" | "String" | "Id" | "Email" | "Bytes" | "Html" => {
                         self.parse_simple_env(&ident.name, raw)
                     }
                     _ => {
@@ -3022,7 +3571,7 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn validate_value(&self, value: &Value, ty: &TypeRef, path: &str) -> ExecResult<()> {
+    fn validate_value(&mut self, value: &Value, ty: &TypeRef, path: &str) -> ExecResult<()> {
         let value = value.unboxed();
         match &ty.kind {
             TypeRefKind::Optional(inner) => {
@@ -3221,6 +3770,18 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
                 },
+                "Html" => match value {
+                    Value::Html(_) => {
+                        return Ok(());
+                    }
+                    _ => {
+                        return Err(ExecError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("expected Html, got {type_name}"),
+                        )));
+                    }
+                },
                 _ => {}
             }
         }
@@ -3247,6 +3808,7 @@ impl<'a> Interpreter<'a> {
             Value::Bool(_) => "Bool".to_string(),
             Value::String(_) => "String".to_string(),
             Value::Bytes(_) => "Bytes".to_string(),
+            Value::Html(_) => "Html".to_string(),
             Value::Null => "Null".to_string(),
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
@@ -3272,6 +3834,7 @@ impl<'a> Interpreter<'a> {
             Value::Bool(v) => rt_json::JsonValue::Bool(v),
             Value::String(v) => rt_json::JsonValue::String(v.clone()),
             Value::Bytes(v) => rt_json::JsonValue::String(rt_bytes::encode_base64(&v)),
+            Value::Html(node) => rt_json::JsonValue::String(node.render_to_string()),
             Value::Null => rt_json::JsonValue::Null,
             Value::List(items) => {
                 rt_json::JsonValue::Array(items.iter().map(|v| self.value_to_json(v)).collect())
@@ -3317,7 +3880,9 @@ impl<'a> Interpreter<'a> {
             Value::ResultOk(value) => self.value_to_json(value.as_ref()),
             Value::ResultErr(value) => self.value_to_json(value.as_ref()),
             Value::Config(name) => rt_json::JsonValue::String(name.clone()),
-            Value::Function(name) => rt_json::JsonValue::String(name.clone()),
+            Value::Function(func) => {
+                rt_json::JsonValue::String(format!("{}::{}", func.module_id, func.name))
+            }
             Value::Builtin(name) => rt_json::JsonValue::String(name.clone()),
             Value::EnumCtor { name, variant } => {
                 rt_json::JsonValue::String(format!("{name}.{variant}"))
@@ -3401,12 +3966,8 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
             }
-            TypeRefKind::Result { .. } => {
-                return Err(ExecError::Error(self.validation_error_value(
-                    path,
-                    "invalid_value",
-                    "Result is not supported for JSON body",
-                )));
+            TypeRefKind::Result { ok, err } => {
+                return self.decode_json_result_value(json, ok, err.as_deref(), path);
             }
             TypeRefKind::Generic { base, args } => match base.name.as_str() {
                 "Option" => {
@@ -3422,11 +3983,12 @@ impl<'a> Interpreter<'a> {
                     }
                 }
                 "Result" => {
-                    return Err(ExecError::Error(self.validation_error_value(
-                        path,
-                        "invalid_value",
-                        "Result is not supported for JSON body",
-                    )));
+                    if args.len() != 2 {
+                        return Err(ExecError::Runtime(
+                            "Result expects 2 type arguments".to_string(),
+                        ));
+                    }
+                    return self.decode_json_result_value(json, &args[0], Some(&args[1]), path);
                 }
                 "List" => {
                     if args.len() != 1 {
@@ -3482,6 +4044,62 @@ impl<'a> Interpreter<'a> {
         };
         self.validate_value(&value, ty, path)?;
         Ok(value)
+    }
+
+    fn decode_json_result_value(
+        &mut self,
+        json: &rt_json::JsonValue,
+        ok_ty: &TypeRef,
+        err_ty: Option<&TypeRef>,
+        path: &str,
+    ) -> ExecResult<Value> {
+        let rt_json::JsonValue::Object(map) = json else {
+            return Err(ExecError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                "expected Result object",
+            )));
+        };
+        let tag = map.get("type").ok_or_else(|| {
+            ExecError::Error(self.validation_error_value(
+                path,
+                "missing_field",
+                "missing Result tag",
+            ))
+        })?;
+        let rt_json::JsonValue::String(tag) = tag else {
+            return Err(ExecError::Error(self.validation_error_value(
+                &format!("{path}.type"),
+                "type_mismatch",
+                "expected Result tag string",
+            )));
+        };
+        let data = map.get("data").ok_or_else(|| {
+            ExecError::Error(self.validation_error_value(
+                path,
+                "missing_field",
+                "missing Result data",
+            ))
+        })?;
+        match tag.as_str() {
+            "Ok" => {
+                let value = self.decode_json_value(data, ok_ty, &format!("{path}.data"))?;
+                Ok(Value::ResultOk(Box::new(value)))
+            }
+            "Err" => {
+                let value = if let Some(err_ty) = err_ty {
+                    self.decode_json_value(data, err_ty, &format!("{path}.data"))?
+                } else {
+                    self.json_to_value(data)
+                };
+                Ok(Value::ResultErr(Box::new(value)))
+            }
+            _ => Err(ExecError::Error(self.validation_error_value(
+                &format!("{path}.type"),
+                "invalid_value",
+                format!("unknown Result variant {tag}"),
+            ))),
+        }
     }
 
     fn decode_simple_json(
@@ -3550,6 +4168,13 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
             },
+            "Html" => {
+                return Err(ExecError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    "expected Html",
+                )));
+            }
             _ => return Ok(None),
         };
         Ok(Some(value))
@@ -3695,17 +4320,70 @@ impl<'a> Interpreter<'a> {
     }
 
     fn check_refined(
-        &self,
+        &mut self,
         value: &Value,
         base: &str,
         args: &[Expr],
         path: &str,
     ) -> ExecResult<()> {
-        let value = value.unboxed();
+        let constraints = parse_constraints(args).map_err(|err| {
+            ExecError::Runtime(format!("invalid refined constraint: {}", err.message))
+        })?;
+        for constraint in constraints {
+            match constraint {
+                RefinementConstraint::Range { min, max, .. } => {
+                    self.check_refined_range(value, base, min, max, path)?;
+                }
+                RefinementConstraint::Regex { pattern, .. } => {
+                    if !base_is_string_like(base) {
+                        return Err(ExecError::Runtime(format!(
+                            "regex() constraint is not supported for refined {base}"
+                        )));
+                    }
+                    let Value::String(text) = value.unboxed() else {
+                        return Err(ExecError::Runtime(format!(
+                            "type mismatch at {path}: expected String"
+                        )));
+                    };
+                    if !self.regex_matches(&pattern, &text)? {
+                        return Err(ExecError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            format!("value does not match regex {pattern}"),
+                        )));
+                    }
+                }
+                RefinementConstraint::Predicate { name, .. } => {
+                    if !self.eval_refinement_predicate(&name, value)? {
+                        return Err(ExecError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            format!("predicate {name} rejected value"),
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_refined_range(
+        &self,
+        value: &Value,
+        base: &str,
+        min: NumberLiteral,
+        max: NumberLiteral,
+        path: &str,
+    ) -> ExecResult<()> {
         match base {
-            "String" => {
-                let (min, max) = self.parse_length_range(args)?;
-                let len = match value {
+            "String" | "Id" | "Email" => {
+                let min = min
+                    .as_i64()
+                    .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
+                let max = max
+                    .as_i64()
+                    .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
+                let len = match value.unboxed() {
                     Value::String(s) => s.chars().count() as i64,
                     _ => {
                         return Err(ExecError::Runtime(format!(
@@ -3713,19 +4391,49 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
                 };
-                if !rt_validate::check_len(len, min, max) {
-                    let message = format!("length {len} out of range {min}..{max}");
-                    return Err(ExecError::Error(self.validation_error_value(
+                if rt_validate::check_len(len, min, max) {
+                    Ok(())
+                } else {
+                    Err(ExecError::Error(self.validation_error_value(
                         path,
                         "invalid_value",
-                        message,
-                    )));
+                        format!("length {len} out of range {min}..{max}"),
+                    )))
                 }
-                Ok(())
+            }
+            "Bytes" => {
+                let min = min
+                    .as_i64()
+                    .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
+                let max = max
+                    .as_i64()
+                    .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
+                let len = match value.unboxed() {
+                    Value::Bytes(bytes) => bytes.len() as i64,
+                    _ => {
+                        return Err(ExecError::Runtime(format!(
+                            "type mismatch at {path}: expected Bytes"
+                        )));
+                    }
+                };
+                if rt_validate::check_len(len, min, max) {
+                    Ok(())
+                } else {
+                    Err(ExecError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("length {len} out of range {min}..{max}"),
+                    )))
+                }
             }
             "Int" => {
-                let (min, max) = self.parse_int_range(args)?;
-                let val = match value {
+                let min = min
+                    .as_i64()
+                    .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
+                let max = max
+                    .as_i64()
+                    .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
+                let val = match value.unboxed() {
                     Value::Int(v) => v,
                     _ => {
                         return Err(ExecError::Runtime(format!(
@@ -3733,19 +4441,20 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
                 };
-                if !rt_validate::check_int_range(val, min, max) {
-                    let message = format!("value {val} out of range {min}..{max}");
-                    return Err(ExecError::Error(self.validation_error_value(
+                if rt_validate::check_int_range(val, min, max) {
+                    Ok(())
+                } else {
+                    Err(ExecError::Error(self.validation_error_value(
                         path,
                         "invalid_value",
-                        message,
-                    )));
+                        format!("value {val} out of range {min}..{max}"),
+                    )))
                 }
-                Ok(())
             }
             "Float" => {
-                let (min, max) = self.parse_float_range(args)?;
-                let val = match value {
+                let min = min.as_f64();
+                let max = max.as_f64();
+                let val = match value.unboxed() {
                     Value::Float(v) => v,
                     _ => {
                         return Err(ExecError::Runtime(format!(
@@ -3753,99 +4462,77 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
                 };
-                if !rt_validate::check_float_range(val, min, max) {
-                    let message = format!("value {val} out of range {min}..{max}");
-                    return Err(ExecError::Error(self.validation_error_value(
+                if rt_validate::check_float_range(val, min, max) {
+                    Ok(())
+                } else {
+                    Err(ExecError::Error(self.validation_error_value(
                         path,
                         "invalid_value",
-                        message,
-                    )));
+                        format!("value {val} out of range {min}..{max}"),
+                    )))
                 }
-                Ok(())
             }
-            _ => Ok(()),
+            _ => Err(ExecError::Runtime(format!(
+                "range constraint is not supported for refined {base}"
+            ))),
         }
     }
 
-    fn parse_length_range(&self, args: &[Expr]) -> ExecResult<(i64, i64)> {
-        let (left, right) = self.extract_range_args(args)?;
-        let min = self
-            .literal_to_i64(left)
-            .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
-        let max = self
-            .literal_to_i64(right)
-            .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
-        Ok((min, max))
-    }
-
-    fn parse_int_range(&self, args: &[Expr]) -> ExecResult<(i64, i64)> {
-        let (left, right) = self.extract_range_args(args)?;
-        let min = self
-            .literal_to_i64(left)
-            .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
-        let max = self
-            .literal_to_i64(right)
-            .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
-        Ok((min, max))
-    }
-
-    fn parse_float_range(&self, args: &[Expr]) -> ExecResult<(f64, f64)> {
-        let (left, right) = self.extract_range_args(args)?;
-        let min = self
-            .literal_to_f64(left)
-            .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
-        let max = self
-            .literal_to_f64(right)
-            .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
-        Ok((min, max))
-    }
-
-    fn extract_range_args<'b>(&self, args: &'b [Expr]) -> ExecResult<(&'b Expr, &'b Expr)> {
-        if args.len() == 1 {
-            if let ExprKind::Binary {
-                op: BinaryOp::Range,
-                left,
-                right,
-            } = &args[0].kind
-            {
-                return Ok((left, right));
-            }
+    fn regex_matches(&mut self, pattern: &str, text: &str) -> ExecResult<bool> {
+        if !self.regex_cache.contains_key(pattern) {
+            let compiled = regex::Regex::new(pattern).map_err(|err| {
+                ExecError::Runtime(format!("invalid regex pattern {pattern}: {err}"))
+            })?;
+            self.regex_cache.insert(pattern.to_string(), compiled);
         }
-        if args.len() == 2 {
-            return Ok((&args[0], &args[1]));
-        }
-        Err(ExecError::Runtime(
-            "refined types expect a range like 1..10".to_string(),
-        ))
+        let regex = self
+            .regex_cache
+            .get(pattern)
+            .ok_or_else(|| ExecError::Runtime("regex cache error".to_string()))?;
+        Ok(regex.is_match(text))
     }
 
-    fn literal_to_i64(&self, expr: &Expr) -> Option<i64> {
-        match &expr.kind {
-            ExprKind::Literal(Literal::Int(v)) => Some(*v),
-            ExprKind::Unary {
-                op: UnaryOp::Neg,
-                expr,
-            } => match &expr.kind {
-                ExprKind::Literal(Literal::Int(v)) => Some(-v),
-                _ => None,
-            },
-            _ => None,
+    fn eval_refinement_predicate(&mut self, fn_name: &str, value: &Value) -> ExecResult<bool> {
+        let func_ref = self
+            .resolve_function_ref(self.current_module, fn_name)
+            .ok_or_else(|| {
+                ExecError::Runtime(format!(
+                    "unknown predicate function {fn_name} in current module/import scope"
+                ))
+            })?;
+        let decl = self.function_decl(&func_ref).ok_or_else(|| {
+            ExecError::Runtime(format!(
+                "unknown function {}::{}",
+                func_ref.module_id, func_ref.name
+            ))
+        })?;
+        if decl.params.len() != 1 {
+            return Err(ExecError::Runtime(format!(
+                "predicate {fn_name} must accept exactly one argument"
+            )));
         }
-    }
-
-    fn literal_to_f64(&self, expr: &Expr) -> Option<f64> {
-        match &expr.kind {
-            ExprKind::Literal(Literal::Int(v)) => Some(*v as f64),
-            ExprKind::Literal(Literal::Float(v)) => Some(*v),
-            ExprKind::Unary {
-                op: UnaryOp::Neg,
-                expr,
-            } => match &expr.kind {
-                ExprKind::Literal(Literal::Int(v)) => Some(-(*v as f64)),
-                ExprKind::Literal(Literal::Float(v)) => Some(-*v),
-                _ => None,
-            },
-            _ => None,
+        let prev_module = self.current_module;
+        self.current_module = func_ref.module_id;
+        self.env.push();
+        let param = &decl.params[0];
+        if let Err(err) = self.validate_value(value, &param.ty, &param.name.name) {
+            self.env.pop();
+            self.current_module = prev_module;
+            return Err(err);
+        }
+        self.env.insert(&param.name.name, value.clone());
+        let result = self.eval_block(&decl.body);
+        self.env.pop();
+        self.current_module = prev_module;
+        let out = match result {
+            Ok(value) | Err(ExecError::Return(value)) => value,
+            Err(err) => return Err(err),
+        };
+        match out.unboxed() {
+            Value::Bool(ok) => Ok(ok),
+            _ => Err(ExecError::Runtime(format!(
+                "predicate {fn_name} must return Bool"
+            ))),
         }
     }
 
@@ -3917,4 +4604,106 @@ fn parse_route_param(segment: &str) -> Option<(String, String)> {
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn proxy_http_request(request: &HttpRequest, base_url: &str) -> Option<String> {
+    let (host, port, base_path) = parse_proxy_base_url(base_url)?;
+    let request_path = if request.path.starts_with('/') {
+        request.path.clone()
+    } else {
+        format!("/{}", request.path)
+    };
+    let target_path = join_proxy_paths(&base_path, &request_path);
+    let mut upstream = TcpStream::connect((host.as_str(), port)).ok()?;
+    let mut head = format!(
+        "{} {} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nContent-Length: {}\r\n",
+        request.method,
+        target_path,
+        request.body.len()
+    );
+    if !request.body.is_empty() {
+        head.push_str("Content-Type: application/json\r\n");
+    }
+    head.push_str("\r\n");
+    upstream.write_all(head.as_bytes()).ok()?;
+    if !request.body.is_empty() {
+        upstream.write_all(&request.body).ok()?;
+    }
+    let mut response = Vec::new();
+    upstream.read_to_end(&mut response).ok()?;
+    Some(String::from_utf8_lossy(&response).into_owned())
+}
+
+fn parse_proxy_base_url(raw: &str) -> Option<(String, u16, String)> {
+    let trimmed = raw.trim();
+    let rest = trimmed.strip_prefix("http://")?;
+    let (authority, path) = match rest.split_once('/') {
+        Some((authority, tail)) => (authority, format!("/{}", tail.trim_start_matches('/'))),
+        None => (rest, "/".to_string()),
+    };
+    if authority.is_empty() {
+        return None;
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => {
+            let port = port.parse::<u16>().ok()?;
+            (host.to_string(), port)
+        }
+        None => (authority.to_string(), 80),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some((host, port, path))
+}
+
+fn join_proxy_paths(base_path: &str, request_path: &str) -> String {
+    if base_path == "/" {
+        return request_path.to_string();
+    }
+    if request_path == "/" {
+        return base_path.to_string();
+    }
+    format!(
+        "{}/{}",
+        base_path.trim_end_matches('/'),
+        request_path.trim_start_matches('/')
+    )
+}
+
+fn escape_js_single_quoted(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn normalize_openapi_ui_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "/docs".to_string();
+    }
+    let mut path = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    while path.len() > 1 && path.ends_with('/') {
+        path.pop();
+    }
+    path
+}
+
+fn openapi_ui_html(spec_url: &str) -> String {
+    let spec_url = escape_js_single_quoted(spec_url);
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>OpenAPI</title><style>:root{{color-scheme:light dark;font-family:ui-sans-serif,system-ui,sans-serif}}body{{margin:0;padding:24px;background:#0b1020;color:#e6e8ee}}main{{max-width:980px;margin:0 auto}}h1{{margin:0 0 12px;font-size:1.6rem}}.muted{{color:#9aa3b2;font-size:.92rem}}.card{{margin-top:16px;padding:16px;border:1px solid #27314a;border-radius:12px;background:#121a2c}}.route{{padding:8px 0;border-bottom:1px solid #222b43}}.route:last-child{{border-bottom:0}}.method{{display:inline-block;min-width:56px;font-weight:700}}code{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}}</style></head><body><main><h1>FUSE OpenAPI</h1><div class=\"muted\">spec: <code id=\"spec-url\"></code></div><section id=\"status\" class=\"card\">Loading…</section><section id=\"routes\" class=\"card\" hidden><h2>Routes</h2><div id=\"route-list\"></div></section></main><script>(function(){{var specUrl='{spec_url}';document.getElementById('spec-url').textContent=specUrl;var status=document.getElementById('status');var routes=document.getElementById('routes');var list=document.getElementById('route-list');fetch(specUrl).then(function(res){{if(!res.ok){{throw new Error('HTTP '+res.status);}}return res.json();}}).then(function(doc){{status.textContent='Loaded '+(doc.info&&doc.info.title?doc.info.title:'OpenAPI')+' '+((doc.info&&doc.info.version)||'');var paths=doc.paths||{{}};var entries=[];Object.keys(paths).sort().forEach(function(path){{var item=paths[path]||{{}};Object.keys(item).forEach(function(method){{entries.push([method.toUpperCase(),path,(item[method]&&item[method].summary)||'']);}});}});if(entries.length===0){{list.textContent='No routes found.';routes.hidden=false;return;}}list.innerHTML='';entries.forEach(function(entry){{var row=document.createElement('div');row.className='route';row.innerHTML='<span class=\"method\">'+entry[0]+'</span> <code>'+entry[1]+'</code>'+(entry[2]?' <span class=\"muted\">'+entry[2]+'</span>':'');list.appendChild(row);}});routes.hidden=false;}}).catch(function(err){{status.textContent='Failed to load OpenAPI: '+err.message;}});}})();</script></body></html>"
+    )
 }

@@ -302,7 +302,11 @@ impl ModuleLoader {
             let Some(unit) = self.modules.get(&id) else {
                 return;
             };
-            let base_dir = unit.path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+            let base_dir = unit
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf();
             let imports: Vec<ImportDecl> = unit
                 .program
                 .items
@@ -317,6 +321,7 @@ impl ModuleLoader {
 
         let mut module_map = ModuleMap::default();
         let mut import_items = import_items;
+        let mut import_item_spans: HashMap<String, Span> = HashMap::new();
 
         for import in imports {
             let span = import.span;
@@ -331,40 +336,38 @@ impl ModuleLoader {
                     }
                 }
                 ImportSpec::ModuleFrom { name, path } => {
-                    let module_id = self
-                        .load_std_module(&path.value, span)
-                        .or_else(|| {
-                            let path = self.resolve_path(&base_dir, &path.value, path.span);
-                            self.load_module(&path, None, span)
-                        });
+                    let module_id = self.load_std_module(&path.value, span).or_else(|| {
+                        let path = self.resolve_path(&base_dir, &path.value, path.span);
+                        self.load_module(&path, None, span)
+                    });
                     if let Some(module_id) = module_id {
                         self.insert_module_alias(&mut module_map, &name.name, module_id);
                     }
                 }
                 ImportSpec::AliasFrom { alias, path, .. } => {
-                    let module_id = self
-                        .load_std_module(&path.value, span)
-                        .or_else(|| {
-                            let path = self.resolve_path(&base_dir, &path.value, path.span);
-                            self.load_module(&path, None, span)
-                        });
+                    let module_id = self.load_std_module(&path.value, span).or_else(|| {
+                        let path = self.resolve_path(&base_dir, &path.value, path.span);
+                        self.load_module(&path, None, span)
+                    });
                     if let Some(module_id) = module_id {
                         self.insert_module_alias(&mut module_map, &alias.name, module_id);
                     }
                 }
                 ImportSpec::NamedFrom { names, path } => {
-                    let module_id = self
-                        .load_std_module(&path.value, span)
-                        .or_else(|| {
-                            let path = self.resolve_path(&base_dir, &path.value, path.span);
-                            self.load_module(&path, None, span)
-                        });
+                    let module_id = self.load_std_module(&path.value, span).or_else(|| {
+                        let path = self.resolve_path(&base_dir, &path.value, path.span);
+                        self.load_module(&path, None, span)
+                    });
                     let Some(module_id) = module_id else {
                         continue;
                     };
                     let exports = self.modules.get(&module_id).map(|unit| &unit.exports);
                     for name in names {
-                        if import_items.contains_key(&name.name) {
+                        if let Some(prev_span) = import_item_spans.get(&name.name).copied() {
+                            self.diags
+                                .error(name.span, format!("duplicate import {}", name.name));
+                            self.diags
+                                .error(prev_span, format!("previous import of {} here", name.name));
                             continue;
                         }
                         let Some(exports) = exports else { continue };
@@ -376,6 +379,7 @@ impl ModuleLoader {
                             continue;
                         }
                         import_items.insert(name.name.clone(), self.link_for(module_id));
+                        import_item_spans.insert(name.name.clone(), name.span);
                     }
                 }
             }
@@ -407,8 +411,7 @@ impl ModuleLoader {
             .collect();
 
         for name in derived {
-            let fields =
-                self.resolve_derived_fields(module_id, &name, &mut cache, &mut visiting);
+            let fields = self.resolve_derived_fields(module_id, &name, &mut cache, &mut visiting);
             if let Some(fields) = fields {
                 if let Some(unit) = self.modules.get_mut(&module_id) {
                     for item in &mut unit.program.items {
@@ -436,8 +439,10 @@ impl ModuleLoader {
             return Some(fields.clone());
         }
         if visiting.contains(&key) {
-            self.diags
-                .error(Span::default(), format!("cyclic type derivation for {name}"));
+            self.diags.error(
+                Span::default(),
+                format!("cyclic type derivation for {name}"),
+            );
             return None;
         }
         visiting.insert(key.clone());
@@ -482,8 +487,7 @@ impl ModuleLoader {
                 return None;
             }
         };
-        let base_fields =
-            self.resolve_derived_fields(base_module, &base_name, cache, visiting)?;
+        let base_fields = self.resolve_derived_fields(base_module, &base_name, cache, visiting)?;
 
         let mut removed = HashSet::new();
         for field in &derive.without {
@@ -506,7 +510,11 @@ impl ModuleLoader {
         Some(fields)
     }
 
-    fn resolve_type_target(&self, module_id: ModuleId, base: &crate::ast::Ident) -> Option<(ModuleId, String)> {
+    fn resolve_type_target(
+        &self,
+        module_id: ModuleId,
+        base: &crate::ast::Ident,
+    ) -> Option<(ModuleId, String)> {
         let unit = self.modules.get(&module_id)?;
         let name = base.name.as_str();
         if let Some((module, item)) = split_qualified_name(name) {
@@ -531,7 +539,8 @@ impl ModuleLoader {
         if map.modules.contains_key(alias) {
             return;
         }
-        map.modules.insert(alias.to_string(), self.link_for(module_id));
+        map.modules
+            .insert(alias.to_string(), self.link_for(module_id));
     }
 
     fn link_for(&self, module_id: ModuleId) -> ModuleLink {
@@ -540,7 +549,10 @@ impl ModuleLoader {
             .get(&module_id)
             .map(|unit| unit.exports.clone())
             .unwrap_or_default();
-        ModuleLink { id: module_id, exports }
+        ModuleLink {
+            id: module_id,
+            exports,
+        }
     }
 
     fn register_global_exports(&mut self, module_id: ModuleId) {
@@ -554,17 +566,20 @@ impl ModuleLoader {
             let (name, span) = match item {
                 Item::Type(decl) => (decl.name.name.as_str(), decl.name.span),
                 Item::Enum(decl) => (decl.name.name.as_str(), decl.name.span),
-                Item::Fn(decl) => (decl.name.name.as_str(), decl.name.span),
                 Item::Config(decl) => (decl.name.name.as_str(), decl.name.span),
                 Item::Service(decl) => (decl.name.name.as_str(), decl.name.span),
                 Item::App(decl) => (decl.name.value.as_str(), decl.name.span),
+                Item::Fn(_) => continue,
                 _ => continue,
             };
             if let Some((prev_id, prev_span)) = self.global_names.get(name) {
                 if *prev_id != module_id {
                     let path = unit.path.clone();
-                    self.diags
-                        .error_at_path(path.clone(), span, format!("duplicate symbol: {name}"));
+                    self.diags.error_at_path(
+                        path.clone(),
+                        span,
+                        format!("duplicate symbol: {name}"),
+                    );
                     if let Some(prev_unit) = self.modules.get(prev_id) {
                         self.diags.error_at_path(
                             prev_unit.path.clone(),
@@ -572,7 +587,8 @@ impl ModuleLoader {
                             format!("previous definition of {name} here"),
                         );
                     } else {
-                        self.diags.error(span, format!("previous definition of {name} here"));
+                        self.diags
+                            .error(span, format!("previous definition of {name} here"));
                     }
                 }
                 continue;
@@ -593,8 +609,7 @@ impl ModuleLoader {
                 }
             };
             let Some(root) = self.deps.get(dep) else {
-                self.diags
-                    .error(span, format!("unknown dependency {dep}"));
+                self.diags.error(span, format!("unknown dependency {dep}"));
                 return base_dir.join(raw);
             };
             let mut path = root.join(rel);

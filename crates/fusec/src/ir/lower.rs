@@ -4,9 +4,10 @@ use std::rc::Rc;
 
 use crate::ast::{
     AppDecl, BinaryOp, Block, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item, Literal, Pattern,
-    PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, UnaryOp,
+    PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, TypeRef, TypeRefKind, UnaryOp,
 };
-use crate::loader::{ModuleMap, ModuleRegistry};
+use crate::html_tags::{self, HtmlTagKind};
+use crate::loader::{ModuleId, ModuleLink, ModuleMap, ModuleRegistry};
 use crate::span::Span;
 
 use super::{
@@ -21,8 +22,110 @@ fn is_query_method(name: &str) -> bool {
     )
 }
 
+pub fn canonical_function_name(module_id: ModuleId, name: &str) -> String {
+    format!("m{module_id}::{name}")
+}
+
+fn canonicalize_predicate_names_in_type_ref(
+    ty: &TypeRef,
+    module_id: ModuleId,
+    import_items: &HashMap<String, ModuleLink>,
+    fn_decls: &HashMap<String, FnDecl>,
+) -> TypeRef {
+    let mut out = ty.clone();
+    rewrite_predicate_names_in_type_ref(&mut out, module_id, import_items, fn_decls);
+    out
+}
+
+fn rewrite_predicate_names_in_type_ref(
+    ty: &mut TypeRef,
+    module_id: ModuleId,
+    import_items: &HashMap<String, ModuleLink>,
+    fn_decls: &HashMap<String, FnDecl>,
+) {
+    match &mut ty.kind {
+        TypeRefKind::Refined { args, .. } => {
+            for arg in args {
+                rewrite_predicate_name_in_refined_arg(arg, module_id, import_items, fn_decls);
+            }
+        }
+        TypeRefKind::Generic { args, .. } => {
+            for arg in args {
+                rewrite_predicate_names_in_type_ref(arg, module_id, import_items, fn_decls);
+            }
+        }
+        TypeRefKind::Optional(inner) => {
+            rewrite_predicate_names_in_type_ref(inner, module_id, import_items, fn_decls);
+        }
+        TypeRefKind::Result { ok, err } => {
+            rewrite_predicate_names_in_type_ref(ok, module_id, import_items, fn_decls);
+            if let Some(err) = err {
+                rewrite_predicate_names_in_type_ref(err, module_id, import_items, fn_decls);
+            }
+        }
+        TypeRefKind::Simple(_) => {}
+    }
+}
+
+fn rewrite_predicate_name_in_refined_arg(
+    expr: &mut Expr,
+    module_id: ModuleId,
+    import_items: &HashMap<String, ModuleLink>,
+    fn_decls: &HashMap<String, FnDecl>,
+) {
+    let ExprKind::Call { callee, args } = &mut expr.kind else {
+        return;
+    };
+    let ExprKind::Ident(callee_ident) = &callee.kind else {
+        return;
+    };
+    if callee_ident.name != "predicate" || args.len() != 1 {
+        return;
+    }
+    let arg = &mut args[0];
+    if arg.name.is_some() || arg.is_block_sugar {
+        return;
+    }
+    let ExprKind::Ident(fn_ident) = &mut arg.value.kind else {
+        return;
+    };
+    if fn_ident.name.contains("::") {
+        return;
+    }
+    if fn_decls.contains_key(&fn_ident.name) {
+        fn_ident.name = canonical_function_name(module_id, &fn_ident.name);
+        return;
+    }
+    if let Some(link) = import_items.get(&fn_ident.name) {
+        fn_ident.name = canonical_function_name(link.id, &fn_ident.name);
+    }
+}
+
 pub fn lower_program(program: &Program, modules: &ModuleMap) -> Result<IrProgram, Vec<String>> {
-    let mut lowerer = Lowerer::new(program, modules);
+    let import_items = HashMap::new();
+    let mut lowerer = Lowerer::new(program, 0, modules, &import_items);
+    lowerer.lower();
+    if lowerer.errors.is_empty() {
+        Ok(IrProgram {
+            functions: lowerer.functions,
+            apps: lowerer.apps,
+            configs: lowerer.configs,
+            types: lowerer.types,
+            enums: lowerer.enums,
+            services: lowerer.services,
+        })
+    } else {
+        Err(lowerer.errors)
+    }
+}
+
+fn lower_program_in_module(
+    program: &Program,
+    module_id: ModuleId,
+    modules: &ModuleMap,
+    import_items: &HashMap<String, ModuleLink>,
+) -> Result<IrProgram, Vec<String>> {
+    let mut lowerer = Lowerer::new(program, module_id, modules, import_items);
     lowerer.lower();
     if lowerer.errors.is_empty() {
         Ok(IrProgram {
@@ -49,7 +152,7 @@ pub fn lower_registry(registry: &ModuleRegistry) -> Result<IrProgram, Vec<String
     };
     let mut errors = Vec::new();
     for unit in registry.modules.values() {
-        match lower_program(&unit.program, &unit.modules) {
+        match lower_program_in_module(&unit.program, unit.id, &unit.modules, &unit.import_items) {
             Ok(ir) => {
                 merge_named("function", ir.functions, &mut merged.functions, &mut errors);
                 merge_named("app", ir.apps, &mut merged.apps, &mut errors);
@@ -70,7 +173,9 @@ pub fn lower_registry(registry: &ModuleRegistry) -> Result<IrProgram, Vec<String
 
 struct Lowerer<'a> {
     program: &'a Program,
+    module_id: ModuleId,
     modules: &'a ModuleMap,
+    import_items: &'a HashMap<String, ModuleLink>,
     fn_decls: Rc<HashMap<String, FnDecl>>,
     functions: HashMap<String, Function>,
     apps: HashMap<String, Function>,
@@ -82,6 +187,7 @@ struct Lowerer<'a> {
     config_names: HashSet<String>,
     enum_names: HashSet<String>,
     enum_variant_names: HashSet<String>,
+    imported_names: HashSet<String>,
     builtin_names: HashSet<String>,
     default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
 }
@@ -93,7 +199,10 @@ struct LoopContext {
 }
 
 enum AssignStep<'a> {
-    Field { name: String, optional: bool },
+    Field {
+        name: String,
+        optional: bool,
+    },
     Index {
         index: &'a Expr,
         slot: usize,
@@ -102,10 +211,16 @@ enum AssignStep<'a> {
 }
 
 impl<'a> Lowerer<'a> {
-    fn new(program: &'a Program, modules: &'a ModuleMap) -> Self {
+    fn new(
+        program: &'a Program,
+        module_id: ModuleId,
+        modules: &'a ModuleMap,
+        import_items: &'a HashMap<String, ModuleLink>,
+    ) -> Self {
         let mut config_names = HashSet::new();
         let mut enum_names = HashSet::new();
         let mut enum_variant_names = HashSet::new();
+        let mut imported_names = HashSet::new();
         let mut fn_decls = HashMap::new();
         for item in &program.items {
             if let Item::Config(cfg) = item {
@@ -117,15 +232,32 @@ impl<'a> Lowerer<'a> {
                 }
             } else if let Item::Fn(decl) = item {
                 fn_decls.insert(decl.name.name.clone(), decl.clone());
+            } else if let Item::Import(decl) = item {
+                match &decl.spec {
+                    crate::ast::ImportSpec::Module { name }
+                    | crate::ast::ImportSpec::ModuleFrom { name, .. } => {
+                        imported_names.insert(name.name.clone());
+                    }
+                    crate::ast::ImportSpec::NamedFrom { names, .. } => {
+                        for name in names {
+                            imported_names.insert(name.name.clone());
+                        }
+                    }
+                    crate::ast::ImportSpec::AliasFrom { alias, .. } => {
+                        imported_names.insert(alias.name.clone());
+                    }
+                }
             }
         }
-        let builtin_names = ["print", "env", "serve", "log", "assert"]
+        let builtin_names = ["print", "env", "serve", "log", "assert", "asset", "svg"]
             .into_iter()
             .map(|s| s.to_string())
             .collect();
         Self {
             program,
+            module_id,
             modules,
+            import_items,
             fn_decls: Rc::new(fn_decls),
             functions: HashMap::new(),
             apps: HashMap::new(),
@@ -137,6 +269,7 @@ impl<'a> Lowerer<'a> {
             config_names,
             enum_names,
             enum_variant_names,
+            imported_names,
             builtin_names,
             default_helpers: Rc::new(RefCell::new(HashMap::new())),
         }
@@ -168,14 +301,26 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_fn(&mut self, decl: &FnDecl) {
+        let fn_name = canonical_function_name(self.module_id, &decl.name.name);
+        let ret = decl.ret.as_ref().map(|ty| {
+            canonicalize_predicate_names_in_type_ref(
+                ty,
+                self.module_id,
+                self.import_items,
+                self.fn_decls.as_ref(),
+            )
+        });
         let mut builder = FuncBuilder::new(
-            decl.name.name.clone(),
-            decl.ret.clone(),
+            self.module_id,
+            fn_name.clone(),
+            ret,
             &self.config_names,
             &self.enum_names,
             &self.enum_variant_names,
+            &self.imported_names,
             &self.builtin_names,
             self.modules,
+            self.import_items,
             self.fn_decls.clone(),
             self.default_helpers.clone(),
         );
@@ -186,7 +331,7 @@ impl<'a> Lowerer<'a> {
         builder.ensure_return();
         let (func, errors, extra) = builder.finish();
         if let Some(func) = func {
-            self.functions.insert(decl.name.name.clone(), func);
+            self.functions.insert(fn_name, func);
         }
         self.errors.extend(errors);
         self.insert_extra_functions(extra);
@@ -194,13 +339,16 @@ impl<'a> Lowerer<'a> {
 
     fn lower_app(&mut self, app: &AppDecl) {
         let mut builder = FuncBuilder::new(
+            self.module_id,
             format!("app:{}", app.name.value),
             None,
             &self.config_names,
             &self.enum_names,
             &self.enum_variant_names,
+            &self.imported_names,
             &self.builtin_names,
             self.modules,
+            self.import_items,
             self.fn_decls.clone(),
             self.default_helpers.clone(),
         );
@@ -219,13 +367,16 @@ impl<'a> Lowerer<'a> {
         for field in &cfg.fields {
             let fn_name = format!("__config::{}::{}", cfg.name.name, field.name.name);
             let mut builder = FuncBuilder::new(
+                self.module_id,
                 fn_name.clone(),
                 None,
                 &self.config_names,
                 &self.enum_names,
                 &self.enum_variant_names,
+                &self.imported_names,
                 &self.builtin_names,
                 self.modules,
+                self.import_items,
                 self.fn_decls.clone(),
                 self.default_helpers.clone(),
             );
@@ -239,7 +390,12 @@ impl<'a> Lowerer<'a> {
             self.insert_extra_functions(extra);
             fields.push(ConfigField {
                 name: field.name.name.clone(),
-                ty: field.ty.clone(),
+                ty: canonicalize_predicate_names_in_type_ref(
+                    &field.ty,
+                    self.module_id,
+                    self.import_items,
+                    self.fn_decls.as_ref(),
+                ),
                 default_fn: Some(fn_name),
             });
         }
@@ -258,13 +414,16 @@ impl<'a> Lowerer<'a> {
             let default_fn = if let Some(expr) = &field.default {
                 let fn_name = format!("__type::{}::{}", decl.name.name, field.name.name);
                 let mut builder = FuncBuilder::new(
+                    self.module_id,
                     fn_name.clone(),
                     None,
                     &self.config_names,
                     &self.enum_names,
                     &self.enum_variant_names,
+                    &self.imported_names,
                     &self.builtin_names,
                     self.modules,
+                    self.import_items,
                     self.fn_decls.clone(),
                     self.default_helpers.clone(),
                 );
@@ -282,7 +441,12 @@ impl<'a> Lowerer<'a> {
             };
             fields.push(TypeField {
                 name: field.name.name.clone(),
-                ty: field.ty.clone(),
+                ty: canonicalize_predicate_names_in_type_ref(
+                    &field.ty,
+                    self.module_id,
+                    self.import_items,
+                    self.fn_decls.as_ref(),
+                ),
                 default_fn,
             });
         }
@@ -301,7 +465,18 @@ impl<'a> Lowerer<'a> {
             .iter()
             .map(|variant| EnumVariantInfo {
                 name: variant.name.name.clone(),
-                payload: variant.payload.clone(),
+                payload: variant
+                    .payload
+                    .iter()
+                    .map(|ty| {
+                        canonicalize_predicate_names_in_type_ref(
+                            ty,
+                            self.module_id,
+                            self.import_items,
+                            self.fn_decls.as_ref(),
+                        )
+                    })
+                    .collect(),
             })
             .collect();
         self.enums.insert(
@@ -319,13 +494,21 @@ impl<'a> Lowerer<'a> {
             let handler = format!("__service::{}::{}", decl.name.name, idx);
             let params = extract_route_params(&route.path.value);
             let mut builder = FuncBuilder::new(
+                self.module_id,
                 handler.clone(),
-                Some(route.ret_type.clone()),
+                Some(canonicalize_predicate_names_in_type_ref(
+                    &route.ret_type,
+                    self.module_id,
+                    self.import_items,
+                    self.fn_decls.as_ref(),
+                )),
                 &self.config_names,
                 &self.enum_names,
                 &self.enum_variant_names,
+                &self.imported_names,
                 &self.builtin_names,
                 self.modules,
+                self.import_items,
                 self.fn_decls.clone(),
                 self.default_helpers.clone(),
             );
@@ -341,7 +524,7 @@ impl<'a> Lowerer<'a> {
                     name: "body".to_string(),
                     span: Span::default(),
                 };
-            builder.declare_param(&ident);
+                builder.declare_param(&ident);
             }
             builder.lower_block(&route.body);
             builder.ensure_return();
@@ -355,8 +538,20 @@ impl<'a> Lowerer<'a> {
                 verb: route.verb.clone(),
                 path: route.path.value.clone(),
                 params,
-                body_type: route.body_type.clone(),
-                ret_type: route.ret_type.clone(),
+                body_type: route.body_type.as_ref().map(|ty| {
+                    canonicalize_predicate_names_in_type_ref(
+                        ty,
+                        self.module_id,
+                        self.import_items,
+                        self.fn_decls.as_ref(),
+                    )
+                }),
+                ret_type: canonicalize_predicate_names_in_type_ref(
+                    &route.ret_type,
+                    self.module_id,
+                    self.import_items,
+                    self.fn_decls.as_ref(),
+                ),
                 handler,
             });
         }
@@ -420,6 +615,7 @@ fn merge_named<T>(
 }
 
 struct FuncBuilder {
+    module_id: ModuleId,
     name: String,
     params: Vec<String>,
     ret: Option<crate::ast::TypeRef>,
@@ -432,8 +628,10 @@ struct FuncBuilder {
     config_names: HashSet<String>,
     enum_names: HashSet<String>,
     enum_variant_names: HashSet<String>,
+    imported_names: HashSet<String>,
     builtin_names: HashSet<String>,
     modules: ModuleMap,
+    import_items: HashMap<String, ModuleLink>,
     loop_stack: Vec<LoopContext>,
     fn_decls: Rc<HashMap<String, FnDecl>>,
     default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
@@ -441,17 +639,21 @@ struct FuncBuilder {
 
 impl FuncBuilder {
     fn new(
+        module_id: ModuleId,
         name: String,
         ret: Option<crate::ast::TypeRef>,
         config_names: &HashSet<String>,
         enum_names: &HashSet<String>,
         enum_variant_names: &HashSet<String>,
+        imported_names: &HashSet<String>,
         builtin_names: &HashSet<String>,
         modules: &ModuleMap,
+        import_items: &HashMap<String, ModuleLink>,
         fn_decls: Rc<HashMap<String, FnDecl>>,
         default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
     ) -> Self {
         Self {
+            module_id,
             name,
             params: Vec::new(),
             ret,
@@ -464,8 +666,10 @@ impl FuncBuilder {
             config_names: config_names.clone(),
             enum_names: enum_names.clone(),
             enum_variant_names: enum_variant_names.clone(),
+            imported_names: imported_names.clone(),
             builtin_names: builtin_names.clone(),
             modules: modules.clone(),
+            import_items: import_items.clone(),
             loop_stack: Vec::new(),
             fn_decls,
             default_helpers,
@@ -691,7 +895,9 @@ impl FuncBuilder {
                                 }
                                 if !is_last {
                                     self.emit(Instr::Dup);
-                                    self.emit(Instr::GetField { field: name.clone() });
+                                    self.emit(Instr::GetField {
+                                        field: name.clone(),
+                                    });
                                 }
                             }
                             AssignStep::Index {
@@ -719,9 +925,13 @@ impl FuncBuilder {
                     match last {
                         AssignStep::Field { name, .. } => {
                             self.lower_expr(expr);
-                            self.emit(Instr::SetField { field: name.clone() });
+                            self.emit(Instr::SetField {
+                                field: name.clone(),
+                            });
                         }
-                        AssignStep::Index { slot: index_slot, .. } => {
+                        AssignStep::Index {
+                            slot: index_slot, ..
+                        } => {
                             self.emit(Instr::LoadLocal(*index_slot));
                             self.lower_expr(expr);
                             self.emit(Instr::SetIndex);
@@ -731,9 +941,13 @@ impl FuncBuilder {
                         for step in steps[..steps.len() - 1].iter().rev() {
                             match step {
                                 AssignStep::Field { name, .. } => {
-                                    self.emit(Instr::SetField { field: name.clone() });
+                                    self.emit(Instr::SetField {
+                                        field: name.clone(),
+                                    });
                                 }
-                                AssignStep::Index { slot: index_slot, .. } => {
+                                AssignStep::Index {
+                                    slot: index_slot, ..
+                                } => {
                                     self.emit(Instr::LoadLocal(*index_slot));
                                     self.emit(Instr::SetIndex);
                                 }
@@ -743,7 +957,9 @@ impl FuncBuilder {
                     self.emit(Instr::StoreLocal(slot));
                     self.emit(Instr::Push(Const::Unit));
                 }
-                _ => self.errors.push("unsupported assignment target".to_string()),
+                _ => self
+                    .errors
+                    .push("unsupported assignment target".to_string()),
             },
             StmtKind::Return { expr } => {
                 if let Some(expr) = expr {
@@ -967,7 +1183,8 @@ impl FuncBuilder {
 
     fn lower_continue(&mut self) {
         if self.loop_stack.is_empty() {
-            self.errors.push("continue used outside of loop".to_string());
+            self.errors
+                .push("continue used outside of loop".to_string());
             self.emit(Instr::Push(Const::Unit));
             return;
         }
@@ -1073,118 +1290,136 @@ impl FuncBuilder {
                     UnaryOp::Not => self.emit(Instr::Not),
                 }
             }
-            ExprKind::Call { callee, args } => {
-                match &callee.kind {
-                    ExprKind::Ident(ident) => {
-                        if self.builtin_names.contains(&ident.name) {
-                            for arg in args {
-                                self.lower_expr(&arg.value);
-                            }
-                            self.emit(Instr::Call {
-                                name: ident.name.clone(),
-                                argc: args.len(),
-                                kind: CallKind::Builtin,
-                            });
-                        } else if let Some(decl) = self.fn_decls.get(&ident.name).cloned() {
-                            self.lower_call_with_defaults(&ident.name, &decl, args);
-                        } else {
-                            for arg in args {
-                                self.lower_expr(&arg.value);
-                            }
-                            self.emit(Instr::Call {
-                                name: ident.name.clone(),
-                                argc: args.len(),
-                                kind: CallKind::Function,
-                            });
-                        }
+            ExprKind::Call { callee, args } => match &callee.kind {
+                ExprKind::Ident(ident) => {
+                    if self.should_use_html_tag_builtin(&ident.name) {
+                        self.lower_html_tag_builtin_call(&ident.name, args);
+                        return;
                     }
-                    ExprKind::Member { base, name } => {
-                        if let ExprKind::Ident(ident) = &base.kind {
-                            if ident.name == "db" || ident.name == "task" || ident.name == "json" {
-                                for arg in args {
-                                    self.lower_expr(&arg.value);
-                                }
-                                self.emit(Instr::Call {
-                                    name: format!("{}.{}", ident.name, name.name),
-                                    argc: args.len(),
-                                    kind: CallKind::Builtin,
-                                });
-                                return;
-                            }
+                    if self.builtin_names.contains(&ident.name) {
+                        for arg in args {
+                            self.lower_expr(&arg.value);
                         }
-                        if is_query_method(&name.name) {
-                            self.lower_expr(base);
+                        self.emit(Instr::Call {
+                            name: ident.name.clone(),
+                            argc: args.len(),
+                            kind: CallKind::Builtin,
+                        });
+                    } else if let Some(decl) = self.fn_decls.get(&ident.name).cloned() {
+                        let target = canonical_function_name(self.module_id, &ident.name);
+                        self.lower_call_with_defaults(&target, &decl, args);
+                    } else if let Some(target) = self.resolve_imported_function_name(&ident.name) {
+                        for arg in args {
+                            self.lower_expr(&arg.value);
+                        }
+                        self.emit(Instr::Call {
+                            name: target,
+                            argc: args.len(),
+                            kind: CallKind::Function,
+                        });
+                    } else {
+                        for arg in args {
+                            self.lower_expr(&arg.value);
+                        }
+                        self.emit(Instr::Call {
+                            name: ident.name.clone(),
+                            argc: args.len(),
+                            kind: CallKind::Function,
+                        });
+                    }
+                }
+                ExprKind::Member { base, name } => {
+                    if let ExprKind::Ident(ident) = &base.kind {
+                        if ident.name == "db"
+                            || ident.name == "task"
+                            || ident.name == "json"
+                            || ident.name == "html"
+                            || ident.name == "svg"
+                        {
                             for arg in args {
                                 self.lower_expr(&arg.value);
                             }
                             self.emit(Instr::Call {
-                                name: format!("query.{}", name.name),
-                                argc: args.len() + 1,
+                                name: format!("{}.{}", ident.name, name.name),
+                                argc: args.len(),
                                 kind: CallKind::Builtin,
                             });
                             return;
                         }
-                        if let ExprKind::Ident(module_ident) = &base.kind {
+                    }
+                    if is_query_method(&name.name) {
+                        self.lower_expr(base);
+                        for arg in args {
+                            self.lower_expr(&arg.value);
+                        }
+                        self.emit(Instr::Call {
+                            name: format!("query.{}", name.name),
+                            argc: args.len() + 1,
+                            kind: CallKind::Builtin,
+                        });
+                        return;
+                    }
+                    if let ExprKind::Ident(module_ident) = &base.kind {
+                        if let Some(module) = self.modules.get(&module_ident.name) {
+                            if module.exports.functions.contains(&name.name) {
+                                let module_id = module.id;
+                                for arg in args {
+                                    self.lower_expr(&arg.value);
+                                }
+                                self.emit(Instr::Call {
+                                    name: canonical_function_name(module_id, &name.name),
+                                    argc: args.len(),
+                                    kind: CallKind::Function,
+                                });
+                                return;
+                            }
+                        }
+                    }
+                    if let ExprKind::Member {
+                        base: inner_base,
+                        name: inner_name,
+                    } = &base.kind
+                    {
+                        if let ExprKind::Ident(module_ident) = &inner_base.kind {
                             if let Some(module) = self.modules.get(&module_ident.name) {
-                                if module.exports.functions.contains(&name.name) {
+                                if module.exports.enums.contains(&inner_name.name) {
                                     for arg in args {
                                         self.lower_expr(&arg.value);
                                     }
-                                    self.emit(Instr::Call {
-                                        name: name.name.clone(),
+                                    self.emit(Instr::MakeEnum {
+                                        name: inner_name.name.clone(),
+                                        variant: name.name.clone(),
                                         argc: args.len(),
-                                        kind: CallKind::Function,
                                     });
                                     return;
                                 }
                             }
                         }
-                        if let ExprKind::Member {
-                            base: inner_base,
-                            name: inner_name,
-                        } = &base.kind
-                        {
-                            if let ExprKind::Ident(module_ident) = &inner_base.kind {
-                                if let Some(module) = self.modules.get(&module_ident.name) {
-                                    if module.exports.enums.contains(&inner_name.name) {
-                                        for arg in args {
-                                            self.lower_expr(&arg.value);
-                                        }
-                                        self.emit(Instr::MakeEnum {
-                                            name: inner_name.name.clone(),
-                                            variant: name.name.clone(),
-                                            argc: args.len(),
-                                        });
-                                        return;
-                                    }
-                                }
+                    }
+                    if let ExprKind::Ident(enum_name) = &base.kind {
+                        if self.enum_names.contains(&enum_name.name) {
+                            for arg in args {
+                                self.lower_expr(&arg.value);
                             }
-                        }
-                        if let ExprKind::Ident(enum_name) = &base.kind {
-                            if self.enum_names.contains(&enum_name.name) {
-                                for arg in args {
-                                    self.lower_expr(&arg.value);
-                                }
-                                self.emit(Instr::MakeEnum {
-                                    name: enum_name.name.clone(),
-                                    variant: name.name.clone(),
-                                    argc: args.len(),
-                                });
-                            } else {
-                                self.errors
-                                    .push("call target not supported in VM yet".to_string());
-                            }
+                            self.emit(Instr::MakeEnum {
+                                name: enum_name.name.clone(),
+                                variant: name.name.clone(),
+                                argc: args.len(),
+                            });
                         } else {
                             self.errors
                                 .push("call target not supported in VM yet".to_string());
                         }
-                    }
-                    _ => {
+                    } else {
                         self.errors
                             .push("call target not supported in VM yet".to_string());
                     }
                 }
-            }
+                _ => {
+                    self.errors
+                        .push("call target not supported in VM yet".to_string());
+                }
+            },
             ExprKind::Member { base, name } => {
                 if let ExprKind::Member {
                     base: inner_base,
@@ -1333,13 +1568,16 @@ impl FuncBuilder {
                 let captured = self.capture_locals();
                 let spawn_name = self.next_spawn_name();
                 let mut builder = FuncBuilder::new(
+                    self.module_id,
                     spawn_name.clone(),
                     None,
                     &self.config_names,
                     &self.enum_names,
                     &self.enum_variant_names,
+                    &self.imported_names,
                     &self.builtin_names,
                     &self.modules,
+                    &self.import_items,
                     self.fn_decls.clone(),
                     self.default_helpers.clone(),
                 );
@@ -1374,7 +1612,128 @@ impl FuncBuilder {
         }
     }
 
-    fn lower_call_with_defaults(&mut self, name: &str, decl: &FnDecl, args: &[crate::ast::CallArg]) {
+    fn should_use_html_tag_builtin(&self, name: &str) -> bool {
+        if html_tags::tag_kind(name).is_none() {
+            return false;
+        }
+        !self.fn_decls.contains_key(name) && !self.imported_names.contains(name)
+    }
+
+    fn resolve_imported_function_name(&self, name: &str) -> Option<String> {
+        let link = self.import_items.get(name)?;
+        if !link.exports.functions.contains(name) {
+            return None;
+        }
+        Some(canonical_function_name(link.id, name))
+    }
+
+    fn lower_html_tag_builtin_call(&mut self, tag: &str, args: &[crate::ast::CallArg]) {
+        let Some(kind) = html_tags::tag_kind(tag) else {
+            self.errors
+                .push(format!("unknown html tag builtin {}", tag));
+            return;
+        };
+        let has_named = args.iter().any(|arg| arg.name.is_some());
+        if has_named {
+            let mut named_attrs: Vec<(String, String)> = Vec::new();
+            let mut child_arg: Option<&crate::ast::CallArg> = None;
+            for arg in args {
+                if let Some(name) = &arg.name {
+                    match &arg.value.kind {
+                        ExprKind::Literal(Literal::String(value)) => {
+                            named_attrs
+                                .push((html_tags::normalize_attr_name(&name.name), value.clone()));
+                        }
+                        _ => {
+                            self.errors.push(
+                                "html attribute shorthand only supports string literals"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    continue;
+                }
+                if arg.is_block_sugar && child_arg.is_none() {
+                    child_arg = Some(arg);
+                    continue;
+                }
+                self.errors.push(
+                    "cannot mix html attribute shorthand with positional arguments".to_string(),
+                );
+            }
+            self.emit(Instr::Push(Const::String(tag.to_string())));
+            for (key, value) in &named_attrs {
+                self.emit(Instr::Push(Const::String(key.clone())));
+                self.emit(Instr::Push(Const::String(value.clone())));
+            }
+            self.emit(Instr::MakeMap {
+                len: named_attrs.len(),
+            });
+            if matches!(kind, HtmlTagKind::Normal) {
+                if let Some(children) = child_arg {
+                    self.lower_expr(&children.value);
+                } else {
+                    self.emit(Instr::MakeList { len: 0 });
+                }
+            } else {
+                if child_arg.is_some() {
+                    self.errors
+                        .push(format!("void html tag {} does not accept children", tag));
+                }
+                self.emit(Instr::MakeList { len: 0 });
+            }
+            self.emit(Instr::Call {
+                name: "html.node".to_string(),
+                argc: 3,
+                kind: CallKind::Builtin,
+            });
+            return;
+        }
+
+        let max = match kind {
+            HtmlTagKind::Normal => 2usize,
+            HtmlTagKind::Void => 1usize,
+        };
+        if args.len() > max {
+            self.errors.push(format!(
+                "html tag {} expects at most {} arguments, got {}",
+                tag,
+                max,
+                args.len()
+            ));
+        }
+        self.emit(Instr::Push(Const::String(tag.to_string())));
+        if let Some(attrs) = args.get(0) {
+            self.lower_expr(&attrs.value);
+        } else {
+            self.emit(Instr::MakeMap { len: 0 });
+        }
+        if matches!(kind, HtmlTagKind::Normal) {
+            if let Some(children) = args.get(1) {
+                self.lower_expr(&children.value);
+            } else {
+                self.emit(Instr::MakeList { len: 0 });
+            }
+        } else {
+            if args.get(1).is_some() {
+                self.errors
+                    .push(format!("void html tag {} does not accept children", tag));
+            }
+            self.emit(Instr::MakeList { len: 0 });
+        }
+        self.emit(Instr::Call {
+            name: "html.node".to_string(),
+            argc: 3,
+            kind: CallKind::Builtin,
+        });
+    }
+
+    fn lower_call_with_defaults(
+        &mut self,
+        name: &str,
+        decl: &FnDecl,
+        args: &[crate::ast::CallArg],
+    ) {
         let param_count = decl.params.len();
         if args.is_empty() && param_count == 0 {
             self.emit(Instr::Call {
@@ -1432,8 +1791,7 @@ impl FuncBuilder {
                     param_for_arg.push(None);
                 }
                 _ => {
-                    self.errors
-                        .push(format!("too many arguments for {}", name));
+                    self.errors.push(format!("too many arguments for {}", name));
                     param_for_arg.push(None);
                 }
             }
@@ -1468,10 +1826,8 @@ impl FuncBuilder {
                     self.emit(Instr::StoreLocal(param_slots[idx]));
                     assigned[idx] = true;
                 } else {
-                    self.errors.push(format!(
-                        "missing argument {} for {}",
-                        param.name.name, name
-                    ));
+                    self.errors
+                        .push(format!("missing argument {} for {}", param.name.name, name));
                     self.emit(Instr::Push(Const::Null));
                     self.emit(Instr::StoreLocal(param_slots[idx]));
                 }
@@ -1504,13 +1860,21 @@ impl FuncBuilder {
             .borrow_mut()
             .insert(key, helper_name.clone());
         let mut builder = FuncBuilder::new(
+            self.module_id,
             helper_name.clone(),
-            Some(param.ty.clone()),
+            Some(canonicalize_predicate_names_in_type_ref(
+                &param.ty,
+                self.module_id,
+                &self.import_items,
+                self.fn_decls.as_ref(),
+            )),
             &self.config_names,
             &self.enum_names,
             &self.enum_variant_names,
+            &self.imported_names,
             &self.builtin_names,
             &self.modules,
+            &self.import_items,
             self.fn_decls.clone(),
             self.default_helpers.clone(),
         );

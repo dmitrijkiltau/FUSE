@@ -364,7 +364,9 @@ enum Segment {
 
 impl Path {
     fn root() -> Self {
-        Self { segments: Vec::new() }
+        Self {
+            segments: Vec::new(),
+        }
     }
 
     fn field(&self, name: &str) -> Self {

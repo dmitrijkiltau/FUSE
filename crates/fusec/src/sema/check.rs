@@ -1,10 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    Block, Expr, ExprKind, Item, Literal, Pattern, PatternKind, Program, RouteDecl, Stmt, StmtKind,
+    Block, CallArg, Expr, ExprKind, Item, Literal, Pattern, PatternKind, Program, RouteDecl, Stmt,
+    StmtKind,
 };
 use crate::diag::Diagnostics;
+use crate::html_tags::{self, HtmlTagKind};
 use crate::loader::{ModuleId, ModuleLink, ModuleMap};
+use crate::refinement::{
+    NumberLiteral, RefinementConstraint, base_is_string_like, parse_constraints,
+};
 use crate::span::Span;
 
 use super::symbols::ModuleSymbols;
@@ -43,8 +48,21 @@ impl<'a> Checker<'a> {
         env.insert_builtin("time");
         env.insert_builtin("print");
         env.insert_builtin("assert");
+        env.insert_builtin_with_ty(
+            "asset",
+            Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "path".to_string(),
+                    ty: Ty::String,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::String),
+            }),
+        );
         env.insert_builtin("serve");
         env.insert_builtin_with_ty("task", Ty::External("task".to_string()));
+        env.insert_builtin_with_ty("html", Ty::External("html".to_string()));
+        env.insert_builtin_with_ty("svg", Ty::External("svg".to_string()));
         env.insert_builtin("errors");
         Self {
             module_id,
@@ -345,11 +363,23 @@ impl<'a> Checker<'a> {
                 self.check_binary(expr.span, op, left_ty, right_ty)
             }
             ExprKind::Call { callee, args } => {
+                let uses_html_block = args.iter().any(|arg| arg.is_block_sugar);
+                if let ExprKind::Ident(ident) = &callee.kind {
+                    if self.should_use_html_tag_builtin(&ident.name) {
+                        return self.check_html_tag_call(expr.span, &ident.name, args);
+                    }
+                }
                 if let ExprKind::Member { base, name } = &callee.kind {
                     if let ExprKind::Ident(ident) = &base.kind {
                         if ident.name == "db"
                             && matches!(name.name.as_str(), "exec" | "query" | "one")
                         {
+                            if uses_html_block {
+                                self.diags.error(
+                                    expr.span,
+                                    "html block form requires a function that returns Html",
+                                );
+                            }
                             if args.len() < 1 || args.len() > 2 {
                                 self.diags.error(expr.span, "db.* expects 1 or 2 arguments");
                             }
@@ -389,6 +419,12 @@ impl<'a> Checker<'a> {
                 let callee_ty = self.check_expr(callee);
                 match callee_ty {
                     Ty::Fn(sig) => {
+                        if uses_html_block && !matches!(sig.ret.as_ref(), Ty::Html | Ty::Unknown) {
+                            self.diags.error(
+                                expr.span,
+                                "html block form requires a function that returns Html",
+                            );
+                        }
                         for arg in args {
                             if arg.name.is_some() {
                                 self.diags.error(
@@ -707,11 +743,77 @@ impl<'a> Checker<'a> {
             "db" => self.lookup_db_member(name),
             "query" => self.lookup_query_member(name),
             "task" => self.lookup_task_member(name),
+            "html" => self.lookup_html_member(name),
+            "svg" => self.lookup_svg_member(name),
             _ => {
                 self.diags.error(
                     name.span,
                     format!("{} has no field {}", external, name.name),
                 );
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn lookup_html_member(&mut self, name: &crate::ast::Ident) -> Ty {
+        match name.name.as_str() {
+            "text" | "raw" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "value".to_string(),
+                    ty: Ty::String,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::Html),
+            }),
+            "node" => Ty::Fn(FnSig {
+                params: vec![
+                    ParamSig {
+                        name: "name".to_string(),
+                        ty: Ty::String,
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "attrs".to_string(),
+                        ty: Ty::Map(Box::new(Ty::String), Box::new(Ty::String)),
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "children".to_string(),
+                        ty: Ty::List(Box::new(Ty::Html)),
+                        has_default: false,
+                    },
+                ],
+                ret: Box::new(Ty::Html),
+            }),
+            "render" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "value".to_string(),
+                    ty: Ty::Html,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::String),
+            }),
+            _ => {
+                self.diags
+                    .error(name.span, format!("unknown html method {}", name.name));
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn lookup_svg_member(&mut self, name: &crate::ast::Ident) -> Ty {
+        match name.name.as_str() {
+            "inline" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "name".to_string(),
+                    ty: Ty::String,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::Html),
+            }),
+            _ => {
+                self.diags
+                    .error(name.span, format!("unknown svg method {}", name.name));
                 Ty::Unknown
             }
         }
@@ -1258,10 +1360,8 @@ impl<'a> Checker<'a> {
                 Ty::Result(Box::new(ok), Box::new(err))
             }
             TypeRefKind::Refined { base, args } => {
-                for arg in args {
-                    let _ = self.check_expr(arg);
-                }
                 let base_ty = self.resolve_simple_type_name_in(module_id, &base.name, base.span);
+                self.validate_refined_constraints(module_id, base, &base_ty, args);
                 let repr = format!("{}(...)", base.name);
                 Ty::Refined {
                     base: Box::new(base_ty),
@@ -1273,6 +1373,145 @@ impl<'a> Checker<'a> {
 
     fn resolve_simple_type_name(&mut self, name: &str, span: Span) -> Ty {
         self.resolve_simple_type_name_in(self.module_id, name, span)
+    }
+
+    fn validate_refined_constraints(
+        &mut self,
+        module_id: ModuleId,
+        base: &crate::ast::Ident,
+        base_ty: &Ty,
+        args: &[Expr],
+    ) {
+        let constraints = match parse_constraints(args) {
+            Ok(items) => items,
+            Err(err) => {
+                let span = if err.span == Span::default() {
+                    base.span
+                } else {
+                    err.span
+                };
+                self.diags.error(span, err.message);
+                return;
+            }
+        };
+        for constraint in constraints {
+            match constraint {
+                RefinementConstraint::Range { min, max, span } => {
+                    self.validate_refined_range_constraint(&base.name, min, max, span);
+                }
+                RefinementConstraint::Regex { span, .. } => {
+                    if !base_is_string_like(&base.name) {
+                        self.diags.error(
+                            span,
+                            format!(
+                                "regex() constraint is only supported for string-like refined bases, found {}",
+                                base.name
+                            ),
+                        );
+                    }
+                }
+                RefinementConstraint::Predicate { name, span } => {
+                    self.validate_refined_predicate(module_id, &name, span, base_ty, &base.name);
+                }
+            }
+        }
+    }
+
+    fn validate_refined_range_constraint(
+        &mut self,
+        base_name: &str,
+        min: NumberLiteral,
+        max: NumberLiteral,
+        span: Span,
+    ) {
+        match base_name {
+            "String" | "Id" | "Email" | "Bytes" => {
+                if min.as_i64().is_none() || max.as_i64().is_none() {
+                    self.diags
+                        .error(span, "range bounds for string-like types must be integers");
+                }
+            }
+            "Int" => {
+                if min.as_i64().is_none() || max.as_i64().is_none() {
+                    self.diags
+                        .error(span, "range bounds for Int refinements must be integers");
+                }
+            }
+            "Float" => {}
+            _ => self.diags.error(
+                span,
+                format!(
+                    "range constraints are not supported for refined base type {}",
+                    base_name
+                ),
+            ),
+        }
+    }
+
+    fn validate_refined_predicate(
+        &mut self,
+        module_id: ModuleId,
+        fn_name: &str,
+        span: Span,
+        base_ty: &Ty,
+        base_name: &str,
+    ) {
+        let sig = match self.resolve_function_sig_in_scope(module_id, fn_name) {
+            Some(sig) => sig,
+            None => {
+                self.diags.error(
+                    span,
+                    format!(
+                        "unknown predicate function {} in current module/import scope",
+                        fn_name
+                    ),
+                );
+                return;
+            }
+        };
+        if sig.params.len() != 1 {
+            self.diags.error(
+                span,
+                format!(
+                    "predicate {} must accept exactly one parameter (found {})",
+                    fn_name,
+                    sig.params.len()
+                ),
+            );
+            return;
+        }
+        let param_ty = &sig.params[0].ty;
+        if !self.is_assignable(base_ty, param_ty) {
+            self.diags.error(
+                span,
+                format!(
+                    "predicate {} parameter type mismatch: expected {}, found {}",
+                    fn_name, base_name, param_ty
+                ),
+            );
+        }
+        if !self.is_assignable(sig.ret.as_ref(), &Ty::Bool) {
+            self.diags.error(
+                span,
+                format!(
+                    "predicate {} must return Bool, found {}",
+                    fn_name,
+                    sig.ret.as_ref()
+                ),
+            );
+        }
+    }
+
+    fn resolve_function_sig_in_scope(&mut self, module_id: ModuleId, name: &str) -> Option<FnSig> {
+        if let Some(sig) = self.fn_sig_in(module_id, name) {
+            return Some(sig);
+        }
+        let imported_module = self
+            .module_import_items
+            .get(&module_id)
+            .and_then(|items| items.get(name))
+            .map(|link| link.id)?;
+        self.fn_sig_in(imported_module, name)
     }
 
     fn resolve_simple_type_name_in(&mut self, module_id: ModuleId, name: &str, span: Span) -> Ty {
@@ -1323,6 +1562,7 @@ impl<'a> Checker<'a> {
             "Bool" => Ty::Bool,
             "String" => Ty::String,
             "Bytes" => Ty::Bytes,
+            "Html" => Ty::Html,
             "Id" => Ty::Id,
             "Email" => Ty::Email,
             "Error" => Ty::Error,
@@ -1580,11 +1820,7 @@ impl<'a> Checker<'a> {
                 if let Some(current) = &self.current_return {
                     self.collect_result_errors(current, &mut errs);
                 }
-                if errs.is_empty() {
-                    None
-                } else {
-                    Some(errs)
-                }
+                if errs.is_empty() { None } else { Some(errs) }
             }
             Some(Ty::Unknown) => None,
             Some(other) => {
@@ -1825,6 +2061,99 @@ impl<'a> Checker<'a> {
             }
         }
         out
+    }
+
+    fn should_use_html_tag_builtin(&mut self, name: &str) -> bool {
+        if html_tags::tag_kind(name).is_none() {
+            return false;
+        }
+        if name != "html" && self.env.lookup(name).is_some() {
+            return false;
+        }
+        if self.import_items.contains_key(name) {
+            return false;
+        }
+        self.fn_sig_in(self.module_id, name).is_none()
+    }
+
+    fn check_html_tag_call(&mut self, span: Span, tag: &str, args: &[CallArg]) -> Ty {
+        let Some(kind) = html_tags::tag_kind(tag) else {
+            return Ty::Unknown;
+        };
+        let has_named = args.iter().any(|arg| arg.name.is_some());
+        if has_named {
+            let mut child_arg: Option<&CallArg> = None;
+            for arg in args {
+                if arg.name.is_some() {
+                    if !matches!(&arg.value.kind, ExprKind::Literal(Literal::String(_))) {
+                        self.diags.error(
+                            arg.span,
+                            "html attribute shorthand only supports string literals",
+                        );
+                    }
+                    let _ = self.check_expr(&arg.value);
+                    continue;
+                }
+                if arg.is_block_sugar && child_arg.is_none() {
+                    child_arg = Some(arg);
+                    continue;
+                }
+                self.diags.error(
+                    arg.span,
+                    "cannot mix html attribute shorthand with positional arguments",
+                );
+                let _ = self.check_expr(&arg.value);
+            }
+            if let Some(children) = child_arg {
+                if matches!(kind, HtmlTagKind::Void) {
+                    self.diags.error(
+                        children.span,
+                        format!("void html tag {} does not accept children", tag),
+                    );
+                }
+                let children_ty = self.check_expr(&children.value);
+                let expected_children = Ty::List(Box::new(Ty::Html));
+                if !self.is_assignable(&children_ty, &expected_children) {
+                    self.type_mismatch(children.span, &expected_children, &children_ty);
+                }
+            }
+            return Ty::Html;
+        }
+
+        let max = match kind {
+            HtmlTagKind::Normal => 2usize,
+            HtmlTagKind::Void => 1usize,
+        };
+        if args.len() > max {
+            self.diags.error(
+                span,
+                format!("expected at most {} arguments, got {}", max, args.len()),
+            );
+        }
+        if let Some(attrs) = args.get(0) {
+            let attrs_ty = self.check_expr(&attrs.value);
+            let expected_attrs = Ty::Map(Box::new(Ty::String), Box::new(Ty::String));
+            if !self.is_assignable(&attrs_ty, &expected_attrs) {
+                self.type_mismatch(attrs.span, &expected_attrs, &attrs_ty);
+            }
+        }
+        if let Some(children) = args.get(1) {
+            if matches!(kind, HtmlTagKind::Void) {
+                self.diags.error(
+                    children.span,
+                    format!("void html tag {} does not accept children", tag),
+                );
+            }
+            let children_ty = self.check_expr(&children.value);
+            let expected_children = Ty::List(Box::new(Ty::Html));
+            if !self.is_assignable(&children_ty, &expected_children) {
+                self.type_mismatch(children.span, &expected_children, &children_ty);
+            }
+        }
+        for arg in args.iter().skip(2) {
+            let _ = self.check_expr(&arg.value);
+        }
+        Ty::Html
     }
 }
 

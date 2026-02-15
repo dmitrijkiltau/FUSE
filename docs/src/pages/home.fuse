@@ -1,0 +1,92 @@
+import { page_shell } from "../components/page.fuse"
+
+fn home_page() -> Html:
+  let content = article(class="home-content"):
+    section(class="hero"):
+      h1(): "FUSE Documentation"
+      p(class="lead"): "Write intent. Get software."
+      p(class="subtitle"): "A small, strict language for CLI apps and HTTP services with built-in config, validation, JSON binding, and OpenAPI generation."
+
+    section(class="quick-start"):
+      h2(): "Quick Start"
+      div(class="code-example"):
+        h3(): "1. Create a service"
+        pre():
+          code(class="language-fuse"):
+            html.text("config App:\n  port: Int = env(\"PORT\") ?? 3000\n\ntype User:\n  email: Email\n  name: String(1..80)\n\nservice Api at \"/api\":\n  post \"/users\" body User -> User:\n    return body\n\napp \"Api\":\n  serve(App.port)")
+      div(class="code-example"):
+        h3(): "2. Run it"
+        pre():
+          code(class="language-bash"):
+            html.text("fuse run .")
+
+    section(class="features"):
+      h2(): "Why FUSE?"
+      div(class="feature-grid"):
+        div(class="feature"):
+          h3(): "Types as Contracts"
+          p(): "Validation rules are part of your types. They're enforced automatically at HTTP boundaries, config loading, and JSON binding."
+        div(class="feature"):
+          h3(): "Config Built-in"
+          p(): "Typed config blocks with environment variable support. No boilerplate, just declare what you need."
+        div(class="feature"):
+          h3(): "HTTP Native"
+          p(): "Services define routes with automatic request parsing, response encoding, and error-to-status mapping."
+        div(class="feature"):
+          h3(): "One Source of Truth"
+          p(): "Define types once. Get validation, JSON encoding, OpenAPI docs, and error handling for free."
+
+    section(class="quick-links"):
+      h2(): "Documentation"
+      div(class="card-grid"):
+        a(href="/specs/reference", class="card"):
+          h3(): "Developer Reference"
+          p(): "Language, runtime, and tooling behavior in one place."
+        a(href="/openapi", class="card"):
+          h3(): "API Reference"
+          p(): "Interactive OpenAPI documentation."
+
+    section(class="examples"):
+      h2(): "Examples"
+      div(class="example-grid"):
+        div(class="example"):
+          h4(): "CLI App"
+          pre():
+            code(class="language-fuse"):
+              html.text("fn main(name: String = \"world\"):\n  print(\"Hello, \${name}!\")\n\napp \"hello\":\n  main()")
+        div(class="example"):
+          h4(): "Pattern Matching"
+          pre():
+            code(class="language-fuse"):
+              html.text("enum Status:\n  Pending\n  Done(String)\n\nfn describe(s: Status) -> String:\n  match s:\n    Pending -> \"waiting\"\n    Done(msg) -> msg")
+        div(class="example"):
+          h4(): "Error Handling"
+          pre():
+            code(class="language-fuse"):
+              html.text("type std.Error.NotFound:\n  message: String\n\nfn get_user(id: Id) -> User!std.Error.NotFound:\n  let user = find(id) ?! std.Error.NotFound(message=\"not found\")\n  return user")
+        div(class="example"):
+          h4(): "Database"
+          pre():
+            code(class="language-fuse"):
+              html.text("fn get_users() -> List<Map<String, String>>:\n  return db.from(\"users\")\n    .where(\"status\", \"=\", \"active\")\n    .order_by(\"created_at\", \"desc\")\n    .all()")
+
+    section(class="commands"):
+      h2(): "Package Commands"
+      div(class="command-list"):
+        div(class="command"):
+          code(): "fuse check"
+          span(): "Type-check without running"
+        div(class="command"):
+          code(): "fuse run"
+          span(): "Build and run"
+        div(class="command"):
+          code(): "fuse dev"
+          span(): "Run with live reload"
+        div(class="command"):
+          code(): "fuse test"
+          span(): "Run test blocks"
+        div(class="command"):
+          code(): "fuse build"
+          span(): "Build artifacts"
+
+  return page_shell("FUSE Docs", "home", "", false, content)

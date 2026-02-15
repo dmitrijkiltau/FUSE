@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use fuse_rt::codec::{
-    decode_value, encode_value, EnumType, EnumVariant, StructField, StructType, Type, Value,
+    EnumType, EnumVariant, StructField, StructType, Type, Value, decode_value, encode_value,
 };
 use fuse_rt::json::JsonValue;
 
@@ -50,27 +50,30 @@ fn decodes_enum_payload() {
     });
 
     let json = JsonValue::Object(
-        [(
-            "type".to_string(),
-            JsonValue::String("Rgb".to_string()),
-        ), (
-            "data".to_string(),
-            JsonValue::Array(vec![
-                JsonValue::Number(1.0),
-                JsonValue::Number(2.0),
-                JsonValue::Number(3.0),
-            ]),
-        )]
+        [
+            ("type".to_string(), JsonValue::String("Rgb".to_string())),
+            (
+                "data".to_string(),
+                JsonValue::Array(vec![
+                    JsonValue::Number(1.0),
+                    JsonValue::Number(2.0),
+                    JsonValue::Number(3.0),
+                ]),
+            ),
+        ]
         .into_iter()
         .collect(),
     );
 
     let value = decode_value(&json, &ty).expect("decode enum");
-    assert_eq!(value, Value::Enum {
-        name: "Color".to_string(),
-        variant: "Rgb".to_string(),
-        payload: vec![Value::Int(1), Value::Int(2), Value::Int(3)],
-    });
+    assert_eq!(
+        value,
+        Value::Enum {
+            name: "Color".to_string(),
+            variant: "Rgb".to_string(),
+            payload: vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+        }
+    );
 }
 
 #[test]

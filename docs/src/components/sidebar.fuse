@@ -1,0 +1,16 @@
+fn sidebar_link(href: String, label: String, is_active: Bool) -> Html:
+  var class_name = "sidebar-link"
+  if is_active: class_name = "sidebar-link is-active"
+  return a({"href": href, "class": class_name}):
+    html.text(label)
+
+fn spec_sidebar(active_slug: String) -> Html:
+  return aside({"class": "sidebar", "id": "sidebar", "aria-label": "Reference navigation"}):
+    nav(class="sidebar-nav"):
+      sidebar_link("/specs/reference", "Developer Reference", active_slug == "reference")
+    div(class="toc", id="toc")
+
+fn maybe_sidebar(show_sidebar: Bool, active_slug: String) -> Html:
+  if show_sidebar:
+    return spec_sidebar(active_slug)
+  return html.raw("")

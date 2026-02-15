@@ -14,13 +14,14 @@ use fuse_rt::{
     validate as rt_validate,
 };
 
-use crate::ast::{
-    BinaryOp, Expr, ExprKind, HttpVerb, Ident, Literal, TypeRef, TypeRefKind, UnaryOp,
-};
+use crate::ast::{Expr, HttpVerb, Ident, TypeRef, TypeRefKind};
 use crate::interp::{Task, TaskResult, Value, format_error_value};
 use crate::ir::{Config, Function, Program as IrProgram, Service, ServiceRoute};
 use crate::loader::ModuleRegistry;
 use crate::native::value::NativeHeap;
+use crate::refinement::{
+    NumberLiteral, RefinementConstraint, base_is_string_like, parse_constraints,
+};
 use crate::span::Span;
 use jit::{JitCallError, JitRuntime, ObjectArtifactSet};
 
@@ -62,6 +63,33 @@ pub struct ConfigDefaultSymbol {
 
 pub fn symbol_for_function(name: &str) -> String {
     jit::jit_symbol(name)
+}
+
+fn simple_function_name(name: &str) -> &str {
+    name.rsplit("::").next().unwrap_or(name)
+}
+
+fn resolve_public_function_name(program: &NativeProgram, name: &str) -> Result<String, String> {
+    if program.ir.functions.contains_key(name) || program.ir.apps.contains_key(name) {
+        return Ok(name.to_string());
+    }
+    if name.contains("::") {
+        return Err(format!("unknown function {name}"));
+    }
+    let mut matches = program
+        .ir
+        .functions
+        .keys()
+        .filter(|candidate| simple_function_name(candidate) == name);
+    let first = matches.next().cloned();
+    let second = matches.next();
+    match (first, second) {
+        (Some(resolved), None) => Ok(resolved),
+        (Some(_), Some(_)) => Err(format!(
+            "ambiguous function name {name}; use canonical form m<module_id>::{name}"
+        )),
+        (None, _) => Err(format!("unknown function {name}")),
+    }
 }
 
 pub fn emit_object_for_app(
@@ -128,12 +156,19 @@ pub fn emit_object_for_function(
     program: &NativeProgram,
     name: &str,
 ) -> Result<NativeObject, String> {
+    let resolved_name = resolve_public_function_name(program, name)?;
     let func = program
         .ir
         .functions
-        .get(name)
-        .or_else(|| program.ir.apps.get(name))
-        .or_else(|| program.ir.apps.values().find(|func| func.name == name))
+        .get(&resolved_name)
+        .or_else(|| program.ir.apps.get(&resolved_name))
+        .or_else(|| {
+            program
+                .ir
+                .apps
+                .values()
+                .find(|func| func.name == resolved_name)
+        })
         .ok_or_else(|| format!("unknown function {name}"))?;
     let artifact = jit::emit_object_for_function(&program.ir, func)?;
     Ok(NativeObject {
@@ -152,7 +187,7 @@ pub fn load_configs_for_binary<'a, I>(
 where
     I: IntoIterator<Item = &'a Config>,
 {
-    let mut evaluator = ConfigEvaluator;
+    let mut evaluator = ConfigEvaluator::default();
     evaluator
         .eval_configs(configs, heap, &mut default_fn)
         .map_err(render_native_error)
@@ -239,6 +274,7 @@ pub struct NativeVm<'a> {
     jit: JitRuntime,
     heap: NativeHeap,
     configs_loaded: bool,
+    regex_cache: HashMap<String, regex::Regex>,
 }
 
 impl<'a> NativeVm<'a> {
@@ -250,6 +286,7 @@ impl<'a> NativeVm<'a> {
             jit: JitRuntime::build(),
             heap,
             configs_loaded: false,
+            regex_cache: HashMap::new(),
         }
     }
 
@@ -275,11 +312,17 @@ impl<'a> NativeVm<'a> {
 
     pub fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, String> {
         self.ensure_configs_loaded()?;
-        self.call_function_native_only_inner(name, args)
+        let resolved = resolve_public_function_name(self.program, name)?;
+        self.call_function_native_only_inner(&resolved, args)
     }
 
     pub fn has_jit_function(&self, name: &str) -> bool {
-        self.jit.has_function(name)
+        if self.jit.has_function(name) {
+            return true;
+        }
+        resolve_public_function_name(self.program, name)
+            .ok()
+            .is_some_and(|resolved| self.jit.has_function(&resolved))
     }
 
     fn call_function_native_only_inner(
@@ -302,7 +345,7 @@ impl<'a> NativeVm<'a> {
     }
 
     fn eval_configs_native(&mut self) -> NativeResult<()> {
-        let mut evaluator = ConfigEvaluator;
+        let mut evaluator = ConfigEvaluator::default();
         let mut configs: Vec<Config> = self.program.ir.configs.values().cloned().collect();
         configs.sort_by(|a, b| a.name.cmp(&b.name));
         let program = self.program;
@@ -684,12 +727,18 @@ impl<'a> NativeVm<'a> {
             .next()
             .unwrap_or(&request.path)
             .to_string();
+        if let Some(response) = self.try_openapi_ui_response(request.method.as_str(), &path) {
+            return Ok(response);
+        }
         if let Some(response) = self.try_static_response(request.method.as_str(), &path) {
             return Ok(response);
         }
         let (route, params) = match self.match_route(service, &verb, &path)? {
             Some(result) => result,
             None => {
+                if let Some(response) = self.try_vite_proxy_response(&request) {
+                    return Ok(response);
+                }
                 let body = self.error_json_from_code("not_found", "not found");
                 return Ok(self.http_response(404, body));
             }
@@ -714,6 +763,7 @@ impl<'a> NativeVm<'a> {
             Ok(value) => value,
             Err(err) => return Err(err),
         };
+        let html_response = is_html_response_type(&route.ret_type);
         match value {
             Value::ResultErr(err) => {
                 let status = self.http_status_for_error_value(&err);
@@ -721,12 +771,23 @@ impl<'a> NativeVm<'a> {
                 Ok(self.http_response(status, json))
             }
             Value::ResultOk(ok) => {
-                let json = self.value_to_json(&ok);
-                Ok(self.http_response(200, rt_json::encode(&json)))
+                if html_response {
+                    let body =
+                        self.maybe_inject_live_reload_html(self.render_html_value(ok.as_ref())?);
+                    Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
+                } else {
+                    let json = self.value_to_json(&ok);
+                    Ok(self.http_response(200, rt_json::encode(&json)))
+                }
             }
             other => {
-                let json = self.value_to_json(&other);
-                Ok(self.http_response(200, rt_json::encode(&json)))
+                if html_response {
+                    let body = self.maybe_inject_live_reload_html(self.render_html_value(&other)?);
+                    Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
+                } else {
+                    let json = self.value_to_json(&other);
+                    Ok(self.http_response(200, rt_json::encode(&json)))
+                }
             }
         }
     }
@@ -757,7 +818,7 @@ impl<'a> NativeVm<'a> {
         if !full.is_file() {
             return None;
         }
-        let body = fs::read_to_string(&full).ok()?;
+        let mut body = fs::read_to_string(&full).ok()?;
         let content_type = match full.extension().and_then(|ext| ext.to_str()) {
             Some("html") => "text/html; charset=utf-8",
             Some("css") => "text/css; charset=utf-8",
@@ -765,7 +826,53 @@ impl<'a> NativeVm<'a> {
             Some("json") => "application/json; charset=utf-8",
             _ => "text/plain; charset=utf-8",
         };
+        if content_type.starts_with("text/html") {
+            body = self.maybe_inject_live_reload_html(body);
+        }
         Some(self.http_response_with_type(200, body, content_type))
+    }
+
+    fn try_vite_proxy_response(&self, request: &HttpRequest) -> Option<String> {
+        let base_url = std::env::var("FUSE_VITE_PROXY_URL").ok()?;
+        proxy_http_request(request, &base_url)
+    }
+
+    fn try_openapi_ui_response(&self, method: &str, path: &str) -> Option<String> {
+        if method != "GET" {
+            return None;
+        }
+        let spec_path = std::env::var("FUSE_OPENAPI_JSON_PATH").ok()?;
+        let ui_path = normalize_openapi_ui_path(
+            std::env::var("FUSE_OPENAPI_UI_PATH")
+                .ok()
+                .as_deref()
+                .unwrap_or("/docs"),
+        );
+        let path_no_slash = path.strip_suffix('/').unwrap_or(path);
+        let docs_path_no_slash = ui_path.strip_suffix('/').unwrap_or(&ui_path);
+        if path_no_slash == docs_path_no_slash {
+            let spec_url = format!("{docs_path_no_slash}/openapi.json");
+            let body = self.maybe_inject_live_reload_html(openapi_ui_html(&spec_url));
+            return Some(self.http_response_with_type(200, body, "text/html; charset=utf-8"));
+        }
+        let spec_route = format!("{docs_path_no_slash}/openapi.json");
+        if path == spec_route {
+            let body = match fs::read_to_string(&spec_path) {
+                Ok(body) => body,
+                Err(err) => {
+                    return Some(self.http_response(
+                        500,
+                        self.internal_error_json(&format!("failed to read openapi spec: {err}")),
+                    ));
+                }
+            };
+            return Some(self.http_response_with_type(
+                200,
+                body,
+                "application/json; charset=utf-8",
+            ));
+        }
+        None
     }
 
     fn eval_route(
@@ -919,6 +1026,26 @@ impl<'a> NativeVm<'a> {
         )
     }
 
+    fn maybe_inject_live_reload_html(&self, mut body: String) -> String {
+        let ws_url = match std::env::var("FUSE_DEV_RELOAD_WS_URL") {
+            Ok(url) if !url.trim().is_empty() => url,
+            _ => return body,
+        };
+        if body.contains("data-fuse-live-reload") {
+            return body;
+        }
+        let ws_url = escape_js_single_quoted(&ws_url);
+        let script = format!(
+            "<script data-fuse-live-reload>(function(){{var url='{ws_url}';var retry=500;function connect(){{var ws=new WebSocket(url);ws.onopen=function(){{retry=500;}};ws.onmessage=function(){{window.location.reload();}};ws.onclose=function(){{setTimeout(connect,retry);retry=Math.min(retry*2,3000);}};ws.onerror=function(){{ws.close();}};}}connect();}})();</script>"
+        );
+        if let Some(index) = body.rfind("</body>") {
+            body.insert_str(index, &script);
+        } else {
+            body.push_str(&script);
+        }
+        body
+    }
+
     fn http_error_response(&self, err: NativeError) -> String {
         match err {
             NativeError::Error(value) => {
@@ -968,6 +1095,16 @@ impl<'a> NativeVm<'a> {
 
     fn internal_error_json(&self, message: &str) -> String {
         self.error_json_from_code("internal_error", message)
+    }
+
+    fn render_html_value(&self, value: &Value) -> NativeResult<String> {
+        match value.unboxed() {
+            Value::Html(node) => Ok(node.render_to_string()),
+            other => Err(NativeError::Runtime(format!(
+                "expected Html response, got {}",
+                self.value_type_name(&other)
+            ))),
+        }
     }
 
     fn parse_env_value(&mut self, ty: &TypeRef, raw: &str) -> NativeResult<Value> {
@@ -1061,7 +1198,7 @@ impl<'a> NativeVm<'a> {
         }
     }
 
-    fn validate_value(&self, value: &Value, ty: &TypeRef, path: &str) -> NativeResult<()> {
+    fn validate_value(&mut self, value: &Value, ty: &TypeRef, path: &str) -> NativeResult<()> {
         let value = value.unboxed();
         match &ty.kind {
             TypeRefKind::Optional(inner) => {
@@ -1264,6 +1401,18 @@ impl<'a> NativeVm<'a> {
                         )));
                     }
                 },
+                "Html" => match value {
+                    Value::Html(_) => {
+                        return Ok(());
+                    }
+                    _ => {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("expected Html, got {type_name}"),
+                        )));
+                    }
+                },
                 _ => {}
             }
         }
@@ -1290,6 +1439,7 @@ impl<'a> NativeVm<'a> {
             Value::Bool(_) => "Bool".to_string(),
             Value::String(_) => "String".to_string(),
             Value::Bytes(_) => "Bytes".to_string(),
+            Value::Html(_) => "Html".to_string(),
             Value::Null => "Null".to_string(),
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
@@ -1341,17 +1491,70 @@ impl<'a> NativeVm<'a> {
     }
 
     fn check_refined(
-        &self,
+        &mut self,
         value: &Value,
         base: &str,
         args: &[Expr],
         path: &str,
     ) -> NativeResult<()> {
-        let value = value.unboxed();
+        let constraints = parse_constraints(args).map_err(|err| {
+            NativeError::Runtime(format!("invalid refined constraint: {}", err.message))
+        })?;
+        for constraint in constraints {
+            match constraint {
+                RefinementConstraint::Range { min, max, .. } => {
+                    self.check_refined_range(value, base, min, max, path)?;
+                }
+                RefinementConstraint::Regex { pattern, .. } => {
+                    if !base_is_string_like(base) {
+                        return Err(NativeError::Runtime(format!(
+                            "regex() constraint is not supported for refined {base}"
+                        )));
+                    }
+                    let Value::String(text) = value.unboxed() else {
+                        return Err(NativeError::Runtime(
+                            "refined String expects a String".to_string(),
+                        ));
+                    };
+                    if !self.regex_matches(&pattern, &text)? {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            format!("value does not match regex {pattern}"),
+                        )));
+                    }
+                }
+                RefinementConstraint::Predicate { name, .. } => {
+                    if !self.eval_refinement_predicate(&name, value)? {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            format!("predicate {name} rejected value"),
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_refined_range(
+        &self,
+        value: &Value,
+        base: &str,
+        min: NumberLiteral,
+        max: NumberLiteral,
+        path: &str,
+    ) -> NativeResult<()> {
         match base {
-            "String" => {
-                let (min, max) = self.parse_length_range(args)?;
-                let len = match value {
+            "String" | "Id" | "Email" => {
+                let min = min
+                    .as_i64()
+                    .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+                let max = max
+                    .as_i64()
+                    .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+                let len = match value.unboxed() {
                     Value::String(s) => s.chars().count() as i64,
                     _ => {
                         return Err(NativeError::Runtime(
@@ -1369,9 +1572,39 @@ impl<'a> NativeVm<'a> {
                     )))
                 }
             }
+            "Bytes" => {
+                let min = min
+                    .as_i64()
+                    .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+                let max = max
+                    .as_i64()
+                    .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+                let len = match value.unboxed() {
+                    Value::Bytes(bytes) => bytes.len() as i64,
+                    _ => {
+                        return Err(NativeError::Runtime(
+                            "refined Bytes expects Bytes".to_string(),
+                        ));
+                    }
+                };
+                if rt_validate::check_len(len, min, max) {
+                    Ok(())
+                } else {
+                    Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("length {len} out of range {min}..{max}"),
+                    )))
+                }
+            }
             "Int" => {
-                let (min, max) = self.parse_int_range(args)?;
-                let val = match value {
+                let min = min
+                    .as_i64()
+                    .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+                let max = max
+                    .as_i64()
+                    .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+                let val = match value.unboxed() {
                     Value::Int(v) => v,
                     _ => {
                         return Err(NativeError::Runtime(
@@ -1390,8 +1623,9 @@ impl<'a> NativeVm<'a> {
                 }
             }
             "Float" => {
-                let (min, max) = self.parse_float_range(args)?;
-                let val = match value {
+                let min = min.as_f64();
+                let max = max.as_f64();
+                let val = match value.unboxed() {
                     Value::Float(v) => v,
                     _ => {
                         return Err(NativeError::Runtime(
@@ -1409,89 +1643,37 @@ impl<'a> NativeVm<'a> {
                     )))
                 }
             }
-            _ => Ok(()),
+            _ => Err(NativeError::Runtime(format!(
+                "range constraint is not supported for refined {base}"
+            ))),
         }
     }
 
-    fn parse_length_range(&self, args: &[Expr]) -> NativeResult<(i64, i64)> {
-        let (left, right) = self.extract_range_args(args)?;
-        let min = self
-            .literal_to_i64(left)
-            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
-        let max = self
-            .literal_to_i64(right)
-            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
-        Ok((min, max))
-    }
-
-    fn parse_int_range(&self, args: &[Expr]) -> NativeResult<(i64, i64)> {
-        let (left, right) = self.extract_range_args(args)?;
-        let min = self
-            .literal_to_i64(left)
-            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
-        let max = self
-            .literal_to_i64(right)
-            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
-        Ok((min, max))
-    }
-
-    fn parse_float_range(&self, args: &[Expr]) -> NativeResult<(f64, f64)> {
-        let (left, right) = self.extract_range_args(args)?;
-        let min = self
-            .literal_to_f64(left)
-            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
-        let max = self
-            .literal_to_f64(right)
-            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
-        Ok((min, max))
-    }
-
-    fn extract_range_args<'b>(&self, args: &'b [Expr]) -> NativeResult<(&'b Expr, &'b Expr)> {
-        if args.len() == 1 {
-            if let ExprKind::Binary {
-                op: BinaryOp::Range,
-                left,
-                right,
-            } = &args[0].kind
-            {
-                return Ok((left, right));
-            }
+    fn regex_matches(&mut self, pattern: &str, text: &str) -> NativeResult<bool> {
+        if !self.regex_cache.contains_key(pattern) {
+            let compiled = regex::Regex::new(pattern).map_err(|err| {
+                NativeError::Runtime(format!("invalid regex pattern {pattern}: {err}"))
+            })?;
+            self.regex_cache.insert(pattern.to_string(), compiled);
         }
-        if args.len() == 2 {
-            return Ok((&args[0], &args[1]));
-        }
-        Err(NativeError::Runtime(
-            "refined types expect a range like 1..10".to_string(),
-        ))
+        let regex = self
+            .regex_cache
+            .get(pattern)
+            .ok_or_else(|| NativeError::Runtime("regex cache error".to_string()))?;
+        Ok(regex.is_match(text))
     }
 
-    fn literal_to_i64(&self, expr: &Expr) -> Option<i64> {
-        match &expr.kind {
-            ExprKind::Literal(Literal::Int(v)) => Some(*v),
-            ExprKind::Unary {
-                op: UnaryOp::Neg,
-                expr,
-            } => match &expr.kind {
-                ExprKind::Literal(Literal::Int(v)) => Some(-v),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn literal_to_f64(&self, expr: &Expr) -> Option<f64> {
-        match &expr.kind {
-            ExprKind::Literal(Literal::Int(v)) => Some(*v as f64),
-            ExprKind::Literal(Literal::Float(v)) => Some(*v),
-            ExprKind::Unary {
-                op: UnaryOp::Neg,
-                expr,
-            } => match &expr.kind {
-                ExprKind::Literal(Literal::Int(v)) => Some(-(*v as f64)),
-                ExprKind::Literal(Literal::Float(v)) => Some(-*v),
-                _ => None,
-            },
-            _ => None,
+    fn eval_refinement_predicate(&mut self, fn_name: &str, value: &Value) -> NativeResult<bool> {
+        let resolved = resolve_public_function_name(self.program, fn_name)
+            .unwrap_or_else(|_| fn_name.to_string());
+        let result = self
+            .call_function_native_only_inner(&resolved, vec![value.clone()])
+            .map_err(NativeError::Runtime)?;
+        match result.unboxed() {
+            Value::Bool(ok) => Ok(ok),
+            _ => Err(NativeError::Runtime(format!(
+                "predicate {fn_name} must return Bool"
+            ))),
         }
     }
 
@@ -1503,6 +1685,7 @@ impl<'a> NativeVm<'a> {
             Value::Bool(v) => rt_json::JsonValue::Bool(v),
             Value::String(v) => rt_json::JsonValue::String(v.clone()),
             Value::Bytes(v) => rt_json::JsonValue::String(rt_bytes::encode_base64(&v)),
+            Value::Html(node) => rt_json::JsonValue::String(node.render_to_string()),
             Value::Null => rt_json::JsonValue::Null,
             Value::List(items) => {
                 rt_json::JsonValue::Array(items.iter().map(|v| self.value_to_json(v)).collect())
@@ -1548,10 +1731,37 @@ impl<'a> NativeVm<'a> {
             Value::ResultOk(value) => self.value_to_json(value.as_ref()),
             Value::ResultErr(value) => self.value_to_json(value.as_ref()),
             Value::Config(name) => rt_json::JsonValue::String(name.clone()),
-            Value::Function(name) => rt_json::JsonValue::String(name.clone()),
+            Value::Function(func) => {
+                rt_json::JsonValue::String(format!("{}::{}", func.module_id, func.name))
+            }
             Value::Builtin(name) => rt_json::JsonValue::String(name.clone()),
             Value::EnumCtor { name, variant } => {
                 rt_json::JsonValue::String(format!("{name}.{variant}"))
+            }
+        }
+    }
+
+    fn json_to_value(&self, json: &rt_json::JsonValue) -> Value {
+        match json {
+            rt_json::JsonValue::Null => Value::Null,
+            rt_json::JsonValue::Bool(v) => Value::Bool(*v),
+            rt_json::JsonValue::Number(n) => {
+                if n.fract() == 0.0 {
+                    Value::Int(*n as i64)
+                } else {
+                    Value::Float(*n)
+                }
+            }
+            rt_json::JsonValue::String(v) => Value::String(v.clone()),
+            rt_json::JsonValue::Array(items) => {
+                Value::List(items.iter().map(|item| self.json_to_value(item)).collect())
+            }
+            rt_json::JsonValue::Object(items) => {
+                let mut out = HashMap::new();
+                for (key, value) in items {
+                    out.insert(key.clone(), self.json_to_value(value));
+                }
+                Value::Map(out)
             }
         }
     }
@@ -1607,12 +1817,8 @@ impl<'a> NativeVm<'a> {
                     )));
                 }
             }
-            TypeRefKind::Result { .. } => {
-                return Err(NativeError::Error(self.validation_error_value(
-                    path,
-                    "invalid_value",
-                    "Result is not supported for JSON body",
-                )));
+            TypeRefKind::Result { ok, err } => {
+                return self.decode_json_result_value(json, ok, err.as_deref(), path);
             }
             TypeRefKind::Generic { base, args } => match base.name.as_str() {
                 "Option" => {
@@ -1628,11 +1834,12 @@ impl<'a> NativeVm<'a> {
                     }
                 }
                 "Result" => {
-                    return Err(NativeError::Error(self.validation_error_value(
-                        path,
-                        "invalid_value",
-                        "Result is not supported for JSON body",
-                    )));
+                    if args.len() != 2 {
+                        return Err(NativeError::Runtime(
+                            "Result expects 2 type arguments".to_string(),
+                        ));
+                    }
+                    return self.decode_json_result_value(json, &args[0], Some(&args[1]), path);
                 }
                 "List" => {
                     if args.len() != 1 {
@@ -1688,6 +1895,62 @@ impl<'a> NativeVm<'a> {
         };
         self.validate_value(&value, ty, path)?;
         Ok(value)
+    }
+
+    fn decode_json_result_value(
+        &mut self,
+        json: &rt_json::JsonValue,
+        ok_ty: &TypeRef,
+        err_ty: Option<&TypeRef>,
+        path: &str,
+    ) -> NativeResult<Value> {
+        let rt_json::JsonValue::Object(map) = json else {
+            return Err(NativeError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                "expected Result object",
+            )));
+        };
+        let tag = map.get("type").ok_or_else(|| {
+            NativeError::Error(self.validation_error_value(
+                path,
+                "missing_field",
+                "missing Result tag",
+            ))
+        })?;
+        let rt_json::JsonValue::String(tag) = tag else {
+            return Err(NativeError::Error(self.validation_error_value(
+                &format!("{path}.type"),
+                "type_mismatch",
+                "expected Result tag string",
+            )));
+        };
+        let data = map.get("data").ok_or_else(|| {
+            NativeError::Error(self.validation_error_value(
+                path,
+                "missing_field",
+                "missing Result data",
+            ))
+        })?;
+        match tag.as_str() {
+            "Ok" => {
+                let value = self.decode_json_value(data, ok_ty, &format!("{path}.data"))?;
+                Ok(Value::ResultOk(Box::new(value)))
+            }
+            "Err" => {
+                let value = if let Some(err_ty) = err_ty {
+                    self.decode_json_value(data, err_ty, &format!("{path}.data"))?
+                } else {
+                    self.json_to_value(data)
+                };
+                Ok(Value::ResultErr(Box::new(value)))
+            }
+            _ => Err(NativeError::Error(self.validation_error_value(
+                &format!("{path}.type"),
+                "invalid_value",
+                format!("unknown Result variant {tag}"),
+            ))),
+        }
     }
 
     fn decode_simple_json(
@@ -1756,6 +2019,13 @@ impl<'a> NativeVm<'a> {
                     )));
                 }
             },
+            "Html" => {
+                return Err(NativeError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    "expected Html",
+                )));
+            }
             _ => return Ok(None),
         };
         Ok(Some(value))
@@ -1971,7 +2241,10 @@ fn is_result_type(ty: Option<&crate::ast::TypeRef>) -> bool {
     }
 }
 
-struct ConfigEvaluator;
+#[derive(Default)]
+struct ConfigEvaluator {
+    regex_cache: HashMap<String, regex::Regex>,
+}
 
 impl ConfigEvaluator {
     fn eval_configs<'a, I>(
@@ -2262,6 +2535,13 @@ impl ConfigEvaluator {
                     )));
                 }
             },
+            "Html" => {
+                return Err(NativeError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    "expected Html",
+                )));
+            }
             _ => return Ok(None),
         };
         Ok(Some(value))
@@ -2304,7 +2584,7 @@ impl ConfigEvaluator {
         }
     }
 
-    fn validate_value(&self, value: &Value, ty: &TypeRef, path: &str) -> NativeResult<()> {
+    fn validate_value(&mut self, value: &Value, ty: &TypeRef, path: &str) -> NativeResult<()> {
         let value = value.unboxed();
         match &ty.kind {
             TypeRefKind::Optional(inner) => {
@@ -2507,6 +2787,18 @@ impl ConfigEvaluator {
                         )));
                     }
                 },
+                "Html" => match value {
+                    Value::Html(_) => {
+                        return Ok(());
+                    }
+                    _ => {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "type_mismatch",
+                            format!("expected Html, got {type_name}"),
+                        )));
+                    }
+                },
                 _ => {}
             }
         }
@@ -2533,6 +2825,7 @@ impl ConfigEvaluator {
             Value::Bool(_) => "Bool".to_string(),
             Value::String(_) => "String".to_string(),
             Value::Bytes(_) => "Bytes".to_string(),
+            Value::Html(_) => "Html".to_string(),
             Value::Null => "Null".to_string(),
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
@@ -2576,17 +2869,70 @@ impl ConfigEvaluator {
     }
 
     fn check_refined(
-        &self,
+        &mut self,
         value: &Value,
         base: &str,
         args: &[Expr],
         path: &str,
     ) -> NativeResult<()> {
-        let value = value.unboxed();
+        let constraints = parse_constraints(args).map_err(|err| {
+            NativeError::Runtime(format!("invalid refined constraint: {}", err.message))
+        })?;
+        for constraint in constraints {
+            match constraint {
+                RefinementConstraint::Range { min, max, .. } => {
+                    self.check_refined_range(value, base, min, max, path)?;
+                }
+                RefinementConstraint::Regex { pattern, .. } => {
+                    if !base_is_string_like(base) {
+                        return Err(NativeError::Runtime(format!(
+                            "regex() constraint is not supported for refined {base}"
+                        )));
+                    }
+                    let Value::String(text) = value.unboxed() else {
+                        return Err(NativeError::Runtime(
+                            "refined String expects a String".to_string(),
+                        ));
+                    };
+                    if !self.regex_matches(&pattern, &text)? {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            format!("value does not match regex {pattern}"),
+                        )));
+                    }
+                }
+                RefinementConstraint::Predicate { name, .. } => {
+                    if !self.eval_refinement_predicate(&name, value)? {
+                        return Err(NativeError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            format!("predicate {name} rejected value"),
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_refined_range(
+        &self,
+        value: &Value,
+        base: &str,
+        min: NumberLiteral,
+        max: NumberLiteral,
+        path: &str,
+    ) -> NativeResult<()> {
         match base {
-            "String" => {
-                let (min, max) = self.parse_length_range(args)?;
-                let len = match value {
+            "String" | "Id" | "Email" => {
+                let min = min
+                    .as_i64()
+                    .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+                let max = max
+                    .as_i64()
+                    .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+                let len = match value.unboxed() {
                     Value::String(s) => s.chars().count() as i64,
                     _ => {
                         return Err(NativeError::Runtime(
@@ -2604,9 +2950,39 @@ impl ConfigEvaluator {
                     )))
                 }
             }
+            "Bytes" => {
+                let min = min
+                    .as_i64()
+                    .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+                let max = max
+                    .as_i64()
+                    .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+                let len = match value.unboxed() {
+                    Value::Bytes(bytes) => bytes.len() as i64,
+                    _ => {
+                        return Err(NativeError::Runtime(
+                            "refined Bytes expects Bytes".to_string(),
+                        ));
+                    }
+                };
+                if rt_validate::check_len(len, min, max) {
+                    Ok(())
+                } else {
+                    Err(NativeError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("length {len} out of range {min}..{max}"),
+                    )))
+                }
+            }
             "Int" => {
-                let (min, max) = self.parse_int_range(args)?;
-                let val = match value {
+                let min = min
+                    .as_i64()
+                    .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+                let max = max
+                    .as_i64()
+                    .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
+                let val = match value.unboxed() {
                     Value::Int(v) => v,
                     _ => {
                         return Err(NativeError::Runtime(
@@ -2625,8 +3001,9 @@ impl ConfigEvaluator {
                 }
             }
             "Float" => {
-                let (min, max) = self.parse_float_range(args)?;
-                let val = match value {
+                let min = min.as_f64();
+                let max = max.as_f64();
+                let val = match value.unboxed() {
                     Value::Float(v) => v,
                     _ => {
                         return Err(NativeError::Runtime(
@@ -2644,89 +3021,40 @@ impl ConfigEvaluator {
                     )))
                 }
             }
-            _ => Ok(()),
+            _ => Err(NativeError::Runtime(format!(
+                "range constraint is not supported for refined {base}"
+            ))),
         }
     }
 
-    fn parse_length_range(&self, args: &[Expr]) -> NativeResult<(i64, i64)> {
-        let (left, right) = self.extract_range_args(args)?;
-        let min = self
-            .literal_to_i64(left)
-            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
-        let max = self
-            .literal_to_i64(right)
-            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
-        Ok((min, max))
-    }
-
-    fn parse_int_range(&self, args: &[Expr]) -> NativeResult<(i64, i64)> {
-        let (left, right) = self.extract_range_args(args)?;
-        let min = self
-            .literal_to_i64(left)
-            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
-        let max = self
-            .literal_to_i64(right)
-            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
-        Ok((min, max))
-    }
-
-    fn parse_float_range(&self, args: &[Expr]) -> NativeResult<(f64, f64)> {
-        let (left, right) = self.extract_range_args(args)?;
-        let min = self
-            .literal_to_f64(left)
-            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
-        let max = self
-            .literal_to_f64(right)
-            .ok_or_else(|| NativeError::Runtime("invalid refined range".to_string()))?;
-        Ok((min, max))
-    }
-
-    fn extract_range_args<'b>(&self, args: &'b [Expr]) -> NativeResult<(&'b Expr, &'b Expr)> {
-        if args.len() == 1 {
-            if let ExprKind::Binary {
-                op: BinaryOp::Range,
-                left,
-                right,
-            } = &args[0].kind
-            {
-                return Ok((left, right));
-            }
+    fn regex_matches(&mut self, pattern: &str, text: &str) -> NativeResult<bool> {
+        if !self.regex_cache.contains_key(pattern) {
+            let compiled = regex::Regex::new(pattern).map_err(|err| {
+                NativeError::Runtime(format!("invalid regex pattern {pattern}: {err}"))
+            })?;
+            self.regex_cache.insert(pattern.to_string(), compiled);
         }
-        if args.len() == 2 {
-            return Ok((&args[0], &args[1]));
-        }
-        Err(NativeError::Runtime(
-            "refined types expect a range like 1..10".to_string(),
-        ))
+        let regex = self
+            .regex_cache
+            .get(pattern)
+            .ok_or_else(|| NativeError::Runtime("regex cache error".to_string()))?;
+        Ok(regex.is_match(text))
     }
 
-    fn literal_to_i64(&self, expr: &Expr) -> Option<i64> {
-        match &expr.kind {
-            ExprKind::Literal(Literal::Int(v)) => Some(*v),
-            ExprKind::Unary {
-                op: UnaryOp::Neg,
-                expr,
-            } => match &expr.kind {
-                ExprKind::Literal(Literal::Int(v)) => Some(-v),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn literal_to_f64(&self, expr: &Expr) -> Option<f64> {
-        match &expr.kind {
-            ExprKind::Literal(Literal::Int(v)) => Some(*v as f64),
-            ExprKind::Literal(Literal::Float(v)) => Some(*v),
-            ExprKind::Unary {
-                op: UnaryOp::Neg,
-                expr,
-            } => match &expr.kind {
-                ExprKind::Literal(Literal::Int(v)) => Some(-(*v as f64)),
-                ExprKind::Literal(Literal::Float(v)) => Some(-*v),
-                _ => None,
-            },
-            _ => None,
+    fn eval_refinement_predicate(&mut self, fn_name: &str, value: &Value) -> NativeResult<bool> {
+        let vm = jit::current_vm().ok_or_else(|| {
+            NativeError::Runtime("predicate evaluation requires an active native VM".to_string())
+        })?;
+        let resolved = resolve_public_function_name(vm.program, fn_name)
+            .unwrap_or_else(|_| fn_name.to_string());
+        let result = vm
+            .call_function_native_only_inner(&resolved, vec![value.clone()])
+            .map_err(NativeError::Runtime)?;
+        match result.unboxed() {
+            Value::Bool(ok) => Ok(ok),
+            _ => Err(NativeError::Runtime(format!(
+                "predicate {fn_name} must return Bool"
+            ))),
         }
     }
 }
@@ -2744,6 +3072,24 @@ fn split_type_name(name: &str) -> (Option<&str>, &str) {
     match name.split_once('.') {
         Some((module, rest)) if !module.is_empty() && !rest.is_empty() => (Some(module), rest),
         _ => (None, name),
+    }
+}
+
+fn is_html_type_name(name: &str) -> bool {
+    let (_, simple) = split_type_name(name);
+    simple == "Html"
+}
+
+fn is_html_response_type(ty: &TypeRef) -> bool {
+    match &ty.kind {
+        TypeRefKind::Simple(ident) => is_html_type_name(&ident.name),
+        TypeRefKind::Refined { base, .. } => is_html_type_name(&base.name),
+        TypeRefKind::Optional(inner) => is_html_response_type(inner),
+        TypeRefKind::Result { ok, .. } => is_html_response_type(ok),
+        TypeRefKind::Generic { base, args } => match base.name.as_str() {
+            "Option" | "Result" => args.first().is_some_and(is_html_response_type),
+            _ => false,
+        },
     }
 }
 
@@ -2857,4 +3203,106 @@ fn parse_route_param(segment: &str) -> Option<(String, String)> {
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn proxy_http_request(request: &HttpRequest, base_url: &str) -> Option<String> {
+    let (host, port, base_path) = parse_proxy_base_url(base_url)?;
+    let request_path = if request.path.starts_with('/') {
+        request.path.clone()
+    } else {
+        format!("/{}", request.path)
+    };
+    let target_path = join_proxy_paths(&base_path, &request_path);
+    let mut upstream = TcpStream::connect((host.as_str(), port)).ok()?;
+    let mut head = format!(
+        "{} {} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nContent-Length: {}\r\n",
+        request.method,
+        target_path,
+        request.body.len()
+    );
+    if !request.body.is_empty() {
+        head.push_str("Content-Type: application/json\r\n");
+    }
+    head.push_str("\r\n");
+    upstream.write_all(head.as_bytes()).ok()?;
+    if !request.body.is_empty() {
+        upstream.write_all(&request.body).ok()?;
+    }
+    let mut response = Vec::new();
+    upstream.read_to_end(&mut response).ok()?;
+    Some(String::from_utf8_lossy(&response).into_owned())
+}
+
+fn parse_proxy_base_url(raw: &str) -> Option<(String, u16, String)> {
+    let trimmed = raw.trim();
+    let rest = trimmed.strip_prefix("http://")?;
+    let (authority, path) = match rest.split_once('/') {
+        Some((authority, tail)) => (authority, format!("/{}", tail.trim_start_matches('/'))),
+        None => (rest, "/".to_string()),
+    };
+    if authority.is_empty() {
+        return None;
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => {
+            let port = port.parse::<u16>().ok()?;
+            (host.to_string(), port)
+        }
+        None => (authority.to_string(), 80),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some((host, port, path))
+}
+
+fn join_proxy_paths(base_path: &str, request_path: &str) -> String {
+    if base_path == "/" {
+        return request_path.to_string();
+    }
+    if request_path == "/" {
+        return base_path.to_string();
+    }
+    format!(
+        "{}/{}",
+        base_path.trim_end_matches('/'),
+        request_path.trim_start_matches('/')
+    )
+}
+
+fn escape_js_single_quoted(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn normalize_openapi_ui_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "/docs".to_string();
+    }
+    let mut path = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    while path.len() > 1 && path.ends_with('/') {
+        path.pop();
+    }
+    path
+}
+
+fn openapi_ui_html(spec_url: &str) -> String {
+    let spec_url = escape_js_single_quoted(spec_url);
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>OpenAPI</title><style>:root{{color-scheme:light dark;font-family:ui-sans-serif,system-ui,sans-serif}}body{{margin:0;padding:24px;background:#0b1020;color:#e6e8ee}}main{{max-width:980px;margin:0 auto}}h1{{margin:0 0 12px;font-size:1.6rem}}.muted{{color:#9aa3b2;font-size:.92rem}}.card{{margin-top:16px;padding:16px;border:1px solid #27314a;border-radius:12px;background:#121a2c}}.route{{padding:8px 0;border-bottom:1px solid #222b43}}.route:last-child{{border-bottom:0}}.method{{display:inline-block;min-width:56px;font-weight:700}}code{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}}</style></head><body><main><h1>FUSE OpenAPI</h1><div class=\"muted\">spec: <code id=\"spec-url\"></code></div><section id=\"status\" class=\"card\">Loading…</section><section id=\"routes\" class=\"card\" hidden><h2>Routes</h2><div id=\"route-list\"></div></section></main><script>(function(){{var specUrl='{spec_url}';document.getElementById('spec-url').textContent=specUrl;var status=document.getElementById('status');var routes=document.getElementById('routes');var list=document.getElementById('route-list');fetch(specUrl).then(function(res){{if(!res.ok){{throw new Error('HTTP '+res.status);}}return res.json();}}).then(function(doc){{status.textContent='Loaded '+(doc.info&&doc.info.title?doc.info.title:'OpenAPI')+' '+((doc.info&&doc.info.version)||'');var paths=doc.paths||{{}};var entries=[];Object.keys(paths).sort().forEach(function(path){{var item=paths[path]||{{}};Object.keys(item).forEach(function(method){{entries.push([method.toUpperCase(),path,(item[method]&&item[method].summary)||'']);}});}});if(entries.length===0){{list.textContent='No routes found.';routes.hidden=false;return;}}list.innerHTML='';entries.forEach(function(entry){{var row=document.createElement('div');row.className='route';row.innerHTML='<span class=\"method\">'+entry[0]+'</span> <code>'+entry[1]+'</code>'+(entry[2]?' <span class=\"muted\">'+entry[2]+'</span>':'');list.appendChild(row);}});routes.hidden=false;}}).catch(function(err){{status.textContent='Failed to load OpenAPI: '+err.message;}});}})();</script></body></html>"
+    )
 }

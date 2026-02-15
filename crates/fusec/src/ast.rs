@@ -41,10 +41,22 @@ pub struct ImportDecl {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ImportSpec {
-    Module { name: Ident },
-    ModuleFrom { name: Ident, path: StringLit },
-    NamedFrom { names: Vec<Ident>, path: StringLit },
-    AliasFrom { name: Ident, alias: Ident, path: StringLit },
+    Module {
+        name: Ident,
+    },
+    ModuleFrom {
+        name: Ident,
+        path: StringLit,
+    },
+    NamedFrom {
+        names: Vec<Ident>,
+        path: StringLit,
+    },
+    AliasFrom {
+        name: Ident,
+        alias: Ident,
+        path: StringLit,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -304,6 +316,8 @@ pub struct CallArg {
     pub name: Option<Ident>,
     pub value: Expr,
     pub span: Span,
+    #[serde(default)]
+    pub is_block_sugar: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

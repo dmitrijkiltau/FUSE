@@ -28,7 +28,10 @@ fn native_heap_literals_smoke() {
     let list = vm
         .call_function("make_list", vec![])
         .expect("native list call failed");
-    assert!(vm.has_jit_function("make_list"), "expected JIT for make_list");
+    assert!(
+        vm.has_jit_function("make_list"),
+        "expected JIT for make_list"
+    );
     match list {
         Value::List(items) => {
             assert_eq!(items.len(), 2);
@@ -66,12 +69,18 @@ fn native_heap_literals_smoke() {
     let user = vm
         .call_function("make_user", vec![])
         .expect("native make_user call failed");
-    assert!(vm.has_jit_function("make_user"), "expected JIT for make_user");
+    assert!(
+        vm.has_jit_function("make_user"),
+        "expected JIT for make_user"
+    );
 
     let role = vm
         .call_function("user_role", vec![user])
         .expect("native user_role call failed");
-    assert!(vm.has_jit_function("user_role"), "expected JIT for user_role");
+    assert!(
+        vm.has_jit_function("user_role"),
+        "expected JIT for user_role"
+    );
     match role {
         Value::String(text) => assert_eq!(text, "dev"),
         other => panic!("unexpected role value: {other:?}"),
@@ -80,7 +89,10 @@ fn native_heap_literals_smoke() {
     let color = vm
         .call_function("make_color", vec![])
         .expect("native make_color call failed");
-    assert!(vm.has_jit_function("make_color"), "expected JIT for make_color");
+    assert!(
+        vm.has_jit_function("make_color"),
+        "expected JIT for make_color"
+    );
     match color {
         Value::Enum {
             name,
@@ -97,7 +109,10 @@ fn native_heap_literals_smoke() {
     let boxed = vm
         .call_function("make_boxed", vec![])
         .expect("native make_boxed call failed");
-    assert!(vm.has_jit_function("make_boxed"), "expected JIT for make_boxed");
+    assert!(
+        vm.has_jit_function("make_boxed"),
+        "expected JIT for make_boxed"
+    );
     match boxed {
         Value::Boxed(inner) => match &*inner.borrow() {
             Value::String(text) => assert_eq!(text, "boxed"),

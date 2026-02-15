@@ -1,15 +1,19 @@
 pub mod ast;
 pub mod cli;
-pub mod diag;
 pub mod db;
+pub mod diag;
 pub mod format;
+pub mod html_tags;
+pub mod interp;
+pub mod ir;
 pub mod lexer;
 pub mod loader;
 pub mod native;
 pub mod openapi;
 pub mod parser;
-pub mod interp;
-pub mod ir;
+pub mod refinement;
+mod runtime_assets;
+mod runtime_svg;
 pub mod sema;
 pub mod span;
 pub mod token;
@@ -18,8 +22,8 @@ pub mod vm;
 use crate::diag::Diagnostics;
 
 pub use loader::{
-    load_program, load_program_with_modules, load_program_with_modules_and_deps, ModuleExports,
-    ModuleId, ModuleLink, ModuleMap, ModuleRegistry, ModuleUnit,
+    ModuleExports, ModuleId, ModuleLink, ModuleMap, ModuleRegistry, ModuleUnit, load_program,
+    load_program_with_modules, load_program_with_modules_and_deps,
 };
 
 pub fn parse_source(src: &str) -> (ast::Program, Vec<diag::Diag>) {

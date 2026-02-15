@@ -2,6 +2,9 @@
 name = "fuse-rt"
 version = "0.1.0"
 edition = "2024"
+description = "Shared runtime primitives for the FUSE toolchain."
+repository = "https://github.com/dmitrijkiltau/fuse"
+license = "Apache-2.0"
 
 [lib]
 path = "src/lib.rs"

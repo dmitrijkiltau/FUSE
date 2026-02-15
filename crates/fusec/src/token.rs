@@ -112,6 +112,47 @@ impl Keyword {
             _ => None,
         }
     }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Keyword::App => "app",
+            Keyword::Service => "service",
+            Keyword::At => "at",
+            Keyword::Get => "get",
+            Keyword::Post => "post",
+            Keyword::Put => "put",
+            Keyword::Patch => "patch",
+            Keyword::Delete => "delete",
+            Keyword::Fn => "fn",
+            Keyword::Type => "type",
+            Keyword::Enum => "enum",
+            Keyword::Let => "let",
+            Keyword::Var => "var",
+            Keyword::Return => "return",
+            Keyword::If => "if",
+            Keyword::Else => "else",
+            Keyword::Match => "match",
+            Keyword::For => "for",
+            Keyword::In => "in",
+            Keyword::While => "while",
+            Keyword::Break => "break",
+            Keyword::Continue => "continue",
+            Keyword::Import => "import",
+            Keyword::From => "from",
+            Keyword::As => "as",
+            Keyword::Config => "config",
+            Keyword::Migration => "migration",
+            Keyword::Table => "table",
+            Keyword::Test => "test",
+            Keyword::Body => "body",
+            Keyword::And => "and",
+            Keyword::Or => "or",
+            Keyword::Without => "without",
+            Keyword::Spawn => "spawn",
+            Keyword::Await => "await",
+            Keyword::Box => "box",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

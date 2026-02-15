@@ -1,5 +1,6 @@
 use crate::ast::*;
 use crate::diag::Diagnostics;
+use crate::html_tags;
 use crate::lexer;
 use crate::span::Span;
 use crate::token::{InterpSegment, Keyword, Punct, Token, TokenKind};
@@ -12,7 +13,11 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token], diags: &'a mut Diagnostics) -> Self {
-        Self { tokens, pos: 0, diags }
+        Self {
+            tokens,
+            pos: 0,
+            diags,
+        }
     }
 
     pub fn parse_program(&mut self) -> Program {
@@ -234,10 +239,17 @@ impl<'a> Parser<'a> {
         let name = self.expect_ident();
         self.expect_punct(Punct::LParen);
         let mut params = Vec::new();
+        self.consume_newlines();
         if !self.at_punct(Punct::RParen) {
             loop {
+                self.consume_newlines();
                 params.push(self.parse_param());
+                self.consume_newlines();
                 if self.eat_punct(Punct::Comma).is_none() {
+                    break;
+                }
+                self.consume_newlines();
+                if self.at_punct(Punct::RParen) {
                     break;
                 }
             }
@@ -381,7 +393,12 @@ impl<'a> Parser<'a> {
         self.expect_punct(Punct::Colon);
         let body = self.parse_block();
         let span = name.span.merge(body.span);
-        AppDecl { name, body, doc, span }
+        AppDecl {
+            name,
+            body,
+            doc,
+            span,
+        }
     }
 
     fn parse_migration_decl(&mut self, doc: Option<Doc>) -> MigrationDecl {
@@ -414,7 +431,12 @@ impl<'a> Parser<'a> {
         self.expect_punct(Punct::Colon);
         let body = self.parse_block();
         let span = name.span.merge(body.span);
-        TestDecl { name, body, doc, span }
+        TestDecl {
+            name,
+            body,
+            doc,
+            span,
+        }
     }
 
     fn parse_param(&mut self) -> Param {
@@ -466,7 +488,7 @@ impl<'a> Parser<'a> {
                     None
                 };
                 self.expect_punct(Punct::Assign);
-                let expr = self.parse_expr();
+                let expr = self.parse_expr_with_html_block();
                 StmtKind::Let { name, ty, expr }
             }
             TokenKind::Keyword(Keyword::Var) => {
@@ -478,7 +500,7 @@ impl<'a> Parser<'a> {
                     None
                 };
                 self.expect_punct(Punct::Assign);
-                let expr = self.parse_expr();
+                let expr = self.parse_expr_with_html_block();
                 StmtKind::Var { name, ty, expr }
             }
             TokenKind::Keyword(Keyword::Return) => {
@@ -486,7 +508,7 @@ impl<'a> Parser<'a> {
                 let expr = if self.at_newline() {
                     None
                 } else {
-                    Some(self.parse_expr())
+                    Some(self.parse_expr_with_html_block())
                 };
                 StmtKind::Return { expr }
             }
@@ -505,24 +527,32 @@ impl<'a> Parser<'a> {
             _ => {
                 let expr = self.parse_expr();
                 if self.eat_punct(Punct::Assign).is_some() {
-                    let value = self.parse_expr();
-                    StmtKind::Assign { target: expr, expr: value }
+                    let value = self.parse_expr_with_html_block();
+                    StmtKind::Assign {
+                        target: expr,
+                        expr: value,
+                    }
                 } else {
+                    let expr = self.parse_html_block_suffix(expr);
                     StmtKind::Expr(expr)
                 }
             }
         };
-        let spawn_expr = |expr: &Expr| matches!(expr.kind, ExprKind::Spawn { .. });
+        let block_expr = |expr: &Expr| match &expr.kind {
+            ExprKind::Spawn { .. } => true,
+            ExprKind::Call { args, .. } => args.iter().any(|arg| arg.is_block_sugar),
+            _ => false,
+        };
         let needs_newline = match &kind {
             StmtKind::If { .. }
             | StmtKind::Match { .. }
             | StmtKind::For { .. }
             | StmtKind::While { .. } => false,
-            StmtKind::Expr(expr) => !spawn_expr(expr),
-            StmtKind::Let { expr, .. } => !spawn_expr(expr),
-            StmtKind::Var { expr, .. } => !spawn_expr(expr),
-            StmtKind::Assign { expr, .. } => !spawn_expr(expr),
-            StmtKind::Return { expr } => expr.as_ref().map(spawn_expr).map(|v| !v).unwrap_or(true),
+            StmtKind::Expr(expr) => !block_expr(expr),
+            StmtKind::Let { expr, .. } => !block_expr(expr),
+            StmtKind::Var { expr, .. } => !block_expr(expr),
+            StmtKind::Assign { expr, .. } => !block_expr(expr),
+            StmtKind::Return { expr } => expr.as_ref().map(block_expr).map(|v| !v).unwrap_or(true),
             _ => true,
         };
         if needs_newline {
@@ -537,11 +567,128 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_expr_with_html_block(&mut self) -> Expr {
+        let expr = self.parse_expr();
+        self.parse_html_block_suffix(expr)
+    }
+
+    fn parse_html_block_suffix(&mut self, expr: Expr) -> Expr {
+        if !self.at_punct(Punct::Colon) {
+            return expr;
+        }
+        let colon = self.expect_punct(Punct::Colon);
+        let (children, block_span, output_span) = if self.at_newline() {
+            let block = self.parse_block();
+            let mut children = Vec::new();
+            for stmt in block.stmts {
+                match stmt.kind {
+                    StmtKind::Expr(child) => children.push(self.lower_html_block_child(child)),
+                    _ => {
+                        self.diags
+                            .error(stmt.span, "html block children must be expressions");
+                    }
+                }
+            }
+            (children, block.span, expr.span.merge(block.span))
+        } else {
+            let child_expr = self.parse_expr_with_html_block();
+            let child = self.lower_html_block_child(child_expr);
+            let child_span = child.span;
+            (vec![child], child_span, expr.span.merge(child_span))
+        };
+        match expr.kind {
+            ExprKind::Call { callee, mut args } => {
+                let all_named_attrs = !args.is_empty() && args.iter().all(|arg| arg.name.is_some());
+                if args.len() > 1 && !all_named_attrs {
+                    self.diags.error(
+                        expr.span.merge(colon),
+                        "html block call accepts at most one explicit attrs argument",
+                    );
+                }
+                if args.is_empty() {
+                    let attrs = Expr {
+                        kind: ExprKind::MapLit(Vec::new()),
+                        span: block_span,
+                    };
+                    args.push(CallArg {
+                        name: None,
+                        value: attrs,
+                        span: block_span,
+                        is_block_sugar: true,
+                    });
+                }
+                let children_expr = Expr {
+                    kind: ExprKind::ListLit(children),
+                    span: block_span,
+                };
+                args.push(CallArg {
+                    name: None,
+                    value: children_expr,
+                    span: block_span,
+                    is_block_sugar: true,
+                });
+                Expr {
+                    kind: ExprKind::Call { callee, args },
+                    span: output_span,
+                }
+            }
+            kind => {
+                self.diags.error(
+                    expr.span.merge(colon),
+                    "html block form requires a function call",
+                );
+                Expr {
+                    kind,
+                    span: expr.span,
+                }
+            }
+        }
+    }
+
+    fn lower_html_block_child(&self, child: Expr) -> Expr {
+        match child.kind {
+            ExprKind::Literal(Literal::String(_)) => {
+                let span = child.span;
+                let html_ident = Ident {
+                    name: "html".to_string(),
+                    span,
+                };
+                let text_ident = Ident {
+                    name: "text".to_string(),
+                    span,
+                };
+                let callee = Expr {
+                    kind: ExprKind::Member {
+                        base: Box::new(Expr {
+                            kind: ExprKind::Ident(html_ident),
+                            span,
+                        }),
+                        name: text_ident,
+                    },
+                    span,
+                };
+                Expr {
+                    kind: ExprKind::Call {
+                        callee: Box::new(callee),
+                        args: vec![CallArg {
+                            name: None,
+                            value: child,
+                            span,
+                            is_block_sugar: false,
+                        }],
+                    },
+                    span,
+                }
+            }
+            _ => child,
+        }
+    }
+
     fn parse_if_stmt(&mut self) -> StmtKind {
         self.expect_keyword(Keyword::If);
         let cond = self.parse_expr();
         self.expect_punct(Punct::Colon);
-        let then_block = self.parse_block();
+        let then_block = self.parse_control_block();
         let mut else_if = Vec::new();
         let mut else_block = None;
         loop {
@@ -552,11 +699,11 @@ impl<'a> Parser<'a> {
             if self.eat_keyword(Keyword::If).is_some() {
                 let cond = self.parse_expr();
                 self.expect_punct(Punct::Colon);
-                let block = self.parse_block();
+                let block = self.parse_control_block();
                 else_if.push((cond, block));
             } else {
                 self.expect_punct(Punct::Colon);
-                else_block = Some(self.parse_block());
+                else_block = Some(self.parse_control_block());
                 break;
             }
         }
@@ -565,6 +712,18 @@ impl<'a> Parser<'a> {
             then_block,
             else_if,
             else_block,
+        }
+    }
+
+    fn parse_control_block(&mut self) -> Block {
+        if self.at_newline() {
+            return self.parse_block();
+        }
+        let stmt = self.parse_stmt();
+        let span = stmt.span;
+        Block {
+            stmts: vec![stmt],
+            span,
         }
     }
 
@@ -660,13 +819,14 @@ impl<'a> Parser<'a> {
                     }
                     let end = self.expect_punct(Punct::RParen);
                     if has_named && has_positional {
-                        self.diags.error(
-                            start.merge(end),
-                            "cannot mix positional and named patterns",
-                        );
+                        self.diags
+                            .error(start.merge(end), "cannot mix positional and named patterns");
                     }
                     if has_named {
-                        PatternKind::Struct { name: ident, fields }
+                        PatternKind::Struct {
+                            name: ident,
+                            fields,
+                        }
                     } else {
                         PatternKind::EnumVariant { name: ident, args }
                     }
@@ -705,13 +865,14 @@ impl<'a> Parser<'a> {
                     }
                     let end = self.expect_punct(Punct::RParen);
                     if has_named && has_positional {
-                        self.diags.error(
-                            start.merge(end),
-                            "cannot mix positional and named patterns",
-                        );
+                        self.diags
+                            .error(start.merge(end), "cannot mix positional and named patterns");
                     }
                     if has_named {
-                        PatternKind::Struct { name: ident, fields }
+                        PatternKind::Struct {
+                            name: ident,
+                            fields,
+                        }
                     } else {
                         PatternKind::EnumVariant { name: ident, args }
                     }
@@ -1011,6 +1172,7 @@ impl<'a> Parser<'a> {
                 let has_named = args.iter().any(|arg| arg.name.is_some());
                 let struct_name = if has_named {
                     self.struct_literal_name(&expr)
+                        .filter(|name| !html_tags::is_html_tag(&name.name))
                 } else {
                     None
                 };
@@ -1233,7 +1395,8 @@ impl<'a> Parser<'a> {
                 InterpSegment::Expr { src, offset } => {
                     let expr_span = Span::new(offset, offset + src.len());
                     if src.trim().is_empty() {
-                        self.diags.error(expr_span, "empty interpolation expression");
+                        self.diags
+                            .error(expr_span, "empty interpolation expression");
                         parts.push(InterpPart::Expr(Expr {
                             kind: ExprKind::Literal(Literal::Null),
                             span: expr_span,
@@ -1277,15 +1440,15 @@ impl<'a> Parser<'a> {
 
     fn parse_call_args(&mut self) -> Vec<CallArg> {
         let mut args = Vec::new();
-        self.consume_newlines();
+        self.consume_call_layout();
         if self.at_punct(Punct::RParen) {
             return args;
         }
         loop {
-            self.consume_newlines();
+            self.consume_call_layout();
             let start = self.peek_span();
             let (name, value) = if self.is_named_arg() {
-                let name = self.expect_ident();
+                let name = self.expect_call_arg_name();
                 self.expect_punct(Punct::Assign);
                 let value = self.parse_expr();
                 (Some(name), value)
@@ -1293,16 +1456,22 @@ impl<'a> Parser<'a> {
                 (None, self.parse_expr())
             };
             let end = self.prev_span();
+            let was_named = name.is_some();
             args.push(CallArg {
                 name,
                 value,
                 span: start.merge(end),
+                is_block_sugar: false,
             });
-            self.consume_newlines();
+            self.consume_call_layout();
             if self.eat_punct(Punct::Comma).is_none() {
+                if was_named && self.is_named_arg() && self.peek_span().start > end.end {
+                    // Permit named args without commas when separated by layout.
+                    continue;
+                }
                 break;
             }
-            self.consume_newlines();
+            self.consume_call_layout();
             if self.at_punct(Punct::RParen) {
                 break;
             }
@@ -1476,7 +1645,29 @@ impl<'a> Parser<'a> {
     fn is_named_arg(&self) -> bool {
         match (self.peek_kind(), self.peek_kind_n(1)) {
             (TokenKind::Ident(_), TokenKind::Punct(Punct::Assign)) => true,
+            (TokenKind::Keyword(_), TokenKind::Punct(Punct::Assign)) => true,
             _ => false,
+        }
+    }
+
+    fn expect_call_arg_name(&mut self) -> Ident {
+        let tok = self.bump();
+        match tok.kind {
+            TokenKind::Ident(name) => Ident {
+                name,
+                span: tok.span,
+            },
+            TokenKind::Keyword(kw) => Ident {
+                name: kw.as_str().to_string(),
+                span: tok.span,
+            },
+            _ => {
+                self.error_here("expected identifier");
+                Ident {
+                    name: "_".to_string(),
+                    span: tok.span,
+                }
+            }
         }
     }
 
@@ -1657,6 +1848,20 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn consume_call_layout(&mut self) -> bool {
+        let mut had_newline = false;
+        while matches!(
+            self.peek_kind(),
+            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
+        ) {
+            if self.at_newline() {
+                had_newline = true;
+            }
+            self.bump();
+        }
+        had_newline
+    }
+
     fn error_here(&mut self, message: &str) {
         let span = self.peek_span();
         self.diags.error(span, message);
@@ -1664,7 +1869,9 @@ impl<'a> Parser<'a> {
 
     fn peek(&self) -> &Token {
         self.tokens.get(self.pos).unwrap_or_else(|| {
-            self.tokens.last().expect("token stream should end with Eof")
+            self.tokens
+                .last()
+                .expect("token stream should end with Eof")
         })
     }
 

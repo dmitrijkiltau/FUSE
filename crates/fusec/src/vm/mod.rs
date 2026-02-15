@@ -11,12 +11,14 @@ use fuse_rt::{
     validate as rt_validate,
 };
 
-use crate::ast::{
-    Expr, ExprKind, HttpVerb, Ident, Literal, Pattern, PatternKind, TypeRef, TypeRefKind, UnaryOp,
-};
-use crate::db::Db;
-use crate::interp::{format_error_value, Task, TaskResult, Value};
+use crate::ast::{Expr, HttpVerb, Ident, Literal, Pattern, PatternKind, TypeRef, TypeRefKind};
+use crate::db::{DEFAULT_DB_POOL_SIZE, Db, parse_db_pool_size, parse_db_pool_size_value};
+use crate::html_tags::{self, HtmlTagKind};
+use crate::interp::{Task, TaskResult, Value, format_error_value};
 use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram, Service, ServiceRoute};
+use crate::refinement::{
+    NumberLiteral, RefinementConstraint, base_is_string_like, parse_constraints,
+};
 use crate::span::Span;
 
 #[derive(Debug)]
@@ -36,6 +38,28 @@ fn split_type_name(name: &str) -> (Option<&str>, &str) {
         Some((module, rest)) if !module.is_empty() && !rest.is_empty() => (Some(module), rest),
         _ => (None, name),
     }
+}
+
+fn is_html_type_name(name: &str) -> bool {
+    let (_, simple) = split_type_name(name);
+    simple == "Html"
+}
+
+fn is_html_response_type(ty: &TypeRef) -> bool {
+    match &ty.kind {
+        TypeRefKind::Simple(ident) => is_html_type_name(&ident.name),
+        TypeRefKind::Refined { base, .. } => is_html_type_name(&base.name),
+        TypeRefKind::Optional(inner) => is_html_response_type(inner),
+        TypeRefKind::Result { ok, .. } => is_html_response_type(ok),
+        TypeRefKind::Generic { base, args } => match base.name.as_str() {
+            "Option" | "Result" => args.first().is_some_and(is_html_response_type),
+            _ => false,
+        },
+    }
+}
+
+fn simple_function_name(name: &str) -> &str {
+    name.rsplit("::").next().unwrap_or(name)
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -91,6 +115,7 @@ pub struct Vm<'a> {
     program: &'a IrProgram,
     configs: HashMap<String, HashMap<String, Value>>,
     db: Option<Db>,
+    regex_cache: HashMap<String, regex::Regex>,
     serve_hook: Option<ServeHook<'a>>,
 }
 
@@ -100,6 +125,7 @@ impl<'a> Vm<'a> {
             program,
             configs: HashMap::new(),
             db: None,
+            regex_cache: HashMap::new(),
             serve_hook: None,
         }
     }
@@ -131,13 +157,11 @@ impl<'a> Vm<'a> {
     }
 
     pub fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, String> {
-        let func = self
-            .program
-            .functions
-            .get(name)
-            .ok_or_else(|| format!("unknown function {name}"))?;
-        let value = match self.exec_function(func, args) {
-            Ok(val) => self.wrap_function_result(func, val).map_err(|err| self.render_error(err))?,
+        let func = self.resolve_public_function(name)?.clone();
+        let value = match self.exec_function(&func, args) {
+            Ok(val) => self
+                .wrap_function_result(&func, val)
+                .map_err(|err| self.render_error(err))?,
             Err(VmError::Error(err_val)) => {
                 if self.is_result_type(func.ret.as_ref()) {
                     Value::ResultErr(Box::new(err_val))
@@ -150,6 +174,29 @@ impl<'a> Vm<'a> {
         Ok(value)
     }
 
+    fn resolve_public_function(&self, name: &str) -> Result<&Function, String> {
+        if let Some(func) = self.program.functions.get(name) {
+            return Ok(func);
+        }
+        if name.contains("::") {
+            return Err(format!("unknown function {name}"));
+        }
+        let mut matches = self
+            .program
+            .functions
+            .iter()
+            .filter(|(key, _)| simple_function_name(key) == name);
+        let first = matches.next().map(|(_, func)| func);
+        let second = matches.next();
+        match (first, second) {
+            (Some(func), None) => Ok(func),
+            (Some(_), Some(_)) => Err(format!(
+                "ambiguous function name {name}; use canonical form m<module_id>::{name}"
+            )),
+            (None, _) => Err(format!("unknown function {name}")),
+        }
+    }
+
     fn render_error(&self, err: VmError) -> String {
         match err {
             VmError::Runtime(msg) => msg,
@@ -160,8 +207,7 @@ impl<'a> Vm<'a> {
     fn eval_configs(&mut self) -> VmResult<()> {
         let config_path =
             std::env::var("FUSE_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
-        let file_values =
-            rt_config::load_config_file(&config_path).map_err(VmError::Runtime)?;
+        let file_values = rt_config::load_config_file(&config_path).map_err(VmError::Runtime)?;
         for config in self.program.configs.values() {
             let mut map = HashMap::new();
             let section = file_values.get(&config.name);
@@ -182,11 +228,8 @@ impl<'a> Vm<'a> {
                                 self.parse_env_value(&field.ty, raw)
                                     .map_err(|err| self.map_parse_error(err, &path))?
                             } else if let Some(fn_name) = &field.default_fn {
-                                let func = self
-                                    .program
-                                    .functions
-                                    .get(fn_name)
-                                    .ok_or_else(|| {
+                                let func =
+                                    self.program.functions.get(fn_name).ok_or_else(|| {
                                         VmError::Runtime(format!(
                                             "unknown config default {fn_name}"
                                         ))
@@ -196,15 +239,9 @@ impl<'a> Vm<'a> {
                                 Value::Null
                             }
                         } else if let Some(fn_name) = &field.default_fn {
-                            let func = self
-                                .program
-                                .functions
-                                .get(fn_name)
-                                .ok_or_else(|| {
-                                    VmError::Runtime(format!(
-                                        "unknown config default {fn_name}"
-                                    ))
-                                })?;
+                            let func = self.program.functions.get(fn_name).ok_or_else(|| {
+                                VmError::Runtime(format!("unknown config default {fn_name}"))
+                            })?;
                             self.exec_function(func, Vec::new())?
                         } else {
                             Value::Null
@@ -293,12 +330,7 @@ impl<'a> Vm<'a> {
                     let left = frame.pop()?;
                     frame.stack.push(self.eval_arith(&instr, left, right)?);
                 }
-                Instr::Eq
-                | Instr::NotEq
-                | Instr::Lt
-                | Instr::LtEq
-                | Instr::Gt
-                | Instr::GtEq => {
+                Instr::Eq | Instr::NotEq | Instr::Lt | Instr::LtEq | Instr::Gt | Instr::GtEq => {
                     let right = frame.pop()?;
                     let left = frame.pop()?;
                     frame.stack.push(self.eval_compare(&instr, left, right)?);
@@ -333,11 +365,9 @@ impl<'a> Vm<'a> {
                     let value = match kind {
                         CallKind::Builtin => self.eval_builtin(&name, args)?,
                         CallKind::Function => {
-                            let func = self
-                                .program
-                                .functions
-                                .get(&name)
-                                .ok_or_else(|| VmError::Runtime(format!("unknown function {name}")))?;
+                            let func = self.program.functions.get(&name).ok_or_else(|| {
+                                VmError::Runtime(format!("unknown function {name}"))
+                            })?;
                             match self.exec_function(func, args) {
                                 Ok(val) => self.wrap_function_result(func, val)?,
                                 Err(VmError::Error(err_val)) => {
@@ -385,9 +415,7 @@ impl<'a> Vm<'a> {
                             TaskResult::Runtime(msg) => return Err(VmError::Runtime(msg)),
                         },
                         _ => {
-                            return Err(VmError::Runtime(
-                                "await expects a Task value".to_string(),
-                            ))
+                            return Err(VmError::Runtime("await expects a Task value".to_string()));
                         }
                     }
                 }
@@ -400,15 +428,12 @@ impl<'a> Vm<'a> {
                     return Ok(self.wrap_function_result(func, value)?);
                 }
                 Instr::Bang { has_error } => {
-                    let err_value = if has_error {
-                        Some(frame.pop()?)
-                    } else {
-                        None
-                    };
+                    let err_value = if has_error { Some(frame.pop()?) } else { None };
                     let value = frame.pop()?.unboxed();
                     match value {
                         Value::Null => {
-                            let err = err_value.unwrap_or_else(|| self.default_error_value("missing value"));
+                            let err = err_value
+                                .unwrap_or_else(|| self.default_error_value("missing value"));
                             return Err(VmError::Error(err));
                         }
                         Value::ResultOk(ok) => {
@@ -447,7 +472,7 @@ impl<'a> Vm<'a> {
                                 return Err(VmError::Runtime(format!(
                                     "map keys must be strings, got {}",
                                     self.value_type_name(&key_val)
-                                )))
+                                )));
                             }
                         };
                         map.insert(key, value);
@@ -471,7 +496,11 @@ impl<'a> Vm<'a> {
                     let value = self.make_struct(&name, values)?;
                     frame.stack.push(value);
                 }
-                Instr::MakeEnum { name, variant, argc } => {
+                Instr::MakeEnum {
+                    name,
+                    variant,
+                    argc,
+                } => {
                     let mut payload = Vec::with_capacity(argc);
                     for _ in 0..argc {
                         payload.push(frame.pop()?);
@@ -483,9 +512,10 @@ impl<'a> Vm<'a> {
                 Instr::GetField { field } => {
                     let base = frame.pop()?.unboxed();
                     let value = match base {
-                        Value::Struct { fields, .. } => fields.get(&field).cloned().ok_or_else(|| {
-                            VmError::Runtime(format!("unknown field {field}"))
-                        })?,
+                        Value::Struct { fields, .. } => fields
+                            .get(&field)
+                            .cloned()
+                            .ok_or_else(|| VmError::Runtime(format!("unknown field {field}")))?,
                         Value::Config(name) => {
                             let map = self.configs.get(&name).ok_or_else(|| {
                                 VmError::Runtime(format!("unknown config {name}"))
@@ -497,7 +527,7 @@ impl<'a> Vm<'a> {
                         _ => {
                             return Err(VmError::Runtime(
                                 "member access not supported on this value".to_string(),
-                            ))
+                            ));
                         }
                     };
                     frame.stack.push(value);
@@ -522,7 +552,7 @@ impl<'a> Vm<'a> {
                         _ => {
                             return Err(VmError::Runtime(
                                 "index access not supported on this value".to_string(),
-                            ))
+                            ));
                         }
                     };
                     frame.stack.push(value);
@@ -542,7 +572,7 @@ impl<'a> Vm<'a> {
                                     _ => {
                                         return Err(VmError::Runtime(
                                             "assignment target must be a struct field".to_string(),
-                                        ))
+                                        ));
                                     }
                                 }
                             }
@@ -555,7 +585,7 @@ impl<'a> Vm<'a> {
                         _ => {
                             return Err(VmError::Runtime(
                                 "assignment target must be a struct field".to_string(),
-                            ))
+                            ));
                         }
                     };
                     frame.stack.push(updated);
@@ -583,13 +613,13 @@ impl<'a> Vm<'a> {
                                         items.insert(key, value);
                                     }
                                     Value::Null => {
-                                        return Err(VmError::Runtime("null access".to_string()))
+                                        return Err(VmError::Runtime("null access".to_string()));
                                     }
                                     _ => {
                                         return Err(VmError::Runtime(
                                             "assignment target must be an indexable value"
                                                 .to_string(),
-                                        ))
+                                        ));
                                     }
                                 }
                             }
@@ -612,7 +642,7 @@ impl<'a> Vm<'a> {
                         _ => {
                             return Err(VmError::Runtime(
                                 "assignment target must be an indexable value".to_string(),
-                            ))
+                            ));
                         }
                     };
                     frame.stack.push(updated);
@@ -658,10 +688,9 @@ impl<'a> Vm<'a> {
                         .configs
                         .get(&config)
                         .ok_or_else(|| VmError::Runtime(format!("unknown config {config}")))?;
-                    let value = map
-                        .get(&field)
-                        .cloned()
-                        .ok_or_else(|| VmError::Runtime(format!("unknown config field {config}.{field}")))?;
+                    let value = map.get(&field).cloned().ok_or_else(|| {
+                        VmError::Runtime(format!("unknown config field {config}.{field}"))
+                    })?;
                     frame.stack.push(value);
                 }
                 Instr::IterInit => {
@@ -673,12 +702,14 @@ impl<'a> Vm<'a> {
                             return Err(VmError::Runtime(format!(
                                 "cannot iterate over {}",
                                 self.value_type_name(&other)
-                            )))
+                            )));
                         }
                     };
-                    frame.stack.push(Value::Iterator(crate::interp::IteratorValue::new(
-                        iter_values,
-                    )));
+                    frame
+                        .stack
+                        .push(Value::Iterator(crate::interp::IteratorValue::new(
+                            iter_values,
+                        )));
                 }
                 Instr::IterNext { jump } => {
                     let iter_value = frame.pop()?.unboxed();
@@ -688,7 +719,7 @@ impl<'a> Vm<'a> {
                             return Err(VmError::Runtime(format!(
                                 "expected iterator, got {}",
                                 self.value_type_name(&other)
-                            )))
+                            )));
                         }
                     };
                     if iter.index >= iter.values.len() {
@@ -726,10 +757,25 @@ impl<'a> Vm<'a> {
         ))
     }
 
+    fn db_pool_size(&self) -> VmResult<usize> {
+        if let Ok(raw) = std::env::var("FUSE_DB_POOL_SIZE") {
+            return parse_db_pool_size(&raw, "FUSE_DB_POOL_SIZE").map_err(VmError::Runtime);
+        }
+        if let Some(value) = self
+            .configs
+            .get("App")
+            .and_then(|config| config.get("dbPoolSize"))
+        {
+            return parse_db_pool_size_value(value, "App.dbPoolSize").map_err(VmError::Runtime);
+        }
+        Ok(DEFAULT_DB_POOL_SIZE)
+    }
+
     fn db_mut(&mut self) -> VmResult<&mut Db> {
         if self.db.is_none() {
+            let pool_size = self.db_pool_size()?;
             let url = self.db_url()?;
-            let db = Db::open(&url).map_err(VmError::Runtime)?;
+            let db = Db::open_with_pool(&url, pool_size).map_err(VmError::Runtime)?;
             self.db = Some(db);
         }
         Ok(self.db.as_mut().expect("db initialized"))
@@ -737,6 +783,9 @@ impl<'a> Vm<'a> {
 
     fn eval_builtin(&mut self, name: &str, args: Vec<Value>) -> VmResult<Value> {
         let args: Vec<Value> = args.into_iter().map(|val| val.unboxed()).collect();
+        if html_tags::is_html_tag(name) {
+            return self.eval_html_tag_builtin(name, &args);
+        }
         match name {
             "print" => {
                 let text = args.get(0).map(|v| v.to_string_value()).unwrap_or_default();
@@ -776,10 +825,7 @@ impl<'a> Vm<'a> {
                             "level".to_string(),
                             rt_json::JsonValue::String(level.json_label().to_string()),
                         );
-                        obj.insert(
-                            "message".to_string(),
-                            rt_json::JsonValue::String(message),
-                        );
+                        obj.insert("message".to_string(), rt_json::JsonValue::String(message));
                         obj.insert("data".to_string(), data_json);
                         eprintln!("{}", rt_json::encode(&rt_json::JsonValue::Object(obj)));
                     } else {
@@ -794,9 +840,10 @@ impl<'a> Vm<'a> {
                 Ok(Value::Unit)
             }
             "json.encode" => {
-                let value = args.get(0).cloned().ok_or_else(|| {
-                    VmError::Runtime("json.encode expects a value".to_string())
-                })?;
+                let value = args
+                    .get(0)
+                    .cloned()
+                    .ok_or_else(|| VmError::Runtime("json.encode expects a value".to_string()))?;
                 let json = self.value_to_json(&value);
                 Ok(Value::String(rt_json::encode(&json)))
             }
@@ -806,12 +853,135 @@ impl<'a> Vm<'a> {
                     _ => {
                         return Err(VmError::Runtime(
                             "json.decode expects a string argument".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let json = rt_json::decode(&text)
                     .map_err(|msg| VmError::Runtime(format!("invalid json: {msg}")))?;
                 Ok(self.json_to_value(&json))
+            }
+            "asset" => {
+                if args.len() != 1 {
+                    return Err(VmError::Runtime("asset expects 1 argument".to_string()));
+                }
+                let path = match args.get(0) {
+                    Some(Value::String(path)) => path,
+                    _ => return Err(VmError::Runtime("asset expects a string path".to_string())),
+                };
+                Ok(Value::String(crate::runtime_assets::resolve_asset_href(
+                    path,
+                )))
+            }
+            "html.text" => {
+                if args.len() != 1 {
+                    return Err(VmError::Runtime("html.text expects 1 argument".to_string()));
+                }
+                let text = match args.get(0) {
+                    Some(Value::String(text)) => text.clone(),
+                    _ => return Err(VmError::Runtime("html.text expects a String".to_string())),
+                };
+                Ok(Value::Html(crate::interp::HtmlNode::Text(text)))
+            }
+            "html.raw" => {
+                if args.len() != 1 {
+                    return Err(VmError::Runtime("html.raw expects 1 argument".to_string()));
+                }
+                let text = match args.get(0) {
+                    Some(Value::String(text)) => text.clone(),
+                    _ => return Err(VmError::Runtime("html.raw expects a String".to_string())),
+                };
+                Ok(Value::Html(crate::interp::HtmlNode::Raw(text)))
+            }
+            "html.node" => {
+                if args.len() != 3 {
+                    return Err(VmError::Runtime(
+                        "html.node expects 3 arguments".to_string(),
+                    ));
+                }
+                let tag = match args.get(0) {
+                    Some(Value::String(tag)) => tag.clone(),
+                    _ => {
+                        return Err(VmError::Runtime(
+                            "html.node expects a String tag".to_string(),
+                        ));
+                    }
+                };
+                let attrs = match args.get(1) {
+                    Some(Value::Map(map)) => {
+                        let mut attrs = HashMap::with_capacity(map.len());
+                        for (key, value) in map {
+                            let Value::String(text) = value else {
+                                return Err(VmError::Runtime(
+                                    "html.node attrs must be Map<String, String>".to_string(),
+                                ));
+                            };
+                            attrs.insert(key.clone(), text.clone());
+                        }
+                        attrs
+                    }
+                    _ => {
+                        return Err(VmError::Runtime(
+                            "html.node expects attrs as Map<String, String>".to_string(),
+                        ));
+                    }
+                };
+                let children = match args.get(2) {
+                    Some(Value::List(items)) => {
+                        let mut children = Vec::with_capacity(items.len());
+                        for item in items {
+                            let Value::Html(node) = item else {
+                                return Err(VmError::Runtime(
+                                    "html.node children must be List<Html>".to_string(),
+                                ));
+                            };
+                            children.push(node.clone());
+                        }
+                        children
+                    }
+                    _ => {
+                        return Err(VmError::Runtime(
+                            "html.node expects children as List<Html>".to_string(),
+                        ));
+                    }
+                };
+                Ok(Value::Html(crate::interp::HtmlNode::Element {
+                    tag,
+                    attrs,
+                    children,
+                }))
+            }
+            "html.render" => {
+                if args.len() != 1 {
+                    return Err(VmError::Runtime(
+                        "html.render expects 1 argument".to_string(),
+                    ));
+                }
+                let node = match args.get(0) {
+                    Some(Value::Html(node)) => node,
+                    _ => {
+                        return Err(VmError::Runtime(
+                            "html.render expects an Html value".to_string(),
+                        ));
+                    }
+                };
+                Ok(Value::String(node.render_to_string()))
+            }
+            "svg.inline" => {
+                if args.len() != 1 {
+                    return Err(VmError::Runtime(
+                        "svg.inline expects 1 argument".to_string(),
+                    ));
+                }
+                let name = match args.get(0) {
+                    Some(Value::String(name)) => name,
+                    _ => {
+                        return Err(VmError::Runtime(
+                            "svg.inline expects a String path".to_string(),
+                        ));
+                    }
+                };
+                let svg = crate::runtime_svg::load_svg_inline(name).map_err(VmError::Runtime)?;
+                Ok(Value::Html(crate::interp::HtmlNode::Raw(svg)))
             }
             "db.exec" => {
                 if args.len() > 2 {
@@ -821,11 +991,7 @@ impl<'a> Vm<'a> {
                 }
                 let sql = match args.get(0) {
                     Some(Value::String(s)) => s.clone(),
-                    _ => {
-                        return Err(VmError::Runtime(
-                            "db.exec expects a SQL string".to_string(),
-                        ))
-                    }
+                    _ => return Err(VmError::Runtime("db.exec expects a SQL string".to_string())),
                 };
                 let params = if args.len() > 1 {
                     match args.get(1) {
@@ -833,15 +999,14 @@ impl<'a> Vm<'a> {
                         _ => {
                             return Err(VmError::Runtime(
                                 "db.exec params must be a list".to_string(),
-                            ))
+                            ));
                         }
                     }
                 } else {
                     Vec::new()
                 };
                 let db = self.db_mut()?;
-                db.exec_params(&sql, &params)
-                    .map_err(VmError::Runtime)?;
+                db.exec_params(&sql, &params).map_err(VmError::Runtime)?;
                 Ok(Value::Unit)
             }
             "db.query" => {
@@ -855,7 +1020,7 @@ impl<'a> Vm<'a> {
                     _ => {
                         return Err(VmError::Runtime(
                             "db.query expects a SQL string".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let params = if args.len() > 1 {
@@ -864,16 +1029,14 @@ impl<'a> Vm<'a> {
                         _ => {
                             return Err(VmError::Runtime(
                                 "db.query params must be a list".to_string(),
-                            ))
+                            ));
                         }
                     }
                 } else {
                     Vec::new()
                 };
                 let db = self.db_mut()?;
-                let rows = db
-                    .query_params(&sql, &params)
-                    .map_err(VmError::Runtime)?;
+                let rows = db.query_params(&sql, &params).map_err(VmError::Runtime)?;
                 let list = rows.into_iter().map(Value::Map).collect();
                 Ok(Value::List(list))
             }
@@ -885,11 +1048,7 @@ impl<'a> Vm<'a> {
                 }
                 let sql = match args.get(0) {
                     Some(Value::String(s)) => s.clone(),
-                    _ => {
-                        return Err(VmError::Runtime(
-                            "db.one expects a SQL string".to_string(),
-                        ))
-                    }
+                    _ => return Err(VmError::Runtime("db.one expects a SQL string".to_string())),
                 };
                 let params = if args.len() > 1 {
                     match args.get(1) {
@@ -897,16 +1056,14 @@ impl<'a> Vm<'a> {
                         _ => {
                             return Err(VmError::Runtime(
                                 "db.one params must be a list".to_string(),
-                            ))
+                            ));
                         }
                     }
                 } else {
                     Vec::new()
                 };
                 let db = self.db_mut()?;
-                let rows = db
-                    .query_params(&sql, &params)
-                    .map_err(VmError::Runtime)?;
+                let rows = db.query_params(&sql, &params).map_err(VmError::Runtime)?;
                 if let Some(row) = rows.into_iter().next() {
                     Ok(Value::Map(row))
                 } else {
@@ -919,7 +1076,7 @@ impl<'a> Vm<'a> {
                     _ => {
                         return Err(VmError::Runtime(
                             "db.from expects a table name string".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let query = crate::db::Query::new(table).map_err(VmError::Runtime)?;
@@ -933,11 +1090,7 @@ impl<'a> Vm<'a> {
                 }
                 let query = match args.get(0) {
                     Some(Value::Query(query)) => query.clone(),
-                    _ => {
-                        return Err(VmError::Runtime(
-                            "query.select expects a Query".to_string(),
-                        ))
-                    }
+                    _ => return Err(VmError::Runtime("query.select expects a Query".to_string())),
                 };
                 let columns = match args.get(1) {
                     Some(Value::List(items)) => {
@@ -948,7 +1101,7 @@ impl<'a> Vm<'a> {
                                 _ => {
                                     return Err(VmError::Runtime(
                                         "query.select expects a list of strings".to_string(),
-                                    ))
+                                    ));
                                 }
                             }
                         }
@@ -957,7 +1110,7 @@ impl<'a> Vm<'a> {
                     _ => {
                         return Err(VmError::Runtime(
                             "query.select expects a list of strings".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let next = query.select(columns).map_err(VmError::Runtime)?;
@@ -971,18 +1124,14 @@ impl<'a> Vm<'a> {
                 }
                 let query = match args.get(0) {
                     Some(Value::Query(query)) => query.clone(),
-                    _ => {
-                        return Err(VmError::Runtime(
-                            "query.where expects a Query".to_string(),
-                        ))
-                    }
+                    _ => return Err(VmError::Runtime("query.where expects a Query".to_string())),
                 };
                 let column = match args.get(1) {
                     Some(Value::String(s)) => s.clone(),
                     _ => {
                         return Err(VmError::Runtime(
                             "query.where expects a column string".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let op = match args.get(2) {
@@ -990,12 +1139,13 @@ impl<'a> Vm<'a> {
                     _ => {
                         return Err(VmError::Runtime(
                             "query.where expects an operator string".to_string(),
-                        ))
+                        ));
                     }
                 };
-                let value = args.get(3).cloned().ok_or_else(|| {
-                    VmError::Runtime("query.where expects a value".to_string())
-                })?;
+                let value = args
+                    .get(3)
+                    .cloned()
+                    .ok_or_else(|| VmError::Runtime("query.where expects a value".to_string()))?;
                 let next = query
                     .where_clause(column, op, value)
                     .map_err(VmError::Runtime)?;
@@ -1012,7 +1162,7 @@ impl<'a> Vm<'a> {
                     _ => {
                         return Err(VmError::Runtime(
                             "query.order_by expects a Query".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let column = match args.get(1) {
@@ -1020,7 +1170,7 @@ impl<'a> Vm<'a> {
                     _ => {
                         return Err(VmError::Runtime(
                             "query.order_by expects a column string".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let dir = match args.get(2) {
@@ -1028,7 +1178,7 @@ impl<'a> Vm<'a> {
                     _ => {
                         return Err(VmError::Runtime(
                             "query.order_by expects a direction string".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let next = query.order_by(column, dir).map_err(VmError::Runtime)?;
@@ -1042,43 +1192,27 @@ impl<'a> Vm<'a> {
                 }
                 let query = match args.get(0) {
                     Some(Value::Query(query)) => query.clone(),
-                    _ => {
-                        return Err(VmError::Runtime(
-                            "query.limit expects a Query".to_string(),
-                        ))
-                    }
+                    _ => return Err(VmError::Runtime("query.limit expects a Query".to_string())),
                 };
                 let limit = match args.get(1) {
                     Some(Value::Int(v)) => *v,
                     Some(Value::Float(v)) => *v as i64,
-                    _ => {
-                        return Err(VmError::Runtime(
-                            "query.limit expects an Int".to_string(),
-                        ))
-                    }
+                    _ => return Err(VmError::Runtime("query.limit expects an Int".to_string())),
                 };
                 let next = query.limit(limit).map_err(VmError::Runtime)?;
                 Ok(Value::Query(next))
             }
             "query.one" => {
                 if args.len() != 1 {
-                    return Err(VmError::Runtime(
-                        "query.one expects 1 argument".to_string(),
-                    ));
+                    return Err(VmError::Runtime("query.one expects 1 argument".to_string()));
                 }
                 let query = match args.get(0) {
                     Some(Value::Query(query)) => query.clone(),
-                    _ => {
-                        return Err(VmError::Runtime(
-                            "query.one expects a Query".to_string(),
-                        ))
-                    }
+                    _ => return Err(VmError::Runtime("query.one expects a Query".to_string())),
                 };
                 let (sql, params) = query.build_sql(Some(1)).map_err(VmError::Runtime)?;
                 let db = self.db_mut()?;
-                let rows = db
-                    .query_params(&sql, &params)
-                    .map_err(VmError::Runtime)?;
+                let rows = db.query_params(&sql, &params).map_err(VmError::Runtime)?;
                 if let Some(row) = rows.into_iter().next() {
                     Ok(Value::Map(row))
                 } else {
@@ -1087,23 +1221,15 @@ impl<'a> Vm<'a> {
             }
             "query.all" => {
                 if args.len() != 1 {
-                    return Err(VmError::Runtime(
-                        "query.all expects 1 argument".to_string(),
-                    ));
+                    return Err(VmError::Runtime("query.all expects 1 argument".to_string()));
                 }
                 let query = match args.get(0) {
                     Some(Value::Query(query)) => query.clone(),
-                    _ => {
-                        return Err(VmError::Runtime(
-                            "query.all expects a Query".to_string(),
-                        ))
-                    }
+                    _ => return Err(VmError::Runtime("query.all expects a Query".to_string())),
                 };
                 let (sql, params) = query.build_sql(None).map_err(VmError::Runtime)?;
                 let db = self.db_mut()?;
-                let rows = db
-                    .query_params(&sql, &params)
-                    .map_err(VmError::Runtime)?;
+                let rows = db.query_params(&sql, &params).map_err(VmError::Runtime)?;
                 let list = rows.into_iter().map(Value::Map).collect();
                 Ok(Value::List(list))
             }
@@ -1115,31 +1241,20 @@ impl<'a> Vm<'a> {
                 }
                 let query = match args.get(0) {
                     Some(Value::Query(query)) => query.clone(),
-                    _ => {
-                        return Err(VmError::Runtime(
-                            "query.exec expects a Query".to_string(),
-                        ))
-                    }
+                    _ => return Err(VmError::Runtime("query.exec expects a Query".to_string())),
                 };
                 let (sql, params) = query.build_sql(None).map_err(VmError::Runtime)?;
                 let db = self.db_mut()?;
-                db.exec_params(&sql, &params)
-                    .map_err(VmError::Runtime)?;
+                db.exec_params(&sql, &params).map_err(VmError::Runtime)?;
                 Ok(Value::Unit)
             }
             "query.sql" => {
                 if args.len() != 1 {
-                    return Err(VmError::Runtime(
-                        "query.sql expects 1 argument".to_string(),
-                    ));
+                    return Err(VmError::Runtime("query.sql expects 1 argument".to_string()));
                 }
                 let query = match args.get(0) {
                     Some(Value::Query(query)) => query.clone(),
-                    _ => {
-                        return Err(VmError::Runtime(
-                            "query.sql expects a Query".to_string(),
-                        ))
-                    }
+                    _ => return Err(VmError::Runtime("query.sql expects a Query".to_string())),
                 };
                 let sql = query.sql().map_err(VmError::Runtime)?;
                 Ok(Value::String(sql))
@@ -1152,11 +1267,7 @@ impl<'a> Vm<'a> {
                 }
                 let query = match args.get(0) {
                     Some(Value::Query(query)) => query.clone(),
-                    _ => {
-                        return Err(VmError::Runtime(
-                            "query.params expects a Query".to_string(),
-                        ))
-                    }
+                    _ => return Err(VmError::Runtime("query.params expects a Query".to_string())),
                 };
                 let params = query.params().map_err(VmError::Runtime)?;
                 Ok(Value::List(params))
@@ -1185,7 +1296,7 @@ impl<'a> Vm<'a> {
                     _ => {
                         return Err(VmError::Runtime(
                             "assert expects a Bool as the first argument".to_string(),
-                        ))
+                        ));
                     }
                 };
                 if cond {
@@ -1199,16 +1310,18 @@ impl<'a> Vm<'a> {
             }
             "range" => {
                 if args.len() != 2 {
-                    return Err(VmError::Runtime(
-                        "range expects 2 arguments".to_string(),
-                    ));
+                    return Err(VmError::Runtime("range expects 2 arguments".to_string()));
                 }
                 self.eval_range(&args[0], &args[1])
             }
             "env" => {
                 let key = match args.get(0) {
                     Some(Value::String(s)) => s.clone(),
-                    _ => return Err(VmError::Runtime("env expects a string argument".to_string())),
+                    _ => {
+                        return Err(VmError::Runtime(
+                            "env expects a string argument".to_string(),
+                        ));
+                    }
                 };
                 match std::env::var(key) {
                     Ok(value) => Ok(Value::String(value)),
@@ -1220,11 +1333,7 @@ impl<'a> Vm<'a> {
                     Some(Value::Int(v)) => *v,
                     Some(Value::Float(v)) => *v as i64,
                     Some(Value::String(s)) => s.parse::<i64>().unwrap_or(0),
-                    _ => {
-                        return Err(VmError::Runtime(
-                            "serve expects a port number".to_string(),
-                        ))
-                    }
+                    _ => return Err(VmError::Runtime("serve expects a port number".to_string())),
                 };
                 if let Some(hook) = self.serve_hook.as_mut() {
                     hook(port).map_err(VmError::Runtime)
@@ -1236,13 +1345,79 @@ impl<'a> Vm<'a> {
         }
     }
 
+    fn eval_html_tag_builtin(&self, name: &str, args: &[Value]) -> VmResult<Value> {
+        let Some(kind) = html_tags::tag_kind(name) else {
+            return Err(VmError::Runtime(format!("unknown builtin {name}")));
+        };
+        let max = match kind {
+            HtmlTagKind::Normal => 2usize,
+            HtmlTagKind::Void => 1usize,
+        };
+        if args.len() > max {
+            return Err(VmError::Runtime(format!(
+                "{} expects at most {} arguments",
+                name, max
+            )));
+        }
+        let attrs = match args.get(0) {
+            Some(Value::Map(map)) => {
+                let mut attrs = HashMap::with_capacity(map.len());
+                for (key, value) in map {
+                    let Value::String(text) = value else {
+                        return Err(VmError::Runtime(format!(
+                            "{} attrs must be Map<String, String>",
+                            name
+                        )));
+                    };
+                    attrs.insert(key.clone(), text.clone());
+                }
+                attrs
+            }
+            Some(_) => {
+                return Err(VmError::Runtime(format!(
+                    "{} expects attrs as Map<String, String>",
+                    name
+                )));
+            }
+            None => HashMap::new(),
+        };
+        let children = match kind {
+            HtmlTagKind::Void => Vec::new(),
+            HtmlTagKind::Normal => match args.get(1) {
+                Some(Value::List(items)) => {
+                    let mut children = Vec::with_capacity(items.len());
+                    for item in items {
+                        let Value::Html(node) = item else {
+                            return Err(VmError::Runtime(format!(
+                                "{} children must be List<Html>",
+                                name
+                            )));
+                        };
+                        children.push(node.clone());
+                    }
+                    children
+                }
+                Some(_) => {
+                    return Err(VmError::Runtime(format!(
+                        "{} expects children as List<Html>",
+                        name
+                    )));
+                }
+                None => Vec::new(),
+            },
+        };
+        Ok(Value::Html(crate::interp::HtmlNode::Element {
+            tag: name.to_string(),
+            attrs,
+            children,
+        }))
+    }
+
     fn eval_range(&self, start: &Value, end: &Value) -> VmResult<Value> {
         match (start.unboxed(), end.unboxed()) {
             (Value::Int(start), Value::Int(end)) => {
                 if start > end {
-                    return Err(VmError::Runtime(
-                        "range start must be <= end".to_string(),
-                    ));
+                    return Err(VmError::Runtime("range start must be <= end".to_string()));
                 }
                 let items = (start..=end).map(Value::Int).collect();
                 Ok(Value::List(items))
@@ -1259,9 +1434,7 @@ impl<'a> Vm<'a> {
             return Err(VmError::Runtime("invalid range bounds".to_string()));
         }
         if start > end {
-            return Err(VmError::Runtime(
-                "range start must be <= end".to_string(),
-            ));
+            return Err(VmError::Runtime("range start must be <= end".to_string()));
         }
         let mut items = Vec::new();
         let mut current = start;
@@ -1293,7 +1466,7 @@ impl<'a> Vm<'a> {
                 Err(err) => {
                     return Err(VmError::Runtime(format!(
                         "failed to accept connection: {err}"
-                    )))
+                    )));
                 }
             };
             let response = match self.handle_http_request(&service, &mut stream) {
@@ -1340,12 +1513,7 @@ impl<'a> Vm<'a> {
             "PUT" => HttpVerb::Put,
             "PATCH" => HttpVerb::Patch,
             "DELETE" => HttpVerb::Delete,
-            _ => {
-                return Ok(self.http_response(
-                    405,
-                    self.internal_error_json("method not allowed"),
-                ))
-            }
+            _ => return Ok(self.http_response(405, self.internal_error_json("method not allowed"))),
         };
         let path = request
             .path
@@ -1353,12 +1521,18 @@ impl<'a> Vm<'a> {
             .next()
             .unwrap_or(&request.path)
             .to_string();
+        if let Some(response) = self.try_openapi_ui_response(request.method.as_str(), &path) {
+            return Ok(response);
+        }
         if let Some(response) = self.try_static_response(request.method.as_str(), &path) {
             return Ok(response);
         }
         let (route, params) = match self.match_route(service, &verb, &path)? {
             Some(result) => result,
             None => {
+                if let Some(response) = self.try_vite_proxy_response(&request) {
+                    return Ok(response);
+                }
                 let body = self.error_json_from_code("not_found", "not found");
                 return Ok(self.http_response(404, body));
             }
@@ -1383,6 +1557,7 @@ impl<'a> Vm<'a> {
             Ok(value) => value,
             Err(err) => return Err(err),
         };
+        let html_response = is_html_response_type(&route.ret_type);
         match value {
             Value::ResultErr(err) => {
                 let status = self.http_status_for_error_value(&err);
@@ -1390,12 +1565,23 @@ impl<'a> Vm<'a> {
                 Ok(self.http_response(status, json))
             }
             Value::ResultOk(ok) => {
-                let json = self.value_to_json(&ok);
-                Ok(self.http_response(200, rt_json::encode(&json)))
+                if html_response {
+                    let body =
+                        self.maybe_inject_live_reload_html(self.render_html_value(ok.as_ref())?);
+                    Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
+                } else {
+                    let json = self.value_to_json(&ok);
+                    Ok(self.http_response(200, rt_json::encode(&json)))
+                }
             }
             other => {
-                let json = self.value_to_json(&other);
-                Ok(self.http_response(200, rt_json::encode(&json)))
+                if html_response {
+                    let body = self.maybe_inject_live_reload_html(self.render_html_value(&other)?);
+                    Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
+                } else {
+                    let json = self.value_to_json(&other);
+                    Ok(self.http_response(200, rt_json::encode(&json)))
+                }
             }
         }
     }
@@ -1414,14 +1600,19 @@ impl<'a> Vm<'a> {
             path.trim_start_matches('/').to_string()
         };
         let rel = Path::new(&rel_path);
-        if rel.components().any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_))) {
+        if rel.components().any(|c| {
+            matches!(
+                c,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        }) {
             return None;
         }
         let full = Path::new(&static_dir).join(rel);
         if !full.is_file() {
             return None;
         }
-        let body = fs::read_to_string(&full).ok()?;
+        let mut body = fs::read_to_string(&full).ok()?;
         let content_type = match full.extension().and_then(|ext| ext.to_str()) {
             Some("html") => "text/html; charset=utf-8",
             Some("css") => "text/css; charset=utf-8",
@@ -1429,7 +1620,53 @@ impl<'a> Vm<'a> {
             Some("json") => "application/json; charset=utf-8",
             _ => "text/plain; charset=utf-8",
         };
+        if content_type.starts_with("text/html") {
+            body = self.maybe_inject_live_reload_html(body);
+        }
         Some(self.http_response_with_type(200, body, content_type))
+    }
+
+    fn try_vite_proxy_response(&self, request: &HttpRequest) -> Option<String> {
+        let base_url = std::env::var("FUSE_VITE_PROXY_URL").ok()?;
+        proxy_http_request(request, &base_url)
+    }
+
+    fn try_openapi_ui_response(&self, method: &str, path: &str) -> Option<String> {
+        if method != "GET" {
+            return None;
+        }
+        let spec_path = std::env::var("FUSE_OPENAPI_JSON_PATH").ok()?;
+        let ui_path = normalize_openapi_ui_path(
+            std::env::var("FUSE_OPENAPI_UI_PATH")
+                .ok()
+                .as_deref()
+                .unwrap_or("/docs"),
+        );
+        let path_no_slash = path.strip_suffix('/').unwrap_or(path);
+        let docs_path_no_slash = ui_path.strip_suffix('/').unwrap_or(&ui_path);
+        if path_no_slash == docs_path_no_slash {
+            let spec_url = format!("{docs_path_no_slash}/openapi.json");
+            let body = self.maybe_inject_live_reload_html(openapi_ui_html(&spec_url));
+            return Some(self.http_response_with_type(200, body, "text/html; charset=utf-8"));
+        }
+        let spec_route = format!("{docs_path_no_slash}/openapi.json");
+        if path == spec_route {
+            let body = match fs::read_to_string(&spec_path) {
+                Ok(body) => body,
+                Err(err) => {
+                    return Some(self.http_response(
+                        500,
+                        self.internal_error_json(&format!("failed to read openapi spec: {err}")),
+                    ));
+                }
+            };
+            return Some(self.http_response_with_type(
+                200,
+                body,
+                "application/json; charset=utf-8",
+            ));
+        }
+        None
     }
 
     fn eval_route(
@@ -1441,11 +1678,10 @@ impl<'a> Vm<'a> {
         if let Some(body) = body_value {
             params.push(body);
         }
-        let func = self
-            .program
-            .functions
-            .get(&route.handler)
-            .ok_or_else(|| VmError::Runtime(format!("unknown route handler {}", route.handler)))?;
+        let func =
+            self.program.functions.get(&route.handler).ok_or_else(|| {
+                VmError::Runtime(format!("unknown route handler {}", route.handler))
+            })?;
         self.exec_function(func, params)
     }
 
@@ -1519,9 +1755,8 @@ impl<'a> Vm<'a> {
                 return Err(VmError::Runtime("request header too large".to_string()));
             }
         }
-        let header_end = header_end.ok_or_else(|| {
-            VmError::Runtime("invalid HTTP request: missing headers".to_string())
-        })?;
+        let header_end = header_end
+            .ok_or_else(|| VmError::Runtime("invalid HTTP request: missing headers".to_string()))?;
         let header_bytes = &buffer[..header_end];
         let header_text = String::from_utf8_lossy(header_bytes);
         let mut lines = header_text.split("\r\n");
@@ -1587,6 +1822,26 @@ impl<'a> Vm<'a> {
         )
     }
 
+    fn maybe_inject_live_reload_html(&self, mut body: String) -> String {
+        let ws_url = match std::env::var("FUSE_DEV_RELOAD_WS_URL") {
+            Ok(url) if !url.trim().is_empty() => url,
+            _ => return body,
+        };
+        if body.contains("data-fuse-live-reload") {
+            return body;
+        }
+        let ws_url = escape_js_single_quoted(&ws_url);
+        let script = format!(
+            "<script data-fuse-live-reload>(function(){{var url='{ws_url}';var retry=500;function connect(){{var ws=new WebSocket(url);ws.onopen=function(){{retry=500;}};ws.onmessage=function(){{window.location.reload();}};ws.onclose=function(){{setTimeout(connect,retry);retry=Math.min(retry*2,3000);}};ws.onerror=function(){{ws.close();}};}}connect();}})();</script>"
+        );
+        if let Some(index) = body.rfind("</body>") {
+            body.insert_str(index, &script);
+        } else {
+            body.push_str(&script);
+        }
+        body
+    }
+
     fn http_error_response(&self, err: VmError) -> String {
         match err {
             VmError::Error(value) => {
@@ -1636,6 +1891,16 @@ impl<'a> Vm<'a> {
 
     fn internal_error_json(&self, message: &str) -> String {
         self.error_json_from_code("internal_error", message)
+    }
+
+    fn render_html_value(&self, value: &Value) -> VmResult<String> {
+        match value.unboxed() {
+            Value::Html(node) => Ok(node.render_to_string()),
+            other => Err(VmError::Runtime(format!(
+                "expected Html response, got {}",
+                self.value_type_name(&other)
+            ))),
+        }
     }
 
     fn value_from_const(&self, constant: Const) -> Value {
@@ -1714,7 +1979,7 @@ impl<'a> Vm<'a> {
         }
     }
 
-    fn validate_value(&self, value: &Value, ty: &TypeRef, path: &str) -> VmResult<()> {
+    fn validate_value(&mut self, value: &Value, ty: &TypeRef, path: &str) -> VmResult<()> {
         let value = value.unboxed();
         match &ty.kind {
             TypeRefKind::Optional(inner) => {
@@ -1736,10 +2001,7 @@ impl<'a> Vm<'a> {
                 _ => Err(VmError::Error(self.validation_error_value(
                     path,
                     "type_mismatch",
-                    format!(
-                        "expected Result, got {}",
-                        self.value_type_name(&value)
-                    ),
+                    format!("expected Result, got {}", self.value_type_name(&value)),
                 ))),
             },
             TypeRefKind::Refined { base, args } => {
@@ -1772,18 +2034,13 @@ impl<'a> Vm<'a> {
                         _ => Err(VmError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
-                            format!(
-                                "expected Result, got {}",
-                                self.value_type_name(&value)
-                            ),
+                            format!("expected Result, got {}", self.value_type_name(&value)),
                         ))),
                     }
                 }
                 "List" => {
                     if args.len() != 1 {
-                        return Err(VmError::Runtime(
-                            "List expects 1 type argument".to_string(),
-                        ));
+                        return Err(VmError::Runtime("List expects 1 type argument".to_string()));
                     }
                     match value {
                         Value::List(items) => {
@@ -1796,18 +2053,13 @@ impl<'a> Vm<'a> {
                         _ => Err(VmError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
-                            format!(
-                                "expected List, got {}",
-                                self.value_type_name(&value)
-                            ),
+                            format!("expected List, got {}", self.value_type_name(&value)),
                         ))),
                     }
                 }
                 "Map" => {
                     if args.len() != 2 {
-                        return Err(VmError::Runtime(
-                            "Map expects 2 type arguments".to_string(),
-                        ));
+                        return Err(VmError::Runtime("Map expects 2 type arguments".to_string()));
                     }
                     match value {
                         Value::Map(items) => {
@@ -1822,10 +2074,7 @@ impl<'a> Vm<'a> {
                         _ => Err(VmError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
-                            format!(
-                                "expected Map, got {}",
-                                self.value_type_name(&value)
-                            ),
+                            format!("expected Map, got {}", self.value_type_name(&value)),
                         ))),
                     }
                 }
@@ -1890,14 +2139,14 @@ impl<'a> Vm<'a> {
                             path,
                             "invalid_value",
                             "expected non-empty Id".to_string(),
-                        )))
+                        )));
                     }
                     _ => {
                         return Err(VmError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
                             format!("expected Id, got {type_name}"),
-                        )))
+                        )));
                     }
                 },
                 "Email" => match value {
@@ -1907,14 +2156,14 @@ impl<'a> Vm<'a> {
                             path,
                             "invalid_value",
                             "invalid email address".to_string(),
-                        )))
+                        )));
                     }
                     _ => {
                         return Err(VmError::Error(self.validation_error_value(
                             path,
                             "type_mismatch",
                             format!("expected Email, got {type_name}"),
-                        )))
+                        )));
                     }
                 },
                 "Bytes" => {
@@ -1927,12 +2176,26 @@ impl<'a> Vm<'a> {
                         format!("expected Bytes, got {type_name}"),
                     )));
                 }
+                "Html" => {
+                    if matches!(value, Value::Html(_)) {
+                        return Ok(());
+                    }
+                    return Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "type_mismatch",
+                        format!("expected Html, got {type_name}"),
+                    )));
+                }
                 _ => {}
             }
         }
         match value {
-            Value::Struct { name: struct_name, .. } if struct_name == simple_name => Ok(()),
-            Value::Enum { name: enum_name, .. } if enum_name == simple_name => Ok(()),
+            Value::Struct {
+                name: struct_name, ..
+            } if struct_name == simple_name => Ok(()),
+            Value::Enum {
+                name: enum_name, ..
+            } if enum_name == simple_name => Ok(()),
             _ => Err(VmError::Error(self.validation_error_value(
                 path,
                 "type_mismatch",
@@ -1949,6 +2212,7 @@ impl<'a> Vm<'a> {
             Value::Bool(_) => "Bool".to_string(),
             Value::String(_) => "String".to_string(),
             Value::Bytes(_) => "Bytes".to_string(),
+            Value::Html(_) => "Html".to_string(),
             Value::Null => "Null".to_string(),
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
@@ -1989,6 +2253,7 @@ impl<'a> Vm<'a> {
             Value::Bool(v) => rt_json::JsonValue::Bool(v),
             Value::String(v) => rt_json::JsonValue::String(v.clone()),
             Value::Bytes(v) => rt_json::JsonValue::String(rt_bytes::encode_base64(&v)),
+            Value::Html(node) => rt_json::JsonValue::String(node.render_to_string()),
             Value::Null => rt_json::JsonValue::Null,
             Value::List(items) => {
                 rt_json::JsonValue::Array(items.iter().map(|v| self.value_to_json(v)).collect())
@@ -2034,7 +2299,9 @@ impl<'a> Vm<'a> {
             Value::ResultOk(value) => self.value_to_json(value.as_ref()),
             Value::ResultErr(value) => self.value_to_json(value.as_ref()),
             Value::Config(name) => rt_json::JsonValue::String(name.clone()),
-            Value::Function(name) => rt_json::JsonValue::String(name.clone()),
+            Value::Function(func) => {
+                rt_json::JsonValue::String(format!("{}::{}", func.module_id, func.name))
+            }
             Value::Builtin(name) => rt_json::JsonValue::String(name.clone()),
             Value::EnumCtor { name, variant } => {
                 rt_json::JsonValue::String(format!("{name}.{variant}"))
@@ -2118,12 +2385,8 @@ impl<'a> Vm<'a> {
                     )));
                 }
             }
-            TypeRefKind::Result { .. } => {
-                return Err(VmError::Error(self.validation_error_value(
-                    path,
-                    "invalid_value",
-                    "Result is not supported for JSON body",
-                )))
+            TypeRefKind::Result { ok, err } => {
+                return self.decode_json_result_value(json, ok, err.as_deref(), path);
             }
             TypeRefKind::Generic { base, args } => match base.name.as_str() {
                 "Option" => {
@@ -2139,17 +2402,16 @@ impl<'a> Vm<'a> {
                     }
                 }
                 "Result" => {
-                    return Err(VmError::Error(self.validation_error_value(
-                        path,
-                        "invalid_value",
-                        "Result is not supported for JSON body",
-                    )))
+                    if args.len() != 2 {
+                        return Err(VmError::Runtime(
+                            "Result expects 2 type arguments".to_string(),
+                        ));
+                    }
+                    return self.decode_json_result_value(json, &args[0], Some(&args[1]), path);
                 }
                 "List" => {
                     if args.len() != 1 {
-                        return Err(VmError::Runtime(
-                            "List expects 1 type argument".to_string(),
-                        ));
+                        return Err(VmError::Runtime("List expects 1 type argument".to_string()));
                     }
                     let rt_json::JsonValue::Array(items) = json else {
                         return Err(VmError::Error(self.validation_error_value(
@@ -2167,9 +2429,7 @@ impl<'a> Vm<'a> {
                 }
                 "Map" => {
                     if args.len() != 2 {
-                        return Err(VmError::Runtime(
-                            "Map expects 2 type arguments".to_string(),
-                        ));
+                        return Err(VmError::Runtime("Map expects 2 type arguments".to_string()));
                     }
                     let rt_json::JsonValue::Object(items) = json else {
                         return Err(VmError::Error(self.validation_error_value(
@@ -2193,12 +2453,64 @@ impl<'a> Vm<'a> {
                         path,
                         "type_mismatch",
                         format!("unsupported type {}", base.name),
-                    )))
+                    )));
                 }
             },
         };
         self.validate_value(&value, ty, path)?;
         Ok(value)
+    }
+
+    fn decode_json_result_value(
+        &mut self,
+        json: &rt_json::JsonValue,
+        ok_ty: &TypeRef,
+        err_ty: Option<&TypeRef>,
+        path: &str,
+    ) -> VmResult<Value> {
+        let rt_json::JsonValue::Object(map) = json else {
+            return Err(VmError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                "expected Result object",
+            )));
+        };
+        let tag = map.get("type").ok_or_else(|| {
+            VmError::Error(self.validation_error_value(path, "missing_field", "missing Result tag"))
+        })?;
+        let rt_json::JsonValue::String(tag) = tag else {
+            return Err(VmError::Error(self.validation_error_value(
+                &format!("{path}.type"),
+                "type_mismatch",
+                "expected Result tag string",
+            )));
+        };
+        let data = map.get("data").ok_or_else(|| {
+            VmError::Error(self.validation_error_value(
+                path,
+                "missing_field",
+                "missing Result data",
+            ))
+        })?;
+        match tag.as_str() {
+            "Ok" => {
+                let value = self.decode_json_value(data, ok_ty, &format!("{path}.data"))?;
+                Ok(Value::ResultOk(Box::new(value)))
+            }
+            "Err" => {
+                let value = if let Some(err_ty) = err_ty {
+                    self.decode_json_value(data, err_ty, &format!("{path}.data"))?
+                } else {
+                    self.json_to_value(data)
+                };
+                Ok(Value::ResultErr(Box::new(value)))
+            }
+            _ => Err(VmError::Error(self.validation_error_value(
+                &format!("{path}.type"),
+                "invalid_value",
+                format!("unknown Result variant {tag}"),
+            ))),
+        }
     }
 
     fn decode_simple_json(
@@ -2215,7 +2527,7 @@ impl<'a> Vm<'a> {
                         path,
                         "type_mismatch",
                         "expected Int",
-                    )))
+                    )));
                 }
             },
             "Float" => match json {
@@ -2225,7 +2537,7 @@ impl<'a> Vm<'a> {
                         path,
                         "type_mismatch",
                         "expected Float",
-                    )))
+                    )));
                 }
             },
             "Bool" => match json {
@@ -2235,7 +2547,7 @@ impl<'a> Vm<'a> {
                         path,
                         "type_mismatch",
                         "expected Bool",
-                    )))
+                    )));
                 }
             },
             "String" | "Id" | "Email" => match json {
@@ -2245,7 +2557,7 @@ impl<'a> Vm<'a> {
                         path,
                         "type_mismatch",
                         "expected String",
-                    )))
+                    )));
                 }
             },
             "Bytes" => match json {
@@ -2264,9 +2576,16 @@ impl<'a> Vm<'a> {
                         path,
                         "type_mismatch",
                         "expected String",
-                    )))
+                    )));
                 }
             },
+            "Html" => {
+                return Err(VmError::Error(self.validation_error_value(
+                    path,
+                    "type_mismatch",
+                    "expected Html",
+                )));
+            }
             _ => return Ok(None),
         };
         Ok(Some(value))
@@ -2386,11 +2705,7 @@ impl<'a> Vm<'a> {
                 ))
             })?;
             if variant.payload.len() == 1 {
-                vec![self.decode_json_value(
-                    data,
-                    &variant.payload[0],
-                    &format!("{path}.data"),
-                )?]
+                vec![self.decode_json_value(data, &variant.payload[0], &format!("{path}.data"))?]
             } else {
                 let rt_json::JsonValue::Array(items) = data else {
                     return Err(VmError::Error(self.validation_error_value(
@@ -2408,11 +2723,7 @@ impl<'a> Vm<'a> {
                 }
                 let mut out = Vec::new();
                 for (idx, (item, ty)) in items.iter().zip(variant.payload.iter()).enumerate() {
-                    out.push(self.decode_json_value(
-                        item,
-                        ty,
-                        &format!("{path}.data[{idx}]"),
-                    )?);
+                    out.push(self.decode_json_value(item, ty, &format!("{path}.data[{idx}]"))?);
                 }
                 out
             }
@@ -2589,7 +2900,11 @@ impl<'a> Vm<'a> {
             "Ok" => Some(matches!(value, Value::ResultOk(_))),
             "Err" => Some(matches!(value, Value::ResultErr(_))),
             _ => match value {
-                Value::Enum { name: enum_name, variant, payload } => {
+                Value::Enum {
+                    name: enum_name,
+                    variant,
+                    payload,
+                } => {
                     if variant == name {
                         let arity = self.enum_variant_arity(&enum_name, &variant).unwrap_or(0);
                         Some(payload.len() == arity && arity == 0)
@@ -2645,7 +2960,11 @@ impl<'a> Vm<'a> {
                 }
             }
             _ => match value {
-                Value::Enum { name: enum_name, variant, payload } => {
+                Value::Enum {
+                    name: enum_name,
+                    variant,
+                    payload,
+                } => {
                     if variant != name {
                         return Ok(false);
                     }
@@ -2722,22 +3041,75 @@ impl<'a> Vm<'a> {
     }
 
     fn check_refined(
-        &self,
+        &mut self,
         value: &Value,
         base: &str,
         args: &[Expr],
         path: &str,
     ) -> VmResult<()> {
-        let value = value.unboxed();
+        let constraints = parse_constraints(args).map_err(|err| {
+            VmError::Runtime(format!("invalid refined constraint: {}", err.message))
+        })?;
+        for constraint in constraints {
+            match constraint {
+                RefinementConstraint::Range { min, max, .. } => {
+                    self.check_refined_range(value, base, min, max, path)?;
+                }
+                RefinementConstraint::Regex { pattern, .. } => {
+                    if !base_is_string_like(base) {
+                        return Err(VmError::Runtime(format!(
+                            "regex() constraint is not supported for refined {base}"
+                        )));
+                    }
+                    let Value::String(text) = value.unboxed() else {
+                        return Err(VmError::Runtime(
+                            "refined String expects a String".to_string(),
+                        ));
+                    };
+                    if !self.regex_matches(&pattern, &text)? {
+                        return Err(VmError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            format!("value does not match regex {pattern}"),
+                        )));
+                    }
+                }
+                RefinementConstraint::Predicate { name, .. } => {
+                    if !self.eval_refinement_predicate(&name, value)? {
+                        return Err(VmError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            format!("predicate {name} rejected value"),
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_refined_range(
+        &self,
+        value: &Value,
+        base: &str,
+        min: NumberLiteral,
+        max: NumberLiteral,
+        path: &str,
+    ) -> VmResult<()> {
         match base {
-            "String" => {
-                let (min, max) = self.parse_length_range(args)?;
-                let len = match value {
+            "String" | "Id" | "Email" => {
+                let min = min
+                    .as_i64()
+                    .ok_or_else(|| VmError::Runtime("invalid refined range".to_string()))?;
+                let max = max
+                    .as_i64()
+                    .ok_or_else(|| VmError::Runtime("invalid refined range".to_string()))?;
+                let len = match value.unboxed() {
                     Value::String(s) => s.chars().count() as i64,
                     _ => {
                         return Err(VmError::Runtime(
                             "refined String expects a String".to_string(),
-                        ))
+                        ));
                     }
                 };
                 if rt_validate::check_len(len, min, max) {
@@ -2750,15 +3122,37 @@ impl<'a> Vm<'a> {
                     )))
                 }
             }
+            "Bytes" => {
+                let min = min
+                    .as_i64()
+                    .ok_or_else(|| VmError::Runtime("invalid refined range".to_string()))?;
+                let max = max
+                    .as_i64()
+                    .ok_or_else(|| VmError::Runtime("invalid refined range".to_string()))?;
+                let len = match value.unboxed() {
+                    Value::Bytes(bytes) => bytes.len() as i64,
+                    _ => return Err(VmError::Runtime("refined Bytes expects Bytes".to_string())),
+                };
+                if rt_validate::check_len(len, min, max) {
+                    Ok(())
+                } else {
+                    Err(VmError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("length {len} out of range {min}..{max}"),
+                    )))
+                }
+            }
             "Int" => {
-                let (min, max) = self.parse_int_range(args)?;
-                let val = match value {
+                let min = min
+                    .as_i64()
+                    .ok_or_else(|| VmError::Runtime("invalid refined range".to_string()))?;
+                let max = max
+                    .as_i64()
+                    .ok_or_else(|| VmError::Runtime("invalid refined range".to_string()))?;
+                let val = match value.unboxed() {
                     Value::Int(v) => v,
-                    _ => {
-                        return Err(VmError::Runtime(
-                            "refined Int expects an Int".to_string(),
-                        ))
-                    }
+                    _ => return Err(VmError::Runtime("refined Int expects an Int".to_string())),
                 };
                 if rt_validate::check_int_range(val, min, max) {
                     Ok(())
@@ -2771,13 +3165,14 @@ impl<'a> Vm<'a> {
                 }
             }
             "Float" => {
-                let (min, max) = self.parse_float_range(args)?;
-                let val = match value {
+                let min = min.as_f64();
+                let max = max.as_f64();
+                let val = match value.unboxed() {
                     Value::Float(v) => v,
                     _ => {
                         return Err(VmError::Runtime(
                             "refined Float expects a Float".to_string(),
-                        ))
+                        ));
                     }
                 };
                 if rt_validate::check_float_range(val, min, max) {
@@ -2790,89 +3185,35 @@ impl<'a> Vm<'a> {
                     )))
                 }
             }
-            _ => Ok(()),
+            _ => Err(VmError::Runtime(format!(
+                "range constraint is not supported for refined {base}"
+            ))),
         }
     }
 
-    fn parse_length_range(&self, args: &[Expr]) -> VmResult<(i64, i64)> {
-        let (left, right) = self.extract_range_args(args)?;
-        let min = self
-            .literal_to_i64(left)
-            .ok_or_else(|| VmError::Runtime("invalid refined range".to_string()))?;
-        let max = self
-            .literal_to_i64(right)
-            .ok_or_else(|| VmError::Runtime("invalid refined range".to_string()))?;
-        Ok((min, max))
-    }
-
-    fn parse_int_range(&self, args: &[Expr]) -> VmResult<(i64, i64)> {
-        let (left, right) = self.extract_range_args(args)?;
-        let min = self
-            .literal_to_i64(left)
-            .ok_or_else(|| VmError::Runtime("invalid refined range".to_string()))?;
-        let max = self
-            .literal_to_i64(right)
-            .ok_or_else(|| VmError::Runtime("invalid refined range".to_string()))?;
-        Ok((min, max))
-    }
-
-    fn parse_float_range(&self, args: &[Expr]) -> VmResult<(f64, f64)> {
-        let (left, right) = self.extract_range_args(args)?;
-        let min = self
-            .literal_to_f64(left)
-            .ok_or_else(|| VmError::Runtime("invalid refined range".to_string()))?;
-        let max = self
-            .literal_to_f64(right)
-            .ok_or_else(|| VmError::Runtime("invalid refined range".to_string()))?;
-        Ok((min, max))
-    }
-
-    fn extract_range_args<'b>(&self, args: &'b [Expr]) -> VmResult<(&'b Expr, &'b Expr)> {
-        if args.len() == 1 {
-            if let ExprKind::Binary {
-                op: crate::ast::BinaryOp::Range,
-                left,
-                right,
-            } = &args[0].kind
-            {
-                return Ok((left, right));
-            }
+    fn regex_matches(&mut self, pattern: &str, text: &str) -> VmResult<bool> {
+        if !self.regex_cache.contains_key(pattern) {
+            let compiled = regex::Regex::new(pattern).map_err(|err| {
+                VmError::Runtime(format!("invalid regex pattern {pattern}: {err}"))
+            })?;
+            self.regex_cache.insert(pattern.to_string(), compiled);
         }
-        if args.len() == 2 {
-            return Ok((&args[0], &args[1]));
-        }
-        Err(VmError::Runtime(
-            "refined types expect a range like 1..10".to_string(),
-        ))
+        let regex = self
+            .regex_cache
+            .get(pattern)
+            .ok_or_else(|| VmError::Runtime("regex cache error".to_string()))?;
+        Ok(regex.is_match(text))
     }
 
-    fn literal_to_i64(&self, expr: &Expr) -> Option<i64> {
-        match &expr.kind {
-            ExprKind::Literal(Literal::Int(v)) => Some(*v),
-            ExprKind::Unary {
-                op: UnaryOp::Neg,
-                expr,
-            } => match &expr.kind {
-                ExprKind::Literal(Literal::Int(v)) => Some(-v),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn literal_to_f64(&self, expr: &Expr) -> Option<f64> {
-        match &expr.kind {
-            ExprKind::Literal(Literal::Int(v)) => Some(*v as f64),
-            ExprKind::Literal(Literal::Float(v)) => Some(*v),
-            ExprKind::Unary {
-                op: UnaryOp::Neg,
-                expr,
-            } => match &expr.kind {
-                ExprKind::Literal(Literal::Int(v)) => Some(-(*v as f64)),
-                ExprKind::Literal(Literal::Float(v)) => Some(-*v),
-                _ => None,
-            },
-            _ => None,
+    fn eval_refinement_predicate(&mut self, fn_name: &str, value: &Value) -> VmResult<bool> {
+        let result = self
+            .call_function(fn_name, vec![value.clone()])
+            .map_err(VmError::Runtime)?;
+        match result.unboxed() {
+            Value::Bool(ok) => Ok(ok),
+            _ => Err(VmError::Runtime(format!(
+                "predicate {fn_name} must return Bool"
+            ))),
         }
     }
 
@@ -2906,27 +3247,21 @@ impl<'a> Vm<'a> {
                 Instr::Sub => Ok(Value::Float(a - b)),
                 Instr::Mul => Ok(Value::Float(a * b)),
                 Instr::Div => Ok(Value::Float(a / b)),
-                Instr::Mod => Err(VmError::Runtime(
-                    "mod not supported for float".to_string(),
-                )),
+                Instr::Mod => Err(VmError::Runtime("mod not supported for float".to_string())),
                 _ => Err(VmError::Runtime("unsupported arithmetic op".to_string())),
             },
             (Value::Int(a), Value::Float(b)) => match op {
                 Instr::Sub => Ok(Value::Float(a as f64 - b)),
                 Instr::Mul => Ok(Value::Float(a as f64 * b)),
                 Instr::Div => Ok(Value::Float(a as f64 / b)),
-                Instr::Mod => Err(VmError::Runtime(
-                    "mod not supported for float".to_string(),
-                )),
+                Instr::Mod => Err(VmError::Runtime("mod not supported for float".to_string())),
                 _ => Err(VmError::Runtime("unsupported arithmetic op".to_string())),
             },
             (Value::Float(a), Value::Int(b)) => match op {
                 Instr::Sub => Ok(Value::Float(a - b as f64)),
                 Instr::Mul => Ok(Value::Float(a * b as f64)),
                 Instr::Div => Ok(Value::Float(a / b as f64)),
-                Instr::Mod => Err(VmError::Runtime(
-                    "mod not supported for float".to_string(),
-                )),
+                Instr::Mod => Err(VmError::Runtime("mod not supported for float".to_string())),
                 _ => Err(VmError::Runtime("unsupported arithmetic op".to_string())),
             },
             _ => Err(VmError::Runtime(
@@ -2963,22 +3298,18 @@ impl<'a> Vm<'a> {
                 _ => {
                     return Err(VmError::Runtime(
                         "unsupported string comparison".to_string(),
-                    ))
+                    ));
                 }
             },
             (Value::Bytes(a), Value::Bytes(b)) => match op {
                 Instr::Eq => a == b,
                 Instr::NotEq => a != b,
-                _ => {
-                    return Err(VmError::Runtime(
-                        "unsupported bytes comparison".to_string(),
-                    ))
-                }
+                _ => return Err(VmError::Runtime("unsupported bytes comparison".to_string())),
             },
             _ => {
                 return Err(VmError::Runtime(
                     "unsupported comparison operands".to_string(),
-                ))
+                ));
             }
         };
         Ok(Value::Bool(result))
@@ -3103,10 +3434,18 @@ fn extract_validation_fields(value: Option<&Value>) -> Vec<rt_error::ValidationF
     };
     for item in items {
         let item = item.unboxed();
-        let Value::Struct { fields, .. } = item else { continue };
-        let Some(Value::String(path)) = fields.get("path") else { continue };
-        let Some(Value::String(code)) = fields.get("code") else { continue };
-        let Some(Value::String(message)) = fields.get("message") else { continue };
+        let Value::Struct { fields, .. } = item else {
+            continue;
+        };
+        let Some(Value::String(path)) = fields.get("path") else {
+            continue;
+        };
+        let Some(Value::String(code)) = fields.get("code") else {
+            continue;
+        };
+        let Some(Value::String(message)) = fields.get("message") else {
+            continue;
+        };
         out.push(rt_error::ValidationField {
             path: path.clone(),
             code: code.clone(),
@@ -3140,7 +3479,107 @@ fn parse_route_param(segment: &str) -> Option<(String, String)> {
 }
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
-    buffer
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn proxy_http_request(request: &HttpRequest, base_url: &str) -> Option<String> {
+    let (host, port, base_path) = parse_proxy_base_url(base_url)?;
+    let request_path = if request.path.starts_with('/') {
+        request.path.clone()
+    } else {
+        format!("/{}", request.path)
+    };
+    let target_path = join_proxy_paths(&base_path, &request_path);
+    let mut upstream = TcpStream::connect((host.as_str(), port)).ok()?;
+    let mut head = format!(
+        "{} {} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nContent-Length: {}\r\n",
+        request.method,
+        target_path,
+        request.body.len()
+    );
+    if !request.body.is_empty() {
+        head.push_str("Content-Type: application/json\r\n");
+    }
+    head.push_str("\r\n");
+    upstream.write_all(head.as_bytes()).ok()?;
+    if !request.body.is_empty() {
+        upstream.write_all(&request.body).ok()?;
+    }
+    let mut response = Vec::new();
+    upstream.read_to_end(&mut response).ok()?;
+    Some(String::from_utf8_lossy(&response).into_owned())
+}
+
+fn parse_proxy_base_url(raw: &str) -> Option<(String, u16, String)> {
+    let trimmed = raw.trim();
+    let rest = trimmed.strip_prefix("http://")?;
+    let (authority, path) = match rest.split_once('/') {
+        Some((authority, tail)) => (authority, format!("/{}", tail.trim_start_matches('/'))),
+        None => (rest, "/".to_string()),
+    };
+    if authority.is_empty() {
+        return None;
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => {
+            let port = port.parse::<u16>().ok()?;
+            (host.to_string(), port)
+        }
+        None => (authority.to_string(), 80),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some((host, port, path))
+}
+
+fn join_proxy_paths(base_path: &str, request_path: &str) -> String {
+    if base_path == "/" {
+        return request_path.to_string();
+    }
+    if request_path == "/" {
+        return base_path.to_string();
+    }
+    format!(
+        "{}/{}",
+        base_path.trim_end_matches('/'),
+        request_path.trim_start_matches('/')
+    )
+}
+
+fn escape_js_single_quoted(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn normalize_openapi_ui_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "/docs".to_string();
+    }
+    let mut path = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    while path.len() > 1 && path.ends_with('/') {
+        path.pop();
+    }
+    path
+}
+
+fn openapi_ui_html(spec_url: &str) -> String {
+    let spec_url = escape_js_single_quoted(spec_url);
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>OpenAPI</title><style>:root{{color-scheme:light dark;font-family:ui-sans-serif,system-ui,sans-serif}}body{{margin:0;padding:24px;background:#0b1020;color:#e6e8ee}}main{{max-width:980px;margin:0 auto}}h1{{margin:0 0 12px;font-size:1.6rem}}.muted{{color:#9aa3b2;font-size:.92rem}}.card{{margin-top:16px;padding:16px;border:1px solid #27314a;border-radius:12px;background:#121a2c}}.route{{padding:8px 0;border-bottom:1px solid #222b43}}.route:last-child{{border-bottom:0}}.method{{display:inline-block;min-width:56px;font-weight:700}}code{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}}</style></head><body><main><h1>FUSE OpenAPI</h1><div class=\"muted\">spec: <code id=\"spec-url\"></code></div><section id=\"status\" class=\"card\">Loading…</section><section id=\"routes\" class=\"card\" hidden><h2>Routes</h2><div id=\"route-list\"></div></section></main><script>(function(){{var specUrl='{spec_url}';document.getElementById('spec-url').textContent=specUrl;var status=document.getElementById('status');var routes=document.getElementById('routes');var list=document.getElementById('route-list');fetch(specUrl).then(function(res){{if(!res.ok){{throw new Error('HTTP '+res.status);}}return res.json();}}).then(function(doc){{status.textContent='Loaded '+(doc.info&&doc.info.title?doc.info.title:'OpenAPI')+' '+((doc.info&&doc.info.version)||'');var paths=doc.paths||{{}};var entries=[];Object.keys(paths).sort().forEach(function(path){{var item=paths[path]||{{}};Object.keys(item).forEach(function(method){{entries.push([method.toUpperCase(),path,(item[method]&&item[method].summary)||'']);}});}});if(entries.length===0){{list.textContent='No routes found.';routes.hidden=false;return;}}list.innerHTML='';entries.forEach(function(entry){{var row=document.createElement('div');row.className='route';row.innerHTML='<span class=\"method\">'+entry[0]+'</span> <code>'+entry[1]+'</code>'+(entry[2]?' <span class=\"muted\">'+entry[2]+'</span>':'');list.appendChild(row);}});routes.hidden=false;}}).catch(function(err){{status.textContent='Failed to load OpenAPI: '+err.message;}});}})();</script></body></html>"
+    )
 }

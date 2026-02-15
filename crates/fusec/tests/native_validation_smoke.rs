@@ -53,9 +53,7 @@ fn native_validation_smoke() {
     let native = load_native_example("native_validation.fuse");
     let mut vm = NativeVm::new(&native);
 
-    let ok = vm
-        .call_function("ok_user", vec![])
-        .expect("ok_user failed");
+    let ok = vm.call_function("ok_user", vec![]).expect("ok_user failed");
     assert!(vm.has_jit_function("ok_user"));
     match ok {
         Value::ResultOk(inner) => match inner.as_ref() {
