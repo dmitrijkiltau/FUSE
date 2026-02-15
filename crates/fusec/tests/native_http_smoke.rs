@@ -1,8 +1,11 @@
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+
+mod support;
+use support::net::{find_free_port, skip_if_loopback_unavailable};
 
 fn example_path(name: &str) -> String {
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -11,11 +14,6 @@ fn example_path(name: &str) -> String {
     path.push("examples");
     path.push(name);
     path.to_string_lossy().to_string()
-}
-
-fn find_free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test port");
-    listener.local_addr().unwrap().port()
 }
 
 fn send_http_request_with_retry(port: u16, request: &str) -> (u16, String) {
@@ -82,6 +80,9 @@ where
 
 #[test]
 fn native_http_users_post_ok() {
+    if skip_if_loopback_unavailable("native_http_users_post_ok") {
+        return;
+    }
     let body = r#"{"id":"u1","email":"ada@example.com","name":"Ada"}"#;
     let (status, response_body) = run_http_example(|port| {
         format!(
@@ -99,6 +100,9 @@ fn native_http_users_post_ok() {
 
 #[test]
 fn native_http_users_get_not_found() {
+    if skip_if_loopback_unavailable("native_http_users_get_not_found") {
+        return;
+    }
     let (status, response_body) = run_http_example(|port| {
         format!("GET /api/users/42 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n")
     });

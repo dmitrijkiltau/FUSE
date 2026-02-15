@@ -124,6 +124,7 @@ Pipeline:
 
 Authority/parity release gates:
 
+- `./scripts/semantic_suite.sh` (parser/sema/boundary semantic contract suite)
 - `./scripts/authority_parity.sh` (explicit semantic-authority suite)
 - `./scripts/release_smoke.sh` (includes authority parity + full smoke checks)
 

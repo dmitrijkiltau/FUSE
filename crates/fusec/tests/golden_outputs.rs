@@ -1,10 +1,12 @@
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use fuse_rt::json;
+mod support;
+use support::net::{find_free_port, skip_if_loopback_unavailable};
 
 fn example_path(name: &str) -> String {
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -13,11 +15,6 @@ fn example_path(name: &str) -> String {
     path.push("examples");
     path.push(name);
     path.to_string_lossy().to_string()
-}
-
-fn find_free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test port");
-    listener.local_addr().unwrap().port()
 }
 
 fn send_http_request_with_retry(port: u16, request: &str) -> (u16, String) {
@@ -127,6 +124,9 @@ fn golden_project_demo_error_json_native() {
 
 #[test]
 fn golden_http_users_post_ok() {
+    if skip_if_loopback_unavailable("golden_http_users_post_ok") {
+        return;
+    }
     let port = find_free_port();
     let exe = env!("CARGO_BIN_EXE_fusec");
     let mut child = Command::new(exe)
@@ -158,6 +158,9 @@ fn golden_http_users_post_ok() {
 
 #[test]
 fn golden_http_users_get_not_found() {
+    if skip_if_loopback_unavailable("golden_http_users_get_not_found") {
+        return;
+    }
     let port = find_free_port();
     let exe = env!("CARGO_BIN_EXE_fusec");
     let mut child = Command::new(exe)
@@ -184,6 +187,9 @@ fn golden_http_users_get_not_found() {
 
 #[test]
 fn golden_http_body_structured_and_bytes_validation() {
+    if skip_if_loopback_unavailable("golden_http_body_structured_and_bytes_validation") {
+        return;
+    }
     let port = find_free_port();
     let src = r#"
 config App:

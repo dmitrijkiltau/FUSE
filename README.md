@@ -101,6 +101,12 @@ Run AST semantic authority/parity gates:
 ./scripts/authority_parity.sh
 ```
 
+Run semantic contract suite:
+
+```
+./scripts/semantic_suite.sh
+```
+
 Run all `fuse` CLI tests:
 
 ```
