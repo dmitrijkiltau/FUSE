@@ -1,0 +1,6 @@
+import { page_shell } from "../components/page.fuse"
+
+fn spec_page(slug: String, label: String) -> Html:
+  let content = article({"class": "spec-content", "data-spec": slug}):
+    div(class="loading-state"): html.text("Loading ${label}...")
+  return page_shell("${label} - FUSE Docs", "specs", slug, true, content)

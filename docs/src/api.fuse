@@ -1,17 +1,19 @@
-import Components from "./components"
+import { home_page } from "./pages/home.fuse"
+import { spec_page } from "./pages/spec.fuse"
+import { openapi_page } from "./pages/openapi.fuse"
 
 service DocsApi at "/":
   # Home page
   get "/" -> Html:
-    return Components.home_page()
+    return home_page()
 
   # Canonical reference page
   get "/specs/reference" -> Html:
-    return Components.spec_page("reference", "Developer Reference")
+    return spec_page("reference", "Developer Reference")
 
   # OpenAPI page
   get "/openapi" -> Html:
-    return Components.openapi_page()
+    return openapi_page()
 
   # API endpoints
   get "/api/health" -> Map<String, String>:
