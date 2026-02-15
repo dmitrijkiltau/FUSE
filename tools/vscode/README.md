@@ -15,11 +15,21 @@ Then in the VS Code Command Palette:
 - Select `/home/dima/Projects/fuse/tools/vscode`
 - Reload
 
-## LSP (diagnostics + formatting + UX)
+## LSP (diagnostics + navigation + completion + refactor)
 
 This extension now starts `fuse-lsp` directly.
 Semantic highlighting is enabled by default for `[fuse]`, so LSP token colors override
 TextMate scopes when the server is available.
+
+Current LSP feature baseline:
+
+- diagnostics on open/change/close
+- formatting
+- hover + go-to-definition + references
+- rename refactor
+- completion/autocomplete
+- semantic tokens + inlay hints
+- code actions (quick fix + organize imports)
 
 ### Local dev
 

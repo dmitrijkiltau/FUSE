@@ -146,3 +146,4 @@ Apache-2.0. See `LICENSE`.
 - `fls.md` - formal language specification
 - `runtime.md` - runtime semantics and builtin behavior
 - `scope.md` - project scope and non-goals
+- `LSP_ROADMAP.md` - editor/LSP capability baseline and follow-up plan

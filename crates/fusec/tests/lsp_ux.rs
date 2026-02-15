@@ -343,6 +343,35 @@ fn main():
         "hover missing range: {hover_text}"
     );
 
+    let call_line = main_src.lines().nth(4).expect("call line");
+    let call_greet_col = call_line.find("greet").expect("call greet");
+    let mut completion_doc = BTreeMap::new();
+    completion_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    let mut completion_pos = BTreeMap::new();
+    completion_pos.insert("line".to_string(), JsonValue::Number(4.0));
+    completion_pos.insert(
+        "character".to_string(),
+        JsonValue::Number((call_greet_col + 2) as f64),
+    );
+    let mut completion_params = BTreeMap::new();
+    completion_params.insert(
+        "textDocument".to_string(),
+        JsonValue::Object(completion_doc),
+    );
+    completion_params.insert("position".to_string(), JsonValue::Object(completion_pos));
+    send_request(
+        &mut stdin,
+        5,
+        "textDocument/completion",
+        JsonValue::Object(completion_params),
+    );
+    let completion = wait_response(&mut stdout, 5);
+    let completion_text = json::encode(&completion);
+    assert!(
+        completion_text.contains("\"label\":\"greet\""),
+        "completion missing greet symbol: {completion_text}"
+    );
+
     let mut inlay_doc = BTreeMap::new();
     inlay_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
     let mut range_start = BTreeMap::new();
@@ -455,6 +484,40 @@ fn main():
     assert!(
         sem_range_text.contains("\"data\"") && !sem_range_text.contains("\"data\":[]"),
         "semantic tokens range unexpectedly empty: {sem_range_text}"
+    );
+
+    let util_fn_line = util_src.lines().nth(4).expect("util fn line");
+    let util_greet_col = util_fn_line.find("greet").expect("util greet");
+    let mut rename_doc = BTreeMap::new();
+    rename_doc.insert("uri".to_string(), JsonValue::String(util_uri.clone()));
+    let mut rename_pos = BTreeMap::new();
+    rename_pos.insert("line".to_string(), JsonValue::Number(4.0));
+    rename_pos.insert(
+        "character".to_string(),
+        JsonValue::Number((util_greet_col + 1) as f64),
+    );
+    let mut rename_params = BTreeMap::new();
+    rename_params.insert("textDocument".to_string(), JsonValue::Object(rename_doc));
+    rename_params.insert("position".to_string(), JsonValue::Object(rename_pos));
+    rename_params.insert(
+        "newName".to_string(),
+        JsonValue::String("greetAgain".to_string()),
+    );
+    send_request(
+        &mut stdin,
+        9,
+        "textDocument/rename",
+        JsonValue::Object(rename_params),
+    );
+    let rename = wait_response(&mut stdout, 9);
+    let rename_text = json::encode(&rename);
+    assert!(
+        rename_text.contains("greetAgain"),
+        "rename did not include requested name: {rename_text}"
+    );
+    assert!(
+        rename_text.contains(&util_uri),
+        "rename missing util edits: {rename_text}"
     );
 
     let mut cancel_params = BTreeMap::new();

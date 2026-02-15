@@ -9,9 +9,7 @@ use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 
-use fuse_rt::{
-    config as rt_config, error as rt_error, json as rt_json, validate as rt_validate,
-};
+use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate as rt_validate};
 
 use crate::ast::{Expr, HttpVerb, Ident, TypeRef, TypeRefKind};
 use crate::callbind::{ParamBinding, ParamSpec, bind_positional_args};

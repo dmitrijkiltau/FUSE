@@ -40,6 +40,48 @@ const SEM_KEYWORD: usize = 8;
 const SEM_STRING: usize = 9;
 const SEM_NUMBER: usize = 10;
 const SEM_COMMENT: usize = 11;
+const COMPLETION_KEYWORDS: [&str; 34] = [
+    "app",
+    "service",
+    "at",
+    "get",
+    "post",
+    "put",
+    "patch",
+    "delete",
+    "fn",
+    "type",
+    "enum",
+    "let",
+    "var",
+    "return",
+    "if",
+    "else",
+    "match",
+    "for",
+    "in",
+    "while",
+    "break",
+    "continue",
+    "import",
+    "from",
+    "as",
+    "config",
+    "migration",
+    "table",
+    "test",
+    "body",
+    "and",
+    "or",
+    "without",
+    "spawn",
+];
+const COMPLETION_BUILTIN_RECEIVERS: [&str; 5] = ["db", "task", "json", "html", "svg"];
+const COMPLETION_BUILTIN_FUNCTIONS: [&str; 6] = ["print", "env", "serve", "log", "assert", "asset"];
+const COMPLETION_BUILTIN_TYPES: [&str; 14] = [
+    "Unit", "Int", "Float", "Bool", "String", "Bytes", "Html", "Id", "Email", "Error", "List",
+    "Map", "Task", "Range",
+];
 
 fn main() -> io::Result<()> {
     let mut stdin = io::stdin().lock();
@@ -141,6 +183,11 @@ fn main() -> io::Result<()> {
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
+            Some("textDocument/completion") => {
+                let result = handle_completion(&state, &obj);
+                let response = json_response(id, result);
+                write_message(&mut stdout, &response)?;
+            }
             Some("textDocument/rename") => {
                 let result = handle_rename(&state, &obj);
                 let response = json_response(id, result);
@@ -207,6 +254,16 @@ fn capabilities_result() -> JsonValue {
     caps.insert("textDocumentSync".to_string(), JsonValue::Number(1.0));
     caps.insert("definitionProvider".to_string(), JsonValue::Bool(true));
     caps.insert("hoverProvider".to_string(), JsonValue::Bool(true));
+    let mut completion_provider = BTreeMap::new();
+    completion_provider.insert("resolveProvider".to_string(), JsonValue::Bool(false));
+    completion_provider.insert(
+        "triggerCharacters".to_string(),
+        JsonValue::Array(vec![JsonValue::String(".".to_string())]),
+    );
+    caps.insert(
+        "completionProvider".to_string(),
+        JsonValue::Object(completion_provider),
+    );
     caps.insert("renameProvider".to_string(), JsonValue::Bool(true));
     caps.insert("referencesProvider".to_string(), JsonValue::Bool(true));
     caps.insert("callHierarchyProvider".to_string(), JsonValue::Bool(true));
@@ -853,6 +910,295 @@ fn handle_hover(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValu
         out.insert("range".to_string(), span_range_json(text, def.def.span));
     }
     JsonValue::Object(out)
+}
+
+#[derive(Clone)]
+struct CompletionCandidate {
+    kind: u32,
+    detail: Option<String>,
+    sort_group: u8,
+}
+
+fn handle_completion(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+    let Some((uri, line, character)) = extract_position(obj) else {
+        return completion_list_json(Vec::new());
+    };
+    let Some(text) = load_text_for_uri(state, &uri) else {
+        return completion_list_json(Vec::new());
+    };
+    let offsets = line_offsets(&text);
+    let offset = line_col_to_offset(&text, &offsets, line, character);
+    let prefix_start = completion_ident_start(&text, offset);
+    let prefix = text.get(prefix_start..offset).unwrap_or_default();
+    let member_base = completion_member_base(&text, prefix_start);
+    let index = build_workspace_index(state, &uri);
+    let mut candidates: HashMap<String, CompletionCandidate> = HashMap::new();
+
+    if let Some(base) = member_base {
+        if let Some(index) = &index {
+            for name in index.alias_exports_for_module(&uri, &base) {
+                let mut kind = 3u32;
+                let mut detail = None;
+                if let Some(def) = index
+                    .defs
+                    .iter()
+                    .find(|def| def.def.name == name && is_exported_def_kind(def.def.kind))
+                {
+                    kind = completion_kind_for_symbol_kind(def.def.kind);
+                    if !def.def.detail.is_empty() {
+                        detail = Some(def.def.detail.clone());
+                    }
+                }
+                upsert_completion_candidate(&mut candidates, &name, kind, detail, 0);
+            }
+        }
+        for method in builtin_receiver_methods(&base) {
+            upsert_completion_candidate(
+                &mut candidates,
+                method,
+                2,
+                Some(format!("{base} builtin")),
+                1,
+            );
+        }
+    } else {
+        for keyword in COMPLETION_KEYWORDS {
+            upsert_completion_candidate(&mut candidates, keyword, 14, None, 4);
+        }
+        for literal in ["true", "false", "null"] {
+            upsert_completion_candidate(&mut candidates, literal, 14, None, 4);
+        }
+        for builtin in COMPLETION_BUILTIN_RECEIVERS {
+            upsert_completion_candidate(
+                &mut candidates,
+                builtin,
+                9,
+                Some("builtin namespace".to_string()),
+                3,
+            );
+        }
+        for builtin in COMPLETION_BUILTIN_FUNCTIONS {
+            upsert_completion_candidate(
+                &mut candidates,
+                builtin,
+                3,
+                Some("builtin function".to_string()),
+                3,
+            );
+        }
+        for builtin in COMPLETION_BUILTIN_TYPES {
+            upsert_completion_candidate(
+                &mut candidates,
+                builtin,
+                22,
+                Some("builtin type".to_string()),
+                3,
+            );
+        }
+        for tag in fusec::html_tags::all_html_tags() {
+            upsert_completion_candidate(
+                &mut candidates,
+                tag,
+                3,
+                Some("html tag builtin".to_string()),
+                3,
+            );
+        }
+        if let Some(index) = &index {
+            for def in &index.defs {
+                let sort_group = if def.uri == uri { 0 } else { 1 };
+                let kind = completion_kind_for_symbol_kind(def.def.kind);
+                let detail = if def.def.detail.is_empty() {
+                    None
+                } else {
+                    Some(def.def.detail.clone())
+                };
+                upsert_completion_candidate(
+                    &mut candidates,
+                    &def.def.name,
+                    kind,
+                    detail,
+                    sort_group,
+                );
+            }
+        }
+    }
+
+    let mut entries: Vec<(String, CompletionCandidate)> = candidates
+        .into_iter()
+        .filter(|(label, _)| completion_label_matches(label, prefix))
+        .collect();
+    entries.sort_by(|(left_label, left), (right_label, right)| {
+        left.sort_group
+            .cmp(&right.sort_group)
+            .then_with(|| left_label.to_lowercase().cmp(&right_label.to_lowercase()))
+            .then_with(|| left_label.cmp(right_label))
+    });
+    if entries.len() > 256 {
+        entries.truncate(256);
+    }
+    let items = entries
+        .into_iter()
+        .map(|(label, candidate)| {
+            completion_item_json(
+                &label,
+                candidate.kind,
+                candidate.detail.as_deref(),
+                candidate.sort_group,
+            )
+        })
+        .collect();
+    completion_list_json(items)
+}
+
+fn completion_item_json(label: &str, kind: u32, detail: Option<&str>, sort_group: u8) -> JsonValue {
+    let mut item = BTreeMap::new();
+    item.insert("label".to_string(), JsonValue::String(label.to_string()));
+    item.insert("kind".to_string(), JsonValue::Number(kind as f64));
+    if let Some(detail) = detail {
+        item.insert("detail".to_string(), JsonValue::String(detail.to_string()));
+    }
+    item.insert(
+        "sortText".to_string(),
+        JsonValue::String(format!("{sort_group:02}_{}", label.to_lowercase())),
+    );
+    JsonValue::Object(item)
+}
+
+fn completion_list_json(items: Vec<JsonValue>) -> JsonValue {
+    let mut out = BTreeMap::new();
+    out.insert("isIncomplete".to_string(), JsonValue::Bool(false));
+    out.insert("items".to_string(), JsonValue::Array(items));
+    JsonValue::Object(out)
+}
+
+fn upsert_completion_candidate(
+    candidates: &mut HashMap<String, CompletionCandidate>,
+    label: &str,
+    kind: u32,
+    detail: Option<String>,
+    sort_group: u8,
+) {
+    use std::collections::hash_map::Entry;
+    match candidates.entry(label.to_string()) {
+        Entry::Vacant(slot) => {
+            slot.insert(CompletionCandidate {
+                kind,
+                detail,
+                sort_group,
+            });
+        }
+        Entry::Occupied(mut slot) => {
+            let existing = slot.get();
+            if sort_group < existing.sort_group {
+                slot.insert(CompletionCandidate {
+                    kind,
+                    detail,
+                    sort_group,
+                });
+                return;
+            }
+            if sort_group == existing.sort_group && existing.detail.is_none() && detail.is_some() {
+                let existing = slot.get_mut();
+                existing.detail = detail;
+                existing.kind = kind;
+            }
+        }
+    }
+}
+
+fn completion_label_matches(label: &str, prefix: &str) -> bool {
+    if prefix.is_empty() {
+        return true;
+    }
+    let label_lower = label.to_lowercase();
+    let prefix_lower = prefix.to_lowercase();
+    label_lower.starts_with(&prefix_lower)
+}
+
+fn completion_ident_start(text: &str, offset: usize) -> usize {
+    let bytes = text.as_bytes();
+    let mut pos = offset.min(bytes.len());
+    while pos > 0 && is_ident_byte(bytes[pos - 1]) {
+        pos -= 1;
+    }
+    pos
+}
+
+fn completion_member_base(text: &str, prefix_start: usize) -> Option<String> {
+    if prefix_start == 0 {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let dot = prefix_start - 1;
+    if bytes.get(dot).copied() != Some(b'.') {
+        return None;
+    }
+    let mut end = dot;
+    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && is_ident_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    if start == end {
+        return None;
+    }
+    Some(text[start..end].to_string())
+}
+
+fn is_ident_byte(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphanumeric()
+}
+
+fn completion_kind_for_symbol_kind(kind: SymbolKind) -> u32 {
+    match kind {
+        SymbolKind::Module => 9,
+        SymbolKind::Type | SymbolKind::Config => 22,
+        SymbolKind::Enum => 13,
+        SymbolKind::EnumVariant => 20,
+        SymbolKind::Function
+        | SymbolKind::Service
+        | SymbolKind::App
+        | SymbolKind::Migration
+        | SymbolKind::Test => 3,
+        SymbolKind::Param | SymbolKind::Variable => 6,
+        SymbolKind::Field => 5,
+    }
+}
+
+fn builtin_receiver_methods(receiver: &str) -> &'static [&'static str] {
+    match receiver {
+        "db" => &[
+            "exec",
+            "query",
+            "one",
+            "from",
+            "select",
+            "where",
+            "all",
+            "first",
+            "limit",
+            "offset",
+            "order_by",
+            "insert",
+            "update",
+            "delete",
+            "set",
+            "join",
+            "left_join",
+            "right_join",
+            "group_by",
+            "having",
+            "count",
+        ],
+        "task" => &["id", "done", "cancel"],
+        "json" => &["encode", "decode"],
+        "html" => &["text", "raw", "node", "render"],
+        "svg" => &["inline"],
+        _ => &[],
+    }
 }
 
 fn handle_workspace_symbol(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
@@ -2579,6 +2925,20 @@ impl WorkspaceIndex {
                 out.push(alias.clone());
             }
         }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    fn alias_exports_for_module(&self, uri: &str, alias: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let Some(aliases) = self.module_alias_exports.get(uri) else {
+            return out;
+        };
+        let Some(exports) = aliases.get(alias) else {
+            return out;
+        };
+        out.extend(exports.iter().cloned());
         out.sort();
         out.dedup();
         out
