@@ -1496,15 +1496,14 @@ impl<'a> Interpreter<'a> {
         let mut child: Option<Value> = None;
         for arg in args {
             if let Some(attr_name) = &arg.name {
-                let value = self.eval_expr(&arg.value)?.unboxed();
-                let Value::String(text) = value else {
+                let ExprKind::Literal(Literal::String(text)) = &arg.value.kind else {
                     return Err(ExecError::Runtime(
-                        "html attribute shorthand only supports string values".to_string(),
+                        "html attribute shorthand only supports string literals".to_string(),
                     ));
                 };
                 attrs.insert(
                     html_tags::normalize_attr_name(&attr_name.name),
-                    Value::String(text),
+                    Value::String(text.clone()),
                 );
                 continue;
             }

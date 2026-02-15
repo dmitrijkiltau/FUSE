@@ -1,3 +1,4 @@
+use fusec::ast::{ExprKind, Item, Literal, StmtKind};
 use fusec::parse_source;
 
 fn assert_parse_ok(src: &str) {
@@ -12,6 +13,21 @@ fn assert_parse_ok(src: &str) {
         }
         panic!("expected parse success, got diagnostics:\n{out}");
     }
+}
+
+fn parse_ok(src: &str) -> fusec::ast::Program {
+    let (program, diags) = parse_source(src);
+    if !diags.is_empty() {
+        let mut out = String::new();
+        for diag in diags {
+            out.push_str(&format!(
+                "{:?}: {} ({}..{})\n",
+                diag.level, diag.message, diag.span.start, diag.span.end
+            ));
+        }
+        panic!("expected parse success, got diagnostics:\n{out}");
+    }
+    program
 }
 
 #[test]
@@ -240,4 +256,74 @@ fn page() -> Html:
   )
 "#;
     assert_parse_ok(src);
+}
+
+#[test]
+fn lowers_html_block_children_to_canonical_ast_shape() {
+    let src = r#"
+fn page() -> Html:
+  return div(class="hero"):
+    "Hello"
+"#;
+    let program = parse_ok(src);
+    let Some(Item::Fn(page)) = program.items.first() else {
+        panic!("expected first item to be fn");
+    };
+    let Some(stmt) = page.body.stmts.first() else {
+        panic!("expected function body statement");
+    };
+    let StmtKind::Return { expr: Some(expr) } = &stmt.kind else {
+        panic!("expected return expression");
+    };
+    let ExprKind::Call { callee, args } = &expr.kind else {
+        panic!("expected call expression");
+    };
+    let ExprKind::Ident(callee_ident) = &callee.kind else {
+        panic!("expected identifier callee");
+    };
+    assert_eq!(callee_ident.name, "div");
+    assert_eq!(args.len(), 2, "expected attrs + children arguments");
+
+    let first = &args[0];
+    let Some(name) = &first.name else {
+        panic!("expected named attr shorthand argument");
+    };
+    assert_eq!(name.name, "class");
+    assert!(!first.is_block_sugar);
+    match &first.value.kind {
+        ExprKind::Literal(Literal::String(value)) => assert_eq!(value, "hero"),
+        other => panic!("expected literal string attr value, got {other:?}"),
+    }
+
+    let second = &args[1];
+    assert!(second.name.is_none());
+    assert!(second.is_block_sugar);
+    let ExprKind::ListLit(children) = &second.value.kind else {
+        panic!("expected block-sugar children list");
+    };
+    assert_eq!(children.len(), 1);
+    let ExprKind::Call {
+        callee: text_callee,
+        args: text_args,
+    } = &children[0].kind
+    else {
+        panic!("expected lowered html.text call for string child");
+    };
+    let ExprKind::Member {
+        base: text_base,
+        name: text_name,
+    } = &text_callee.kind
+    else {
+        panic!("expected html.text member access");
+    };
+    let ExprKind::Ident(html_ident) = &text_base.kind else {
+        panic!("expected html identifier base");
+    };
+    assert_eq!(html_ident.name, "html");
+    assert_eq!(text_name.name, "text");
+    assert_eq!(text_args.len(), 1);
+    match &text_args[0].value.kind {
+        ExprKind::Literal(Literal::String(value)) => assert_eq!(value, "Hello"),
+        other => panic!("expected lowered html.text literal child, got {other:?}"),
+    }
 }
