@@ -33,6 +33,6 @@ fn page_shell(
             aria_label="Close navigation"
             hidden="hidden"
           )
-          main({"class": "panel", "id": "content"}): content
+          main(class="panel", id="content"): content
       script({"src": asset("site/assets/js/libs/highlight_11.11.1.min.js")})
       script({"type": "module", "src": asset("site/assets/js/main.js")})
