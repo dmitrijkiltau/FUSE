@@ -410,6 +410,11 @@ Notes:
 
 - module imports do not automatically import all members into local scope
 - named imports do not create a module alias
+- function symbols are module-scoped (not global across all loaded modules)
+- unqualified function calls resolve in this order: current module, then named imports
+- module-qualified calls (`Foo.bar`) resolve against the referenced module alias
+- duplicate named imports in one module are load-time errors
+- duplicate function names across different modules are allowed
 - module-qualified type references are valid in type positions (`Foo.User`, `Foo.Config`)
 - dependency modules use `dep:` import paths (for example, `dep:Auth/lib`)
 

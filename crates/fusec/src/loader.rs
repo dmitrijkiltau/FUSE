@@ -321,6 +321,7 @@ impl ModuleLoader {
 
         let mut module_map = ModuleMap::default();
         let mut import_items = import_items;
+        let mut import_item_spans: HashMap<String, Span> = HashMap::new();
 
         for import in imports {
             let span = import.span;
@@ -362,7 +363,11 @@ impl ModuleLoader {
                     };
                     let exports = self.modules.get(&module_id).map(|unit| &unit.exports);
                     for name in names {
-                        if import_items.contains_key(&name.name) {
+                        if let Some(prev_span) = import_item_spans.get(&name.name).copied() {
+                            self.diags
+                                .error(name.span, format!("duplicate import {}", name.name));
+                            self.diags
+                                .error(prev_span, format!("previous import of {} here", name.name));
                             continue;
                         }
                         let Some(exports) = exports else { continue };
@@ -374,6 +379,7 @@ impl ModuleLoader {
                             continue;
                         }
                         import_items.insert(name.name.clone(), self.link_for(module_id));
+                        import_item_spans.insert(name.name.clone(), name.span);
                     }
                 }
             }
@@ -560,10 +566,10 @@ impl ModuleLoader {
             let (name, span) = match item {
                 Item::Type(decl) => (decl.name.name.as_str(), decl.name.span),
                 Item::Enum(decl) => (decl.name.name.as_str(), decl.name.span),
-                Item::Fn(decl) => (decl.name.name.as_str(), decl.name.span),
                 Item::Config(decl) => (decl.name.name.as_str(), decl.name.span),
                 Item::Service(decl) => (decl.name.name.as_str(), decl.name.span),
                 Item::App(decl) => (decl.name.value.as_str(), decl.name.span),
+                Item::Fn(_) => continue,
                 _ => continue,
             };
             if let Some((prev_id, prev_span)) = self.global_names.get(name) {

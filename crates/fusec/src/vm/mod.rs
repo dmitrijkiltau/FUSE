@@ -57,6 +57,10 @@ fn is_html_response_type(ty: &TypeRef) -> bool {
     }
 }
 
+fn simple_function_name(name: &str) -> &str {
+    name.rsplit("::").next().unwrap_or(name)
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 enum LogLevel {
     Trace,
@@ -150,14 +154,10 @@ impl<'a> Vm<'a> {
     }
 
     pub fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, String> {
-        let func = self
-            .program
-            .functions
-            .get(name)
-            .ok_or_else(|| format!("unknown function {name}"))?;
-        let value = match self.exec_function(func, args) {
+        let func = self.resolve_public_function(name)?.clone();
+        let value = match self.exec_function(&func, args) {
             Ok(val) => self
-                .wrap_function_result(func, val)
+                .wrap_function_result(&func, val)
                 .map_err(|err| self.render_error(err))?,
             Err(VmError::Error(err_val)) => {
                 if self.is_result_type(func.ret.as_ref()) {
@@ -169,6 +169,29 @@ impl<'a> Vm<'a> {
             Err(VmError::Runtime(msg)) => return Err(msg),
         };
         Ok(value)
+    }
+
+    fn resolve_public_function(&self, name: &str) -> Result<&Function, String> {
+        if let Some(func) = self.program.functions.get(name) {
+            return Ok(func);
+        }
+        if name.contains("::") {
+            return Err(format!("unknown function {name}"));
+        }
+        let mut matches = self
+            .program
+            .functions
+            .iter()
+            .filter(|(key, _)| simple_function_name(key) == name);
+        let first = matches.next().map(|(_, func)| func);
+        let second = matches.next();
+        match (first, second) {
+            (Some(func), None) => Ok(func),
+            (Some(_), Some(_)) => Err(format!(
+                "ambiguous function name {name}; use canonical form m<module_id>::{name}"
+            )),
+            (None, _) => Err(format!("unknown function {name}")),
+        }
     }
 
     fn render_error(&self, err: VmError) -> String {
@@ -2258,7 +2281,9 @@ impl<'a> Vm<'a> {
             Value::ResultOk(value) => self.value_to_json(value.as_ref()),
             Value::ResultErr(value) => self.value_to_json(value.as_ref()),
             Value::Config(name) => rt_json::JsonValue::String(name.clone()),
-            Value::Function(name) => rt_json::JsonValue::String(name.clone()),
+            Value::Function(func) => {
+                rt_json::JsonValue::String(format!("{}::{}", func.module_id, func.name))
+            }
             Value::Builtin(name) => rt_json::JsonValue::String(name.clone()),
             Value::EnumCtor { name, variant } => {
                 rt_json::JsonValue::String(format!("{name}.{variant}"))

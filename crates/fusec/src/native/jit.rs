@@ -1001,7 +1001,9 @@ fn value_to_json(value: &Value) -> rt_json::JsonValue {
         Value::ResultOk(value) => value_to_json(value.as_ref()),
         Value::ResultErr(value) => value_to_json(value.as_ref()),
         Value::Config(name) => rt_json::JsonValue::String(name.clone()),
-        Value::Function(name) => rt_json::JsonValue::String(name.clone()),
+        Value::Function(func) => {
+            rt_json::JsonValue::String(format!("{}::{}", func.module_id, func.name))
+        }
         Value::Builtin(name) => rt_json::JsonValue::String(name.clone()),
         Value::EnumCtor { name, variant } => {
             rt_json::JsonValue::String(format!("{name}.{variant}"))

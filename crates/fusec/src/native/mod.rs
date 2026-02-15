@@ -64,6 +64,33 @@ pub fn symbol_for_function(name: &str) -> String {
     jit::jit_symbol(name)
 }
 
+fn simple_function_name(name: &str) -> &str {
+    name.rsplit("::").next().unwrap_or(name)
+}
+
+fn resolve_public_function_name(program: &NativeProgram, name: &str) -> Result<String, String> {
+    if program.ir.functions.contains_key(name) || program.ir.apps.contains_key(name) {
+        return Ok(name.to_string());
+    }
+    if name.contains("::") {
+        return Err(format!("unknown function {name}"));
+    }
+    let mut matches = program
+        .ir
+        .functions
+        .keys()
+        .filter(|candidate| simple_function_name(candidate) == name);
+    let first = matches.next().cloned();
+    let second = matches.next();
+    match (first, second) {
+        (Some(resolved), None) => Ok(resolved),
+        (Some(_), Some(_)) => Err(format!(
+            "ambiguous function name {name}; use canonical form m<module_id>::{name}"
+        )),
+        (None, _) => Err(format!("unknown function {name}")),
+    }
+}
+
 pub fn emit_object_for_app(
     program: &NativeProgram,
     name: Option<&str>,
@@ -128,12 +155,19 @@ pub fn emit_object_for_function(
     program: &NativeProgram,
     name: &str,
 ) -> Result<NativeObject, String> {
+    let resolved_name = resolve_public_function_name(program, name)?;
     let func = program
         .ir
         .functions
-        .get(name)
-        .or_else(|| program.ir.apps.get(name))
-        .or_else(|| program.ir.apps.values().find(|func| func.name == name))
+        .get(&resolved_name)
+        .or_else(|| program.ir.apps.get(&resolved_name))
+        .or_else(|| {
+            program
+                .ir
+                .apps
+                .values()
+                .find(|func| func.name == resolved_name)
+        })
         .ok_or_else(|| format!("unknown function {name}"))?;
     let artifact = jit::emit_object_for_function(&program.ir, func)?;
     Ok(NativeObject {
@@ -275,11 +309,17 @@ impl<'a> NativeVm<'a> {
 
     pub fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, String> {
         self.ensure_configs_loaded()?;
-        self.call_function_native_only_inner(name, args)
+        let resolved = resolve_public_function_name(self.program, name)?;
+        self.call_function_native_only_inner(&resolved, args)
     }
 
     pub fn has_jit_function(&self, name: &str) -> bool {
-        self.jit.has_function(name)
+        if self.jit.has_function(name) {
+            return true;
+        }
+        resolve_public_function_name(self.program, name)
+            .ok()
+            .is_some_and(|resolved| self.jit.has_function(&resolved))
     }
 
     fn call_function_native_only_inner(
@@ -1656,7 +1696,9 @@ impl<'a> NativeVm<'a> {
             Value::ResultOk(value) => self.value_to_json(value.as_ref()),
             Value::ResultErr(value) => self.value_to_json(value.as_ref()),
             Value::Config(name) => rt_json::JsonValue::String(name.clone()),
-            Value::Function(name) => rt_json::JsonValue::String(name.clone()),
+            Value::Function(func) => {
+                rt_json::JsonValue::String(format!("{}::{}", func.module_id, func.name))
+            }
             Value::Builtin(name) => rt_json::JsonValue::String(name.clone()),
             Value::EnumCtor { name, variant } => {
                 rt_json::JsonValue::String(format!("{name}.{variant}"))

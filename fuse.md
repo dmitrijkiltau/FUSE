@@ -93,6 +93,7 @@ FUSE currently ships with:
 - VM backend
 - native backend path targeting VM-compatible semantics
 - module imports (including dependency imports via `dep:`)
+- module-scoped function symbols (local-first, then named-import resolution)
 - package tooling via `fuse.toml` and `fuse` commands
 
 Detailed capability matrices and caveats live in:

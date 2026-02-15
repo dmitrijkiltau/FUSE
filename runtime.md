@@ -42,6 +42,13 @@ Native backend note:
 
 - If native compilation/execution fails for a function, the run fails (no automatic backend fallback).
 
+### Function symbol resolution
+
+- Function symbols are module-scoped.
+- Unqualified calls resolve in the current module first, then named imports.
+- Qualified calls (`Foo.bar()`) resolve to the exported function in module alias `Foo`.
+- Duplicate function names across different modules are valid.
+
 See also: [Scope + constraints](scope.md), [Priority roadmap](scope.md#priority-roadmap).
 
 ---
@@ -252,7 +259,7 @@ Rules:
 - `--flag` sets `Bool` to `true`; `--no-flag` sets it to `false`
 - unknown flags are validation errors
 - multiple values for the same flag are rejected
-- binding calls `fn main` directly; `app` block is ignored when program args are present
+- binding calls `fn main` from the root module directly; `app` block is ignored when program args are present
 
 Type support levels mirror config/env parsing:
 

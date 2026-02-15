@@ -55,6 +55,7 @@ See also: [Runtime semantics](runtime.md), [FUSE overview](fuse.md).
 FUSE is currently scoped as a strict, typed language with integrated boundary/runtime tooling for:
 
 - language authoring (`fn`, `type`, `enum`, modules/imports, services/config/apps)
+- module-scoped function symbol resolution (local module + explicit imports)
 - backend execution across AST/VM/native path with aligned semantics
 - runtime boundary handling (validation, JSON/config/CLI/HTTP binding, error mapping)
 - service-oriented package workflow (`fuse check/run/dev/test/build`)

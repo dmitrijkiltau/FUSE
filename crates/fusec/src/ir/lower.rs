@@ -7,7 +7,7 @@ use crate::ast::{
     PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, UnaryOp,
 };
 use crate::html_tags::{self, HtmlTagKind};
-use crate::loader::{ModuleMap, ModuleRegistry};
+use crate::loader::{ModuleId, ModuleLink, ModuleMap, ModuleRegistry};
 use crate::span::Span;
 
 use super::{
@@ -22,8 +22,35 @@ fn is_query_method(name: &str) -> bool {
     )
 }
 
+pub fn canonical_function_name(module_id: ModuleId, name: &str) -> String {
+    format!("m{module_id}::{name}")
+}
+
 pub fn lower_program(program: &Program, modules: &ModuleMap) -> Result<IrProgram, Vec<String>> {
-    let mut lowerer = Lowerer::new(program, modules);
+    let import_items = HashMap::new();
+    let mut lowerer = Lowerer::new(program, 0, modules, &import_items);
+    lowerer.lower();
+    if lowerer.errors.is_empty() {
+        Ok(IrProgram {
+            functions: lowerer.functions,
+            apps: lowerer.apps,
+            configs: lowerer.configs,
+            types: lowerer.types,
+            enums: lowerer.enums,
+            services: lowerer.services,
+        })
+    } else {
+        Err(lowerer.errors)
+    }
+}
+
+fn lower_program_in_module(
+    program: &Program,
+    module_id: ModuleId,
+    modules: &ModuleMap,
+    import_items: &HashMap<String, ModuleLink>,
+) -> Result<IrProgram, Vec<String>> {
+    let mut lowerer = Lowerer::new(program, module_id, modules, import_items);
     lowerer.lower();
     if lowerer.errors.is_empty() {
         Ok(IrProgram {
@@ -50,7 +77,7 @@ pub fn lower_registry(registry: &ModuleRegistry) -> Result<IrProgram, Vec<String
     };
     let mut errors = Vec::new();
     for unit in registry.modules.values() {
-        match lower_program(&unit.program, &unit.modules) {
+        match lower_program_in_module(&unit.program, unit.id, &unit.modules, &unit.import_items) {
             Ok(ir) => {
                 merge_named("function", ir.functions, &mut merged.functions, &mut errors);
                 merge_named("app", ir.apps, &mut merged.apps, &mut errors);
@@ -71,7 +98,9 @@ pub fn lower_registry(registry: &ModuleRegistry) -> Result<IrProgram, Vec<String
 
 struct Lowerer<'a> {
     program: &'a Program,
+    module_id: ModuleId,
     modules: &'a ModuleMap,
+    import_items: &'a HashMap<String, ModuleLink>,
     fn_decls: Rc<HashMap<String, FnDecl>>,
     functions: HashMap<String, Function>,
     apps: HashMap<String, Function>,
@@ -107,7 +136,12 @@ enum AssignStep<'a> {
 }
 
 impl<'a> Lowerer<'a> {
-    fn new(program: &'a Program, modules: &'a ModuleMap) -> Self {
+    fn new(
+        program: &'a Program,
+        module_id: ModuleId,
+        modules: &'a ModuleMap,
+        import_items: &'a HashMap<String, ModuleLink>,
+    ) -> Self {
         let mut config_names = HashSet::new();
         let mut enum_names = HashSet::new();
         let mut enum_variant_names = HashSet::new();
@@ -146,7 +180,9 @@ impl<'a> Lowerer<'a> {
             .collect();
         Self {
             program,
+            module_id,
             modules,
+            import_items,
             fn_decls: Rc::new(fn_decls),
             functions: HashMap::new(),
             apps: HashMap::new(),
@@ -190,8 +226,10 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_fn(&mut self, decl: &FnDecl) {
+        let fn_name = canonical_function_name(self.module_id, &decl.name.name);
         let mut builder = FuncBuilder::new(
-            decl.name.name.clone(),
+            self.module_id,
+            fn_name.clone(),
             decl.ret.clone(),
             &self.config_names,
             &self.enum_names,
@@ -199,6 +237,7 @@ impl<'a> Lowerer<'a> {
             &self.imported_names,
             &self.builtin_names,
             self.modules,
+            self.import_items,
             self.fn_decls.clone(),
             self.default_helpers.clone(),
         );
@@ -209,7 +248,7 @@ impl<'a> Lowerer<'a> {
         builder.ensure_return();
         let (func, errors, extra) = builder.finish();
         if let Some(func) = func {
-            self.functions.insert(decl.name.name.clone(), func);
+            self.functions.insert(fn_name, func);
         }
         self.errors.extend(errors);
         self.insert_extra_functions(extra);
@@ -217,6 +256,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_app(&mut self, app: &AppDecl) {
         let mut builder = FuncBuilder::new(
+            self.module_id,
             format!("app:{}", app.name.value),
             None,
             &self.config_names,
@@ -225,6 +265,7 @@ impl<'a> Lowerer<'a> {
             &self.imported_names,
             &self.builtin_names,
             self.modules,
+            self.import_items,
             self.fn_decls.clone(),
             self.default_helpers.clone(),
         );
@@ -243,6 +284,7 @@ impl<'a> Lowerer<'a> {
         for field in &cfg.fields {
             let fn_name = format!("__config::{}::{}", cfg.name.name, field.name.name);
             let mut builder = FuncBuilder::new(
+                self.module_id,
                 fn_name.clone(),
                 None,
                 &self.config_names,
@@ -251,6 +293,7 @@ impl<'a> Lowerer<'a> {
                 &self.imported_names,
                 &self.builtin_names,
                 self.modules,
+                self.import_items,
                 self.fn_decls.clone(),
                 self.default_helpers.clone(),
             );
@@ -283,6 +326,7 @@ impl<'a> Lowerer<'a> {
             let default_fn = if let Some(expr) = &field.default {
                 let fn_name = format!("__type::{}::{}", decl.name.name, field.name.name);
                 let mut builder = FuncBuilder::new(
+                    self.module_id,
                     fn_name.clone(),
                     None,
                     &self.config_names,
@@ -291,6 +335,7 @@ impl<'a> Lowerer<'a> {
                     &self.imported_names,
                     &self.builtin_names,
                     self.modules,
+                    self.import_items,
                     self.fn_decls.clone(),
                     self.default_helpers.clone(),
                 );
@@ -345,6 +390,7 @@ impl<'a> Lowerer<'a> {
             let handler = format!("__service::{}::{}", decl.name.name, idx);
             let params = extract_route_params(&route.path.value);
             let mut builder = FuncBuilder::new(
+                self.module_id,
                 handler.clone(),
                 Some(route.ret_type.clone()),
                 &self.config_names,
@@ -353,6 +399,7 @@ impl<'a> Lowerer<'a> {
                 &self.imported_names,
                 &self.builtin_names,
                 self.modules,
+                self.import_items,
                 self.fn_decls.clone(),
                 self.default_helpers.clone(),
             );
@@ -447,6 +494,7 @@ fn merge_named<T>(
 }
 
 struct FuncBuilder {
+    module_id: ModuleId,
     name: String,
     params: Vec<String>,
     ret: Option<crate::ast::TypeRef>,
@@ -462,6 +510,7 @@ struct FuncBuilder {
     imported_names: HashSet<String>,
     builtin_names: HashSet<String>,
     modules: ModuleMap,
+    import_items: HashMap<String, ModuleLink>,
     loop_stack: Vec<LoopContext>,
     fn_decls: Rc<HashMap<String, FnDecl>>,
     default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
@@ -469,6 +518,7 @@ struct FuncBuilder {
 
 impl FuncBuilder {
     fn new(
+        module_id: ModuleId,
         name: String,
         ret: Option<crate::ast::TypeRef>,
         config_names: &HashSet<String>,
@@ -477,10 +527,12 @@ impl FuncBuilder {
         imported_names: &HashSet<String>,
         builtin_names: &HashSet<String>,
         modules: &ModuleMap,
+        import_items: &HashMap<String, ModuleLink>,
         fn_decls: Rc<HashMap<String, FnDecl>>,
         default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
     ) -> Self {
         Self {
+            module_id,
             name,
             params: Vec::new(),
             ret,
@@ -496,6 +548,7 @@ impl FuncBuilder {
             imported_names: imported_names.clone(),
             builtin_names: builtin_names.clone(),
             modules: modules.clone(),
+            import_items: import_items.clone(),
             loop_stack: Vec::new(),
             fn_decls,
             default_helpers,
@@ -1132,7 +1185,17 @@ impl FuncBuilder {
                             kind: CallKind::Builtin,
                         });
                     } else if let Some(decl) = self.fn_decls.get(&ident.name).cloned() {
-                        self.lower_call_with_defaults(&ident.name, &decl, args);
+                        let target = canonical_function_name(self.module_id, &ident.name);
+                        self.lower_call_with_defaults(&target, &decl, args);
+                    } else if let Some(target) = self.resolve_imported_function_name(&ident.name) {
+                        for arg in args {
+                            self.lower_expr(&arg.value);
+                        }
+                        self.emit(Instr::Call {
+                            name: target,
+                            argc: args.len(),
+                            kind: CallKind::Function,
+                        });
                     } else {
                         for arg in args {
                             self.lower_expr(&arg.value);
@@ -1178,11 +1241,12 @@ impl FuncBuilder {
                     if let ExprKind::Ident(module_ident) = &base.kind {
                         if let Some(module) = self.modules.get(&module_ident.name) {
                             if module.exports.functions.contains(&name.name) {
+                                let module_id = module.id;
                                 for arg in args {
                                     self.lower_expr(&arg.value);
                                 }
                                 self.emit(Instr::Call {
-                                    name: name.name.clone(),
+                                    name: canonical_function_name(module_id, &name.name),
                                     argc: args.len(),
                                     kind: CallKind::Function,
                                 });
@@ -1383,6 +1447,7 @@ impl FuncBuilder {
                 let captured = self.capture_locals();
                 let spawn_name = self.next_spawn_name();
                 let mut builder = FuncBuilder::new(
+                    self.module_id,
                     spawn_name.clone(),
                     None,
                     &self.config_names,
@@ -1391,6 +1456,7 @@ impl FuncBuilder {
                     &self.imported_names,
                     &self.builtin_names,
                     &self.modules,
+                    &self.import_items,
                     self.fn_decls.clone(),
                     self.default_helpers.clone(),
                 );
@@ -1430,6 +1496,14 @@ impl FuncBuilder {
             return false;
         }
         !self.fn_decls.contains_key(name) && !self.imported_names.contains(name)
+    }
+
+    fn resolve_imported_function_name(&self, name: &str) -> Option<String> {
+        let link = self.import_items.get(name)?;
+        if !link.exports.functions.contains(name) {
+            return None;
+        }
+        Some(canonical_function_name(link.id, name))
     }
 
     fn lower_html_tag_builtin_call(&mut self, tag: &str, args: &[crate::ast::CallArg]) {
@@ -1665,6 +1739,7 @@ impl FuncBuilder {
             .borrow_mut()
             .insert(key, helper_name.clone());
         let mut builder = FuncBuilder::new(
+            self.module_id,
             helper_name.clone(),
             Some(param.ty.clone()),
             &self.config_names,
@@ -1673,6 +1748,7 @@ impl FuncBuilder {
             &self.imported_names,
             &self.builtin_names,
             &self.modules,
+            &self.import_items,
             self.fn_decls.clone(),
             self.default_helpers.clone(),
         );

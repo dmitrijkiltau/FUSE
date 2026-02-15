@@ -251,7 +251,7 @@ where
             let main_decl = match main_decl {
                 Some(decl) => decl,
                 None => {
-                    eprintln!("no fn main found for CLI binding");
+                    eprintln!("no root fn main found for CLI binding");
                     return 1;
                 }
             };
@@ -353,6 +353,8 @@ where
                             return 2;
                         }
                     };
+                    let entry_name =
+                        crate::ir::lower::canonical_function_name(registry.root, "main");
                     match backend {
                         Backend::Vm => {
                             let ir = match crate::ir::lower::lower_registry(&registry) {
@@ -365,7 +367,7 @@ where
                                 }
                             };
                             let mut vm = crate::vm::Vm::new(&ir);
-                            match vm.call_function("main", args) {
+                            match vm.call_function(&entry_name, args) {
                                 Ok(_) => {}
                                 Err(err) => {
                                     emit_error_json(&err);
@@ -384,7 +386,7 @@ where
                                 }
                             };
                             let mut vm = crate::native::NativeVm::new(&native);
-                            match vm.call_function("main", args) {
+                            match vm.call_function(&entry_name, args) {
                                 Ok(_) => {}
                                 Err(err) => {
                                     emit_error_json(&err);

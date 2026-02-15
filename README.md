@@ -8,6 +8,7 @@ Status:
 - parser + semantic analysis + AST/VM backends are usable
 - native backend is available (`--backend native`) with VM-compatible runtime semantics and an
   in-progress Cranelift JIT fast-path
+- function symbols are module-scoped (duplicate function names across modules are supported)
 
 ## Requirements
 

@@ -20,7 +20,13 @@ use crate::ast::{
 };
 use crate::db::{Db, Query};
 use crate::html_tags::{self, HtmlTagKind};
-use crate::loader::{ModuleId, ModuleMap, ModuleRegistry};
+use crate::loader::{ModuleId, ModuleLink, ModuleMap, ModuleRegistry};
+
+#[derive(Clone, Debug)]
+pub struct FunctionRef {
+    pub(crate) module_id: ModuleId,
+    pub(crate) name: String,
+}
 
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -54,7 +60,7 @@ pub enum Value {
     ResultOk(Box<Value>),
     ResultErr(Box<Value>),
     Config(String),
-    Function(String),
+    Function(FunctionRef),
     Builtin(String),
 }
 
@@ -279,7 +285,7 @@ impl Value {
             Value::ResultOk(val) => format!("Ok({})", val.to_string_value()),
             Value::ResultErr(val) => format!("Err({})", val.to_string_value()),
             Value::Config(name) => format!("<config {name}>"),
-            Value::Function(name) => format!("<fn {name}>"),
+            Value::Function(func) => format!("<fn {}::{}>", func.module_id, func.name),
             Value::Builtin(name) => format!("<builtin {name}>"),
         }
     }
@@ -540,7 +546,7 @@ pub struct Interpreter<'a> {
     env: Env,
     configs: HashMap<String, HashMap<String, Value>>,
     db: Option<Db>,
-    functions: HashMap<String, &'a FnDecl>,
+    functions: HashMap<ModuleId, HashMap<String, &'a FnDecl>>,
     apps: Vec<&'a AppDecl>,
     app_owner: HashMap<String, ModuleId>,
     services: HashMap<String, &'a ServiceDecl>,
@@ -549,7 +555,7 @@ pub struct Interpreter<'a> {
     config_decls: HashMap<String, &'a ConfigDecl>,
     enums: HashMap<String, &'a EnumDecl>,
     module_maps: HashMap<ModuleId, ModuleMap>,
-    function_owner: HashMap<String, ModuleId>,
+    module_import_items: HashMap<ModuleId, HashMap<String, ModuleLink>>,
     config_owner: HashMap<String, ModuleId>,
     current_module: ModuleId,
 }
@@ -578,8 +584,7 @@ impl<'a> Interpreter<'a> {
     }
 
     pub fn with_modules(program: &'a Program, modules: ModuleMap) -> Self {
-        let mut functions = HashMap::new();
-        let mut function_owner = HashMap::new();
+        let mut functions: HashMap<ModuleId, HashMap<String, &'a FnDecl>> = HashMap::new();
         let mut apps = Vec::new();
         let mut app_owner = HashMap::new();
         let mut services = HashMap::new();
@@ -588,11 +593,17 @@ impl<'a> Interpreter<'a> {
         let mut config_decls = HashMap::new();
         let mut config_owner = HashMap::new();
         let mut enums = HashMap::new();
+        let mut module_import_items: HashMap<ModuleId, HashMap<String, ModuleLink>> =
+            HashMap::new();
+        functions.insert(0, HashMap::new());
+        module_import_items.insert(0, HashMap::new());
         for item in &program.items {
             match item {
                 Item::Fn(decl) => {
-                    functions.insert(decl.name.name.clone(), decl);
-                    function_owner.insert(decl.name.name.clone(), 0);
+                    functions
+                        .entry(0)
+                        .or_default()
+                        .insert(decl.name.name.clone(), decl);
                 }
                 Item::App(app) => {
                     apps.push(app);
@@ -628,15 +639,14 @@ impl<'a> Interpreter<'a> {
             config_decls,
             enums,
             module_maps: HashMap::from([(0, modules)]),
-            function_owner,
+            module_import_items,
             config_owner,
             current_module: 0,
         }
     }
 
     pub fn with_registry(registry: &'a ModuleRegistry) -> Self {
-        let mut functions = HashMap::new();
-        let mut function_owner = HashMap::new();
+        let mut functions: HashMap<ModuleId, HashMap<String, &'a FnDecl>> = HashMap::new();
         let mut apps = Vec::new();
         let mut app_owner = HashMap::new();
         let mut services = HashMap::new();
@@ -646,13 +656,18 @@ impl<'a> Interpreter<'a> {
         let mut config_owner = HashMap::new();
         let mut enums = HashMap::new();
         let mut module_maps = HashMap::new();
+        let mut module_import_items: HashMap<ModuleId, HashMap<String, ModuleLink>> =
+            HashMap::new();
         for (id, unit) in &registry.modules {
             module_maps.insert(*id, unit.modules.clone());
+            module_import_items.insert(*id, unit.import_items.clone());
             for item in &unit.program.items {
                 match item {
                     Item::Fn(decl) => {
-                        functions.insert(decl.name.name.clone(), decl);
-                        function_owner.insert(decl.name.name.clone(), *id);
+                        functions
+                            .entry(*id)
+                            .or_default()
+                            .insert(decl.name.name.clone(), decl);
                     }
                     Item::App(app) => {
                         apps.push(app);
@@ -689,10 +704,41 @@ impl<'a> Interpreter<'a> {
             config_decls,
             enums,
             module_maps,
-            function_owner,
+            module_import_items,
             config_owner,
             current_module: registry.root,
         }
+    }
+
+    fn has_function_in_module(&self, module_id: ModuleId, name: &str) -> bool {
+        self.functions
+            .get(&module_id)
+            .is_some_and(|items| items.contains_key(name))
+    }
+
+    fn function_decl(&self, func: &FunctionRef) -> Option<&'a FnDecl> {
+        self.functions
+            .get(&func.module_id)
+            .and_then(|items| items.get(&func.name))
+            .copied()
+    }
+
+    fn resolve_function_ref(&self, module_id: ModuleId, name: &str) -> Option<FunctionRef> {
+        if self.has_function_in_module(module_id, name) {
+            return Some(FunctionRef {
+                module_id,
+                name: name.to_string(),
+            });
+        }
+        let import_items = self.module_import_items.get(&module_id)?;
+        let link = import_items.get(name)?;
+        if self.has_function_in_module(link.id, name) {
+            return Some(FunctionRef {
+                module_id: link.id,
+                name: name.to_string(),
+            });
+        }
+        None
     }
 
     pub fn run_app(&mut self, name: Option<&str>) -> Result<(), String> {
@@ -838,14 +884,25 @@ impl<'a> Interpreter<'a> {
         name: &str,
         args: &HashMap<String, Value>,
     ) -> Result<Vec<Value>, String> {
-        let decl = match self.functions.get(name) {
-            Some(decl) => *decl,
-            None => return Err(format!("unknown function {name}")),
+        let func_ref = match self.resolve_function_ref(self.current_module, name) {
+            Some(func_ref) => func_ref,
+            None => {
+                return Err(format!(
+                    "unknown function {name} in current module/import scope"
+                ));
+            }
+        };
+        let decl = match self.function_decl(&func_ref) {
+            Some(decl) => decl,
+            None => {
+                return Err(format!(
+                    "unknown function {}::{}",
+                    func_ref.module_id, func_ref.name
+                ));
+            }
         };
         let prev_module = self.current_module;
-        if let Some(owner) = self.function_owner.get(name) {
-            self.current_module = *owner;
-        }
+        self.current_module = func_ref.module_id;
         self.env.push();
         let mut ordered = Vec::with_capacity(decl.params.len());
         for param in &decl.params {
@@ -885,14 +942,25 @@ impl<'a> Interpreter<'a> {
         name: &str,
         args: &HashMap<String, Value>,
     ) -> Result<Value, String> {
-        let decl = match self.functions.get(name) {
-            Some(decl) => *decl,
-            None => return Err(format!("unknown function {name}")),
+        let func_ref = match self.resolve_function_ref(self.current_module, name) {
+            Some(func_ref) => func_ref,
+            None => {
+                return Err(format!(
+                    "unknown function {name} in current module/import scope"
+                ));
+            }
+        };
+        let decl = match self.function_decl(&func_ref) {
+            Some(decl) => decl,
+            None => {
+                return Err(format!(
+                    "unknown function {}::{}",
+                    func_ref.module_id, func_ref.name
+                ));
+            }
         };
         let prev_module = self.current_module;
-        if let Some(owner) = self.function_owner.get(name) {
-            self.current_module = *owner;
-        }
+        self.current_module = func_ref.module_id;
         self.env.push();
         for param in &decl.params {
             let value = if let Some(value) = args.get(&param.name.name) {
@@ -1352,8 +1420,8 @@ impl<'a> Interpreter<'a> {
         if let Some(val) = self.env.get(name) {
             return Ok(val);
         }
-        if self.functions.contains_key(name) {
-            return Ok(Value::Function(name.to_string()));
+        if let Some(func) = self.resolve_function_ref(self.current_module, name) {
+            return Ok(Value::Function(func));
         }
         if self.config_decls.contains_key(name) {
             return Ok(Value::Config(name.to_string()));
@@ -1373,7 +1441,11 @@ impl<'a> Interpreter<'a> {
         if self.env.get(name).is_some() {
             return false;
         }
-        if self.functions.contains_key(name) || self.config_decls.contains_key(name) {
+        if self
+            .resolve_function_ref(self.current_module, name)
+            .is_some()
+            || self.config_decls.contains_key(name)
+        {
             return false;
         }
         true
@@ -1428,7 +1500,7 @@ impl<'a> Interpreter<'a> {
     fn eval_call(&mut self, callee: Value, args: Vec<Value>) -> ExecResult<Value> {
         match callee.unboxed() {
             Value::Builtin(name) => self.eval_builtin(&name, args),
-            Value::Function(name) => self.eval_function(&name, args),
+            Value::Function(func) => self.eval_function(&func, args),
             Value::EnumCtor { name, variant } => {
                 let arity = self.enum_variant_arity(&name, &variant).ok_or_else(|| {
                     ExecError::Runtime(format!("unknown variant {name}.{variant}"))
@@ -2120,15 +2192,18 @@ impl<'a> Interpreter<'a> {
         }))
     }
 
-    fn eval_function(&mut self, name: &str, args: Vec<Value>) -> ExecResult<Value> {
-        let decl = match self.functions.get(name) {
-            Some(decl) => *decl,
-            None => return Err(ExecError::Runtime(format!("unknown function {name}"))),
+    fn eval_function(&mut self, func: &FunctionRef, args: Vec<Value>) -> ExecResult<Value> {
+        let decl = match self.function_decl(func) {
+            Some(decl) => decl,
+            None => {
+                return Err(ExecError::Runtime(format!(
+                    "unknown function {}::{}",
+                    func.module_id, func.name
+                )));
+            }
         };
         let prev_module = self.current_module;
-        if let Some(owner) = self.function_owner.get(name) {
-            self.current_module = *owner;
-        }
+        self.current_module = func.module_id;
         self.env.push();
         for (idx, param) in decl.params.iter().enumerate() {
             let value = if idx < args.len() {
@@ -2754,7 +2829,10 @@ impl<'a> Interpreter<'a> {
         if let ExprKind::Ident(module_ident) = &base.kind {
             if let Some(module) = module_map.and_then(|map| map.get(&module_ident.name)) {
                 if module.exports.functions.contains(field) {
-                    return Ok(Some(Value::Function(field.to_string())));
+                    return Ok(Some(Value::Function(FunctionRef {
+                        module_id: module.id,
+                        name: field.to_string(),
+                    })));
                 }
                 if module.exports.configs.contains(field) {
                     return Ok(Some(Value::Config(field.to_string())));
@@ -3775,7 +3853,9 @@ impl<'a> Interpreter<'a> {
             Value::ResultOk(value) => self.value_to_json(value.as_ref()),
             Value::ResultErr(value) => self.value_to_json(value.as_ref()),
             Value::Config(name) => rt_json::JsonValue::String(name.clone()),
-            Value::Function(name) => rt_json::JsonValue::String(name.clone()),
+            Value::Function(func) => {
+                rt_json::JsonValue::String(format!("{}::{}", func.module_id, func.name))
+            }
             Value::Builtin(name) => rt_json::JsonValue::String(name.clone()),
             Value::EnumCtor { name, variant } => {
                 rt_json::JsonValue::String(format!("{name}.{variant}"))
