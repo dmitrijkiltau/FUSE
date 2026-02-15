@@ -121,6 +121,10 @@ Build distributable binaries:
 - `docs/` - docs site package (UI, assets, and docs app)
 - `tools/vscode` - VS Code extension assets
 
+## License
+
+Apache-2.0. See `LICENSE`.
+
 ## Specs
 
 - `fuse.md` - project overview + package tooling

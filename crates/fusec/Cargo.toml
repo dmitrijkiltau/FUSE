@@ -3,6 +3,9 @@ name = "fusec"
 version = "0.1.0"
 edition = "2024"
 default-run = "fusec"
+description = "Compiler, runtime, and language tooling for FUSE."
+repository = "https://github.com/dmitrijkiltau/fuse"
+license = "Apache-2.0"
 
 [lib]
 path = "src/lib.rs"
