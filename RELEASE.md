@@ -27,6 +27,8 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
    - Move relevant items from `Unreleased` into the new version section.
 3. Run smoke checks:
    - `./scripts/release_smoke.sh`
+   - Covers `fusec` + `fuse` test suites, release-mode compile checks, package build cache checks,
+     and AST/VM backend smoke runs.
 4. Verify package UX manually (optional but recommended):
    - `./scripts/fuse build`
    - `./scripts/fuse run examples/project_demo.fuse`

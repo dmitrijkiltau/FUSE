@@ -7,19 +7,28 @@ step() {
   printf "\n[%s] %s\n" "$1" "$2"
 }
 
-step "1/5" "Run fusec test suite"
+step "1/8" "Run fusec test suite"
 "$ROOT/scripts/cargo_env.sh" cargo test -p fusec
 
-step "2/5" "Build package from clean state"
+step "2/8" "Run fuse CLI test suite"
+"$ROOT/scripts/cargo_env.sh" cargo test -p fuse
+
+step "3/8" "Release-mode compile check (fuse CLI)"
+"$ROOT/scripts/cargo_env.sh" cargo build -p fuse --release
+
+step "4/8" "Release-mode compile check (fusec binaries)"
+"$ROOT/scripts/cargo_env.sh" cargo build -p fusec --release --bins
+
+step "5/8" "Build package from clean state"
 "$ROOT/scripts/fuse" build --clean
 
-step "3/5" "Build package with warm cache"
+step "6/8" "Build package with warm cache"
 "$ROOT/scripts/fuse" build
 
-step "4/5" "Backend smoke run (AST)"
+step "7/8" "Backend smoke run (AST)"
 "$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --run "$ROOT/examples/task_api.fuse" --backend ast
 
-step "5/5" "Backend smoke run (VM)"
+step "8/8" "Backend smoke run (VM)"
 "$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --run "$ROOT/examples/task_api.fuse" --backend vm
 
 printf "\nrelease smoke checks passed\n"
