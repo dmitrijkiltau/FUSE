@@ -135,6 +135,7 @@ Apache-2.0. See `LICENSE`.
 
 ## Specs
 
+- `IDENTITY_CHARTER.md` - language identity, hard boundaries, and explicit non-goals
 - `fuse.md` - project overview + package tooling
 - `fls.md` - formal language specification
 - `runtime.md` - runtime semantics and builtin behavior
