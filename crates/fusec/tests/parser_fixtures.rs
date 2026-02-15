@@ -66,6 +66,18 @@ fn load(id: Id) -> User!std.Error.NotFound:
 }
 
 #[test]
+fn parses_refined_regex_and_predicate_constraints() {
+    let src = r#"
+fn is_slug(value: String) -> Bool:
+  return value != ""
+
+type Input:
+  slug: String(1..80, regex("^[a-z0-9_-]+$"), predicate(is_slug))
+"#;
+    assert_parse_ok(src);
+}
+
+#[test]
 fn parses_without_type_derivations() {
     let src = r#"
 type User:

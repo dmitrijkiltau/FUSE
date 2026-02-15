@@ -13,11 +13,15 @@ use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 use cranelift_native::builder as native_builder;
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
-use crate::ast::{BinaryOp, Expr, ExprKind, Literal, PatternKind, TypeRef, TypeRefKind, UnaryOp};
+use crate::ast::{BinaryOp, Expr, Literal, PatternKind, TypeRef, TypeRefKind};
+use crate::db::{DEFAULT_DB_POOL_SIZE, parse_db_pool_size, parse_db_pool_size_value};
 use crate::interp::{HtmlNode, Value};
 use crate::ir::{CallKind, Const, Function, Instr, Program as IrProgram};
 use crate::native::value::{
     HeapValue, NativeHeap, NativeIterator, NativeTag, NativeValue, TaskResultValue, TaskValue,
+};
+use crate::refinement::{
+    NumberLiteral, RefinementConstraint, base_is_string_like, parse_constraints,
 };
 
 use fuse_rt::{bytes as rt_bytes, config as rt_config, json as rt_json, validate as rt_validate};
@@ -53,7 +57,7 @@ impl Drop for VmGuard {
     }
 }
 
-fn current_vm() -> Option<&'static mut NativeVm<'static>> {
+pub(crate) fn current_vm() -> Option<&'static mut NativeVm<'static>> {
     CURRENT_VM.with(|cell| {
         let ptr = cell.get();
         if ptr.is_null() {
@@ -1331,14 +1335,77 @@ fn validate_simple(value: &Value, name: &str, path: &str) -> ValidateResult {
 }
 
 fn check_refined(value: &Value, base: &str, args: &[Expr], path: &str) -> ValidateResult {
-    let value = value.unboxed();
+    let constraints = match parse_constraints(args) {
+        Ok(items) => items,
+        Err(err) => {
+            return ValidateResult::Runtime(format!("invalid refined constraint: {}", err.message));
+        }
+    };
+    for constraint in constraints {
+        match constraint {
+            RefinementConstraint::Range { min, max, .. } => {
+                match check_refined_range(value, base, min, max, path) {
+                    ValidateResult::Ok => {}
+                    other => return other,
+                }
+            }
+            RefinementConstraint::Regex { pattern, .. } => {
+                if !base_is_string_like(base) {
+                    return ValidateResult::Runtime(format!(
+                        "regex() constraint is not supported for refined {base}"
+                    ));
+                }
+                let Value::String(text) = value.unboxed() else {
+                    return ValidateResult::Runtime("refined String expects a String".to_string());
+                };
+                let matched = match regex_matches(&pattern, &text) {
+                    Ok(ok) => ok,
+                    Err(msg) => return ValidateResult::Runtime(msg),
+                };
+                if !matched {
+                    return ValidateResult::Error(validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("value does not match regex {pattern}"),
+                    ));
+                }
+            }
+            RefinementConstraint::Predicate { name, .. } => {
+                let ok = match eval_refinement_predicate(&name, value) {
+                    Ok(ok) => ok,
+                    Err(msg) => return ValidateResult::Runtime(msg),
+                };
+                if !ok {
+                    return ValidateResult::Error(validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("predicate {name} rejected value"),
+                    ));
+                }
+            }
+        }
+    }
+    ValidateResult::Ok
+}
+
+fn check_refined_range(
+    value: &Value,
+    base: &str,
+    min: NumberLiteral,
+    max: NumberLiteral,
+    path: &str,
+) -> ValidateResult {
     match base {
-        "String" => {
-            let (min, max) = match parse_length_range(args) {
-                Ok(range) => range,
-                Err(msg) => return ValidateResult::Runtime(msg),
+        "String" | "Id" | "Email" => {
+            let min = match min.as_i64() {
+                Some(v) => v,
+                None => return ValidateResult::Runtime("invalid refined range".to_string()),
             };
-            let len = match value {
+            let max = match max.as_i64() {
+                Some(v) => v,
+                None => return ValidateResult::Runtime("invalid refined range".to_string()),
+            };
+            let len = match value.unboxed() {
                 Value::String(s) => s.chars().count() as i64,
                 _ => return ValidateResult::Runtime("refined String expects a String".to_string()),
             };
@@ -1352,12 +1419,39 @@ fn check_refined(value: &Value, base: &str, args: &[Expr], path: &str) -> Valida
                 ))
             }
         }
-        "Int" => {
-            let (min, max) = match parse_int_range(args) {
-                Ok(range) => range,
-                Err(msg) => return ValidateResult::Runtime(msg),
+        "Bytes" => {
+            let min = match min.as_i64() {
+                Some(v) => v,
+                None => return ValidateResult::Runtime("invalid refined range".to_string()),
             };
-            let val = match value {
+            let max = match max.as_i64() {
+                Some(v) => v,
+                None => return ValidateResult::Runtime("invalid refined range".to_string()),
+            };
+            let len = match value.unboxed() {
+                Value::Bytes(bytes) => bytes.len() as i64,
+                _ => return ValidateResult::Runtime("refined Bytes expects Bytes".to_string()),
+            };
+            if rt_validate::check_len(len, min, max) {
+                ValidateResult::Ok
+            } else {
+                ValidateResult::Error(validation_error_value(
+                    path,
+                    "invalid_value",
+                    format!("length {len} out of range {min}..{max}"),
+                ))
+            }
+        }
+        "Int" => {
+            let min = match min.as_i64() {
+                Some(v) => v,
+                None => return ValidateResult::Runtime("invalid refined range".to_string()),
+            };
+            let max = match max.as_i64() {
+                Some(v) => v,
+                None => return ValidateResult::Runtime("invalid refined range".to_string()),
+            };
+            let val = match value.unboxed() {
                 Value::Int(v) => v,
                 _ => return ValidateResult::Runtime("refined Int expects an Int".to_string()),
             };
@@ -1372,11 +1466,9 @@ fn check_refined(value: &Value, base: &str, args: &[Expr], path: &str) -> Valida
             }
         }
         "Float" => {
-            let (min, max) = match parse_float_range(args) {
-                Ok(range) => range,
-                Err(msg) => return ValidateResult::Runtime(msg),
-            };
-            let val = match value {
+            let min = min.as_f64();
+            let max = max.as_f64();
+            let val = match value.unboxed() {
                 Value::Float(v) => v,
                 _ => return ValidateResult::Runtime("refined Float expects a Float".to_string()),
             };
@@ -1390,75 +1482,39 @@ fn check_refined(value: &Value, base: &str, args: &[Expr], path: &str) -> Valida
                 ))
             }
         }
-        _ => ValidateResult::Ok,
+        _ => ValidateResult::Runtime(format!(
+            "range constraint is not supported for refined {base}"
+        )),
     }
 }
 
-fn parse_length_range(args: &[Expr]) -> Result<(i64, i64), String> {
-    let (left, right) = extract_range_args(args)?;
-    let min = literal_to_i64(left).ok_or_else(|| "invalid refined range".to_string())?;
-    let max = literal_to_i64(right).ok_or_else(|| "invalid refined range".to_string())?;
-    Ok((min, max))
-}
-
-fn parse_int_range(args: &[Expr]) -> Result<(i64, i64), String> {
-    let (left, right) = extract_range_args(args)?;
-    let min = literal_to_i64(left).ok_or_else(|| "invalid refined range".to_string())?;
-    let max = literal_to_i64(right).ok_or_else(|| "invalid refined range".to_string())?;
-    Ok((min, max))
-}
-
-fn parse_float_range(args: &[Expr]) -> Result<(f64, f64), String> {
-    let (left, right) = extract_range_args(args)?;
-    let min = literal_to_f64(left).ok_or_else(|| "invalid refined range".to_string())?;
-    let max = literal_to_f64(right).ok_or_else(|| "invalid refined range".to_string())?;
-    Ok((min, max))
-}
-
-fn extract_range_args<'a>(args: &'a [Expr]) -> Result<(&'a Expr, &'a Expr), String> {
-    if args.len() == 1 {
-        if let ExprKind::Binary {
-            op: BinaryOp::Range,
-            left,
-            right,
-        } = &args[0].kind
-        {
-            return Ok((left, right));
+fn regex_matches(pattern: &str, text: &str) -> Result<bool, String> {
+    if let Some(vm) = current_vm() {
+        if !vm.regex_cache.contains_key(pattern) {
+            let compiled = regex::Regex::new(pattern)
+                .map_err(|err| format!("invalid regex pattern {pattern}: {err}"))?;
+            vm.regex_cache.insert(pattern.to_string(), compiled);
         }
+        let regex = vm
+            .regex_cache
+            .get(pattern)
+            .ok_or_else(|| "regex cache error".to_string())?;
+        return Ok(regex.is_match(text));
     }
-    if args.len() == 2 {
-        return Ok((&args[0], &args[1]));
-    }
-    Err("refined types expect a range like 1..10".to_string())
+    let regex = regex::Regex::new(pattern)
+        .map_err(|err| format!("invalid regex pattern {pattern}: {err}"))?;
+    Ok(regex.is_match(text))
 }
 
-fn literal_to_i64(expr: &Expr) -> Option<i64> {
-    match &expr.kind {
-        ExprKind::Literal(Literal::Int(v)) => Some(*v),
-        ExprKind::Unary {
-            op: UnaryOp::Neg,
-            expr,
-        } => match &expr.kind {
-            ExprKind::Literal(Literal::Int(v)) => Some(-v),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn literal_to_f64(expr: &Expr) -> Option<f64> {
-    match &expr.kind {
-        ExprKind::Literal(Literal::Int(v)) => Some(*v as f64),
-        ExprKind::Literal(Literal::Float(v)) => Some(*v),
-        ExprKind::Unary {
-            op: UnaryOp::Neg,
-            expr,
-        } => match &expr.kind {
-            ExprKind::Literal(Literal::Int(v)) => Some(-(*v as f64)),
-            ExprKind::Literal(Literal::Float(v)) => Some(-*v),
-            _ => None,
-        },
-        _ => None,
+fn eval_refinement_predicate(fn_name: &str, value: &Value) -> Result<bool, String> {
+    let vm = current_vm()
+        .ok_or_else(|| "predicate evaluation requires an active native VM".to_string())?;
+    let resolved = super::resolve_public_function_name(vm.program, fn_name)
+        .unwrap_or_else(|_| fn_name.to_string());
+    let result = vm.call_function_native_only_inner(&resolved, vec![value.clone()])?;
+    match result.unboxed() {
+        Value::Bool(ok) => Ok(ok),
+        _ => Err(format!("predicate {fn_name} must return Bool")),
     }
 }
 
@@ -1494,6 +1550,27 @@ fn db_url() -> Result<String, String> {
         }
     }
     Err("db url not configured (set FUSE_DB_URL or App.dbUrl)".to_string())
+}
+
+fn db_pool_size(heap: &NativeHeap) -> Result<usize, String> {
+    if let Ok(raw) = std::env::var("FUSE_DB_POOL_SIZE") {
+        return parse_db_pool_size(&raw, "FUSE_DB_POOL_SIZE");
+    }
+    if let Some(value) = heap.config_field("App", "dbPoolSize") {
+        return parse_db_pool_size_value(&value, "App.dbPoolSize");
+    }
+    let key = rt_config::env_key("App", "dbPoolSize");
+    if let Ok(raw) = std::env::var(key) {
+        return parse_db_pool_size(&raw, "App.dbPoolSize");
+    }
+    let config_path = std::env::var("FUSE_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
+    let file_values = rt_config::load_config_file(&config_path)?;
+    if let Some(section) = file_values.get("App") {
+        if let Some(raw) = section.get("dbPoolSize") {
+            return parse_db_pool_size(raw, "App.dbPoolSize");
+        }
+    }
+    Ok(DEFAULT_DB_POOL_SIZE)
 }
 
 #[unsafe(no_mangle)]
@@ -2026,11 +2103,13 @@ extern "C" fn fuse_native_match_enum(
     let Some(value) = heap.get(handle) else {
         return 0;
     };
-    let HeapValue::Enum {
-        variant, payload, ..
-    } = value
-    else {
-        return 0;
+    let (actual_variant, actual_payload) = match value {
+        HeapValue::Enum {
+            variant, payload, ..
+        } => (variant.clone(), payload.clone()),
+        HeapValue::ResultOk(inner) => ("Ok".to_string(), vec![*inner]),
+        HeapValue::ResultErr(inner) => ("Err".to_string(), vec![*inner]),
+        _ => return 0,
     };
     let Some(variant_value) = heap.get(variant_handle) else {
         return 0;
@@ -2038,15 +2117,15 @@ extern "C" fn fuse_native_match_enum(
     let HeapValue::String(expected_variant) = variant_value else {
         return 0;
     };
-    if variant != expected_variant {
+    if actual_variant != *expected_variant {
         return 0;
     }
-    if payload.len() != len as usize {
+    if actual_payload.len() != len as usize {
         return 0;
     }
     if !out.is_null() {
         let slice = unsafe { std::slice::from_raw_parts_mut(out, len as usize) };
-        for (dst, src) in slice.iter_mut().zip(payload.iter()) {
+        for (dst, src) in slice.iter_mut().zip(actual_payload.iter()) {
             *dst = src.clone();
         }
     }
@@ -3428,11 +3507,15 @@ extern "C" fn fuse_native_db_exec(
     } else {
         Vec::new()
     };
+    let pool_size = match db_pool_size(heap) {
+        Ok(size) => size,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
     let url = match db_url() {
         Ok(url) => url,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
-    let db = match heap.db_mut(url) {
+    let db = match heap.db_mut(url, pool_size) {
         Ok(db) => db,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
@@ -3484,11 +3567,15 @@ extern "C" fn fuse_native_db_query(
     } else {
         Vec::new()
     };
+    let pool_size = match db_pool_size(heap) {
+        Ok(size) => size,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
     let url = match db_url() {
         Ok(url) => url,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
-    let db = match heap.db_mut(url) {
+    let db = match heap.db_mut(url, pool_size) {
         Ok(db) => db,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
@@ -3546,11 +3633,15 @@ extern "C" fn fuse_native_db_one(
     } else {
         Vec::new()
     };
+    let pool_size = match db_pool_size(heap) {
+        Ok(size) => size,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
     let url = match db_url() {
         Ok(url) => url,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
-    let db = match heap.db_mut(url) {
+    let db = match heap.db_mut(url, pool_size) {
         Ok(db) => db,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
@@ -3839,11 +3930,15 @@ extern "C" fn fuse_native_query_one(
         Ok(result) => result,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
+    let pool_size = match db_pool_size(heap) {
+        Ok(size) => size,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
     let url = match db_url() {
         Ok(url) => url,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
-    let db = match heap.db_mut(url) {
+    let db = match heap.db_mut(url, pool_size) {
         Ok(db) => db,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
@@ -3892,11 +3987,15 @@ extern "C" fn fuse_native_query_all(
         Ok(result) => result,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
+    let pool_size = match db_pool_size(heap) {
+        Ok(size) => size,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
     let url = match db_url() {
         Ok(url) => url,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
-    let db = match heap.db_mut(url) {
+    let db = match heap.db_mut(url, pool_size) {
         Ok(db) => db,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
@@ -3942,11 +4041,15 @@ extern "C" fn fuse_native_query_exec(
         Ok(result) => result,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
+    let pool_size = match db_pool_size(heap) {
+        Ok(size) => size,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
     let url = match db_url() {
         Ok(url) => url,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };
-    let db = match heap.db_mut(url) {
+    let db = match heap.db_mut(url, pool_size) {
         Ok(db) => db,
         Err(err) => return builtin_runtime_error(out, heap, err),
     };

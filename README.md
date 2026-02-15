@@ -1,14 +1,21 @@
 # FUSE
 
-FUSE is an experimental language + toolchain for small CLIs and HTTP services with built-in
+FUSE is a small, strict language + toolchain for small CLIs and HTTP services with built-in
 config loading, validation, JSON binding, and OpenAPI generation.
 
 Status:
 
 - parser + semantic analysis + AST/VM backends are usable
-- native backend is available (`--backend native`) with VM-compatible runtime semantics and an
-  in-progress Cranelift JIT fast-path
+- native backend is available (`--backend native`) with VM-compatible runtime semantics
 - function symbols are module-scoped (duplicate function names across modules are supported)
+
+## v0.1 stability contract
+
+For `0.1.x`, compatibility is defined by currently documented supported behavior in:
+
+- `fls.md` (syntax + static semantics)
+- `runtime.md` (runtime semantics + boundary behavior)
+- `scope.md` (project constraints and non-goals)
 
 ## Requirements
 

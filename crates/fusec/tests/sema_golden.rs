@@ -239,3 +239,45 @@ fn page() -> Html:
         ],
     );
 }
+
+#[test]
+fn refined_predicate_requires_existing_function() {
+    let src = r#"
+type Input:
+  slug: String(predicate(is_slug))
+"#;
+    assert_diags(
+        src,
+        &["Error: unknown predicate function is_slug in current module/import scope"],
+    );
+}
+
+#[test]
+fn refined_predicate_checks_signature() {
+    let src = r#"
+fn is_slug(value: Int) -> Int:
+  return value
+
+type Input:
+  slug: String(predicate(is_slug))
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: predicate is_slug must return Bool, found Int",
+            "Error: predicate is_slug parameter type mismatch: expected String, found Int",
+        ],
+    );
+}
+
+#[test]
+fn refined_regex_requires_string_like_base() {
+    let src = r#"
+type Input:
+  age: Int(regex("^[0-9]+$"))
+"#;
+    assert_diags(
+        src,
+        &["Error: regex() constraint is only supported for string-like refined bases, found Int"],
+    );
+}

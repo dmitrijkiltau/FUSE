@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::ast::{
-    BinaryOp, EnumDecl, Expr, ExprKind, FieldDecl, HttpVerb, Item, Literal, RouteDecl, ServiceDecl,
-    TypeDecl, TypeRef, TypeRefKind,
+    EnumDecl, Expr, FieldDecl, HttpVerb, Item, RouteDecl, ServiceDecl, TypeDecl, TypeRef,
+    TypeRefKind,
 };
 use crate::loader::{ModuleId, ModuleRegistry, ModuleUnit};
+use crate::refinement::{RefinementConstraint, base_is_string_like, parse_constraints};
 use fuse_rt::json::JsonValue;
 
 pub fn generate_openapi(registry: &ModuleRegistry) -> Result<String, String> {
@@ -221,7 +222,7 @@ impl<'a> OpenApiBuilder<'a> {
 
         if let Some(body_ty) = &route.body_type {
             let mut body = BTreeMap::new();
-            let schema = self.schema_for_type_ref(unit, body_ty);
+            let schema = self.schema_for_request_body_type(unit, body_ty);
             let mut content = BTreeMap::new();
             let mut json = BTreeMap::new();
             json.insert("schema".to_string(), schema);
@@ -268,6 +269,45 @@ impl<'a> OpenApiBuilder<'a> {
 
         op.insert("responses".to_string(), JsonValue::Object(responses));
         JsonValue::Object(op)
+    }
+
+    fn schema_for_request_body_type(&self, unit: &ModuleUnit, ty: &TypeRef) -> JsonValue {
+        match &ty.kind {
+            TypeRefKind::Optional(inner) => {
+                make_nullable(self.schema_for_request_body_type(unit, inner))
+            }
+            TypeRefKind::Result { ok, err } => {
+                self.schema_for_tagged_result(unit, ok, err.as_deref())
+            }
+            TypeRefKind::Generic { base, args } if base.name == "Result" && args.len() == 2 => {
+                self.schema_for_tagged_result(unit, &args[0], Some(&args[1]))
+            }
+            _ => self.schema_for_type_ref(unit, ty),
+        }
+    }
+
+    fn schema_for_tagged_result(
+        &self,
+        unit: &ModuleUnit,
+        ok_ty: &TypeRef,
+        err_ty: Option<&TypeRef>,
+    ) -> JsonValue {
+        let ok_data = self.schema_for_type_ref(unit, ok_ty);
+        let err_data = if let Some(err_ty) = err_ty {
+            self.schema_for_type_ref(unit, err_ty)
+        } else {
+            JsonValue::Object(BTreeMap::from([(
+                "$ref".to_string(),
+                JsonValue::String("#/components/schemas/Error".to_string()),
+            )]))
+        };
+        JsonValue::Object(BTreeMap::from([(
+            "oneOf".to_string(),
+            JsonValue::Array(vec![
+                tagged_result_variant_schema("Ok", ok_data),
+                tagged_result_variant_schema("Err", err_data),
+            ]),
+        )]))
     }
 
     fn schema_for_path_param(&self, unit: &ModuleUnit, name: &str) -> JsonValue {
@@ -725,40 +765,65 @@ fn apply_constraints(schema: JsonValue, constraints: BTreeMap<String, JsonValue>
 
 fn refined_constraints(base: &str, args: &[Expr]) -> BTreeMap<String, JsonValue> {
     let mut out = BTreeMap::new();
-    let Some((min, max)) = extract_range(args) else {
+    let Ok(constraints) = parse_constraints(args) else {
         return out;
     };
-    match base {
-        "String" | "Id" | "Email" | "Bytes" => {
-            out.insert("minLength".to_string(), JsonValue::Number(min));
-            out.insert("maxLength".to_string(), JsonValue::Number(max));
+    for constraint in constraints {
+        match constraint {
+            RefinementConstraint::Range { min, max, .. } => match base {
+                "String" | "Id" | "Email" | "Bytes" => {
+                    let (Some(min), Some(max)) = (min.as_i64(), max.as_i64()) else {
+                        continue;
+                    };
+                    out.insert("minLength".to_string(), JsonValue::Number(min as f64));
+                    out.insert("maxLength".to_string(), JsonValue::Number(max as f64));
+                }
+                "Int" => {
+                    let (Some(min), Some(max)) = (min.as_i64(), max.as_i64()) else {
+                        continue;
+                    };
+                    out.insert("minimum".to_string(), JsonValue::Number(min as f64));
+                    out.insert("maximum".to_string(), JsonValue::Number(max as f64));
+                }
+                "Float" => {
+                    out.insert("minimum".to_string(), JsonValue::Number(min.as_f64()));
+                    out.insert("maximum".to_string(), JsonValue::Number(max.as_f64()));
+                }
+                _ => {}
+            },
+            RefinementConstraint::Regex { pattern, .. } => {
+                if base_is_string_like(base) {
+                    out.insert("pattern".to_string(), JsonValue::String(pattern));
+                }
+            }
+            RefinementConstraint::Predicate { .. } => {}
         }
-        "Int" | "Float" => {
-            out.insert("minimum".to_string(), JsonValue::Number(min));
-            out.insert("maximum".to_string(), JsonValue::Number(max));
-        }
-        _ => {}
     }
     out
 }
 
-fn extract_range(args: &[Expr]) -> Option<(f64, f64)> {
-    let first = args.first()?;
-    if let ExprKind::Binary { op, left, right } = &first.kind {
-        if *op != BinaryOp::Range {
-            return None;
-        }
-        let min = literal_number(left)?;
-        let max = literal_number(right)?;
-        return Some((min, max));
-    }
-    None
-}
-
-fn literal_number(expr: &Expr) -> Option<f64> {
-    match &expr.kind {
-        ExprKind::Literal(Literal::Int(v)) => Some(*v as f64),
-        ExprKind::Literal(Literal::Float(v)) => Some(*v),
-        _ => None,
-    }
+fn tagged_result_variant_schema(tag: &str, data_schema: JsonValue) -> JsonValue {
+    let mut out = BTreeMap::new();
+    out.insert("type".to_string(), JsonValue::String("object".to_string()));
+    out.insert(
+        "required".to_string(),
+        JsonValue::Array(vec![
+            JsonValue::String("type".to_string()),
+            JsonValue::String("data".to_string()),
+        ]),
+    );
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "type".to_string(),
+        JsonValue::Object(BTreeMap::from([
+            ("type".to_string(), JsonValue::String("string".to_string())),
+            (
+                "enum".to_string(),
+                JsonValue::Array(vec![JsonValue::String(tag.to_string())]),
+            ),
+        ])),
+    );
+    properties.insert("data".to_string(), data_schema);
+    out.insert("properties".to_string(), JsonValue::Object(properties));
+    JsonValue::Object(out)
 }

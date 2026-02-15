@@ -368,8 +368,14 @@ Refinements attach predicates to primitive base types in type positions:
 - `String(1..80)`
 - `Int(0..130)`
 - `Float(0.0..1.0)`
+- `String(regex("^[a-z0-9_-]+$"))`
+- `String(1..80, regex("^[a-z]"), predicate(is_slug))`
 
-Current implementation supports range-based refinement forms.
+Constraint forms:
+
+- range literals (`1..80`, `0..130`, `0.0..1.0`)
+- `regex("<pattern>")` on string-like bases
+- `predicate(<fn_ident>)` where the function signature is `fn(<base>) -> Bool`
 
 ### Type inference
 

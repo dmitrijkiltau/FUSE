@@ -11,6 +11,7 @@ pub mod loader;
 pub mod native;
 pub mod openapi;
 pub mod parser;
+pub mod refinement;
 mod runtime_assets;
 mod runtime_svg;
 pub mod sema;

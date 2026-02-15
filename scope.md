@@ -58,6 +58,7 @@ FUSE is currently scoped as a strict, typed language with integrated boundary/ru
 - module-scoped function symbol resolution (local module + explicit imports)
 - backend execution across AST/VM/native path with aligned semantics
 - runtime boundary handling (validation, JSON/config/CLI/HTTP binding, error mapping)
+- pooled SQLite DB execution with configurable pool sizing and migration transaction safety
 - service-oriented package workflow (`fuse check/run/dev/test/build`)
 
 Detailed behavior is intentionally kept out of this doc and lives in `fls.md` and `runtime.md`.

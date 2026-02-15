@@ -146,13 +146,18 @@ Defaults are applied before validation:
 
 #### Built-in refinements
 
-Refinements are range-based only:
+Refinements support range, regex, and predicate constraints:
 
 - `String(1..80)` length constraint
+- `String(regex("^[a-z0-9_-]+$"))` pattern constraint
+- `String(1..80, regex("^[a-z]"), predicate(is_slug))` mixed constraints, left-to-right
 - `Int(0..130)` numeric range
 - `Float(0.0..1.0)` numeric range
 
-Other refinement styles (regex/custom predicates) are not implemented.
+Rules:
+
+- `regex("...")` is valid on string-like refined bases (`String`, `Id`, `Email`).
+- `predicate(fn_name)` requires a function signature `fn(<base>) -> Bool`.
 
 #### `Id` and `Email`
 
@@ -197,7 +202,9 @@ Rules:
 - `List<T>` -> JSON array
 - `Map<K,V>` -> JSON object (runtime requires `K = String`)
 - user-defined `struct` and `enum` decode with same validation model as struct literals
-- `Result<T,E>` is not supported in JSON decoding
+- `Result<T,E>` -> tagged object:
+  - `{"type":"Ok","data":...}` decodes as `Ok(T)`
+  - `{"type":"Err","data":...}` decodes as `Err(E)`
 
 `Bytes` use base64 text at JSON/config/CLI boundaries. Runtime values are raw bytes.
 `Html` values are runtime trees and are not parsed from config/env/CLI.
@@ -329,12 +336,15 @@ Compile-time sugar affecting HTML builtins:
 
 ### Database (SQLite only)
 
-Database access is intentionally minimal and currently uses SQLite via a single connection.
+Database access is intentionally minimal and currently uses SQLite via a pooled set of
+connections.
 
 Configuration sources:
 
 - `FUSE_DB_URL` (preferred) or `DATABASE_URL`
 - `App.dbUrl` if config has been loaded
+- `FUSE_DB_POOL_SIZE` (default `1`) for pool sizing
+- `App.dbPoolSize` as optional fallback when `FUSE_DB_POOL_SIZE` is unset
 
 URL format:
 
@@ -379,7 +389,11 @@ Value mapping:
 - text -> `String`
 - blobs -> `Bytes`
 
-Connection pooling is not implemented.
+Connection pool behavior:
+
+- DB calls use pooled SQLite connections.
+- the active connection is pinned for migration transaction scope (`BEGIN`/`COMMIT`/`ROLLBACK`).
+- pool-size values must be integer `>= 1`; invalid values report runtime/config errors.
 
 ### Migrations
 

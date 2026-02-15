@@ -126,9 +126,9 @@ impl NativeHeap {
             .collect()
     }
 
-    pub fn db_mut(&mut self, url: String) -> Result<&mut Db, String> {
+    pub fn db_mut(&mut self, url: String, pool_size: usize) -> Result<&mut Db, String> {
         if self.db.is_none() {
-            let db = Db::open(&url)?;
+            let db = Db::open_with_pool(&url, pool_size)?;
             self.db = Some(db);
         }
         Ok(self.db.as_mut().expect("db initialized"))

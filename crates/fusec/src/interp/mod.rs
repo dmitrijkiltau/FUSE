@@ -18,9 +18,12 @@ use crate::ast::{
     RouteDecl, ServiceDecl, Stmt, StmtKind, StructField, TestDecl, TypeDecl, TypeRef, TypeRefKind,
     UnaryOp,
 };
-use crate::db::{Db, Query};
+use crate::db::{DEFAULT_DB_POOL_SIZE, Db, Query, parse_db_pool_size, parse_db_pool_size_value};
 use crate::html_tags::{self, HtmlTagKind};
 use crate::loader::{ModuleId, ModuleLink, ModuleMap, ModuleRegistry};
+use crate::refinement::{
+    NumberLiteral, RefinementConstraint, base_is_string_like, parse_constraints,
+};
 
 #[derive(Clone, Debug)]
 pub struct FunctionRef {
@@ -546,6 +549,7 @@ pub struct Interpreter<'a> {
     env: Env,
     configs: HashMap<String, HashMap<String, Value>>,
     db: Option<Db>,
+    regex_cache: HashMap<String, regex::Regex>,
     functions: HashMap<ModuleId, HashMap<String, &'a FnDecl>>,
     apps: Vec<&'a AppDecl>,
     app_owner: HashMap<String, ModuleId>,
@@ -630,6 +634,7 @@ impl<'a> Interpreter<'a> {
             env: Env::new(),
             configs: HashMap::new(),
             db: None,
+            regex_cache: HashMap::new(),
             functions,
             apps,
             app_owner,
@@ -695,6 +700,7 @@ impl<'a> Interpreter<'a> {
             env: Env::new(),
             configs: HashMap::new(),
             db: None,
+            regex_cache: HashMap::new(),
             functions,
             apps,
             app_owner,
@@ -805,7 +811,7 @@ impl<'a> Interpreter<'a> {
                     Ok(db) => db,
                     Err(err) => return Err(self.render_exec_error(err)),
                 };
-                db.exec("BEGIN")?;
+                db.begin_transaction()?;
             }
             let prev_module = self.current_module;
             self.current_module = job.module_id;
@@ -815,13 +821,13 @@ impl<'a> Interpreter<'a> {
                 Ok(_) => {}
                 Err(ExecError::Return(_)) => {
                     if let Ok(db) = self.db_mut() {
-                        let _ = db.exec("ROLLBACK");
+                        let _ = db.rollback_transaction();
                     }
                     return Err("return not allowed in migration".to_string());
                 }
                 Err(err) => {
                     if let Ok(db) = self.db_mut() {
-                        let _ = db.exec("ROLLBACK");
+                        let _ = db.rollback_transaction();
                     }
                     return Err(self.render_exec_error(err));
                 }
@@ -831,11 +837,17 @@ impl<'a> Interpreter<'a> {
                     Ok(db) => db,
                     Err(err) => return Err(self.render_exec_error(err)),
                 };
-                db.execute(
+                if let Err(err) = db.execute(
                     "INSERT INTO __fuse_migrations (id, applied_at) VALUES (?1, CURRENT_TIMESTAMP)",
                     (&job.id,),
-                )?;
-                db.exec("COMMIT")?;
+                ) {
+                    let _ = db.rollback_transaction();
+                    return Err(err);
+                }
+                if let Err(err) = db.commit_transaction() {
+                    let _ = db.rollback_transaction();
+                    return Err(err);
+                }
             }
         }
         Ok(())
@@ -1407,10 +1419,25 @@ impl<'a> Interpreter<'a> {
         ))
     }
 
+    fn db_pool_size(&self) -> ExecResult<usize> {
+        if let Ok(raw) = std::env::var("FUSE_DB_POOL_SIZE") {
+            return parse_db_pool_size(&raw, "FUSE_DB_POOL_SIZE").map_err(ExecError::Runtime);
+        }
+        if let Some(value) = self
+            .configs
+            .get("App")
+            .and_then(|config| config.get("dbPoolSize"))
+        {
+            return parse_db_pool_size_value(value, "App.dbPoolSize").map_err(ExecError::Runtime);
+        }
+        Ok(DEFAULT_DB_POOL_SIZE)
+    }
+
     fn db_mut(&mut self) -> ExecResult<&mut Db> {
         if self.db.is_none() {
+            let pool_size = self.db_pool_size()?;
             let url = self.db_url()?;
-            let db = Db::open(&url).map_err(ExecError::Runtime)?;
+            let db = Db::open_with_pool(&url, pool_size).map_err(ExecError::Runtime)?;
             self.db = Some(db);
         }
         Ok(self.db.as_mut().expect("db initialized"))
@@ -3544,7 +3571,7 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn validate_value(&self, value: &Value, ty: &TypeRef, path: &str) -> ExecResult<()> {
+    fn validate_value(&mut self, value: &Value, ty: &TypeRef, path: &str) -> ExecResult<()> {
         let value = value.unboxed();
         match &ty.kind {
             TypeRefKind::Optional(inner) => {
@@ -3939,12 +3966,8 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
             }
-            TypeRefKind::Result { .. } => {
-                return Err(ExecError::Error(self.validation_error_value(
-                    path,
-                    "invalid_value",
-                    "Result is not supported for JSON body",
-                )));
+            TypeRefKind::Result { ok, err } => {
+                return self.decode_json_result_value(json, ok, err.as_deref(), path);
             }
             TypeRefKind::Generic { base, args } => match base.name.as_str() {
                 "Option" => {
@@ -3960,11 +3983,12 @@ impl<'a> Interpreter<'a> {
                     }
                 }
                 "Result" => {
-                    return Err(ExecError::Error(self.validation_error_value(
-                        path,
-                        "invalid_value",
-                        "Result is not supported for JSON body",
-                    )));
+                    if args.len() != 2 {
+                        return Err(ExecError::Runtime(
+                            "Result expects 2 type arguments".to_string(),
+                        ));
+                    }
+                    return self.decode_json_result_value(json, &args[0], Some(&args[1]), path);
                 }
                 "List" => {
                     if args.len() != 1 {
@@ -4020,6 +4044,62 @@ impl<'a> Interpreter<'a> {
         };
         self.validate_value(&value, ty, path)?;
         Ok(value)
+    }
+
+    fn decode_json_result_value(
+        &mut self,
+        json: &rt_json::JsonValue,
+        ok_ty: &TypeRef,
+        err_ty: Option<&TypeRef>,
+        path: &str,
+    ) -> ExecResult<Value> {
+        let rt_json::JsonValue::Object(map) = json else {
+            return Err(ExecError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                "expected Result object",
+            )));
+        };
+        let tag = map.get("type").ok_or_else(|| {
+            ExecError::Error(self.validation_error_value(
+                path,
+                "missing_field",
+                "missing Result tag",
+            ))
+        })?;
+        let rt_json::JsonValue::String(tag) = tag else {
+            return Err(ExecError::Error(self.validation_error_value(
+                &format!("{path}.type"),
+                "type_mismatch",
+                "expected Result tag string",
+            )));
+        };
+        let data = map.get("data").ok_or_else(|| {
+            ExecError::Error(self.validation_error_value(
+                path,
+                "missing_field",
+                "missing Result data",
+            ))
+        })?;
+        match tag.as_str() {
+            "Ok" => {
+                let value = self.decode_json_value(data, ok_ty, &format!("{path}.data"))?;
+                Ok(Value::ResultOk(Box::new(value)))
+            }
+            "Err" => {
+                let value = if let Some(err_ty) = err_ty {
+                    self.decode_json_value(data, err_ty, &format!("{path}.data"))?
+                } else {
+                    self.json_to_value(data)
+                };
+                Ok(Value::ResultErr(Box::new(value)))
+            }
+            _ => Err(ExecError::Error(self.validation_error_value(
+                &format!("{path}.type"),
+                "invalid_value",
+                format!("unknown Result variant {tag}"),
+            ))),
+        }
     }
 
     fn decode_simple_json(
@@ -4240,17 +4320,70 @@ impl<'a> Interpreter<'a> {
     }
 
     fn check_refined(
-        &self,
+        &mut self,
         value: &Value,
         base: &str,
         args: &[Expr],
         path: &str,
     ) -> ExecResult<()> {
-        let value = value.unboxed();
+        let constraints = parse_constraints(args).map_err(|err| {
+            ExecError::Runtime(format!("invalid refined constraint: {}", err.message))
+        })?;
+        for constraint in constraints {
+            match constraint {
+                RefinementConstraint::Range { min, max, .. } => {
+                    self.check_refined_range(value, base, min, max, path)?;
+                }
+                RefinementConstraint::Regex { pattern, .. } => {
+                    if !base_is_string_like(base) {
+                        return Err(ExecError::Runtime(format!(
+                            "regex() constraint is not supported for refined {base}"
+                        )));
+                    }
+                    let Value::String(text) = value.unboxed() else {
+                        return Err(ExecError::Runtime(format!(
+                            "type mismatch at {path}: expected String"
+                        )));
+                    };
+                    if !self.regex_matches(&pattern, &text)? {
+                        return Err(ExecError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            format!("value does not match regex {pattern}"),
+                        )));
+                    }
+                }
+                RefinementConstraint::Predicate { name, .. } => {
+                    if !self.eval_refinement_predicate(&name, value)? {
+                        return Err(ExecError::Error(self.validation_error_value(
+                            path,
+                            "invalid_value",
+                            format!("predicate {name} rejected value"),
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_refined_range(
+        &self,
+        value: &Value,
+        base: &str,
+        min: NumberLiteral,
+        max: NumberLiteral,
+        path: &str,
+    ) -> ExecResult<()> {
         match base {
-            "String" => {
-                let (min, max) = self.parse_length_range(args)?;
-                let len = match value {
+            "String" | "Id" | "Email" => {
+                let min = min
+                    .as_i64()
+                    .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
+                let max = max
+                    .as_i64()
+                    .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
+                let len = match value.unboxed() {
                     Value::String(s) => s.chars().count() as i64,
                     _ => {
                         return Err(ExecError::Runtime(format!(
@@ -4258,19 +4391,49 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
                 };
-                if !rt_validate::check_len(len, min, max) {
-                    let message = format!("length {len} out of range {min}..{max}");
-                    return Err(ExecError::Error(self.validation_error_value(
+                if rt_validate::check_len(len, min, max) {
+                    Ok(())
+                } else {
+                    Err(ExecError::Error(self.validation_error_value(
                         path,
                         "invalid_value",
-                        message,
-                    )));
+                        format!("length {len} out of range {min}..{max}"),
+                    )))
                 }
-                Ok(())
+            }
+            "Bytes" => {
+                let min = min
+                    .as_i64()
+                    .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
+                let max = max
+                    .as_i64()
+                    .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
+                let len = match value.unboxed() {
+                    Value::Bytes(bytes) => bytes.len() as i64,
+                    _ => {
+                        return Err(ExecError::Runtime(format!(
+                            "type mismatch at {path}: expected Bytes"
+                        )));
+                    }
+                };
+                if rt_validate::check_len(len, min, max) {
+                    Ok(())
+                } else {
+                    Err(ExecError::Error(self.validation_error_value(
+                        path,
+                        "invalid_value",
+                        format!("length {len} out of range {min}..{max}"),
+                    )))
+                }
             }
             "Int" => {
-                let (min, max) = self.parse_int_range(args)?;
-                let val = match value {
+                let min = min
+                    .as_i64()
+                    .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
+                let max = max
+                    .as_i64()
+                    .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
+                let val = match value.unboxed() {
                     Value::Int(v) => v,
                     _ => {
                         return Err(ExecError::Runtime(format!(
@@ -4278,19 +4441,20 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
                 };
-                if !rt_validate::check_int_range(val, min, max) {
-                    let message = format!("value {val} out of range {min}..{max}");
-                    return Err(ExecError::Error(self.validation_error_value(
+                if rt_validate::check_int_range(val, min, max) {
+                    Ok(())
+                } else {
+                    Err(ExecError::Error(self.validation_error_value(
                         path,
                         "invalid_value",
-                        message,
-                    )));
+                        format!("value {val} out of range {min}..{max}"),
+                    )))
                 }
-                Ok(())
             }
             "Float" => {
-                let (min, max) = self.parse_float_range(args)?;
-                let val = match value {
+                let min = min.as_f64();
+                let max = max.as_f64();
+                let val = match value.unboxed() {
                     Value::Float(v) => v,
                     _ => {
                         return Err(ExecError::Runtime(format!(
@@ -4298,99 +4462,77 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
                 };
-                if !rt_validate::check_float_range(val, min, max) {
-                    let message = format!("value {val} out of range {min}..{max}");
-                    return Err(ExecError::Error(self.validation_error_value(
+                if rt_validate::check_float_range(val, min, max) {
+                    Ok(())
+                } else {
+                    Err(ExecError::Error(self.validation_error_value(
                         path,
                         "invalid_value",
-                        message,
-                    )));
+                        format!("value {val} out of range {min}..{max}"),
+                    )))
                 }
-                Ok(())
             }
-            _ => Ok(()),
+            _ => Err(ExecError::Runtime(format!(
+                "range constraint is not supported for refined {base}"
+            ))),
         }
     }
 
-    fn parse_length_range(&self, args: &[Expr]) -> ExecResult<(i64, i64)> {
-        let (left, right) = self.extract_range_args(args)?;
-        let min = self
-            .literal_to_i64(left)
-            .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
-        let max = self
-            .literal_to_i64(right)
-            .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
-        Ok((min, max))
-    }
-
-    fn parse_int_range(&self, args: &[Expr]) -> ExecResult<(i64, i64)> {
-        let (left, right) = self.extract_range_args(args)?;
-        let min = self
-            .literal_to_i64(left)
-            .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
-        let max = self
-            .literal_to_i64(right)
-            .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
-        Ok((min, max))
-    }
-
-    fn parse_float_range(&self, args: &[Expr]) -> ExecResult<(f64, f64)> {
-        let (left, right) = self.extract_range_args(args)?;
-        let min = self
-            .literal_to_f64(left)
-            .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
-        let max = self
-            .literal_to_f64(right)
-            .ok_or_else(|| ExecError::Runtime("invalid refined range".to_string()))?;
-        Ok((min, max))
-    }
-
-    fn extract_range_args<'b>(&self, args: &'b [Expr]) -> ExecResult<(&'b Expr, &'b Expr)> {
-        if args.len() == 1 {
-            if let ExprKind::Binary {
-                op: BinaryOp::Range,
-                left,
-                right,
-            } = &args[0].kind
-            {
-                return Ok((left, right));
-            }
+    fn regex_matches(&mut self, pattern: &str, text: &str) -> ExecResult<bool> {
+        if !self.regex_cache.contains_key(pattern) {
+            let compiled = regex::Regex::new(pattern).map_err(|err| {
+                ExecError::Runtime(format!("invalid regex pattern {pattern}: {err}"))
+            })?;
+            self.regex_cache.insert(pattern.to_string(), compiled);
         }
-        if args.len() == 2 {
-            return Ok((&args[0], &args[1]));
-        }
-        Err(ExecError::Runtime(
-            "refined types expect a range like 1..10".to_string(),
-        ))
+        let regex = self
+            .regex_cache
+            .get(pattern)
+            .ok_or_else(|| ExecError::Runtime("regex cache error".to_string()))?;
+        Ok(regex.is_match(text))
     }
 
-    fn literal_to_i64(&self, expr: &Expr) -> Option<i64> {
-        match &expr.kind {
-            ExprKind::Literal(Literal::Int(v)) => Some(*v),
-            ExprKind::Unary {
-                op: UnaryOp::Neg,
-                expr,
-            } => match &expr.kind {
-                ExprKind::Literal(Literal::Int(v)) => Some(-v),
-                _ => None,
-            },
-            _ => None,
+    fn eval_refinement_predicate(&mut self, fn_name: &str, value: &Value) -> ExecResult<bool> {
+        let func_ref = self
+            .resolve_function_ref(self.current_module, fn_name)
+            .ok_or_else(|| {
+                ExecError::Runtime(format!(
+                    "unknown predicate function {fn_name} in current module/import scope"
+                ))
+            })?;
+        let decl = self.function_decl(&func_ref).ok_or_else(|| {
+            ExecError::Runtime(format!(
+                "unknown function {}::{}",
+                func_ref.module_id, func_ref.name
+            ))
+        })?;
+        if decl.params.len() != 1 {
+            return Err(ExecError::Runtime(format!(
+                "predicate {fn_name} must accept exactly one argument"
+            )));
         }
-    }
-
-    fn literal_to_f64(&self, expr: &Expr) -> Option<f64> {
-        match &expr.kind {
-            ExprKind::Literal(Literal::Int(v)) => Some(*v as f64),
-            ExprKind::Literal(Literal::Float(v)) => Some(*v),
-            ExprKind::Unary {
-                op: UnaryOp::Neg,
-                expr,
-            } => match &expr.kind {
-                ExprKind::Literal(Literal::Int(v)) => Some(-(*v as f64)),
-                ExprKind::Literal(Literal::Float(v)) => Some(-*v),
-                _ => None,
-            },
-            _ => None,
+        let prev_module = self.current_module;
+        self.current_module = func_ref.module_id;
+        self.env.push();
+        let param = &decl.params[0];
+        if let Err(err) = self.validate_value(value, &param.ty, &param.name.name) {
+            self.env.pop();
+            self.current_module = prev_module;
+            return Err(err);
+        }
+        self.env.insert(&param.name.name, value.clone());
+        let result = self.eval_block(&decl.body);
+        self.env.pop();
+        self.current_module = prev_module;
+        let out = match result {
+            Ok(value) | Err(ExecError::Return(value)) => value,
+            Err(err) => return Err(err),
+        };
+        match out.unboxed() {
+            Value::Bool(ok) => Ok(ok),
+            _ => Err(ExecError::Runtime(format!(
+                "predicate {fn_name} must return Bool"
+            ))),
         }
     }
 

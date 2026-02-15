@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use crate::ast::{
     AppDecl, BinaryOp, Block, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item, Literal, Pattern,
-    PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, UnaryOp,
+    PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, TypeRef, TypeRefKind, UnaryOp,
 };
 use crate::html_tags::{self, HtmlTagKind};
 use crate::loader::{ModuleId, ModuleLink, ModuleMap, ModuleRegistry};
@@ -24,6 +24,81 @@ fn is_query_method(name: &str) -> bool {
 
 pub fn canonical_function_name(module_id: ModuleId, name: &str) -> String {
     format!("m{module_id}::{name}")
+}
+
+fn canonicalize_predicate_names_in_type_ref(
+    ty: &TypeRef,
+    module_id: ModuleId,
+    import_items: &HashMap<String, ModuleLink>,
+    fn_decls: &HashMap<String, FnDecl>,
+) -> TypeRef {
+    let mut out = ty.clone();
+    rewrite_predicate_names_in_type_ref(&mut out, module_id, import_items, fn_decls);
+    out
+}
+
+fn rewrite_predicate_names_in_type_ref(
+    ty: &mut TypeRef,
+    module_id: ModuleId,
+    import_items: &HashMap<String, ModuleLink>,
+    fn_decls: &HashMap<String, FnDecl>,
+) {
+    match &mut ty.kind {
+        TypeRefKind::Refined { args, .. } => {
+            for arg in args {
+                rewrite_predicate_name_in_refined_arg(arg, module_id, import_items, fn_decls);
+            }
+        }
+        TypeRefKind::Generic { args, .. } => {
+            for arg in args {
+                rewrite_predicate_names_in_type_ref(arg, module_id, import_items, fn_decls);
+            }
+        }
+        TypeRefKind::Optional(inner) => {
+            rewrite_predicate_names_in_type_ref(inner, module_id, import_items, fn_decls);
+        }
+        TypeRefKind::Result { ok, err } => {
+            rewrite_predicate_names_in_type_ref(ok, module_id, import_items, fn_decls);
+            if let Some(err) = err {
+                rewrite_predicate_names_in_type_ref(err, module_id, import_items, fn_decls);
+            }
+        }
+        TypeRefKind::Simple(_) => {}
+    }
+}
+
+fn rewrite_predicate_name_in_refined_arg(
+    expr: &mut Expr,
+    module_id: ModuleId,
+    import_items: &HashMap<String, ModuleLink>,
+    fn_decls: &HashMap<String, FnDecl>,
+) {
+    let ExprKind::Call { callee, args } = &mut expr.kind else {
+        return;
+    };
+    let ExprKind::Ident(callee_ident) = &callee.kind else {
+        return;
+    };
+    if callee_ident.name != "predicate" || args.len() != 1 {
+        return;
+    }
+    let arg = &mut args[0];
+    if arg.name.is_some() || arg.is_block_sugar {
+        return;
+    }
+    let ExprKind::Ident(fn_ident) = &mut arg.value.kind else {
+        return;
+    };
+    if fn_ident.name.contains("::") {
+        return;
+    }
+    if fn_decls.contains_key(&fn_ident.name) {
+        fn_ident.name = canonical_function_name(module_id, &fn_ident.name);
+        return;
+    }
+    if let Some(link) = import_items.get(&fn_ident.name) {
+        fn_ident.name = canonical_function_name(link.id, &fn_ident.name);
+    }
 }
 
 pub fn lower_program(program: &Program, modules: &ModuleMap) -> Result<IrProgram, Vec<String>> {
@@ -227,10 +302,18 @@ impl<'a> Lowerer<'a> {
 
     fn lower_fn(&mut self, decl: &FnDecl) {
         let fn_name = canonical_function_name(self.module_id, &decl.name.name);
+        let ret = decl.ret.as_ref().map(|ty| {
+            canonicalize_predicate_names_in_type_ref(
+                ty,
+                self.module_id,
+                self.import_items,
+                self.fn_decls.as_ref(),
+            )
+        });
         let mut builder = FuncBuilder::new(
             self.module_id,
             fn_name.clone(),
-            decl.ret.clone(),
+            ret,
             &self.config_names,
             &self.enum_names,
             &self.enum_variant_names,
@@ -307,7 +390,12 @@ impl<'a> Lowerer<'a> {
             self.insert_extra_functions(extra);
             fields.push(ConfigField {
                 name: field.name.name.clone(),
-                ty: field.ty.clone(),
+                ty: canonicalize_predicate_names_in_type_ref(
+                    &field.ty,
+                    self.module_id,
+                    self.import_items,
+                    self.fn_decls.as_ref(),
+                ),
                 default_fn: Some(fn_name),
             });
         }
@@ -353,7 +441,12 @@ impl<'a> Lowerer<'a> {
             };
             fields.push(TypeField {
                 name: field.name.name.clone(),
-                ty: field.ty.clone(),
+                ty: canonicalize_predicate_names_in_type_ref(
+                    &field.ty,
+                    self.module_id,
+                    self.import_items,
+                    self.fn_decls.as_ref(),
+                ),
                 default_fn,
             });
         }
@@ -372,7 +465,18 @@ impl<'a> Lowerer<'a> {
             .iter()
             .map(|variant| EnumVariantInfo {
                 name: variant.name.name.clone(),
-                payload: variant.payload.clone(),
+                payload: variant
+                    .payload
+                    .iter()
+                    .map(|ty| {
+                        canonicalize_predicate_names_in_type_ref(
+                            ty,
+                            self.module_id,
+                            self.import_items,
+                            self.fn_decls.as_ref(),
+                        )
+                    })
+                    .collect(),
             })
             .collect();
         self.enums.insert(
@@ -392,7 +496,12 @@ impl<'a> Lowerer<'a> {
             let mut builder = FuncBuilder::new(
                 self.module_id,
                 handler.clone(),
-                Some(route.ret_type.clone()),
+                Some(canonicalize_predicate_names_in_type_ref(
+                    &route.ret_type,
+                    self.module_id,
+                    self.import_items,
+                    self.fn_decls.as_ref(),
+                )),
                 &self.config_names,
                 &self.enum_names,
                 &self.enum_variant_names,
@@ -429,8 +538,20 @@ impl<'a> Lowerer<'a> {
                 verb: route.verb.clone(),
                 path: route.path.value.clone(),
                 params,
-                body_type: route.body_type.clone(),
-                ret_type: route.ret_type.clone(),
+                body_type: route.body_type.as_ref().map(|ty| {
+                    canonicalize_predicate_names_in_type_ref(
+                        ty,
+                        self.module_id,
+                        self.import_items,
+                        self.fn_decls.as_ref(),
+                    )
+                }),
+                ret_type: canonicalize_predicate_names_in_type_ref(
+                    &route.ret_type,
+                    self.module_id,
+                    self.import_items,
+                    self.fn_decls.as_ref(),
+                ),
                 handler,
             });
         }
@@ -1741,7 +1862,12 @@ impl FuncBuilder {
         let mut builder = FuncBuilder::new(
             self.module_id,
             helper_name.clone(),
-            Some(param.ty.clone()),
+            Some(canonicalize_predicate_names_in_type_ref(
+                &param.ty,
+                self.module_id,
+                &self.import_items,
+                self.fn_decls.as_ref(),
+            )),
             &self.config_names,
             &self.enum_names,
             &self.enum_variant_names,

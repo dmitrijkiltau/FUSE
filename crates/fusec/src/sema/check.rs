@@ -7,6 +7,9 @@ use crate::ast::{
 use crate::diag::Diagnostics;
 use crate::html_tags::{self, HtmlTagKind};
 use crate::loader::{ModuleId, ModuleLink, ModuleMap};
+use crate::refinement::{
+    NumberLiteral, RefinementConstraint, base_is_string_like, parse_constraints,
+};
 use crate::span::Span;
 
 use super::symbols::ModuleSymbols;
@@ -1357,10 +1360,8 @@ impl<'a> Checker<'a> {
                 Ty::Result(Box::new(ok), Box::new(err))
             }
             TypeRefKind::Refined { base, args } => {
-                for arg in args {
-                    let _ = self.check_expr(arg);
-                }
                 let base_ty = self.resolve_simple_type_name_in(module_id, &base.name, base.span);
+                self.validate_refined_constraints(module_id, base, &base_ty, args);
                 let repr = format!("{}(...)", base.name);
                 Ty::Refined {
                     base: Box::new(base_ty),
@@ -1372,6 +1373,145 @@ impl<'a> Checker<'a> {
 
     fn resolve_simple_type_name(&mut self, name: &str, span: Span) -> Ty {
         self.resolve_simple_type_name_in(self.module_id, name, span)
+    }
+
+    fn validate_refined_constraints(
+        &mut self,
+        module_id: ModuleId,
+        base: &crate::ast::Ident,
+        base_ty: &Ty,
+        args: &[Expr],
+    ) {
+        let constraints = match parse_constraints(args) {
+            Ok(items) => items,
+            Err(err) => {
+                let span = if err.span == Span::default() {
+                    base.span
+                } else {
+                    err.span
+                };
+                self.diags.error(span, err.message);
+                return;
+            }
+        };
+        for constraint in constraints {
+            match constraint {
+                RefinementConstraint::Range { min, max, span } => {
+                    self.validate_refined_range_constraint(&base.name, min, max, span);
+                }
+                RefinementConstraint::Regex { span, .. } => {
+                    if !base_is_string_like(&base.name) {
+                        self.diags.error(
+                            span,
+                            format!(
+                                "regex() constraint is only supported for string-like refined bases, found {}",
+                                base.name
+                            ),
+                        );
+                    }
+                }
+                RefinementConstraint::Predicate { name, span } => {
+                    self.validate_refined_predicate(module_id, &name, span, base_ty, &base.name);
+                }
+            }
+        }
+    }
+
+    fn validate_refined_range_constraint(
+        &mut self,
+        base_name: &str,
+        min: NumberLiteral,
+        max: NumberLiteral,
+        span: Span,
+    ) {
+        match base_name {
+            "String" | "Id" | "Email" | "Bytes" => {
+                if min.as_i64().is_none() || max.as_i64().is_none() {
+                    self.diags
+                        .error(span, "range bounds for string-like types must be integers");
+                }
+            }
+            "Int" => {
+                if min.as_i64().is_none() || max.as_i64().is_none() {
+                    self.diags
+                        .error(span, "range bounds for Int refinements must be integers");
+                }
+            }
+            "Float" => {}
+            _ => self.diags.error(
+                span,
+                format!(
+                    "range constraints are not supported for refined base type {}",
+                    base_name
+                ),
+            ),
+        }
+    }
+
+    fn validate_refined_predicate(
+        &mut self,
+        module_id: ModuleId,
+        fn_name: &str,
+        span: Span,
+        base_ty: &Ty,
+        base_name: &str,
+    ) {
+        let sig = match self.resolve_function_sig_in_scope(module_id, fn_name) {
+            Some(sig) => sig,
+            None => {
+                self.diags.error(
+                    span,
+                    format!(
+                        "unknown predicate function {} in current module/import scope",
+                        fn_name
+                    ),
+                );
+                return;
+            }
+        };
+        if sig.params.len() != 1 {
+            self.diags.error(
+                span,
+                format!(
+                    "predicate {} must accept exactly one parameter (found {})",
+                    fn_name,
+                    sig.params.len()
+                ),
+            );
+            return;
+        }
+        let param_ty = &sig.params[0].ty;
+        if !self.is_assignable(base_ty, param_ty) {
+            self.diags.error(
+                span,
+                format!(
+                    "predicate {} parameter type mismatch: expected {}, found {}",
+                    fn_name, base_name, param_ty
+                ),
+            );
+        }
+        if !self.is_assignable(sig.ret.as_ref(), &Ty::Bool) {
+            self.diags.error(
+                span,
+                format!(
+                    "predicate {} must return Bool, found {}",
+                    fn_name,
+                    sig.ret.as_ref()
+                ),
+            );
+        }
+    }
+
+    fn resolve_function_sig_in_scope(&mut self, module_id: ModuleId, name: &str) -> Option<FnSig> {
+        if let Some(sig) = self.fn_sig_in(module_id, name) {
+            return Some(sig);
+        }
+        let imported_module = self
+            .module_import_items
+            .get(&module_id)
+            .and_then(|items| items.get(name))
+            .map(|link| link.id)?;
+        self.fn_sig_in(imported_module, name)
     }
 
     fn resolve_simple_type_name_in(&mut self, module_id: ModuleId, name: &str, span: Span) -> Ty {
