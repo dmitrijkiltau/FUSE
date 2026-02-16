@@ -16,6 +16,7 @@ Server: `crates/fusec/src/bin/fuse-lsp.rs`
 - call hierarchy
 - workspace symbols
 - completion/autocomplete (`textDocument/completion`)
+- signature help (`textDocument/signatureHelp`)
 
 Client: `tools/vscode/`
 
@@ -41,8 +42,7 @@ For the current phase, editor support means:
 
 ## Next improvements (planned)
 
-1. Signature help for function and route calls.
-2. Completion ranking tuned by lexical scope and expected type.
-3. Dedicated completion tests for member chains and import-aware suggestions.
-4. Optional code actions for common runtime errors (e.g., missing config/import scaffolding).
-5. Extension packaging workflow for platform-specific bundled `fuse-lsp` binaries.
+1. Completion ranking tuned by lexical scope and expected type.
+2. Dedicated completion tests for member chains and import-aware suggestions.
+3. Optional code actions for common runtime errors (e.g., missing config/import scaffolding).
+4. Extension packaging workflow for platform-specific bundled `fuse-lsp` binaries.

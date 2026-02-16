@@ -183,6 +183,11 @@ fn main() -> io::Result<()> {
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
+            Some("textDocument/signatureHelp") => {
+                let result = handle_signature_help(&state, &obj);
+                let response = json_response(id, result);
+                write_message(&mut stdout, &response)?;
+            }
             Some("textDocument/completion") => {
                 let result = handle_completion(&state, &obj);
                 let response = json_response(id, result);
@@ -254,6 +259,22 @@ fn capabilities_result() -> JsonValue {
     caps.insert("textDocumentSync".to_string(), JsonValue::Number(1.0));
     caps.insert("definitionProvider".to_string(), JsonValue::Bool(true));
     caps.insert("hoverProvider".to_string(), JsonValue::Bool(true));
+    let mut signature_help = BTreeMap::new();
+    signature_help.insert(
+        "triggerCharacters".to_string(),
+        JsonValue::Array(vec![
+            JsonValue::String("(".to_string()),
+            JsonValue::String(",".to_string()),
+        ]),
+    );
+    signature_help.insert(
+        "retriggerCharacters".to_string(),
+        JsonValue::Array(vec![JsonValue::String(",".to_string())]),
+    );
+    caps.insert(
+        "signatureHelpProvider".to_string(),
+        JsonValue::Object(signature_help),
+    );
     let mut completion_provider = BTreeMap::new();
     completion_provider.insert("resolveProvider".to_string(), JsonValue::Bool(false));
     completion_provider.insert(
@@ -910,6 +931,452 @@ fn handle_hover(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValu
         out.insert("range".to_string(), span_range_json(text, def.def.span));
     }
     JsonValue::Object(out)
+}
+
+struct SignatureInfo {
+    label: String,
+    params: Vec<String>,
+    documentation: Option<String>,
+}
+
+#[derive(Clone)]
+enum SignatureTarget {
+    Ident { name: String, span: Span },
+    Member { base: Option<String>, span: Span },
+    Other { span: Span },
+}
+
+#[derive(Clone)]
+struct CallContext {
+    span: Span,
+    target: SignatureTarget,
+    active_arg: usize,
+}
+
+fn handle_signature_help(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+    let Some((uri, line, character)) = extract_position(obj) else {
+        return JsonValue::Null;
+    };
+    let Some(text) = load_text_for_uri(state, &uri) else {
+        return JsonValue::Null;
+    };
+    let offsets = line_offsets(&text);
+    let cursor = line_col_to_offset(&text, &offsets, line, character);
+    let (program, _parse_diags) = parse_source(&text);
+    let Some(call) = find_call_context(&program, cursor) else {
+        return JsonValue::Null;
+    };
+
+    let index = build_workspace_index(state, &uri);
+    let signature = match &call.target {
+        SignatureTarget::Ident { name, span } => {
+            signature_info_for_symbol_ref(index.as_ref(), &uri, &offsets, *span)
+                .or_else(|| builtin_signature_info(name))
+        }
+        SignatureTarget::Member { base, span } => {
+            signature_info_for_symbol_ref(index.as_ref(), &uri, &offsets, *span).or_else(
+                || {
+                    base.as_deref()
+                        .and_then(builtin_member_signature_info)
+                        .or_else(|| base.as_deref().and_then(builtin_signature_info))
+                },
+            )
+        }
+        SignatureTarget::Other { span } => {
+            signature_info_for_symbol_ref(index.as_ref(), &uri, &offsets, *span)
+        }
+    };
+
+    let Some(signature) = signature else {
+        return JsonValue::Null;
+    };
+    signature_help_json(&signature, call.active_arg)
+}
+
+fn signature_help_json(signature: &SignatureInfo, active_arg: usize) -> JsonValue {
+    let mut signature_obj = BTreeMap::new();
+    signature_obj.insert(
+        "label".to_string(),
+        JsonValue::String(signature.label.clone()),
+    );
+    let params = signature
+        .params
+        .iter()
+        .map(|label| {
+            let mut param = BTreeMap::new();
+            param.insert("label".to_string(), JsonValue::String(label.clone()));
+            JsonValue::Object(param)
+        })
+        .collect();
+    signature_obj.insert("parameters".to_string(), JsonValue::Array(params));
+    if let Some(doc) = &signature.documentation {
+        if !doc.trim().is_empty() {
+            signature_obj.insert("documentation".to_string(), JsonValue::String(doc.clone()));
+        }
+    }
+
+    let mut out = BTreeMap::new();
+    out.insert(
+        "signatures".to_string(),
+        JsonValue::Array(vec![JsonValue::Object(signature_obj)]),
+    );
+    out.insert("activeSignature".to_string(), JsonValue::Number(0.0));
+    let active_param = if signature.params.is_empty() {
+        0usize
+    } else {
+        active_arg.min(signature.params.len().saturating_sub(1))
+    };
+    out.insert(
+        "activeParameter".to_string(),
+        JsonValue::Number(active_param as f64),
+    );
+    JsonValue::Object(out)
+}
+
+fn signature_info_for_symbol_ref(
+    index: Option<&WorkspaceIndex>,
+    uri: &str,
+    offsets: &[usize],
+    span: Span,
+) -> Option<SignatureInfo> {
+    let index = index?;
+    let (line, col) = offset_to_line_col(offsets, span.start);
+    let def = index.definition_at(uri, line, col)?;
+    if def.def.kind != SymbolKind::Function {
+        return None;
+    }
+    signature_info_from_function_detail(&def.def.detail, def.def.doc.as_deref())
+}
+
+fn signature_info_from_function_detail(detail: &str, doc: Option<&str>) -> Option<SignatureInfo> {
+    let params = parse_fn_parameter_labels(detail)?;
+    Some(SignatureInfo {
+        label: detail.trim().to_string(),
+        params,
+        documentation: doc.map(|value| value.trim().to_string()),
+    })
+}
+
+fn builtin_signature_info(name: &str) -> Option<SignatureInfo> {
+    match name {
+        "print" => Some(SignatureInfo {
+            label: "fn print(value)".to_string(),
+            params: vec!["value".to_string()],
+            documentation: Some("Prints a value to stdout.".to_string()),
+        }),
+        "log" => Some(SignatureInfo {
+            label: "fn log(level_or_message, message?, data?)".to_string(),
+            params: vec![
+                "level_or_message".to_string(),
+                "message".to_string(),
+                "data".to_string(),
+            ],
+            documentation: Some("Writes structured log output.".to_string()),
+        }),
+        "env" => Some(SignatureInfo {
+            label: "fn env(name: String) -> String?".to_string(),
+            params: vec!["name: String".to_string()],
+            documentation: Some("Returns an environment variable value or null.".to_string()),
+        }),
+        "serve" => Some(SignatureInfo {
+            label: "fn serve(port: Int)".to_string(),
+            params: vec!["port: Int".to_string()],
+            documentation: Some("Starts HTTP server on the given port.".to_string()),
+        }),
+        "assert" => Some(SignatureInfo {
+            label: "fn assert(cond: Bool, message?)".to_string(),
+            params: vec!["cond: Bool".to_string(), "message".to_string()],
+            documentation: Some("Raises runtime error when condition is false.".to_string()),
+        }),
+        "asset" => Some(SignatureInfo {
+            label: "fn asset(path: String) -> String".to_string(),
+            params: vec!["path: String".to_string()],
+            documentation: Some("Resolves logical asset path to public URL.".to_string()),
+        }),
+        _ => None,
+    }
+}
+
+fn builtin_member_signature_info(base: &str) -> Option<SignatureInfo> {
+    match base {
+        "svg" => Some(SignatureInfo {
+            label: "fn svg.inline(path: String) -> Html".to_string(),
+            params: vec!["path: String".to_string()],
+            documentation: Some("Loads an SVG by logical name and returns inline Html.".to_string()),
+        }),
+        _ => None,
+    }
+}
+
+fn find_call_context(program: &Program, cursor: usize) -> Option<CallContext> {
+    let mut best = None;
+    for item in &program.items {
+        collect_call_context_item(item, cursor, &mut best);
+    }
+    best
+}
+
+fn collect_call_context_item(item: &Item, cursor: usize, best: &mut Option<CallContext>) {
+    match item {
+        Item::Import(_) => {}
+        Item::Type(decl) => {
+            for field in &decl.fields {
+                collect_call_context_type_ref(&field.ty, cursor, best);
+                if let Some(default) = &field.default {
+                    collect_call_context_expr(default, cursor, best);
+                }
+            }
+        }
+        Item::Enum(decl) => {
+            for variant in &decl.variants {
+                for ty in &variant.payload {
+                    collect_call_context_type_ref(ty, cursor, best);
+                }
+            }
+        }
+        Item::Fn(decl) => {
+            for param in &decl.params {
+                collect_call_context_type_ref(&param.ty, cursor, best);
+                if let Some(default) = &param.default {
+                    collect_call_context_expr(default, cursor, best);
+                }
+            }
+            if let Some(ret) = &decl.ret {
+                collect_call_context_type_ref(ret, cursor, best);
+            }
+            collect_call_context_block(&decl.body, cursor, best);
+        }
+        Item::Service(decl) => {
+            for route in &decl.routes {
+                collect_call_context_type_ref(&route.ret_type, cursor, best);
+                if let Some(body_ty) = &route.body_type {
+                    collect_call_context_type_ref(body_ty, cursor, best);
+                }
+                collect_call_context_block(&route.body, cursor, best);
+            }
+        }
+        Item::Config(decl) => {
+            for field in &decl.fields {
+                collect_call_context_type_ref(&field.ty, cursor, best);
+                collect_call_context_expr(&field.value, cursor, best);
+            }
+        }
+        Item::App(decl) => collect_call_context_block(&decl.body, cursor, best),
+        Item::Migration(decl) => collect_call_context_block(&decl.body, cursor, best),
+        Item::Test(decl) => collect_call_context_block(&decl.body, cursor, best),
+    }
+}
+
+fn collect_call_context_block(block: &Block, cursor: usize, best: &mut Option<CallContext>) {
+    if !span_contains(block.span, cursor) {
+        return;
+    }
+    for stmt in &block.stmts {
+        collect_call_context_stmt(stmt, cursor, best);
+    }
+}
+
+fn collect_call_context_stmt(stmt: &Stmt, cursor: usize, best: &mut Option<CallContext>) {
+    if !span_contains(stmt.span, cursor) {
+        return;
+    }
+    match &stmt.kind {
+        StmtKind::Let { ty, expr, .. } | StmtKind::Var { ty, expr, .. } => {
+            if let Some(ty) = ty {
+                collect_call_context_type_ref(ty, cursor, best);
+            }
+            collect_call_context_expr(expr, cursor, best);
+        }
+        StmtKind::Assign { target, expr } => {
+            collect_call_context_expr(target, cursor, best);
+            collect_call_context_expr(expr, cursor, best);
+        }
+        StmtKind::Return { expr } => {
+            if let Some(expr) = expr {
+                collect_call_context_expr(expr, cursor, best);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_block,
+            else_if,
+            else_block,
+        } => {
+            collect_call_context_expr(cond, cursor, best);
+            collect_call_context_block(then_block, cursor, best);
+            for (cond, block) in else_if {
+                collect_call_context_expr(cond, cursor, best);
+                collect_call_context_block(block, cursor, best);
+            }
+            if let Some(block) = else_block {
+                collect_call_context_block(block, cursor, best);
+            }
+        }
+        StmtKind::Match { expr, cases } => {
+            collect_call_context_expr(expr, cursor, best);
+            for (_, block) in cases {
+                collect_call_context_block(block, cursor, best);
+            }
+        }
+        StmtKind::For { iter, block, .. } => {
+            collect_call_context_expr(iter, cursor, best);
+            collect_call_context_block(block, cursor, best);
+        }
+        StmtKind::While { cond, block } => {
+            collect_call_context_expr(cond, cursor, best);
+            collect_call_context_block(block, cursor, best);
+        }
+        StmtKind::Expr(expr) => collect_call_context_expr(expr, cursor, best),
+        StmtKind::Break | StmtKind::Continue => {}
+    }
+}
+
+fn collect_call_context_expr(expr: &Expr, cursor: usize, best: &mut Option<CallContext>) {
+    if !span_contains(expr.span, cursor) {
+        return;
+    }
+    match &expr.kind {
+        ExprKind::Call { callee, args } => {
+            consider_call_context(best, expr.span, callee, args, cursor);
+            collect_call_context_expr(callee, cursor, best);
+            for arg in args {
+                collect_call_context_expr(&arg.value, cursor, best);
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_call_context_expr(left, cursor, best);
+            collect_call_context_expr(right, cursor, best);
+        }
+        ExprKind::Unary { expr, .. } | ExprKind::Await { expr } | ExprKind::Box { expr } => {
+            collect_call_context_expr(expr, cursor, best);
+        }
+        ExprKind::Member { base, .. } | ExprKind::OptionalMember { base, .. } => {
+            collect_call_context_expr(base, cursor, best);
+        }
+        ExprKind::Index { base, index } | ExprKind::OptionalIndex { base, index } => {
+            collect_call_context_expr(base, cursor, best);
+            collect_call_context_expr(index, cursor, best);
+        }
+        ExprKind::StructLit { fields, .. } => {
+            for field in fields {
+                collect_call_context_expr(&field.value, cursor, best);
+            }
+        }
+        ExprKind::ListLit(items) => {
+            for item in items {
+                collect_call_context_expr(item, cursor, best);
+            }
+        }
+        ExprKind::MapLit(items) => {
+            for (key, value) in items {
+                collect_call_context_expr(key, cursor, best);
+                collect_call_context_expr(value, cursor, best);
+            }
+        }
+        ExprKind::InterpString(parts) => {
+            for part in parts {
+                if let fusec::ast::InterpPart::Expr(expr) = part {
+                    collect_call_context_expr(expr, cursor, best);
+                }
+            }
+        }
+        ExprKind::Coalesce { left, right } => {
+            collect_call_context_expr(left, cursor, best);
+            collect_call_context_expr(right, cursor, best);
+        }
+        ExprKind::BangChain { expr, error } => {
+            collect_call_context_expr(expr, cursor, best);
+            if let Some(error) = error {
+                collect_call_context_expr(error, cursor, best);
+            }
+        }
+        ExprKind::Spawn { block } => collect_call_context_block(block, cursor, best),
+        ExprKind::Literal(_) | ExprKind::Ident(_) => {}
+    }
+}
+
+fn collect_call_context_type_ref(ty: &TypeRef, cursor: usize, best: &mut Option<CallContext>) {
+    if !span_contains(ty.span, cursor) {
+        return;
+    }
+    match &ty.kind {
+        TypeRefKind::Simple(_) => {}
+        TypeRefKind::Generic { args, .. } => {
+            for arg in args {
+                collect_call_context_type_ref(arg, cursor, best);
+            }
+        }
+        TypeRefKind::Optional(inner) => collect_call_context_type_ref(inner, cursor, best),
+        TypeRefKind::Result { ok, err } => {
+            collect_call_context_type_ref(ok, cursor, best);
+            if let Some(err) = err {
+                collect_call_context_type_ref(err, cursor, best);
+            }
+        }
+        TypeRefKind::Refined { args, .. } => {
+            for arg in args {
+                collect_call_context_expr(arg, cursor, best);
+            }
+        }
+    }
+}
+
+fn consider_call_context(
+    best: &mut Option<CallContext>,
+    span: Span,
+    callee: &Expr,
+    args: &[fusec::ast::CallArg],
+    cursor: usize,
+) {
+    let target = match &callee.kind {
+        ExprKind::Ident(ident) => SignatureTarget::Ident {
+            name: ident.name.clone(),
+            span: ident.span,
+        },
+        ExprKind::Member { base, name } | ExprKind::OptionalMember { base, name } => {
+            let base = match &base.kind {
+                ExprKind::Ident(base_ident) => Some(base_ident.name.clone()),
+                _ => None,
+            };
+            SignatureTarget::Member {
+                base,
+                span: name.span,
+            }
+        }
+        _ => SignatureTarget::Other { span: callee.span },
+    };
+    let candidate = CallContext {
+        span,
+        target,
+        active_arg: call_active_argument(args, cursor),
+    };
+    let span_len = candidate.span.end.saturating_sub(candidate.span.start);
+    let replace = best.as_ref().map_or(true, |current| {
+        span_len < current.span.end.saturating_sub(current.span.start)
+    });
+    if replace {
+        *best = Some(candidate);
+    }
+}
+
+fn call_active_argument(args: &[fusec::ast::CallArg], cursor: usize) -> usize {
+    if args.is_empty() {
+        return 0;
+    }
+    if cursor <= args[0].span.start {
+        return 0;
+    }
+    for (idx, arg) in args.iter().enumerate() {
+        if cursor <= arg.span.end {
+            return idx;
+        }
+        if let Some(next) = args.get(idx + 1) {
+            if cursor < next.span.start {
+                return idx + 1;
+            }
+        }
+    }
+    args.len()
 }
 
 #[derive(Clone)]
@@ -1988,27 +2455,113 @@ fn call_param_names(
 }
 
 fn parse_fn_param_names(detail: &str) -> Option<Vec<String>> {
-    if !detail.starts_with("fn ") {
-        return None;
-    }
-    let open = detail.find('(')?;
-    let close = detail[open + 1..].find(')')? + open + 1;
-    let params_text = detail[open + 1..close].trim();
-    if params_text.is_empty() {
-        return Some(Vec::new());
-    }
+    let params = parse_fn_parameter_labels(detail)?;
     let mut names = Vec::new();
-    for part in params_text.split(',') {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
+    for part in params {
         let name = part.split(':').next().unwrap_or("").trim();
         if !name.is_empty() {
             names.push(name.to_string());
         }
     }
     Some(names)
+}
+
+fn parse_fn_parameter_labels(detail: &str) -> Option<Vec<String>> {
+    if !detail.starts_with("fn ") {
+        return None;
+    }
+    let open = detail.find('(')?;
+    let close = find_matching_paren(detail, open)?;
+    if close <= open {
+        return Some(Vec::new());
+    }
+    let params_text = detail[open + 1..close].trim();
+    if params_text.is_empty() {
+        return Some(Vec::new());
+    }
+    Some(split_top_level_csv(params_text))
+}
+
+fn find_matching_paren(text: &str, open_idx: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, ch) in text[open_idx..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open_idx + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_top_level_csv(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut in_string = false;
+    let mut quote = '\0';
+    let mut escaped = false;
+
+    for (idx, ch) in text.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == quote {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => {
+                in_string = true;
+                quote = ch;
+            }
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '<' => angle_depth += 1,
+            '>' => angle_depth = angle_depth.saturating_sub(1),
+            ',' if paren_depth == 0
+                && bracket_depth == 0
+                && brace_depth == 0
+                && angle_depth == 0 =>
+            {
+                let part = text[start..idx].trim();
+                if !part.is_empty() {
+                    out.push(part.to_string());
+                }
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+
+    let tail = text[start..].trim();
+    if !tail.is_empty() {
+        out.push(tail.to_string());
+    }
+    out
 }
 
 fn parse_fn_return_type(detail: &str) -> Option<String> {
