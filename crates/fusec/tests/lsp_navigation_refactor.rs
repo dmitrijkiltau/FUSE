@@ -160,8 +160,7 @@ fn main():
         "prepareRename should reject keyword targets"
     );
 
-    let mut rename_invalid = match position_params(&util_uri, util_greet_line, util_greet_col + 3)
-    {
+    let mut rename_invalid = match position_params(&util_uri, util_greet_line, util_greet_col + 3) {
         JsonValue::Object(params) => params,
         _ => unreachable!(),
     };
@@ -184,7 +183,10 @@ fn main():
     };
     let mut incoming_params = BTreeMap::new();
     incoming_params.insert("item".to_string(), local_id_item.clone());
-    let incoming = lsp.request("callHierarchy/incomingCalls", JsonValue::Object(incoming_params));
+    let incoming = lsp.request(
+        "callHierarchy/incomingCalls",
+        JsonValue::Object(incoming_params),
+    );
     let incoming_text = json::encode(&incoming);
     assert!(
         incoming_text.contains("\"name\":\"main\""),
@@ -202,7 +204,10 @@ fn main():
     };
     let mut outgoing_params = BTreeMap::new();
     outgoing_params.insert("item".to_string(), main_item);
-    let outgoing = lsp.request("callHierarchy/outgoingCalls", JsonValue::Object(outgoing_params));
+    let outgoing = lsp.request(
+        "callHierarchy/outgoingCalls",
+        JsonValue::Object(outgoing_params),
+    );
     let outgoing_text = json::encode(&outgoing);
     assert!(
         outgoing_text.contains("\"name\":\"local_id\""),

@@ -48,4 +48,5 @@ LSP-specific gates:
   - signature help coverage (`lsp_signature_help.rs`)
   - completion ranking coverage (`lsp_completion_rank.rs`)
   - member-chain/import-aware completion coverage (`lsp_completion_member.rs`)
+  - code-action quickfix/organize coverage (`lsp_code_actions.rs`)
   - end-to-end UX smoke (`lsp_ux.rs`)

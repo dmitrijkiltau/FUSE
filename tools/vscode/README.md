@@ -29,7 +29,7 @@ Current LSP feature baseline:
 - rename refactor
 - completion/autocomplete
 - semantic tokens + inlay hints
-- code actions (quick fix + organize imports)
+- code actions (unresolved import quick fixes, config-field scaffold quick fixes, organize imports)
 
 ### Local dev
 

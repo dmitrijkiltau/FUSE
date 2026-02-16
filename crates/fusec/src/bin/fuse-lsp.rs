@@ -984,13 +984,11 @@ fn handle_signature_help(state: &LspState, obj: &BTreeMap<String, JsonValue>) ->
                 .or_else(|| builtin_signature_info(name))
         }
         SignatureTarget::Member { base, span } => {
-            signature_info_for_symbol_ref(index.as_ref(), &uri, &offsets, *span).or_else(
-                || {
-                    base.as_deref()
-                        .and_then(builtin_member_signature_info)
-                        .or_else(|| base.as_deref().and_then(builtin_signature_info))
-                },
-            )
+            signature_info_for_symbol_ref(index.as_ref(), &uri, &offsets, *span).or_else(|| {
+                base.as_deref()
+                    .and_then(builtin_member_signature_info)
+                    .or_else(|| base.as_deref().and_then(builtin_signature_info))
+            })
         }
         SignatureTarget::Other { span } => {
             signature_info_for_symbol_ref(index.as_ref(), &uri, &offsets, *span)
@@ -1112,7 +1110,9 @@ fn builtin_member_signature_info(base: &str) -> Option<SignatureInfo> {
         "svg" => Some(SignatureInfo {
             label: "fn svg.inline(path: String) -> Html".to_string(),
             params: vec!["path: String".to_string()],
-            documentation: Some("Loads an SVG by logical name and returns inline Html.".to_string()),
+            documentation: Some(
+                "Loads an SVG by logical name and returns inline Html.".to_string(),
+            ),
         }),
         _ => None,
     }
@@ -1741,7 +1741,10 @@ fn completion_callable_name_at_cursor(program: &Program, cursor: usize) -> Optio
             Item::Fn(decl) => {
                 if span_contains(decl.body.span, cursor) {
                     let size = decl.body.span.end.saturating_sub(decl.body.span.start);
-                    if best.as_ref().map_or(true, |(_, best_size)| size < *best_size) {
+                    if best
+                        .as_ref()
+                        .map_or(true, |(_, best_size)| size < *best_size)
+                    {
                         best = Some((decl.name.name.clone(), size));
                     }
                 }
@@ -1750,7 +1753,10 @@ fn completion_callable_name_at_cursor(program: &Program, cursor: usize) -> Optio
                 for route in &decl.routes {
                     if span_contains(route.body.span, cursor) {
                         let size = route.body.span.end.saturating_sub(route.body.span.start);
-                        if best.as_ref().map_or(true, |(_, best_size)| size < *best_size) {
+                        if best
+                            .as_ref()
+                            .map_or(true, |(_, best_size)| size < *best_size)
+                        {
                             best = Some((decl.name.name.clone(), size));
                         }
                     }
@@ -1759,7 +1765,10 @@ fn completion_callable_name_at_cursor(program: &Program, cursor: usize) -> Optio
             Item::App(decl) => {
                 if span_contains(decl.body.span, cursor) {
                     let size = decl.body.span.end.saturating_sub(decl.body.span.start);
-                    if best.as_ref().map_or(true, |(_, best_size)| size < *best_size) {
+                    if best
+                        .as_ref()
+                        .map_or(true, |(_, best_size)| size < *best_size)
+                    {
                         best = Some((decl.name.value.clone(), size));
                     }
                 }
@@ -1767,7 +1776,10 @@ fn completion_callable_name_at_cursor(program: &Program, cursor: usize) -> Optio
             Item::Migration(decl) => {
                 if span_contains(decl.body.span, cursor) {
                     let size = decl.body.span.end.saturating_sub(decl.body.span.start);
-                    if best.as_ref().map_or(true, |(_, best_size)| size < *best_size) {
+                    if best
+                        .as_ref()
+                        .map_or(true, |(_, best_size)| size < *best_size)
+                    {
                         best = Some((decl.name.clone(), size));
                     }
                 }
@@ -1775,7 +1787,10 @@ fn completion_callable_name_at_cursor(program: &Program, cursor: usize) -> Optio
             Item::Test(decl) => {
                 if span_contains(decl.body.span, cursor) {
                     let size = decl.body.span.end.saturating_sub(decl.body.span.start);
-                    if best.as_ref().map_or(true, |(_, best_size)| size < *best_size) {
+                    if best
+                        .as_ref()
+                        .map_or(true, |(_, best_size)| size < *best_size)
+                    {
                         best = Some((decl.name.value.clone(), size));
                     }
                 }
@@ -1787,11 +1802,7 @@ fn completion_callable_name_at_cursor(program: &Program, cursor: usize) -> Optio
     best.map(|(name, _)| name)
 }
 
-fn completion_symbol_sort_group(
-    def: &WorkspaceDef,
-    uri: &str,
-    container: Option<&str>,
-) -> u8 {
+fn completion_symbol_sort_group(def: &WorkspaceDef, uri: &str, container: Option<&str>) -> u8 {
     if def.uri != uri {
         return 2;
     }
@@ -2001,37 +2012,44 @@ fn handle_code_action(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Js
     let mut seen = HashSet::new();
 
     for diag in extract_code_action_diagnostics(obj, &text) {
-        let Some(symbol) = parse_unknown_symbol_name(&diag.message) else {
-            continue;
-        };
-        if !is_valid_ident(&symbol) {
-            continue;
-        }
-        if let Some(span) = diag.span {
-            for alias in index.alias_modules_for_symbol(&uri, &symbol) {
-                let replacement = format!("{alias}.{symbol}");
-                let edit = workspace_edit_with_single_span(&uri, &text, span, &replacement);
-                let title = format!("Qualify as {alias}.{symbol}");
-                let key = format!("quickfix:{title}");
-                if seen.insert(key) {
-                    actions.push(code_action_json(&title, "quickfix", edit));
+        if let Some(symbol) = parse_unknown_symbol_name(&diag.message) {
+            if is_valid_ident(&symbol) {
+                if let Some(span) = diag.span {
+                    for alias in index.alias_modules_for_symbol(&uri, &symbol) {
+                        let replacement = format!("{alias}.{symbol}");
+                        let edit = workspace_edit_with_single_span(&uri, &text, span, &replacement);
+                        let title = format!("Qualify as {alias}.{symbol}");
+                        let key = format!("quickfix:{title}");
+                        if seen.insert(key) {
+                            actions.push(code_action_json(&title, "quickfix", edit));
+                        }
+                    }
+                }
+
+                for module_path in import_candidates_for_symbol(&index, &uri, &symbol)
+                    .into_iter()
+                    .take(8)
+                {
+                    let Some(edit) =
+                        missing_import_workspace_edit(&uri, &text, &imports, &module_path, &symbol)
+                    else {
+                        continue;
+                    };
+                    let title = format!("Import {symbol} from {module_path}");
+                    let key = format!("quickfix:{title}");
+                    if seen.insert(key) {
+                        actions.push(code_action_json(&title, "quickfix", edit));
+                    }
                 }
             }
         }
 
-        for module_path in import_candidates_for_symbol(&index, &uri, &symbol)
-            .into_iter()
-            .take(8)
-        {
-            let Some(edit) =
-                missing_import_workspace_edit(&uri, &text, &imports, &module_path, &symbol)
-            else {
-                continue;
-            };
-            let title = format!("Import {symbol} from {module_path}");
-            let key = format!("quickfix:{title}");
-            if seen.insert(key) {
-                actions.push(code_action_json(&title, "quickfix", edit));
+        if let Some((field, config)) = parse_unknown_field_on_type(&diag.message) {
+            for (title, edit) in missing_config_field_actions(&index, &config, &field) {
+                let key = format!("quickfix:{title}");
+                if seen.insert(key) {
+                    actions.push(code_action_json(&title, "quickfix", edit));
+                }
             }
         }
     }
@@ -3012,6 +3030,141 @@ fn parse_unknown_symbol_name(message: &str) -> Option<String> {
     None
 }
 
+fn parse_unknown_field_on_type(message: &str) -> Option<(String, String)> {
+    let rest = message.strip_prefix("unknown field ")?;
+    let (field, ty) = rest.split_once(" on ")?;
+    let field = field.trim();
+    let ty = ty.trim();
+    if !is_valid_ident(field) || !is_valid_ident(ty) {
+        return None;
+    }
+    Some((field.to_string(), ty.to_string()))
+}
+
+fn missing_config_field_actions(
+    index: &WorkspaceIndex,
+    config_name: &str,
+    field_name: &str,
+) -> Vec<(String, JsonValue)> {
+    let mut defs = config_defs_named(index, config_name);
+    defs.sort_by(|a, b| {
+        a.uri
+            .cmp(&b.uri)
+            .then(a.def.span.start.cmp(&b.def.span.start))
+    });
+    defs.dedup_by(|a, b| a.uri == b.uri && a.def.span.start == b.def.span.start);
+
+    let multiple = defs.len() > 1;
+    let mut out = Vec::new();
+    for def in defs {
+        let Some(text) = index.file_text(&def.uri) else {
+            continue;
+        };
+        let Some(edit) =
+            missing_config_field_workspace_edit(&def.uri, text, config_name, field_name)
+        else {
+            continue;
+        };
+        let title = if multiple {
+            let location = path_display_for_uri(&def.uri);
+            format!("Add {config_name}.{field_name} to config in {location}")
+        } else {
+            format!("Add {config_name}.{field_name} to config")
+        };
+        out.push((title, edit));
+    }
+    out
+}
+
+fn config_defs_named(index: &WorkspaceIndex, config_name: &str) -> Vec<WorkspaceDef> {
+    index
+        .defs
+        .iter()
+        .filter(|def| def.def.kind == SymbolKind::Config && def.def.name == config_name)
+        .cloned()
+        .collect()
+}
+
+fn missing_config_field_workspace_edit(
+    uri: &str,
+    text: &str,
+    config_name: &str,
+    field_name: &str,
+) -> Option<JsonValue> {
+    let (program, parse_diags) = parse_source(text);
+    if parse_diags
+        .iter()
+        .any(|diag| matches!(diag.level, Level::Error))
+    {
+        return None;
+    }
+    let config = program.items.iter().find_map(|item| match item {
+        Item::Config(decl) if decl.name.name == config_name => Some(decl),
+        _ => None,
+    })?;
+    if config
+        .fields
+        .iter()
+        .any(|field| field.name.name == field_name)
+    {
+        return None;
+    }
+
+    let insert_offset = config_field_insert_offset(text, config);
+    let indent = config_field_indent(text, config);
+    let new_text = format!("\n{indent}{field_name}: String = \"\"");
+    Some(workspace_edit_with_single_span(
+        uri,
+        text,
+        Span::new(insert_offset, insert_offset),
+        &new_text,
+    ))
+}
+
+fn config_field_insert_offset(text: &str, config: &ConfigDecl) -> usize {
+    if let Some(last_field) = config.fields.last() {
+        return line_end_offset(text, last_field.span.end);
+    }
+    line_end_offset(text, config.name.span.end)
+}
+
+fn config_field_indent(text: &str, config: &ConfigDecl) -> String {
+    if let Some(first_field) = config.fields.first() {
+        return line_indent_at(text, first_field.span.start);
+    }
+    let base = line_indent_at(text, config.span.start);
+    format!("{base}  ")
+}
+
+fn line_indent_at(text: &str, offset: usize) -> String {
+    let line_start = line_start_offset(text, offset);
+    let mut idx = line_start;
+    let bytes = text.as_bytes();
+    while idx < bytes.len() && (bytes[idx] == b' ' || bytes[idx] == b'\t') {
+        idx += 1;
+    }
+    text[line_start..idx].to_string()
+}
+
+fn line_start_offset(text: &str, offset: usize) -> usize {
+    let offset = offset.min(text.len());
+    text[..offset].rfind('\n').map_or(0, |idx| idx + 1)
+}
+
+fn line_end_offset(text: &str, offset: usize) -> usize {
+    let offset = offset.min(text.len());
+    match text[offset..].find('\n') {
+        Some(rel) => offset + rel,
+        None => text.len(),
+    }
+}
+
+fn path_display_for_uri(uri: &str) -> String {
+    uri_to_path(uri)
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| uri.to_string())
+}
+
 fn import_candidates_for_symbol(index: &WorkspaceIndex, uri: &str, symbol: &str) -> Vec<String> {
     let mut out = Vec::new();
     for def in &index.defs {
@@ -3139,7 +3292,7 @@ fn organize_imports_workspace_edit(
     lines.dedup();
     let first = imports.iter().map(|decl| decl.span.start).min()?;
     let mut end = imports.iter().map(|decl| decl.span.end).max()?;
-    if end < text.len() && text.as_bytes().get(end) == Some(&b'\n') {
+    while end < text.len() && text.as_bytes().get(end) == Some(&b'\n') {
         end += 1;
     }
     let replacement = if end < text.len() {
@@ -4226,7 +4379,10 @@ fn build_workspace_from_registry(
 }
 
 fn import_binding_name(detail: &str) -> Option<&str> {
-    detail.strip_prefix("import ").map(str::trim).filter(|s| !s.is_empty())
+    detail
+        .strip_prefix("import ")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
 }
 
 fn unique_callable_target_by_name(defs: &[WorkspaceDef], name: &str) -> Option<usize> {

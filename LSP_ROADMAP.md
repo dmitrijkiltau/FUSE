@@ -11,7 +11,10 @@ Server: `crates/fusec/src/bin/fuse-lsp.rs`
 - definition/hover/references
 - rename refactor (`textDocument/rename`)
 - rename refactor safety (`textDocument/prepareRename`)
-- code actions (quick fixes + organize imports)
+- code actions:
+  - unresolved symbol import quick fixes
+  - missing config-field scaffold quick fixes (`unknown field <x> on <Config>`)
+  - `source.organizeImports` with idempotent ordering behavior
 - semantic tokens (full + range)
 - inlay hints
 - call hierarchy
@@ -28,6 +31,7 @@ Client: `tools/vscode/`
 Validation:
 
 - `scripts/cargo_env.sh cargo test -p fusec --test lsp_ux`
+- `scripts/cargo_env.sh cargo test -p fusec --test lsp_code_actions`
 - `scripts/lsp_suite.sh`
 - `scripts/cargo_env.sh cargo test -p fusec`
 
@@ -43,5 +47,4 @@ For the current phase, editor support means:
 
 ## Next improvements (planned)
 
-1. Optional code actions for common runtime errors (e.g., missing config/import scaffolding).
-2. Extension packaging workflow for platform-specific bundled `fuse-lsp` binaries.
+1. Extension packaging workflow for platform-specific bundled `fuse-lsp` binaries.

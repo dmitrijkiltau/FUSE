@@ -92,7 +92,10 @@ fn main():
     assert!(lsp.wait_diagnostics(&main_uri).is_empty());
 
     let (line, col) = line_col_of(main_src, "  return current");
-    let completion = lsp.request("textDocument/completion", completion_params(&main_uri, line, col));
+    let completion = lsp.request(
+        "textDocument/completion",
+        completion_params(&main_uri, line, col),
+    );
     let completion_text = json::encode(&completion);
 
     let local_sort = completion_sort_text(&completion, "current")
@@ -101,8 +104,8 @@ fn main():
         .expect("missing imported symbol completion for greet");
     let external_sort = completion_sort_text(&completion, "helper")
         .expect("missing external module completion for helper");
-    let builtin_sort = completion_sort_text(&completion, "print")
-        .expect("missing builtin completion for print");
+    let builtin_sort =
+        completion_sort_text(&completion, "print").expect("missing builtin completion for print");
     let keyword_sort =
         completion_sort_text(&completion, "if").expect("missing keyword completion for if");
 

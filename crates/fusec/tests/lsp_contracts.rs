@@ -112,7 +112,10 @@ fn lsp_lifecycle_diagnostics_open_change_close() {
     let mut lsp = LspClient::spawn_with_root(&root_uri);
     lsp.open_document(&main_uri, broken, 1);
     let open_diags = lsp.wait_diagnostics(&main_uri);
-    assert!(!open_diags.is_empty(), "expected diagnostics on broken input");
+    assert!(
+        !open_diags.is_empty(),
+        "expected diagnostics on broken input"
+    );
 
     lsp.change_document(&main_uri, fixed, 2);
     let changed_diags = lsp.wait_diagnostics(&main_uri);
@@ -205,7 +208,10 @@ fn lsp_navigation_refactor_workspace_symbol_and_call_hierarchy() {
     };
     let mut incoming_params = BTreeMap::new();
     incoming_params.insert("item".to_string(), call_greet_item.clone());
-    let incoming = lsp.request("callHierarchy/incomingCalls", JsonValue::Object(incoming_params));
+    let incoming = lsp.request(
+        "callHierarchy/incomingCalls",
+        JsonValue::Object(incoming_params),
+    );
     let incoming_text = json::encode(&incoming);
     assert!(
         incoming_text.contains("\"name\":\"main\""),
@@ -214,10 +220,14 @@ fn lsp_navigation_refactor_workspace_symbol_and_call_hierarchy() {
 
     let mut outgoing_params = BTreeMap::new();
     outgoing_params.insert("item".to_string(), call_greet_item);
-    let outgoing = lsp.request("callHierarchy/outgoingCalls", JsonValue::Object(outgoing_params));
+    let outgoing = lsp.request(
+        "callHierarchy/outgoingCalls",
+        JsonValue::Object(outgoing_params),
+    );
     let outgoing_text = json::encode(&outgoing);
     assert!(
-        outgoing_text.contains("\"name\":\"local_id\"") && outgoing_text.contains(&fixture.main_uri),
+        outgoing_text.contains("\"name\":\"local_id\"")
+            && outgoing_text.contains(&fixture.main_uri),
         "outgoing call hierarchy missing local target: {outgoing_text}"
     );
 
@@ -274,7 +284,10 @@ fn lsp_semantic_tokens_and_inlay_hints_contract() {
     assert!(lsp.wait_diagnostics(&fixture.main_uri).is_empty());
 
     let mut inlay_doc = BTreeMap::new();
-    inlay_doc.insert("uri".to_string(), JsonValue::String(fixture.main_uri.clone()));
+    inlay_doc.insert(
+        "uri".to_string(),
+        JsonValue::String(fixture.main_uri.clone()),
+    );
     let mut range_start = BTreeMap::new();
     range_start.insert("line".to_string(), JsonValue::Number(0.0));
     range_start.insert("character".to_string(), JsonValue::Number(0.0));
@@ -295,10 +308,16 @@ fn lsp_semantic_tokens_and_inlay_hints_contract() {
     );
 
     let mut sem_doc = BTreeMap::new();
-    sem_doc.insert("uri".to_string(), JsonValue::String(fixture.main_uri.clone()));
+    sem_doc.insert(
+        "uri".to_string(),
+        JsonValue::String(fixture.main_uri.clone()),
+    );
     let mut sem_params = BTreeMap::new();
     sem_params.insert("textDocument".to_string(), JsonValue::Object(sem_doc));
-    let sem = lsp.request("textDocument/semanticTokens/full", JsonValue::Object(sem_params));
+    let sem = lsp.request(
+        "textDocument/semanticTokens/full",
+        JsonValue::Object(sem_params),
+    );
     let sem_text = json::encode(&sem);
     assert!(
         sem_text.contains("\"data\"") && !sem_text.contains("\"data\":[]"),

@@ -55,7 +55,10 @@ impl LspClient {
         };
 
         let mut init_params = BTreeMap::new();
-        init_params.insert("rootUri".to_string(), JsonValue::String(root_uri.to_string()));
+        init_params.insert(
+            "rootUri".to_string(),
+            JsonValue::String(root_uri.to_string()),
+        );
         let _ = client.request("initialize", JsonValue::Object(init_params));
         client.notify("initialized", JsonValue::Object(BTreeMap::new()));
         client

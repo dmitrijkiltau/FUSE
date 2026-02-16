@@ -29,7 +29,10 @@ fn signature_help_params(uri: &str, line: usize, character: usize) -> JsonValue 
 
 fn signature_summary(result: &JsonValue) -> (String, Vec<String>, usize) {
     let JsonValue::Object(root) = result else {
-        panic!("signature help should be object, got {}", json::encode(result));
+        panic!(
+            "signature help should be object, got {}",
+            json::encode(result)
+        );
     };
     let active_param = match root.get("activeParameter") {
         Some(JsonValue::Number(value)) if *value >= 0.0 => *value as usize,
@@ -103,14 +106,21 @@ fn main():
     let (local_line, local_col) = line_col_of(main_src, "local_join(\"a\", \"b\")");
     let local_help = lsp.request(
         "textDocument/signatureHelp",
-        signature_help_params(&main_uri, local_line, local_col + "local_join(\"a\", \"".len()),
+        signature_help_params(
+            &main_uri,
+            local_line,
+            local_col + "local_join(\"a\", \"".len(),
+        ),
     );
     let (local_label, local_params, local_active) = signature_summary(&local_help);
     assert!(
         local_label.contains("fn local_join(left: String, right: String) -> String"),
         "unexpected local signature label: {local_label}"
     );
-    assert_eq!(local_active, 1, "local call active parameter should be second");
+    assert_eq!(
+        local_active, 1,
+        "local call active parameter should be second"
+    );
     assert_eq!(
         local_params,
         vec!["left: String".to_string(), "right: String".to_string()],
