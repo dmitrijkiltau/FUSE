@@ -42,4 +42,9 @@ They are valuable for regressions but are not the primary semantic contract gate
 
 LSP-specific gates:
 
-- `scripts/lsp_suite.sh` runs focused LSP contract tests (`lsp_contracts.rs`), signature help coverage (`lsp_signature_help.rs`), plus end-to-end UX smoke (`lsp_ux.rs`).
+- `scripts/lsp_suite.sh` runs:
+  - focused LSP contract tests (`lsp_contracts.rs`)
+  - signature help coverage (`lsp_signature_help.rs`)
+  - completion ranking coverage (`lsp_completion_rank.rs`)
+  - member-chain/import-aware completion coverage (`lsp_completion_member.rs`)
+  - end-to-end UX smoke (`lsp_ux.rs`)

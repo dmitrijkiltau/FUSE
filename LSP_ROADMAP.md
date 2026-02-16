@@ -42,7 +42,5 @@ For the current phase, editor support means:
 
 ## Next improvements (planned)
 
-1. Completion ranking tuned by lexical scope and expected type.
-2. Dedicated completion tests for member chains and import-aware suggestions.
-3. Optional code actions for common runtime errors (e.g., missing config/import scaffolding).
-4. Extension packaging workflow for platform-specific bundled `fuse-lsp` binaries.
+1. Optional code actions for common runtime errors (e.g., missing config/import scaffolding).
+2. Extension packaging workflow for platform-specific bundled `fuse-lsp` binaries.

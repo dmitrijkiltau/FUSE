@@ -1398,7 +1398,13 @@ fn handle_completion(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Jso
     let prefix_start = completion_ident_start(&text, offset);
     let prefix = text.get(prefix_start..offset).unwrap_or_default();
     let member_base = completion_member_base(&text, prefix_start);
+    let (program, _parse_diags) = parse_source(&text);
     let index = build_workspace_index(state, &uri);
+    let current_container = completion_callable_name_at_cursor(&program, offset).or_else(|| {
+        index
+            .as_ref()
+            .and_then(|index| completion_container_name(index, &uri, offset))
+    });
     let mut candidates: HashMap<String, CompletionCandidate> = HashMap::new();
 
     if let Some(base) = member_base {
@@ -1425,15 +1431,28 @@ fn handle_completion(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Jso
                 method,
                 2,
                 Some(format!("{base} builtin")),
-                1,
+                0,
             );
         }
     } else {
-        for keyword in COMPLETION_KEYWORDS {
-            upsert_completion_candidate(&mut candidates, keyword, 14, None, 4);
-        }
-        for literal in ["true", "false", "null"] {
-            upsert_completion_candidate(&mut candidates, literal, 14, None, 4);
+        if let Some(index) = &index {
+            for def in &index.defs {
+                let sort_group =
+                    completion_symbol_sort_group(def, &uri, current_container.as_deref());
+                let kind = completion_kind_for_symbol_kind(def.def.kind);
+                let detail = if def.def.detail.is_empty() {
+                    None
+                } else {
+                    Some(def.def.detail.clone())
+                };
+                upsert_completion_candidate(
+                    &mut candidates,
+                    &def.def.name,
+                    kind,
+                    detail,
+                    sort_group,
+                );
+            }
         }
         for builtin in COMPLETION_BUILTIN_RECEIVERS {
             upsert_completion_candidate(
@@ -1471,23 +1490,11 @@ fn handle_completion(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Jso
                 3,
             );
         }
-        if let Some(index) = &index {
-            for def in &index.defs {
-                let sort_group = if def.uri == uri { 0 } else { 1 };
-                let kind = completion_kind_for_symbol_kind(def.def.kind);
-                let detail = if def.def.detail.is_empty() {
-                    None
-                } else {
-                    Some(def.def.detail.clone())
-                };
-                upsert_completion_candidate(
-                    &mut candidates,
-                    &def.def.name,
-                    kind,
-                    detail,
-                    sort_group,
-                );
-            }
+        for keyword in COMPLETION_KEYWORDS {
+            upsert_completion_candidate(&mut candidates, keyword, 14, None, 4);
+        }
+        for literal in ["true", "false", "null"] {
+            upsert_completion_candidate(&mut candidates, literal, 14, None, 4);
         }
     }
 
@@ -1605,18 +1612,195 @@ fn completion_member_base(text: &str, prefix_start: usize) -> Option<String> {
     while end > 0 && bytes[end - 1].is_ascii_whitespace() {
         end -= 1;
     }
-    let mut start = end;
-    while start > 0 && is_ident_byte(bytes[start - 1]) {
-        start -= 1;
-    }
-    if start == end {
-        return None;
-    }
-    Some(text[start..end].to_string())
+    completion_receiver_base(text, end)
 }
 
 fn is_ident_byte(byte: u8) -> bool {
     byte == b'_' || byte.is_ascii_alphanumeric()
+}
+
+fn completion_receiver_base(text: &str, end: usize) -> Option<String> {
+    let bytes = text.as_bytes();
+    let end = completion_skip_ws_left(bytes, end);
+    if end == 0 {
+        return None;
+    }
+    let tail = bytes[end - 1];
+
+    if is_ident_byte(tail) {
+        let mut start = end;
+        while start > 0 && is_ident_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        if start == end {
+            return None;
+        }
+        let ident = text[start..end].to_string();
+        let left = completion_skip_ws_left(bytes, start);
+        if left > 0 && bytes[left - 1] == b'.' {
+            return completion_receiver_base(text, left - 1);
+        }
+        return Some(ident);
+    }
+
+    if tail == b')' {
+        let open = completion_find_matching_left(bytes, end - 1, b'(', b')')?;
+        let callee_end = completion_skip_ws_left(bytes, open);
+        if callee_end == 0 {
+            return None;
+        }
+        let mut callee_start = callee_end;
+        while callee_start > 0 && is_ident_byte(bytes[callee_start - 1]) {
+            callee_start -= 1;
+        }
+        if callee_start == callee_end {
+            return None;
+        }
+        let left = completion_skip_ws_left(bytes, callee_start);
+        if left == 0 || bytes[left - 1] != b'.' {
+            return None;
+        }
+        return completion_receiver_base(text, left - 1);
+    }
+
+    if tail == b']' {
+        let open = completion_find_matching_left(bytes, end - 1, b'[', b']')?;
+        return completion_receiver_base(text, open);
+    }
+
+    None
+}
+
+fn completion_skip_ws_left(bytes: &[u8], mut pos: usize) -> usize {
+    while pos > 0 && bytes[pos - 1].is_ascii_whitespace() {
+        pos -= 1;
+    }
+    pos
+}
+
+fn completion_find_matching_left(
+    bytes: &[u8],
+    close_idx: usize,
+    open_char: u8,
+    close_char: u8,
+) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut idx = close_idx + 1;
+    while idx > 0 {
+        idx -= 1;
+        let ch = bytes[idx];
+        if ch == close_char {
+            depth += 1;
+            continue;
+        }
+        if ch == open_char {
+            if depth == 0 {
+                return None;
+            }
+            depth -= 1;
+            if depth == 0 {
+                return Some(idx);
+            }
+        }
+    }
+    None
+}
+
+fn completion_container_name(index: &WorkspaceIndex, uri: &str, offset: usize) -> Option<String> {
+    let mut best: Option<(&WorkspaceDef, usize)> = None;
+    for def in &index.defs {
+        if def.uri != uri || !is_callable_def_kind(def.def.kind) {
+            continue;
+        }
+        if !span_contains(def.def.span, offset) {
+            continue;
+        }
+        let size = def.def.span.end.saturating_sub(def.def.span.start);
+        if best.map_or(true, |(_, best_size)| size < best_size) {
+            best = Some((def, size));
+        }
+    }
+    best.map(|(def, _)| def.def.name.clone())
+}
+
+fn completion_callable_name_at_cursor(program: &Program, cursor: usize) -> Option<String> {
+    let mut best: Option<(String, usize)> = None;
+
+    for item in &program.items {
+        match item {
+            Item::Fn(decl) => {
+                if span_contains(decl.body.span, cursor) {
+                    let size = decl.body.span.end.saturating_sub(decl.body.span.start);
+                    if best.as_ref().map_or(true, |(_, best_size)| size < *best_size) {
+                        best = Some((decl.name.name.clone(), size));
+                    }
+                }
+            }
+            Item::Service(decl) => {
+                for route in &decl.routes {
+                    if span_contains(route.body.span, cursor) {
+                        let size = route.body.span.end.saturating_sub(route.body.span.start);
+                        if best.as_ref().map_or(true, |(_, best_size)| size < *best_size) {
+                            best = Some((decl.name.name.clone(), size));
+                        }
+                    }
+                }
+            }
+            Item::App(decl) => {
+                if span_contains(decl.body.span, cursor) {
+                    let size = decl.body.span.end.saturating_sub(decl.body.span.start);
+                    if best.as_ref().map_or(true, |(_, best_size)| size < *best_size) {
+                        best = Some((decl.name.value.clone(), size));
+                    }
+                }
+            }
+            Item::Migration(decl) => {
+                if span_contains(decl.body.span, cursor) {
+                    let size = decl.body.span.end.saturating_sub(decl.body.span.start);
+                    if best.as_ref().map_or(true, |(_, best_size)| size < *best_size) {
+                        best = Some((decl.name.clone(), size));
+                    }
+                }
+            }
+            Item::Test(decl) => {
+                if span_contains(decl.body.span, cursor) {
+                    let size = decl.body.span.end.saturating_sub(decl.body.span.start);
+                    if best.as_ref().map_or(true, |(_, best_size)| size < *best_size) {
+                        best = Some((decl.name.value.clone(), size));
+                    }
+                }
+            }
+            Item::Import(_) | Item::Type(_) | Item::Enum(_) | Item::Config(_) => {}
+        }
+    }
+
+    best.map(|(name, _)| name)
+}
+
+fn completion_symbol_sort_group(
+    def: &WorkspaceDef,
+    uri: &str,
+    container: Option<&str>,
+) -> u8 {
+    if def.uri != uri {
+        return 2;
+    }
+    if is_lexical_local_symbol(&def.def) {
+        if container.is_some_and(|name| def.def.container.as_deref() == Some(name)) {
+            return 0;
+        }
+        return 1;
+    }
+    1
+}
+
+fn is_lexical_local_symbol(def: &SymbolDef) -> bool {
+    if !matches!(def.kind, SymbolKind::Param | SymbolKind::Variable) {
+        return false;
+    }
+    def.detail.starts_with("param ")
+        || def.detail.starts_with("let ")
+        || def.detail.starts_with("var ")
 }
 
 fn completion_kind_for_symbol_kind(kind: SymbolKind) -> u32 {
@@ -4497,13 +4681,20 @@ impl<'a> IndexBuilder<'a> {
 
     fn visit_fn_decl(&mut self, decl: &FnDecl) {
         self.enter_scope();
+        let container = self.current_container();
         for param in &decl.params {
             let detail = format!(
                 "param {}: {}",
                 param.name.name,
                 self.type_ref_text(&param.ty)
             );
-            let def_id = self.define_local(&param.name, SymbolKind::Param, detail, None, None);
+            let def_id = self.define_local(
+                &param.name,
+                SymbolKind::Param,
+                detail,
+                None,
+                container.clone(),
+            );
             self.insert_local(&param.name.name, def_id);
             self.visit_type_ref(&param.ty);
             if let Some(expr) = &param.default {
@@ -4537,6 +4728,7 @@ impl<'a> IndexBuilder<'a> {
     }
 
     fn visit_service_decl(&mut self, decl: &ServiceDecl) {
+        let container = self.current_container();
         for route in &decl.routes {
             self.visit_type_ref(&route.ret_type);
             if let Some(body_ty) = &route.body_type {
@@ -4546,12 +4738,13 @@ impl<'a> IndexBuilder<'a> {
             if let Some(body_ty) = &route.body_type {
                 let detail = format!("param body: {}", self.type_ref_text(body_ty));
                 let span = route.body_span.unwrap_or(body_ty.span);
-                let def_id = self.define_span_decl(
+                let def_id = self.define_span_decl_with_container(
                     span,
                     "body".to_string(),
                     SymbolKind::Param,
                     detail,
                     None,
+                    container.clone(),
                 );
                 self.insert_local("body", def_id);
             }
@@ -4573,6 +4766,7 @@ impl<'a> IndexBuilder<'a> {
     }
 
     fn visit_stmt(&mut self, stmt: &Stmt) {
+        let container = self.current_container();
         match &stmt.kind {
             StmtKind::Let { name, ty, expr } => {
                 if let Some(ty) = ty {
@@ -4583,7 +4777,8 @@ impl<'a> IndexBuilder<'a> {
                     Some(ty) => format!("let {}: {}", name.name, self.type_ref_text(ty)),
                     None => format!("let {}", name.name),
                 };
-                let def_id = self.define_local(name, SymbolKind::Variable, detail, None, None);
+                let def_id =
+                    self.define_local(name, SymbolKind::Variable, detail, None, container.clone());
                 self.insert_local(&name.name, def_id);
             }
             StmtKind::Var { name, ty, expr } => {
@@ -4595,7 +4790,8 @@ impl<'a> IndexBuilder<'a> {
                     Some(ty) => format!("var {}: {}", name.name, self.type_ref_text(ty)),
                     None => format!("var {}", name.name),
                 };
-                let def_id = self.define_local(name, SymbolKind::Variable, detail, None, None);
+                let def_id =
+                    self.define_local(name, SymbolKind::Variable, detail, None, container.clone());
                 self.insert_local(&name.name, def_id);
             }
             StmtKind::Assign { target, expr } => {
@@ -4761,7 +4957,13 @@ impl<'a> IndexBuilder<'a> {
             PatternKind::Wildcard | PatternKind::Literal(_) => {}
             PatternKind::Ident(ident) => {
                 let detail = format!("let {}", ident.name);
-                let def_id = self.define_local(ident, SymbolKind::Variable, detail, None, None);
+                let def_id = self.define_local(
+                    ident,
+                    SymbolKind::Variable,
+                    detail,
+                    None,
+                    self.current_container(),
+                );
                 self.insert_local(&ident.name, def_id);
             }
             PatternKind::EnumVariant { name, args } => {
@@ -4905,6 +5107,18 @@ impl<'a> IndexBuilder<'a> {
         detail: String,
         doc: Option<&Doc>,
     ) -> usize {
+        self.define_span_decl_with_container(span, name, kind, detail, doc, None)
+    }
+
+    fn define_span_decl_with_container(
+        &mut self,
+        span: Span,
+        name: String,
+        kind: SymbolKind,
+        detail: String,
+        doc: Option<&Doc>,
+        container: Option<String>,
+    ) -> usize {
         let doc = doc.cloned();
         let def_id = self.defs.len();
         self.defs.push(SymbolDef {
@@ -4913,7 +5127,7 @@ impl<'a> IndexBuilder<'a> {
             kind,
             detail,
             doc,
-            container: None,
+            container,
         });
         def_id
     }
@@ -4973,6 +5187,11 @@ impl<'a> IndexBuilder<'a> {
 
     fn type_ref_text(&self, ty: &TypeRef) -> String {
         self.slice_span(ty.span).trim().to_string()
+    }
+
+    fn current_container(&self) -> Option<String> {
+        let id = self.current_callable?;
+        self.defs.get(id).map(|def| def.name.clone())
     }
 
     fn slice_span(&self, span: Span) -> String {
