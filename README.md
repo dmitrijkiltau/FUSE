@@ -167,6 +167,7 @@ Generate docs guides from commented FUSE sources:
 - `CONTRIBUTING.md` - contribution standards, required checks, and RFC criteria
 - `GOVERNANCE.md` - maintainer roles, escalation path, and decision model
 - `CODE_OF_CONDUCT.md` - contributor behavior and moderation policy
+- `SECURITY.md` - vulnerability disclosure and response policy
 - `rfcs/README.md` - RFC lifecycle and indexing
 - `rfcs/0000-template.md` - RFC authoring template
 - `.github/pull_request_template.md` - PR checklist and review contract

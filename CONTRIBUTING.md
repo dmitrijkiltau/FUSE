@@ -96,6 +96,9 @@ Use the issue templates to keep reports actionable:
 - `.github/ISSUE_TEMPLATE/bug_report.md`
 - `.github/ISSUE_TEMPLATE/language_change_rfc.md`
 
+Security vulnerabilities should not be reported through public issues. Use the private reporting
+path documented in `SECURITY.md`.
+
 ## Commit and review hygiene
 
 - Keep PRs focused and small enough to review.
