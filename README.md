@@ -134,6 +134,13 @@ Build distributable binaries:
 ./scripts/build_dist.sh
 ```
 
+Generate docs guides from commented FUSE sources:
+
+```
+./scripts/generate_guide_docs.sh
+./scripts/fuse build --manifest-path docs
+```
+
 ## Repo structure
 
 - `crates/fusec` - compiler, parser/sema, VM, native runtime/JIT, LSP

@@ -7,6 +7,14 @@ service DocsApi at "/":
   get "/" -> Html:
     return home_page()
 
+  # Generated onboarding guide
+  get "/specs/onboarding" -> Html:
+    return spec_page("onboarding", "Onboarding Guide")
+
+  # Generated boundary-contract guide
+  get "/specs/boundary-contracts" -> Html:
+    return spec_page("boundary-contracts", "Boundary Contracts")
+
   # Canonical reference page
   get "/specs/reference" -> Html:
     return spec_page("reference", "Developer Reference")
@@ -21,5 +29,7 @@ service DocsApi at "/":
 
   get "/api/specs" -> List<Map<String, String>>:
     return [
+      {"slug": "onboarding", "label": "Onboarding Guide", "file": "site/specs/onboarding.md"},
+      {"slug": "boundary-contracts", "label": "Boundary Contracts", "file": "site/specs/boundary-contracts.md"},
       {"slug": "reference", "label": "Developer Reference", "file": "site/specs/reference.md"}
     ]

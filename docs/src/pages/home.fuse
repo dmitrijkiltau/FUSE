@@ -39,6 +39,12 @@ fn home_page() -> Html:
     section(class="quick-links"):
       h2(): "Documentation"
       div(class="card-grid"):
+        a(href="/specs/onboarding", class="card"):
+          h3(): "Onboarding Guide"
+          p(): "Generated from FUSE source comments and code snippets."
+        a(href="/specs/boundary-contracts", class="card"):
+          h3(): "Boundary Contracts"
+          p(): "Typed request/response boundaries and error mapping patterns."
         a(href="/specs/reference", class="card"):
           h3(): "Developer Reference"
           p(): "Language, runtime, and tooling behavior in one place."

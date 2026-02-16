@@ -1,6 +1,7 @@
 # FUSE Developer Reference
 
 This document is the reference for building applications with FUSE.
+If you are new to FUSE, start with [Onboarding Guide](onboarding.md) and [Boundary Contracts](boundary-contracts.md) before this reference.
 
 ---
 
@@ -139,7 +140,7 @@ Type notes:
 - `Bytes` is base64 text at JSON/config/CLI boundaries
 - `Html` responses are rendered as text
 - runtime `Map<K,V>` requires `K = String`
-- `Result<T,E>` is not JSON-decodable
+- `Result<T,E>` uses tagged JSON decode (`{"type":"Ok"|"Err","data":...}`)
 
 ### Errors and HTTP status mapping
 
