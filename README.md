@@ -149,10 +149,6 @@ Generate docs guides from commented FUSE sources:
 - `docs/` - docs site package (UI, assets, and docs app)
 - `tools/vscode` - VS Code extension assets
 
-## License
-
-Apache-2.0. See `LICENSE`.
-
 ## Specs
 
 - `IDENTITY_CHARTER.md` - language identity, hard boundaries, and explicit non-goals
@@ -164,3 +160,18 @@ Apache-2.0. See `LICENSE`.
 - `LSP_ROADMAP.md` - editor/LSP capability baseline and follow-up plan
 - `BENCHMARKS.md` - real-world workload matrix and benchmark metric definitions
 - `VERSIONING_POLICY.md` - language/runtime/tooling compatibility and deprecation policy
+- `CONTRIBUTING.md` - contribution workflow, review standards, and RFC requirements
+
+## Contributing
+
+- `CONTRIBUTING.md` - contribution standards, required checks, and RFC criteria
+- `GOVERNANCE.md` - maintainer roles, escalation path, and decision model
+- `CODE_OF_CONDUCT.md` - contributor behavior and moderation policy
+- `rfcs/README.md` - RFC lifecycle and indexing
+- `rfcs/0000-template.md` - RFC authoring template
+- `.github/pull_request_template.md` - PR checklist and review contract
+- `.github/ISSUE_TEMPLATE/` - issue intake templates for bugs and RFC-track proposals
+
+## License
+
+Apache-2.0. See `LICENSE`.
