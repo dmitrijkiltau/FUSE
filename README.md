@@ -140,6 +140,12 @@ Build distributable binaries:
 ./scripts/build_dist.sh
 ```
 
+Package VS Code extension payload with bundled `fuse-lsp`:
+
+```
+./scripts/package_vscode_extension.sh --platform linux-x64
+```
+
 Generate docs guides from commented FUSE sources:
 
 ```

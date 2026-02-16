@@ -49,4 +49,5 @@ LSP-specific gates:
   - completion ranking coverage (`lsp_completion_rank.rs`)
   - member-chain/import-aware completion coverage (`lsp_completion_member.rs`)
   - code-action quickfix/organize coverage (`lsp_code_actions.rs`)
+  - VS Code extension LSP binary path-resolution checks (`scripts/verify_vscode_lsp_resolution.sh`)
   - end-to-end UX smoke (`lsp_ux.rs`)

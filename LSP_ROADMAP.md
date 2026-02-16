@@ -25,6 +25,8 @@ Server: `crates/fusec/src/bin/fuse-lsp.rs`
 Client: `tools/vscode/`
 
 - VS Code extension starts `fuse-lsp` with workspace/dist/bundled path resolution
+- scriptable packaging workflow: `scripts/package_vscode_extension.sh`
+- resolver verification gate: `scripts/verify_vscode_lsp_resolution.sh`
 - TextMate grammar for `.fuse` syntax highlighting
 - semantic highlighting enabled by default for `[fuse]`
 
@@ -32,6 +34,7 @@ Validation:
 
 - `scripts/cargo_env.sh cargo test -p fusec --test lsp_ux`
 - `scripts/cargo_env.sh cargo test -p fusec --test lsp_code_actions`
+- `scripts/verify_vscode_lsp_resolution.sh`
 - `scripts/lsp_suite.sh`
 - `scripts/cargo_env.sh cargo test -p fusec`
 
@@ -47,4 +50,4 @@ For the current phase, editor support means:
 
 ## Next improvements (planned)
 
-1. Extension packaging workflow for platform-specific bundled `fuse-lsp` binaries.
+1. Performance/reliability hardening for larger workspaces and cancellation-heavy request bursts.

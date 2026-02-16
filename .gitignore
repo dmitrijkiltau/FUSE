@@ -8,6 +8,7 @@ tmp/
 logs/
 .fuse/
 dist/
+tools/vscode/bin/
 build/app
 *.log
 *.tmp
