@@ -7,19 +7,22 @@ step() {
   printf "\n[%s] %s\n" "$1" "$2"
 }
 
-step "1/5" "Run focused LSP contract tests"
+step "1/6" "Run focused LSP contract tests"
 "$ROOT/scripts/cargo_env.sh" cargo test -p fusec --test lsp_contracts
 
-step "2/5" "Run signature-help integration tests"
+step "2/6" "Run navigation/refactor integration tests"
+"$ROOT/scripts/cargo_env.sh" cargo test -p fusec --test lsp_navigation_refactor
+
+step "3/6" "Run signature-help integration tests"
 "$ROOT/scripts/cargo_env.sh" cargo test -p fusec --test lsp_signature_help
 
-step "3/5" "Run completion ranking integration tests"
+step "4/6" "Run completion ranking integration tests"
 "$ROOT/scripts/cargo_env.sh" cargo test -p fusec --test lsp_completion_rank
 
-step "4/5" "Run member completion integration tests"
+step "5/6" "Run member completion integration tests"
 "$ROOT/scripts/cargo_env.sh" cargo test -p fusec --test lsp_completion_member
 
-step "5/5" "Run end-to-end LSP UX smoke test"
+step "6/6" "Run end-to-end LSP UX smoke test"
 "$ROOT/scripts/cargo_env.sh" cargo test -p fusec --test lsp_ux
 
 printf "\nlsp suite checks passed\n"

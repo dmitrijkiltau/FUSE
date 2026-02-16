@@ -44,6 +44,7 @@ LSP-specific gates:
 
 - `scripts/lsp_suite.sh` runs:
   - focused LSP contract tests (`lsp_contracts.rs`)
+  - navigation/refactor safety coverage (`lsp_navigation_refactor.rs`)
   - signature help coverage (`lsp_signature_help.rs`)
   - completion ranking coverage (`lsp_completion_rank.rs`)
   - member-chain/import-aware completion coverage (`lsp_completion_member.rs`)

@@ -198,6 +198,11 @@ fn main() -> io::Result<()> {
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
+            Some("textDocument/prepareRename") => {
+                let result = handle_prepare_rename(&state, &obj);
+                let response = json_response(id, result);
+                write_message(&mut stdout, &response)?;
+            }
             Some("textDocument/references") => {
                 let result = handle_references(&state, &obj);
                 let response = json_response(id, result);
@@ -285,7 +290,12 @@ fn capabilities_result() -> JsonValue {
         "completionProvider".to_string(),
         JsonValue::Object(completion_provider),
     );
-    caps.insert("renameProvider".to_string(), JsonValue::Bool(true));
+    let mut rename_provider = BTreeMap::new();
+    rename_provider.insert("prepareProvider".to_string(), JsonValue::Bool(true));
+    caps.insert(
+        "renameProvider".to_string(),
+        JsonValue::Object(rename_provider),
+    );
     caps.insert("referencesProvider".to_string(), JsonValue::Bool(true));
     caps.insert("callHierarchyProvider".to_string(), JsonValue::Bool(true));
     let mut code_action = BTreeMap::new();
@@ -1882,7 +1892,7 @@ fn handle_rename(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonVal
     let Some(new_name) = extract_new_name(obj) else {
         return JsonValue::Null;
     };
-    if !is_valid_ident(&new_name) {
+    if !is_valid_ident(&new_name) || is_keyword_or_literal(&new_name) {
         return JsonValue::Null;
     }
     let index = match build_workspace_index(state, &uri) {
@@ -1892,6 +1902,9 @@ fn handle_rename(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonVal
     let Some(def) = index.definition_at(&uri, line, character) else {
         return JsonValue::Null;
     };
+    if !is_renamable_symbol_kind(def.def.kind) {
+        return JsonValue::Null;
+    }
     let edits = index.rename_edits(def.id, &new_name);
     if edits.is_empty() {
         return JsonValue::Null;
@@ -1903,6 +1916,67 @@ fn handle_rename(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonVal
     let mut root = BTreeMap::new();
     root.insert("changes".to_string(), JsonValue::Object(changes));
     JsonValue::Object(root)
+}
+
+fn handle_prepare_rename(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+    let Some((uri, line, character)) = extract_position(obj) else {
+        return JsonValue::Null;
+    };
+    let index = match build_workspace_index(state, &uri) {
+        Some(index) => index,
+        None => return JsonValue::Null,
+    };
+    let Some(def) = index.definition_at(&uri, line, character) else {
+        return JsonValue::Null;
+    };
+    if !is_renamable_symbol_kind(def.def.kind) {
+        return JsonValue::Null;
+    }
+    let Some(text) = index.file_text(&uri) else {
+        return JsonValue::Null;
+    };
+    let offsets = line_offsets(text);
+    let offset = line_col_to_offset(text, &offsets, line, character);
+    let Some(span) = rename_span_at_position(&index, &uri, offset, def.id) else {
+        return JsonValue::Null;
+    };
+
+    let mut out = BTreeMap::new();
+    out.insert("range".to_string(), span_range_json(text, span));
+    out.insert(
+        "placeholder".to_string(),
+        JsonValue::String(def.def.name.clone()),
+    );
+    JsonValue::Object(out)
+}
+
+fn rename_span_at_position(
+    index: &WorkspaceIndex,
+    uri: &str,
+    offset: usize,
+    def_id: usize,
+) -> Option<Span> {
+    let mut best_ref: Option<(Span, usize)> = None;
+    for reference in &index.refs {
+        if reference.uri != uri || reference.target != def_id {
+            continue;
+        }
+        if !span_contains(reference.span, offset) {
+            continue;
+        }
+        let size = reference.span.end.saturating_sub(reference.span.start);
+        if best_ref.map_or(true, |(_, best_size)| size < best_size) {
+            best_ref = Some((reference.span, size));
+        }
+    }
+    if let Some((span, _)) = best_ref {
+        return Some(span);
+    }
+    let def = index.def_for_target(def_id)?;
+    if def.uri == uri && span_contains(def.def.span, offset) {
+        return Some(def.def.span);
+    }
+    None
 }
 
 fn handle_code_action(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
@@ -3347,6 +3421,25 @@ fn is_valid_ident(name: &str) -> bool {
     chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
+fn is_keyword_or_literal(name: &str) -> bool {
+    COMPLETION_KEYWORDS.contains(&name) || matches!(name, "true" | "false" | "null")
+}
+
+fn is_renamable_symbol_kind(kind: SymbolKind) -> bool {
+    matches!(
+        kind,
+        SymbolKind::Module
+            | SymbolKind::Type
+            | SymbolKind::Enum
+            | SymbolKind::EnumVariant
+            | SymbolKind::Function
+            | SymbolKind::Config
+            | SymbolKind::Param
+            | SymbolKind::Variable
+            | SymbolKind::Field
+    )
+}
+
 struct Index {
     defs: Vec<SymbolDef>,
     refs: Vec<SymbolRef>,
@@ -3589,6 +3682,7 @@ impl WorkspaceIndex {
     }
 
     fn reference_locations(&self, def_id: usize, include_declaration: bool) -> Vec<JsonValue> {
+        let related_targets = self.related_targets_for_def(def_id);
         let mut out = Vec::new();
         let mut seen = HashSet::new();
         if include_declaration {
@@ -3602,7 +3696,7 @@ impl WorkspaceIndex {
             }
         }
         for reference in &self.refs {
-            if reference.target != def_id {
+            if !related_targets.contains(&reference.target) {
                 continue;
             }
             let key = (
@@ -3618,6 +3712,19 @@ impl WorkspaceIndex {
             };
             out.push(location_json(&reference.uri, text, reference.span));
         }
+        for call in &self.calls {
+            if !related_targets.contains(&call.to) {
+                continue;
+            }
+            let key = (call.uri.clone(), call.span.start, call.span.end);
+            if !seen.insert(key) {
+                continue;
+            }
+            let Some(text) = self.file_text(&call.uri) else {
+                continue;
+            };
+            out.push(location_json(&call.uri, text, call.span));
+        }
         out
     }
 
@@ -3627,9 +3734,10 @@ impl WorkspaceIndex {
     }
 
     fn incoming_calls(&self, target: usize) -> Vec<(usize, Vec<WorkspaceCall>)> {
+        let related_targets = self.related_targets_for_def(target);
         let mut grouped: HashMap<usize, Vec<WorkspaceCall>> = HashMap::new();
         for call in &self.calls {
-            if call.to != target {
+            if !related_targets.contains(&call.to) {
                 continue;
             }
             grouped.entry(call.from).or_default().push(call.clone());
@@ -3688,6 +3796,50 @@ impl WorkspaceIndex {
     fn file_text(&self, uri: &str) -> Option<&str> {
         let idx = *self.file_by_uri.get(uri)?;
         Some(self.files[idx].text.as_str())
+    }
+
+    fn resolve_redirect_target(&self, mut target: usize) -> usize {
+        while let Some(next) = self.redirects.get(&target) {
+            if *next == target {
+                break;
+            }
+            target = *next;
+        }
+        target
+    }
+
+    fn related_targets_for_def(&self, def_id: usize) -> HashSet<usize> {
+        let mut related = HashSet::new();
+        related.insert(def_id);
+        let Some(def) = self.def_for_target(def_id) else {
+            return related;
+        };
+
+        for (from, to) in &self.redirects {
+            if self.resolve_redirect_target(*to) == def_id {
+                related.insert(*from);
+            }
+        }
+
+        if matches!(
+            def.def.kind,
+            SymbolKind::Function
+                | SymbolKind::Type
+                | SymbolKind::Enum
+                | SymbolKind::Config
+                | SymbolKind::Service
+                | SymbolKind::App
+                | SymbolKind::Migration
+                | SymbolKind::Test
+        ) {
+            let import_detail = format!("import {}", def.def.name);
+            for cand in &self.defs {
+                if cand.def.kind == SymbolKind::Variable && cand.def.detail == import_detail {
+                    related.insert(cand.id);
+                }
+            }
+        }
+        related
     }
 }
 
@@ -4042,6 +4194,15 @@ fn build_workspace_from_registry(
             }
             call.to = *next;
         }
+        if let Some(to_def) = defs.get(call.to) {
+            if to_def.def.kind == SymbolKind::Variable {
+                if let Some(import_name) = import_binding_name(&to_def.def.detail) {
+                    if let Some(mapped) = unique_callable_target_by_name(&defs, import_name) {
+                        call.to = mapped;
+                    }
+                }
+            }
+        }
     }
     calls.retain(|call| {
         let Some(from) = defs.get(call.from) else {
@@ -4062,6 +4223,24 @@ fn build_workspace_from_registry(
         module_alias_exports,
         redirects,
     })
+}
+
+fn import_binding_name(detail: &str) -> Option<&str> {
+    detail.strip_prefix("import ").map(str::trim).filter(|s| !s.is_empty())
+}
+
+fn unique_callable_target_by_name(defs: &[WorkspaceDef], name: &str) -> Option<usize> {
+    let mut match_id = None;
+    for def in defs {
+        if !is_callable_def_kind(def.def.kind) || def.def.name != name {
+            continue;
+        }
+        if match_id.is_some() {
+            return None;
+        }
+        match_id = Some(def.id);
+    }
+    match_id
 }
 
 fn is_exported_def_kind(kind: SymbolKind) -> bool {

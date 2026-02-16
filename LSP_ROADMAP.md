@@ -10,6 +10,7 @@ Server: `crates/fusec/src/bin/fuse-lsp.rs`
 - formatting (`textDocument/formatting`)
 - definition/hover/references
 - rename refactor (`textDocument/rename`)
+- rename refactor safety (`textDocument/prepareRename`)
 - code actions (quick fixes + organize imports)
 - semantic tokens (full + range)
 - inlay hints
