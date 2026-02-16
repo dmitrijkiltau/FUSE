@@ -26,6 +26,7 @@ Client: `tools/vscode/`
 Validation:
 
 - `scripts/cargo_env.sh cargo test -p fusec --test lsp_ux`
+- `scripts/lsp_suite.sh`
 - `scripts/cargo_env.sh cargo test -p fusec`
 
 ## Scope contract for editor support

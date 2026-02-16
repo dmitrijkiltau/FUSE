@@ -39,3 +39,7 @@ Command gates:
 
 The remaining files are backend smoke, performance-smoke, UX, ABI, and integration checks.
 They are valuable for regressions but are not the primary semantic contract gate.
+
+LSP-specific gates:
+
+- `scripts/lsp_suite.sh` runs focused LSP contract tests (`lsp_contracts.rs`) plus end-to-end UX smoke (`lsp_ux.rs`).

@@ -108,6 +108,12 @@ Run semantic contract suite:
 ./scripts/semantic_suite.sh
 ```
 
+Run LSP contract + UX suite:
+
+```
+./scripts/lsp_suite.sh
+```
+
 Run real-world benchmark/use-case harness:
 
 ```
