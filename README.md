@@ -107,6 +107,12 @@ Run semantic contract suite:
 ./scripts/semantic_suite.sh
 ```
 
+Run real-world benchmark/use-case harness:
+
+```
+./scripts/use_case_bench.sh
+```
+
 Run all `fuse` CLI tests:
 
 ```
@@ -148,3 +154,4 @@ Apache-2.0. See `LICENSE`.
 - `scope.md` - project scope and non-goals
 - `EXTENSIBILITY_BOUNDARIES.md` - allowed/disallowed extension surfaces and stability tiers
 - `LSP_ROADMAP.md` - editor/LSP capability baseline and follow-up plan
+- `BENCHMARKS.md` - real-world workload matrix and benchmark metric definitions

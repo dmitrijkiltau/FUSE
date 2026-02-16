@@ -8,6 +8,7 @@ Companion references for implementation work:
 - `fuse.md` gives the product-level overview
 - `IDENTITY_CHARTER.md` defines non-negotiable language identity boundaries
 - `EXTENSIBILITY_BOUNDARIES.md` defines allowed extension surfaces and stability boundaries
+- `BENCHMARKS.md` defines real-world workload benchmarks and metric collection
 - `fls.md` specifies language and static-semantics details
 - `runtime.md` specifies execution/runtime behavior
 
