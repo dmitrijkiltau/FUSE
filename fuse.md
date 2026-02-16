@@ -17,6 +17,7 @@ Primary references while working in this codebase:
 - `scope.md` defines constraints, roadmap priorities, and explicit non-goals.
 - `EXTENSIBILITY_BOUNDARIES.md` defines allowed extension surfaces and stability boundaries.
 - `BENCHMARKS.md` defines real-world workload benchmarks and metric collection.
+- `VERSIONING_POLICY.md` defines language/runtime/tooling versioning and compatibility guarantees.
 
 If a detail appears in multiple docs, treat `IDENTITY_CHARTER.md` as authoritative for identity/scope boundaries, `fls.md` for syntax/static rules, and `runtime.md` for runtime behavior.
 

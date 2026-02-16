@@ -9,6 +9,7 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
   - `fls.md`
   - `scope.md`
   - `runtime.md`
+- Enforce version bump and compatibility rules from `VERSIONING_POLICY.md`.
 - Features marked planned/unsupported stay out of release criteria.
 
 ## Prerequisites

@@ -16,6 +16,7 @@ For `0.1.x`, compatibility is defined by currently documented supported behavior
 - `fls.md` (syntax + static semantics)
 - `runtime.md` (runtime semantics + boundary behavior)
 - `scope.md` (project constraints and non-goals)
+- `VERSIONING_POLICY.md` (versioning, compatibility, and deprecation rules)
 
 ## Requirements
 
@@ -155,3 +156,4 @@ Apache-2.0. See `LICENSE`.
 - `EXTENSIBILITY_BOUNDARIES.md` - allowed/disallowed extension surfaces and stability tiers
 - `LSP_ROADMAP.md` - editor/LSP capability baseline and follow-up plan
 - `BENCHMARKS.md` - real-world workload matrix and benchmark metric definitions
+- `VERSIONING_POLICY.md` - language/runtime/tooling compatibility and deprecation policy

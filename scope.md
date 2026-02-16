@@ -9,6 +9,7 @@ Companion references for implementation work:
 - `IDENTITY_CHARTER.md` defines non-negotiable language identity boundaries
 - `EXTENSIBILITY_BOUNDARIES.md` defines allowed extension surfaces and stability boundaries
 - `BENCHMARKS.md` defines real-world workload benchmarks and metric collection
+- `VERSIONING_POLICY.md` defines language/runtime/tooling compatibility and deprecation rules
 - `fls.md` specifies language and static-semantics details
 - `runtime.md` specifies execution/runtime behavior
 
