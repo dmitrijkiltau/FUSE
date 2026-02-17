@@ -104,14 +104,14 @@ fn main():
     assert!(lsp.wait_diagnostics(&main_uri).is_empty());
     assert_eq!(
         workspace_builds(&mut lsp),
-        2,
-        "document revision update should rebuild workspace once"
+        1,
+        "non-structural document revision should reuse workspace snapshot"
     );
 
     let _ = lsp.request("textDocument/completion", completion.clone());
     assert_eq!(
         workspace_builds(&mut lsp),
-        2,
+        1,
         "post-change index request should reuse rebuilt snapshot"
     );
 
@@ -119,15 +119,51 @@ fn main():
     assert!(lsp.wait_diagnostics(&util_uri).is_empty());
     assert_eq!(
         workspace_builds(&mut lsp),
-        3,
-        "non-entry module diagnostics should still use one workspace build"
+        1,
+        "non-entry module diagnostics should reuse workspace snapshot"
     );
 
     let _ = lsp.request("textDocument/completion", completion);
     assert_eq!(
         workspace_builds(&mut lsp),
-        3,
+        1,
         "main module completion should reuse manifest-rooted workspace built for util diagnostics"
+    );
+
+    let util_src_v2 = util_src.replacen("fn f0002", "fn g0002", 1);
+    lsp.change_document(&util_uri, &util_src_v2, 2);
+    assert!(lsp.wait_diagnostics(&util_uri).is_empty());
+    assert_eq!(
+        workspace_builds(&mut lsp),
+        2,
+        "export-shape changes should fall back to full workspace rebuild"
+    );
+
+    let _ = lsp.request(
+        "textDocument/completion",
+        completion_params(&main_uri, line, col + "util.".len()),
+    );
+    assert_eq!(
+        workspace_builds(&mut lsp),
+        2,
+        "post-fallback requests should reuse rebuilt workspace snapshot"
+    );
+
+    lsp.close_document(&util_uri);
+    assert_eq!(
+        workspace_builds(&mut lsp),
+        2,
+        "close should invalidate cache without forcing immediate rebuild"
+    );
+
+    let _ = lsp.request(
+        "textDocument/completion",
+        completion_params(&main_uri, line, col + "util.".len()),
+    );
+    assert_eq!(
+        workspace_builds(&mut lsp),
+        3,
+        "post-close request should rebuild once back to disk module state"
     );
 
     lsp.shutdown();

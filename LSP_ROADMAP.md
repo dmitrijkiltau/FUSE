@@ -24,6 +24,7 @@ Server: `crates/fusec/src/bin/fuse-lsp.rs`
 - workspace-index cache with invalidation on doc/root updates (reduces repeated workspace rebuilds)
 - shared workspace snapshot cache for diagnostics + index requests (single workspace load per document revision)
 - manifest-rooted entry resolution for non-entry files in workspace projects (improves cross-file cache reuse)
+- fine-grained module-level cache patching for non-structural edits with structural-change fallback reloads
 - cancellation handling validated for request bursts (`$/cancelRequest` contract)
 - responsiveness budgets validated for large multi-file completion workloads
 
@@ -58,4 +59,4 @@ For the current phase, editor support means:
 
 ## Next improvements (planned)
 
-1. Fine-grained module-level invalidation to avoid one full workspace load per document revision.
+1. Dependency-graph-aware partial relinking when import/export shape changes (reduce current full-reload fallback surface).

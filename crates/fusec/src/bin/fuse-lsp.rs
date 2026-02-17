@@ -141,8 +141,7 @@ fn main() -> io::Result<()> {
             Some("textDocument/didOpen") => {
                 if let Some(uri) = extract_text_doc_uri(&obj) {
                     if let Some(text) = extract_text_doc_text(&obj) {
-                        state.docs.insert(uri.clone(), text.clone());
-                        state.invalidate_workspace_cache();
+                        apply_doc_overlay_change(&mut state, &uri, Some(text.clone()));
                         publish_diagnostics(&mut stdout, &mut state, &uri, &text)?;
                     }
                 }
@@ -150,28 +149,25 @@ fn main() -> io::Result<()> {
             Some("textDocument/didChange") => {
                 if let Some(uri) = extract_text_doc_uri(&obj) {
                     if let Some(text) = extract_change_text(&obj) {
-                        state.docs.insert(uri.clone(), text.clone());
-                        state.invalidate_workspace_cache();
+                        apply_doc_overlay_change(&mut state, &uri, Some(text.clone()));
                         publish_diagnostics(&mut stdout, &mut state, &uri, &text)?;
                     }
                 }
             }
             Some("textDocument/didClose") => {
                 if let Some(uri) = extract_text_doc_uri(&obj) {
-                    state.docs.remove(&uri);
-                    state.invalidate_workspace_cache();
+                    apply_doc_overlay_change(&mut state, &uri, None);
                     publish_empty_diagnostics(&mut stdout, &uri)?;
                 }
             }
             Some("textDocument/formatting") => {
                 let mut edits = Vec::new();
                 if let Some(uri) = extract_text_doc_uri(&obj) {
-                    if let Some(text) = state.docs.get(&uri) {
-                        let formatted = fusec::format::format_source(text);
-                        if formatted != *text {
-                            edits.push(full_document_edit(text, &formatted));
-                            state.docs.insert(uri, formatted.clone());
-                            state.invalidate_workspace_cache();
+                    if let Some(text) = state.docs.get(&uri).cloned() {
+                        let formatted = fusec::format::format_source(&text);
+                        if formatted != text {
+                            edits.push(full_document_edit(&text, &formatted));
+                            apply_doc_overlay_change(&mut state, &uri, Some(formatted));
                         }
                     }
                 }
@@ -404,6 +400,143 @@ fn request_id_key(id: &JsonValue) -> Option<String> {
         JsonValue::String(value) => Some(value.clone()),
         _ => None,
     }
+}
+
+fn apply_doc_overlay_change(state: &mut LspState, uri: &str, text: Option<String>) {
+    if let Some(contents) = text.as_ref() {
+        state.docs.insert(uri.to_string(), contents.clone());
+    } else {
+        state.docs.remove(uri);
+    }
+    state.docs_revision = state.docs_revision.saturating_add(1);
+    if !try_incremental_module_update(state, uri, text.as_deref()) {
+        state.workspace_cache = None;
+    }
+}
+
+fn try_incremental_module_update(state: &mut LspState, uri: &str, text: Option<&str>) -> bool {
+    let Some(cache) = state.workspace_cache.as_mut() else {
+        return true;
+    };
+    cache.docs_revision = state.docs_revision;
+    let Some(path) = uri_to_path(uri) else {
+        return true;
+    };
+    let module_key = normalized_path(path.as_path());
+    if let Some(contents) = text {
+        cache
+            .snapshot
+            .overrides
+            .insert(module_key.clone(), contents.to_string());
+    } else {
+        cache.snapshot.overrides.remove(&module_key);
+    }
+    let Some(module_id) = cache.snapshot.module_ids_by_path.get(&module_key).copied() else {
+        return true;
+    };
+    let next_source = if let Some(contents) = text {
+        contents.to_string()
+    } else {
+        match std::fs::read_to_string(&module_key) {
+            Ok(contents) => contents,
+            Err(_) => return false,
+        }
+    };
+    let (next_program, mut parse_diags) = parse_source(&next_source);
+    for diag in &mut parse_diags {
+        diag.path = Some(module_key.clone());
+    }
+    let Some(unit) = cache.snapshot.registry.modules.get(&module_id) else {
+        return false;
+    };
+    if requires_full_workspace_reload(&unit.program, &next_program) {
+        return false;
+    }
+    let Some(unit) = cache.snapshot.registry.modules.get_mut(&module_id) else {
+        return false;
+    };
+    unit.program = next_program;
+    fusec::frontend::canonicalize::canonicalize_registry(&mut cache.snapshot.registry);
+    replace_loader_diags_for_module(&mut cache.snapshot.loader_diags, &module_key, parse_diags);
+    cache.snapshot.index = None;
+    true
+}
+
+fn replace_loader_diags_for_module(
+    loader_diags: &mut Vec<Diag>,
+    module_path: &Path,
+    next: Vec<Diag>,
+) {
+    loader_diags.retain(|diag| match diag.path.as_ref() {
+        Some(path) => normalized_path(path.as_path()) != module_path,
+        None => true,
+    });
+    loader_diags.extend(next);
+}
+
+fn requires_full_workspace_reload(previous: &Program, next: &Program) -> bool {
+    if has_unexpanded_type_derives(previous) || has_unexpanded_type_derives(next) {
+        return true;
+    }
+    module_import_signature(previous) != module_import_signature(next)
+        || module_export_signature(previous) != module_export_signature(next)
+}
+
+fn has_unexpanded_type_derives(program: &Program) -> bool {
+    program.items.iter().any(|item| match item {
+        Item::Type(decl) => decl.derive.is_some(),
+        _ => false,
+    })
+}
+
+fn module_import_signature(program: &Program) -> Vec<String> {
+    let mut imports = Vec::new();
+    for item in &program.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        imports.push(import_spec_signature(&decl.spec));
+    }
+    imports.sort();
+    imports
+}
+
+fn import_spec_signature(spec: &ImportSpec) -> String {
+    match spec {
+        ImportSpec::Module { name } => format!("module:{}", name.name),
+        ImportSpec::ModuleFrom { name, path } => {
+            format!("module_from:{}@{}", name.name, path.value)
+        }
+        ImportSpec::NamedFrom { names, path } => {
+            let mut symbols: Vec<String> = names.iter().map(|name| name.name.clone()).collect();
+            symbols.sort();
+            format!("named_from:{}@{}", symbols.join(","), path.value)
+        }
+        ImportSpec::AliasFrom { name, alias, path } => {
+            format!("alias_from:{}:{}@{}", name.name, alias.name, path.value)
+        }
+    }
+}
+
+fn module_export_signature(program: &Program) -> Vec<String> {
+    let mut exports = Vec::new();
+    for item in &program.items {
+        match item {
+            Item::Type(decl) => exports.push(format!("type:{}", decl.name.name)),
+            Item::Enum(decl) => exports.push(format!("enum:{}", decl.name.name)),
+            Item::Fn(decl) => exports.push(format!("fn:{}", decl.name.name)),
+            Item::Config(decl) => exports.push(format!("config:{}", decl.name.name)),
+            Item::Service(decl) => exports.push(format!("service:{}", decl.name.name)),
+            Item::App(decl) => exports.push(format!("app:{}", decl.name.value)),
+            _ => {}
+        }
+    }
+    exports.sort();
+    exports
+}
+
+fn normalized_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn workspace_stats_result(state: &LspState) -> JsonValue {
