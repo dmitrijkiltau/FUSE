@@ -114,6 +114,12 @@ Run LSP contract + UX suite:
 ./scripts/lsp_suite.sh
 ```
 
+Run dedicated LSP performance/reliability checks:
+
+```
+./scripts/lsp_perf_reliability.sh
+```
+
 Run real-world benchmark/use-case harness:
 
 ```
@@ -133,6 +139,7 @@ Release smoke checks:
 ```
 
 `release_smoke.sh` runs `authority_parity.sh` first and fails on any AST/VM/native semantic parity regression.
+It also includes the LSP suite gate (`scripts/lsp_suite.sh`).
 
 Build distributable binaries:
 

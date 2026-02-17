@@ -120,6 +120,7 @@ fn main() -> io::Result<()> {
         match method.as_deref() {
             Some("initialize") => {
                 state.root_uri = extract_root_uri(&obj);
+                state.invalidate_workspace_cache();
                 let result = capabilities_result();
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
@@ -141,6 +142,7 @@ fn main() -> io::Result<()> {
                 if let Some(uri) = extract_text_doc_uri(&obj) {
                     if let Some(text) = extract_text_doc_text(&obj) {
                         state.docs.insert(uri.clone(), text.clone());
+                        state.invalidate_workspace_cache();
                         publish_diagnostics(&mut stdout, &state, &uri, &text)?;
                     }
                 }
@@ -149,6 +151,7 @@ fn main() -> io::Result<()> {
                 if let Some(uri) = extract_text_doc_uri(&obj) {
                     if let Some(text) = extract_change_text(&obj) {
                         state.docs.insert(uri.clone(), text.clone());
+                        state.invalidate_workspace_cache();
                         publish_diagnostics(&mut stdout, &state, &uri, &text)?;
                     }
                 }
@@ -156,6 +159,7 @@ fn main() -> io::Result<()> {
             Some("textDocument/didClose") => {
                 if let Some(uri) = extract_text_doc_uri(&obj) {
                     state.docs.remove(&uri);
+                    state.invalidate_workspace_cache();
                     publish_empty_diagnostics(&mut stdout, &uri)?;
                 }
             }
@@ -167,6 +171,7 @@ fn main() -> io::Result<()> {
                         if formatted != *text {
                             edits.push(full_document_edit(text, &formatted));
                             state.docs.insert(uri, formatted.clone());
+                            state.invalidate_workspace_cache();
                         }
                     }
                 }
@@ -174,77 +179,77 @@ fn main() -> io::Result<()> {
                 write_message(&mut stdout, &response)?;
             }
             Some("textDocument/definition") => {
-                let result = handle_definition(&state, &obj);
+                let result = handle_definition(&mut state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("textDocument/hover") => {
-                let result = handle_hover(&state, &obj);
+                let result = handle_hover(&mut state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("textDocument/signatureHelp") => {
-                let result = handle_signature_help(&state, &obj);
+                let result = handle_signature_help(&mut state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("textDocument/completion") => {
-                let result = handle_completion(&state, &obj);
+                let result = handle_completion(&mut state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("textDocument/rename") => {
-                let result = handle_rename(&state, &obj);
+                let result = handle_rename(&mut state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("textDocument/prepareRename") => {
-                let result = handle_prepare_rename(&state, &obj);
+                let result = handle_prepare_rename(&mut state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("textDocument/references") => {
-                let result = handle_references(&state, &obj);
+                let result = handle_references(&mut state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("textDocument/prepareCallHierarchy") => {
-                let result = handle_prepare_call_hierarchy(&state, &obj);
+                let result = handle_prepare_call_hierarchy(&mut state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("callHierarchy/incomingCalls") => {
-                let result = handle_call_hierarchy_incoming(&state, &obj);
+                let result = handle_call_hierarchy_incoming(&mut state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("callHierarchy/outgoingCalls") => {
-                let result = handle_call_hierarchy_outgoing(&state, &obj);
+                let result = handle_call_hierarchy_outgoing(&mut state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("workspace/symbol") => {
-                let result = handle_workspace_symbol(&state, &obj);
+                let result = handle_workspace_symbol(&mut state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("textDocument/codeAction") => {
-                let result = handle_code_action(&state, &obj);
+                let result = handle_code_action(&mut state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("textDocument/semanticTokens/full") => {
-                let result = handle_semantic_tokens(&state, &obj);
+                let result = handle_semantic_tokens(&mut state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("textDocument/semanticTokens/range") => {
-                let result = handle_semantic_tokens_range(&state, &obj);
+                let result = handle_semantic_tokens_range(&mut state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
             Some("textDocument/inlayHint") => {
-                let result = handle_inlay_hints(&state, &obj);
+                let result = handle_inlay_hints(&mut state, &obj);
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
@@ -341,6 +346,21 @@ struct LspState {
     docs: BTreeMap<String, String>,
     root_uri: Option<String>,
     cancelled: HashSet<String>,
+    docs_revision: u64,
+    workspace_cache: Option<WorkspaceCache>,
+}
+
+impl LspState {
+    fn invalidate_workspace_cache(&mut self) {
+        self.docs_revision = self.docs_revision.saturating_add(1);
+        self.workspace_cache = None;
+    }
+}
+
+struct WorkspaceCache {
+    docs_revision: u64,
+    workspace_key: String,
+    index: WorkspaceIndex,
 }
 
 fn handle_cancel(state: &mut LspState, obj: &BTreeMap<String, JsonValue>) {
@@ -888,11 +908,11 @@ fn write_message(out: &mut impl Write, value: &JsonValue) -> io::Result<()> {
     out.flush()
 }
 
-fn handle_definition(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+fn handle_definition(state: &mut LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
     let Some((uri, line, character)) = extract_position(obj) else {
         return JsonValue::Null;
     };
-    let index = match build_workspace_index(state, &uri) {
+    let index = match build_workspace_index_cached(state, &uri) {
         Some(index) => index,
         None => return JsonValue::Null,
     };
@@ -906,11 +926,11 @@ fn handle_definition(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Jso
     JsonValue::Array(vec![location])
 }
 
-fn handle_hover(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+fn handle_hover(state: &mut LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
     let Some((uri, line, character)) = extract_position(obj) else {
         return JsonValue::Null;
     };
-    let index = match build_workspace_index(state, &uri) {
+    let index = match build_workspace_index_cached(state, &uri) {
         Some(index) => index,
         None => return JsonValue::Null,
     };
@@ -963,7 +983,7 @@ struct CallContext {
     active_arg: usize,
 }
 
-fn handle_signature_help(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+fn handle_signature_help(state: &mut LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
     let Some((uri, line, character)) = extract_position(obj) else {
         return JsonValue::Null;
     };
@@ -977,21 +997,21 @@ fn handle_signature_help(state: &LspState, obj: &BTreeMap<String, JsonValue>) ->
         return JsonValue::Null;
     };
 
-    let index = build_workspace_index(state, &uri);
+    let index = build_workspace_index_cached(state, &uri);
     let signature = match &call.target {
         SignatureTarget::Ident { name, span } => {
-            signature_info_for_symbol_ref(index.as_ref(), &uri, &offsets, *span)
+            signature_info_for_symbol_ref(index, &uri, &offsets, *span)
                 .or_else(|| builtin_signature_info(name))
         }
         SignatureTarget::Member { base, span } => {
-            signature_info_for_symbol_ref(index.as_ref(), &uri, &offsets, *span).or_else(|| {
+            signature_info_for_symbol_ref(index, &uri, &offsets, *span).or_else(|| {
                 base.as_deref()
                     .and_then(builtin_member_signature_info)
                     .or_else(|| base.as_deref().and_then(builtin_signature_info))
             })
         }
         SignatureTarget::Other { span } => {
-            signature_info_for_symbol_ref(index.as_ref(), &uri, &offsets, *span)
+            signature_info_for_symbol_ref(index, &uri, &offsets, *span)
         }
     };
 
@@ -1396,7 +1416,7 @@ struct CompletionCandidate {
     sort_group: u8,
 }
 
-fn handle_completion(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+fn handle_completion(state: &mut LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
     let Some((uri, line, character)) = extract_position(obj) else {
         return completion_list_json(Vec::new());
     };
@@ -1409,16 +1429,13 @@ fn handle_completion(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Jso
     let prefix = text.get(prefix_start..offset).unwrap_or_default();
     let member_base = completion_member_base(&text, prefix_start);
     let (program, _parse_diags) = parse_source(&text);
-    let index = build_workspace_index(state, &uri);
-    let current_container = completion_callable_name_at_cursor(&program, offset).or_else(|| {
-        index
-            .as_ref()
-            .and_then(|index| completion_container_name(index, &uri, offset))
-    });
+    let index = build_workspace_index_cached(state, &uri);
+    let current_container = completion_callable_name_at_cursor(&program, offset)
+        .or_else(|| index.and_then(|index| completion_container_name(index, &uri, offset)));
     let mut candidates: HashMap<String, CompletionCandidate> = HashMap::new();
 
     if let Some(base) = member_base {
-        if let Some(index) = &index {
+        if let Some(index) = index {
             for name in index.alias_exports_for_module(&uri, &base) {
                 let mut kind = 3u32;
                 let mut detail = None;
@@ -1445,7 +1462,7 @@ fn handle_completion(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Jso
             );
         }
     } else {
-        if let Some(index) = &index {
+        if let Some(index) = index {
             for def in &index.defs {
                 let sort_group =
                     completion_symbol_sort_group(def, &uri, current_container.as_deref());
@@ -1873,12 +1890,12 @@ fn builtin_receiver_methods(receiver: &str) -> &'static [&'static str] {
     }
 }
 
-fn handle_workspace_symbol(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+fn handle_workspace_symbol(state: &mut LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
     let query = extract_workspace_query(obj)
         .unwrap_or_default()
         .to_lowercase();
     let mut symbols = Vec::new();
-    let index = match build_workspace_index(state, "") {
+    let index = match build_workspace_index_cached(state, "") {
         Some(index) => index,
         None => return JsonValue::Array(Vec::new()),
     };
@@ -1896,7 +1913,7 @@ fn handle_workspace_symbol(state: &LspState, obj: &BTreeMap<String, JsonValue>) 
     JsonValue::Array(symbols)
 }
 
-fn handle_rename(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+fn handle_rename(state: &mut LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
     let Some((uri, line, character)) = extract_position(obj) else {
         return JsonValue::Null;
     };
@@ -1906,7 +1923,7 @@ fn handle_rename(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonVal
     if !is_valid_ident(&new_name) || is_keyword_or_literal(&new_name) {
         return JsonValue::Null;
     }
-    let index = match build_workspace_index(state, &uri) {
+    let index = match build_workspace_index_cached(state, &uri) {
         Some(index) => index,
         None => return JsonValue::Null,
     };
@@ -1929,11 +1946,11 @@ fn handle_rename(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonVal
     JsonValue::Object(root)
 }
 
-fn handle_prepare_rename(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+fn handle_prepare_rename(state: &mut LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
     let Some((uri, line, character)) = extract_position(obj) else {
         return JsonValue::Null;
     };
-    let index = match build_workspace_index(state, &uri) {
+    let index = match build_workspace_index_cached(state, &uri) {
         Some(index) => index,
         None => return JsonValue::Null,
     };
@@ -1948,7 +1965,7 @@ fn handle_prepare_rename(state: &LspState, obj: &BTreeMap<String, JsonValue>) ->
     };
     let offsets = line_offsets(text);
     let offset = line_col_to_offset(text, &offsets, line, character);
-    let Some(span) = rename_span_at_position(&index, &uri, offset, def.id) else {
+    let Some(span) = rename_span_at_position(index, &uri, offset, def.id) else {
         return JsonValue::Null;
     };
 
@@ -1990,7 +2007,7 @@ fn rename_span_at_position(
     None
 }
 
-fn handle_code_action(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+fn handle_code_action(state: &mut LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
     let Some(uri) = extract_text_doc_uri(obj) else {
         return JsonValue::Array(Vec::new());
     };
@@ -2002,7 +2019,7 @@ fn handle_code_action(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Js
     let Some(text) = text else {
         return JsonValue::Array(Vec::new());
     };
-    let index = match build_workspace_index(state, &uri) {
+    let index = match build_workspace_index_cached(state, &uri) {
         Some(index) => index,
         None => return JsonValue::Array(Vec::new()),
     };
@@ -2026,7 +2043,7 @@ fn handle_code_action(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Js
                     }
                 }
 
-                for module_path in import_candidates_for_symbol(&index, &uri, &symbol)
+                for module_path in import_candidates_for_symbol(index, &uri, &symbol)
                     .into_iter()
                     .take(8)
                 {
@@ -2045,7 +2062,7 @@ fn handle_code_action(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Js
         }
 
         if let Some((field, config)) = parse_unknown_field_on_type(&diag.message) {
-            for (title, edit) in missing_config_field_actions(&index, &config, &field) {
+            for (title, edit) in missing_config_field_actions(index, &config, &field) {
                 let key = format!("quickfix:{title}");
                 if seen.insert(key) {
                     actions.push(code_action_json(&title, "quickfix", edit));
@@ -2065,7 +2082,7 @@ fn handle_code_action(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Js
     JsonValue::Array(actions)
 }
 
-fn handle_semantic_tokens(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+fn handle_semantic_tokens(state: &mut LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
     let Some(uri) = extract_text_doc_uri(obj) else {
         return JsonValue::Null;
     };
@@ -2075,7 +2092,10 @@ fn handle_semantic_tokens(state: &LspState, obj: &BTreeMap<String, JsonValue>) -
     semantic_tokens_for_text(state, &uri, &text, None)
 }
 
-fn handle_semantic_tokens_range(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+fn handle_semantic_tokens_range(
+    state: &mut LspState,
+    obj: &BTreeMap<String, JsonValue>,
+) -> JsonValue {
     let Some(uri) = extract_text_doc_uri(obj) else {
         return JsonValue::Null;
     };
@@ -2087,13 +2107,13 @@ fn handle_semantic_tokens_range(state: &LspState, obj: &BTreeMap<String, JsonVal
 }
 
 fn semantic_tokens_for_text(
-    state: &LspState,
+    state: &mut LspState,
     uri: &str,
     text: &str,
     range: Option<Span>,
 ) -> JsonValue {
     let mut symbol_types: HashMap<(usize, usize), usize> = HashMap::new();
-    if let Some(index) = build_workspace_index(state, uri) {
+    if let Some(index) = build_workspace_index_cached(state, uri) {
         for def in &index.defs {
             if def.uri != uri {
                 continue;
@@ -2386,7 +2406,7 @@ fn is_builtin_type_name(name: &str) -> bool {
     )
 }
 
-fn handle_inlay_hints(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+fn handle_inlay_hints(state: &mut LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
     let Some(uri) = extract_text_doc_uri(obj) else {
         return JsonValue::Array(Vec::new());
     };
@@ -2401,7 +2421,7 @@ fn handle_inlay_hints(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Js
     {
         return JsonValue::Array(Vec::new());
     }
-    let index = match build_workspace_index(state, &uri) {
+    let index = match build_workspace_index_cached(state, &uri) {
         Some(index) => index,
         None => return JsonValue::Array(Vec::new()),
     };
@@ -2411,12 +2431,12 @@ fn handle_inlay_hints(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Js
     for item in &program.items {
         match item {
             Item::Fn(decl) => collect_inlay_hints_block(
-                &index, &uri, &text, &offsets, &decl.body, range, &mut hints, &mut seen,
+                index, &uri, &text, &offsets, &decl.body, range, &mut hints, &mut seen,
             ),
             Item::Service(decl) => {
                 for route in &decl.routes {
                     collect_inlay_hints_block(
-                        &index,
+                        index,
                         &uri,
                         &text,
                         &offsets,
@@ -2428,13 +2448,13 @@ fn handle_inlay_hints(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Js
                 }
             }
             Item::App(decl) => collect_inlay_hints_block(
-                &index, &uri, &text, &offsets, &decl.body, range, &mut hints, &mut seen,
+                index, &uri, &text, &offsets, &decl.body, range, &mut hints, &mut seen,
             ),
             Item::Migration(decl) => collect_inlay_hints_block(
-                &index, &uri, &text, &offsets, &decl.body, range, &mut hints, &mut seen,
+                index, &uri, &text, &offsets, &decl.body, range, &mut hints, &mut seen,
             ),
             Item::Test(decl) => collect_inlay_hints_block(
-                &index, &uri, &text, &offsets, &decl.body, range, &mut hints, &mut seen,
+                index, &uri, &text, &offsets, &decl.body, range, &mut hints, &mut seen,
             ),
             _ => {}
         }
@@ -2936,12 +2956,12 @@ struct SemanticTokenRow {
     token_type: usize,
 }
 
-fn handle_references(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+fn handle_references(state: &mut LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
     let Some((uri, line, character)) = extract_position(obj) else {
         return JsonValue::Null;
     };
     let include_declaration = extract_include_declaration(obj);
-    let index = match build_workspace_index(state, &uri) {
+    let index = match build_workspace_index_cached(state, &uri) {
         Some(index) => index,
         None => return JsonValue::Null,
     };
@@ -2951,11 +2971,14 @@ fn handle_references(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> Jso
     JsonValue::Array(index.reference_locations(def.id, include_declaration))
 }
 
-fn handle_prepare_call_hierarchy(state: &LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
+fn handle_prepare_call_hierarchy(
+    state: &mut LspState,
+    obj: &BTreeMap<String, JsonValue>,
+) -> JsonValue {
     let Some((uri, line, character)) = extract_position(obj) else {
         return JsonValue::Null;
     };
-    let index = match build_workspace_index(state, &uri) {
+    let index = match build_workspace_index_cached(state, &uri) {
         Some(index) => index,
         None => return JsonValue::Null,
     };
@@ -2965,20 +2988,20 @@ fn handle_prepare_call_hierarchy(state: &LspState, obj: &BTreeMap<String, JsonVa
     if !is_callable_def_kind(def.def.kind) {
         return JsonValue::Null;
     }
-    let Some(item) = call_hierarchy_item_json(&index, &def) else {
+    let Some(item) = call_hierarchy_item_json(index, &def) else {
         return JsonValue::Null;
     };
     JsonValue::Array(vec![item])
 }
 
 fn handle_call_hierarchy_incoming(
-    state: &LspState,
+    state: &mut LspState,
     obj: &BTreeMap<String, JsonValue>,
 ) -> JsonValue {
     let Some(index) = build_workspace_index_for_call_hierarchy(state, obj) else {
         return JsonValue::Null;
     };
-    let Some(def_id) = call_hierarchy_target_def_id(&index, obj) else {
+    let Some(def_id) = call_hierarchy_target_def_id(index, obj) else {
         return JsonValue::Null;
     };
     let mut result = Vec::new();
@@ -2986,7 +3009,7 @@ fn handle_call_hierarchy_incoming(
         let Some(from_def) = index.def_for_target(from_id) else {
             continue;
         };
-        let Some(from_item) = call_hierarchy_item_json(&index, &from_def) else {
+        let Some(from_item) = call_hierarchy_item_json(index, &from_def) else {
             continue;
         };
         let mut ranges = Vec::new();
@@ -3412,13 +3435,13 @@ fn code_action_json(title: &str, kind: &str, edit: JsonValue) -> JsonValue {
 }
 
 fn handle_call_hierarchy_outgoing(
-    state: &LspState,
+    state: &mut LspState,
     obj: &BTreeMap<String, JsonValue>,
 ) -> JsonValue {
     let Some(index) = build_workspace_index_for_call_hierarchy(state, obj) else {
         return JsonValue::Null;
     };
-    let Some(def_id) = call_hierarchy_target_def_id(&index, obj) else {
+    let Some(def_id) = call_hierarchy_target_def_id(index, obj) else {
         return JsonValue::Null;
     };
     let mut result = Vec::new();
@@ -3426,7 +3449,7 @@ fn handle_call_hierarchy_outgoing(
         let Some(to_def) = index.def_for_target(to_id) else {
             continue;
         };
-        let Some(to_item) = call_hierarchy_item_json(&index, &to_def) else {
+        let Some(to_item) = call_hierarchy_item_json(index, &to_def) else {
             continue;
         };
         let mut ranges = Vec::new();
@@ -3447,10 +3470,10 @@ fn handle_call_hierarchy_outgoing(
     JsonValue::Array(result)
 }
 
-fn build_workspace_index_for_call_hierarchy(
-    state: &LspState,
+fn build_workspace_index_for_call_hierarchy<'a>(
+    state: &'a mut LspState,
     obj: &BTreeMap<String, JsonValue>,
-) -> Option<WorkspaceIndex> {
+) -> Option<&'a WorkspaceIndex> {
     let params = obj.get("params")?;
     let JsonValue::Object(params) = params else {
         return None;
@@ -3463,7 +3486,7 @@ fn build_workspace_index_for_call_hierarchy(
         Some(JsonValue::String(uri)) => uri.clone(),
         _ => return None,
     };
-    build_workspace_index(state, &uri)
+    build_workspace_index_cached(state, &uri)
 }
 
 fn call_hierarchy_target_def_id(
@@ -4013,6 +4036,39 @@ fn build_index_with_program(text: &str, program: &Program) -> Index {
     let mut builder = IndexBuilder::new(text);
     builder.collect(program);
     builder.finish()
+}
+
+fn workspace_index_key(state: &LspState, focus_uri: &str) -> Option<String> {
+    let focus_path = if !focus_uri.is_empty() {
+        uri_to_path(focus_uri)
+    } else {
+        None
+    };
+    let root_path = focus_path
+        .clone()
+        .or_else(|| state.root_uri.as_deref().and_then(uri_to_path))?;
+    let entry_path = resolve_entry_path(&root_path, focus_path.as_deref())?;
+    let entry_key = entry_path.canonicalize().unwrap_or(entry_path);
+    Some(entry_key.to_string_lossy().to_string())
+}
+
+fn build_workspace_index_cached<'a>(
+    state: &'a mut LspState,
+    focus_uri: &str,
+) -> Option<&'a WorkspaceIndex> {
+    let workspace_key = workspace_index_key(state, focus_uri)?;
+    let cache_hit = state.workspace_cache.as_ref().is_some_and(|cache| {
+        cache.docs_revision == state.docs_revision && cache.workspace_key == workspace_key
+    });
+    if !cache_hit {
+        let index = build_workspace_index(state, focus_uri)?;
+        state.workspace_cache = Some(WorkspaceCache {
+            docs_revision: state.docs_revision,
+            workspace_key,
+            index,
+        });
+    }
+    state.workspace_cache.as_ref().map(|cache| &cache.index)
 }
 
 fn build_workspace_index(state: &LspState, focus_uri: &str) -> Option<WorkspaceIndex> {

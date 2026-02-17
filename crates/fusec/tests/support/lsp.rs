@@ -131,6 +131,14 @@ impl LspClient {
     }
 
     pub fn wait_response(&mut self, id: u64) -> JsonValue {
+        let raw = self.wait_raw_response(id);
+        let JsonValue::Object(obj) = raw else {
+            return JsonValue::Null;
+        };
+        obj.get("result").cloned().unwrap_or(JsonValue::Null)
+    }
+
+    pub fn wait_raw_response(&mut self, id: u64) -> JsonValue {
         loop {
             let Some(msg) = read_lsp_message(&mut self.stdout) else {
                 panic!("missing response for id {id}");
@@ -144,7 +152,7 @@ impl LspClient {
             if *got as u64 != id {
                 continue;
             }
-            return obj.get("result").cloned().unwrap_or(JsonValue::Null);
+            return JsonValue::Object(obj);
         }
     }
 
