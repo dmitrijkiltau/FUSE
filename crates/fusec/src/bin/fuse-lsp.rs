@@ -143,7 +143,7 @@ fn main() -> io::Result<()> {
                     if let Some(text) = extract_text_doc_text(&obj) {
                         state.docs.insert(uri.clone(), text.clone());
                         state.invalidate_workspace_cache();
-                        publish_diagnostics(&mut stdout, &state, &uri, &text)?;
+                        publish_diagnostics(&mut stdout, &mut state, &uri, &text)?;
                     }
                 }
             }
@@ -152,7 +152,7 @@ fn main() -> io::Result<()> {
                     if let Some(text) = extract_change_text(&obj) {
                         state.docs.insert(uri.clone(), text.clone());
                         state.invalidate_workspace_cache();
-                        publish_diagnostics(&mut stdout, &state, &uri, &text)?;
+                        publish_diagnostics(&mut stdout, &mut state, &uri, &text)?;
                     }
                 }
             }
@@ -253,6 +253,10 @@ fn main() -> io::Result<()> {
                 let response = json_response(id, result);
                 write_message(&mut stdout, &response)?;
             }
+            Some("fuse/internalWorkspaceStats") => {
+                let response = json_response(id, workspace_stats_result(&state));
+                write_message(&mut stdout, &response)?;
+            }
             _ => {
                 if id.is_some() {
                     let response = json_response(id, JsonValue::Null);
@@ -348,6 +352,7 @@ struct LspState {
     cancelled: HashSet<String>,
     docs_revision: u64,
     workspace_cache: Option<WorkspaceCache>,
+    workspace_builds: u64,
 }
 
 impl LspState {
@@ -360,7 +365,15 @@ impl LspState {
 struct WorkspaceCache {
     docs_revision: u64,
     workspace_key: String,
-    index: WorkspaceIndex,
+    snapshot: WorkspaceSnapshot,
+}
+
+struct WorkspaceSnapshot {
+    registry: ModuleRegistry,
+    overrides: HashMap<PathBuf, String>,
+    loader_diags: Vec<Diag>,
+    module_ids_by_path: HashMap<PathBuf, usize>,
+    index: Option<WorkspaceIndex>,
 }
 
 fn handle_cancel(state: &mut LspState, obj: &BTreeMap<String, JsonValue>) {
@@ -393,9 +406,26 @@ fn request_id_key(id: &JsonValue) -> Option<String> {
     }
 }
 
+fn workspace_stats_result(state: &LspState) -> JsonValue {
+    let mut out = BTreeMap::new();
+    out.insert(
+        "docsRevision".to_string(),
+        JsonValue::Number(state.docs_revision as f64),
+    );
+    out.insert(
+        "workspaceBuilds".to_string(),
+        JsonValue::Number(state.workspace_builds as f64),
+    );
+    out.insert(
+        "cachePresent".to_string(),
+        JsonValue::Bool(state.workspace_cache.is_some()),
+    );
+    JsonValue::Object(out)
+}
+
 fn publish_diagnostics(
     out: &mut impl Write,
-    state: &LspState,
+    state: &mut LspState,
     uri: &str,
     text: &str,
 ) -> io::Result<()> {
@@ -415,62 +445,24 @@ fn publish_diagnostics(
     write_message(out, &notification)
 }
 
-fn workspace_diags_for_uri(state: &LspState, uri: &str, _text: &str) -> Option<Vec<Diag>> {
+fn workspace_diags_for_uri(state: &mut LspState, uri: &str, _text: &str) -> Option<Vec<Diag>> {
     let focus_path = uri_to_path(uri)?;
-    let root_path = if let Some(root_uri) = &state.root_uri {
-        uri_to_path(root_uri)?
-    } else {
-        focus_path.clone()
-    };
-    let entry_path = resolve_entry_path(&root_path, Some(&focus_path))?;
-
-    let mut overrides = HashMap::new();
-    for (doc_uri, doc_text) in &state.docs {
-        if let Some(path) = uri_to_path(doc_uri) {
-            let key = path.canonicalize().unwrap_or(path);
-            overrides.insert(key, doc_text.clone());
-        }
-    }
-
-    let entry_key = entry_path
-        .canonicalize()
-        .unwrap_or_else(|_| entry_path.clone());
-    let root_text = overrides
-        .get(&entry_key)
-        .cloned()
-        .or_else(|| std::fs::read_to_string(&entry_path).ok())?;
-    let (registry, loader_diags) = load_program_with_modules_and_deps_and_overrides(
-        &entry_path,
-        &root_text,
-        &HashMap::new(),
-        &overrides,
-    );
-
     let focus_key = focus_path
         .canonicalize()
         .unwrap_or_else(|_| focus_path.clone());
-    let module_id = registry
-        .modules
-        .iter()
-        .find(|(_, unit)| {
-            unit.path
-                .canonicalize()
-                .unwrap_or_else(|_| unit.path.clone())
-                == focus_key
-        })
-        .map(|(id, _)| *id)?;
-
-    let (_, sema_diags) = sema::analyze_module(&registry, module_id);
+    let snapshot = build_workspace_snapshot_cached(state, uri)?;
+    let module_id = *snapshot.module_ids_by_path.get(&focus_key)?;
+    let (_, sema_diags) = sema::analyze_module(&snapshot.registry, module_id);
     let mut diags = Vec::new();
-    for diag in loader_diags {
+    for diag in &snapshot.loader_diags {
         if diag.path.is_none() {
-            diags.push(diag);
+            diags.push(diag.clone());
             continue;
         }
         if let Some(path) = diag.path.as_ref() {
             let key = path.canonicalize().unwrap_or_else(|_| path.clone());
             if key == focus_key {
-                diags.push(diag);
+                diags.push(diag.clone());
             }
         }
     }
@@ -4044,42 +4036,61 @@ fn workspace_index_key(state: &LspState, focus_uri: &str) -> Option<String> {
     } else {
         None
     };
-    let root_path = focus_path
-        .clone()
-        .or_else(|| state.root_uri.as_deref().and_then(uri_to_path))?;
+    let root_path = state
+        .root_uri
+        .as_deref()
+        .and_then(uri_to_path)
+        .or_else(|| focus_path.clone())?;
     let entry_path = resolve_entry_path(&root_path, focus_path.as_deref())?;
     let entry_key = entry_path.canonicalize().unwrap_or(entry_path);
     Some(entry_key.to_string_lossy().to_string())
+}
+
+fn build_workspace_snapshot_cached<'a>(
+    state: &'a mut LspState,
+    focus_uri: &str,
+) -> Option<&'a mut WorkspaceSnapshot> {
+    let workspace_key = workspace_index_key(state, focus_uri)?;
+    let cache_hit = state.workspace_cache.as_ref().is_some_and(|cache| {
+        cache.docs_revision == state.docs_revision && cache.workspace_key == workspace_key
+    });
+    if !cache_hit {
+        let snapshot = build_workspace_snapshot(state, focus_uri)?;
+        state.workspace_cache = Some(WorkspaceCache {
+            docs_revision: state.docs_revision,
+            workspace_key,
+            snapshot,
+        });
+        state.workspace_builds = state.workspace_builds.saturating_add(1);
+    }
+    state
+        .workspace_cache
+        .as_mut()
+        .map(|cache| &mut cache.snapshot)
 }
 
 fn build_workspace_index_cached<'a>(
     state: &'a mut LspState,
     focus_uri: &str,
 ) -> Option<&'a WorkspaceIndex> {
-    let workspace_key = workspace_index_key(state, focus_uri)?;
-    let cache_hit = state.workspace_cache.as_ref().is_some_and(|cache| {
-        cache.docs_revision == state.docs_revision && cache.workspace_key == workspace_key
-    });
-    if !cache_hit {
-        let index = build_workspace_index(state, focus_uri)?;
-        state.workspace_cache = Some(WorkspaceCache {
-            docs_revision: state.docs_revision,
-            workspace_key,
-            index,
-        });
+    let snapshot = build_workspace_snapshot_cached(state, focus_uri)?;
+    if snapshot.index.is_none() {
+        snapshot.index = build_workspace_from_registry(&snapshot.registry, &snapshot.overrides);
     }
-    state.workspace_cache.as_ref().map(|cache| &cache.index)
+    snapshot.index.as_ref()
 }
 
-fn build_workspace_index(state: &LspState, focus_uri: &str) -> Option<WorkspaceIndex> {
+fn build_workspace_snapshot(state: &LspState, focus_uri: &str) -> Option<WorkspaceSnapshot> {
     let focus_path = if !focus_uri.is_empty() {
         uri_to_path(focus_uri)
     } else {
         None
     };
-    let root_path = focus_path
-        .clone()
-        .or_else(|| state.root_uri.as_deref().and_then(uri_to_path))?;
+    let root_path = state
+        .root_uri
+        .as_deref()
+        .and_then(uri_to_path)
+        .or_else(|| focus_path.clone())?;
     let entry_path = resolve_entry_path(&root_path, focus_path.as_deref())?;
     let mut overrides = HashMap::new();
     for (uri, text) in &state.docs {
@@ -4095,27 +4106,38 @@ fn build_workspace_index(state: &LspState, focus_uri: &str) -> Option<WorkspaceI
         .get(&entry_key)
         .cloned()
         .or_else(|| std::fs::read_to_string(&entry_path).ok())?;
-    let (registry, _diags) = load_program_with_modules_and_deps_and_overrides(
+    let (registry, loader_diags) = load_program_with_modules_and_deps_and_overrides(
         &entry_path,
         &root_text,
         &HashMap::new(),
         &overrides,
     );
-    build_workspace_from_registry(&registry, &overrides)
+    let mut module_ids_by_path = HashMap::new();
+    for (id, unit) in &registry.modules {
+        let key = unit
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| unit.path.clone());
+        module_ids_by_path.insert(key, *id);
+    }
+    Some(WorkspaceSnapshot {
+        registry,
+        overrides,
+        loader_diags,
+        module_ids_by_path,
+        index: None,
+    })
 }
 
 fn resolve_entry_path(root_path: &Path, focus: Option<&Path>) -> Option<PathBuf> {
-    if let Some(path) = focus {
-        if path.is_file() {
-            return Some(path.to_path_buf());
-        }
-    }
-    if root_path.is_file() {
-        return Some(root_path.to_path_buf());
-    }
     if root_path.is_dir() {
         if let Some(entry) = read_manifest_entry(root_path) {
             return Some(entry);
+        }
+        if let Some(path) = focus {
+            if path.is_file() {
+                return Some(path.to_path_buf());
+            }
         }
         let candidate = root_path.join("src").join("main.fuse");
         if candidate.exists() {
@@ -4124,6 +4146,14 @@ fn resolve_entry_path(root_path: &Path, focus: Option<&Path>) -> Option<PathBuf>
         if let Some(first) = find_first_fuse_file(root_path) {
             return Some(first);
         }
+    }
+    if let Some(path) = focus {
+        if path.is_file() {
+            return Some(path.to_path_buf());
+        }
+    }
+    if root_path.is_file() {
+        return Some(root_path.to_path_buf());
     }
     None
 }

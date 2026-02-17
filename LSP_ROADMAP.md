@@ -22,6 +22,8 @@ Server: `crates/fusec/src/bin/fuse-lsp.rs`
 - completion/autocomplete (`textDocument/completion`)
 - signature help (`textDocument/signatureHelp`)
 - workspace-index cache with invalidation on doc/root updates (reduces repeated workspace rebuilds)
+- shared workspace snapshot cache for diagnostics + index requests (single workspace load per document revision)
+- manifest-rooted entry resolution for non-entry files in workspace projects (improves cross-file cache reuse)
 - cancellation handling validated for request bursts (`$/cancelRequest` contract)
 - responsiveness budgets validated for large multi-file completion workloads
 
@@ -37,6 +39,7 @@ Validation:
 
 - `scripts/cargo_env.sh cargo test -p fusec --test lsp_ux`
 - `scripts/cargo_env.sh cargo test -p fusec --test lsp_code_actions`
+- `scripts/cargo_env.sh cargo test -p fusec --test lsp_workspace_incremental`
 - `scripts/cargo_env.sh cargo test -p fusec --test lsp_perf_reliability`
 - `scripts/verify_vscode_lsp_resolution.sh`
 - `scripts/lsp_suite.sh`
@@ -55,4 +58,4 @@ For the current phase, editor support means:
 
 ## Next improvements (planned)
 
-1. Incremental workspace diagnostics/index updates to avoid full loader work on every edit.
+1. Fine-grained module-level invalidation to avoid one full workspace load per document revision.

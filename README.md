@@ -120,6 +120,12 @@ Run dedicated LSP performance/reliability checks:
 ./scripts/lsp_perf_reliability.sh
 ```
 
+Run deterministic LSP workspace-incremental cache checks:
+
+```
+./scripts/lsp_workspace_incremental.sh
+```
+
 Run real-world benchmark/use-case harness:
 
 ```
