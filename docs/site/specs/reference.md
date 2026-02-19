@@ -5,6 +5,26 @@ If you are new to FUSE, start with [Onboarding Guide](onboarding.md) and [Bounda
 
 ---
 
+## Install and Pre-Alpha Downloads
+
+The docs Docker build generates prebuilt runnables and packages them into this docs app.
+You can download the ZIP directly from the running docs site:
+
+1. Download: [`/downloads/fuse-pre-alpha-linux-x64.zip`](/downloads/fuse-pre-alpha-linux-x64.zip)
+2. Extract it and add the directory containing `fuse` and `fuse-lsp` to your `PATH`.
+3. Verify:
+
+```bash
+fuse
+```
+
+Direct binary links are also available:
+
+- [`/runnables/linux-x64/fuse`](/runnables/linux-x64/fuse)
+- [`/runnables/linux-x64/fuse-lsp`](/runnables/linux-x64/fuse-lsp)
+
+---
+
 ## Language at a Glance
 
 Top-level declarations:
@@ -231,6 +251,36 @@ Compiler/runtime CLI operations include:
 - `[assets]`, `[assets.hooks]`
 - `[vite]`
 - `[dependencies]`
+
+---
+
+## Run Docs with Docker
+
+`docs/Dockerfile` builds `fuse` and `fuse-lsp`, then packages:
+
+- `/downloads/fuse-pre-alpha-linux-x64.zip`
+- `/runnables/linux-x64/fuse`
+- `/runnables/linux-x64/fuse-lsp`
+
+Build the docs image from repository root:
+
+```bash
+docker build -f docs/Dockerfile -t fuse-docs:pre-alpha .
+```
+
+Run the docs container:
+
+```bash
+docker run --rm -p 4080:4080 -e PORT=4080 -e FUSE_HOST=0.0.0.0 fuse-docs:pre-alpha
+```
+
+Then open <http://localhost:4080>.
+
+You can also use Compose:
+
+```bash
+docker compose -f docs/docker-compose.yml up --build
+```
 
 ---
 
