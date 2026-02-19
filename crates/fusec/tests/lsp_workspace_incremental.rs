@@ -395,3 +395,84 @@ fn local(value: Int) -> Int:
     lsp.shutdown();
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn lsp_uses_nearest_manifest_for_nested_docs_workspace() {
+    let dir = temp_project_dir("fuse_lsp_nested_manifest");
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"app/main.fuse\"\napp = \"Root\"\n",
+    );
+    write_project_file(&dir.join("app").join("main.fuse"), "fn main():\n  return\n");
+
+    let docs_dir = dir.join("docs");
+    write_project_file(
+        &docs_dir.join("fuse.toml"),
+        "[package]\nentry = \"src/main.fuse\"\napp = \"Docs\"\n",
+    );
+    write_project_file(
+        &docs_dir.join("src").join("main.fuse"),
+        "import DocsApi from \"./api\"\n\napp \"Docs\":\n  serve(\"4000\")\n",
+    );
+    write_project_file(
+        &docs_dir.join("src").join("components").join("page.fuse"),
+        "fn page_shell(title: String, section: String, slug: String, sidebar: Bool, content: Html) -> Html:\n  return content\n",
+    );
+    write_project_file(
+        &docs_dir.join("src").join("pages").join("home.fuse"),
+        "import Page from \"../components/page.fuse\"\n\nfn home_page() -> Html:\n  return Page.page_shell(\"home\", \"home\", \"\", false, html.text(\"ok\"))\n",
+    );
+    let api_src = "import Home from \"./pages/home.fuse\"\n\nservice DocsApi at \"/\":\n  get \"/\" -> Html:\n    return Home.home_page()\n";
+    let api_path = docs_dir.join("src").join("api.fuse");
+    write_project_file(&api_path, api_src);
+
+    let root_uri = path_to_uri(&dir);
+    let api_uri = path_to_uri(&api_path);
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&api_uri, api_src, 1);
+    let diags = lsp.wait_diagnostics(&api_uri);
+    assert!(
+        diags.is_empty(),
+        "nested manifest docs file should resolve against docs workspace, got diagnostics: {diags:?}"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn lsp_reports_module_aware_diagnostics_for_standalone_non_entry_files() {
+    let dir = temp_project_dir("fuse_lsp_standalone_docs_file");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"src/main.fuse\"\napp = \"Docs\"\n",
+    );
+    write_project_file(
+        &dir.join("src").join("main.fuse"),
+        "app \"Docs\":\n  serve(\"4000\")\n",
+    );
+
+    let guide_src = r#"import { NotFound } from "std.Error"
+
+fn load(id: Id) -> String!NotFound:
+  return null ?! NotFound(message="missing")
+"#;
+    let guide_path = dir.join("src").join("guides").join("standalone.fuse");
+    let guide_uri = path_to_uri(&guide_path);
+    write_project_file(&guide_path, guide_src);
+
+    let root_uri = path_to_uri(&dir);
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&guide_uri, guide_src, 1);
+    let diags = lsp.wait_diagnostics(&guide_uri);
+    assert!(
+        diags.is_empty(),
+        "standalone module should be checked with loader semantics, got diagnostics: {diags:?}"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}

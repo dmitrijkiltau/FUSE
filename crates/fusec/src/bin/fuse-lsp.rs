@@ -1423,10 +1423,30 @@ fn workspace_diags_for_uri(state: &mut LspState, uri: &str, _text: &str) -> Opti
         .canonicalize()
         .unwrap_or_else(|_| focus_path.clone());
     let snapshot = build_workspace_snapshot_cached(state, uri)?;
-    let module_id = *snapshot.module_ids_by_path.get(&focus_key)?;
-    let (_, sema_diags) = sema::analyze_module(&snapshot.registry, module_id);
+    if let Some(module_id) = snapshot.module_ids_by_path.get(&focus_key).copied() {
+        let (_, sema_diags) = sema::analyze_module(&snapshot.registry, module_id);
+        let mut diags = Vec::new();
+        for diag in &snapshot.loader_diags {
+            if diag.path.is_none() {
+                diags.push(diag.clone());
+                continue;
+            }
+            if let Some(path) = diag.path.as_ref() {
+                let key = path.canonicalize().unwrap_or_else(|_| path.clone());
+                if key == focus_key {
+                    diags.push(diag.clone());
+                }
+            }
+        }
+        diags.extend(sema_diags);
+        return Some(diags);
+    }
+
+    let focus_snapshot = build_focus_workspace_snapshot(state, uri)?;
+    let module_id = *focus_snapshot.module_ids_by_path.get(&focus_key)?;
+    let (_, sema_diags) = sema::analyze_module(&focus_snapshot.registry, module_id);
     let mut diags = Vec::new();
-    for diag in &snapshot.loader_diags {
+    for diag in &focus_snapshot.loader_diags {
         if diag.path.is_none() {
             diags.push(diag.clone());
             continue;
@@ -5013,7 +5033,8 @@ fn workspace_index_key(state: &LspState, focus_uri: &str) -> Option<String> {
         .as_deref()
         .and_then(uri_to_path)
         .or_else(|| focus_path.clone())?;
-    let entry_path = resolve_entry_path(&root_path, focus_path.as_deref())?;
+    let (_workspace_root, entry_path) =
+        resolve_workspace_context(&root_path, focus_path.as_deref())?;
     let entry_key = entry_path.canonicalize().unwrap_or(entry_path);
     Some(entry_key.to_string_lossy().to_string())
 }
@@ -5063,16 +5084,30 @@ fn build_workspace_snapshot(state: &LspState, focus_uri: &str) -> Option<Workspa
         .as_deref()
         .and_then(uri_to_path)
         .or_else(|| focus_path.clone())?;
-    let entry_path = resolve_entry_path(&root_path, focus_path.as_deref())?;
-    let workspace_root = workspace_root_dir(&root_path, &entry_path);
+    let (workspace_root, entry_path) =
+        resolve_workspace_context(&root_path, focus_path.as_deref())?;
+    let overrides = doc_overrides(state);
+    build_workspace_snapshot_from_entry(entry_path, workspace_root, overrides)
+}
+
+fn build_focus_workspace_snapshot(state: &LspState, focus_uri: &str) -> Option<WorkspaceSnapshot> {
+    let focus_path = uri_to_path(focus_uri)?;
+    let root_path = state
+        .root_uri
+        .as_deref()
+        .and_then(uri_to_path)
+        .or_else(|| Some(focus_path.clone()))?;
+    let (workspace_root, _entry_path) = resolve_workspace_context(&root_path, Some(&focus_path))?;
+    let overrides = doc_overrides(state);
+    build_workspace_snapshot_from_entry(focus_path, workspace_root, overrides)
+}
+
+fn build_workspace_snapshot_from_entry(
+    entry_path: PathBuf,
+    workspace_root: PathBuf,
+    overrides: HashMap<PathBuf, String>,
+) -> Option<WorkspaceSnapshot> {
     let dep_roots = resolve_dependency_roots_for_workspace(&workspace_root);
-    let mut overrides = HashMap::new();
-    for (uri, text) in &state.docs {
-        if let Some(path) = uri_to_path(uri) {
-            let key = path.canonicalize().unwrap_or(path);
-            overrides.insert(key, text.clone());
-        }
-    }
     let entry_key = entry_path
         .canonicalize()
         .unwrap_or_else(|_| entry_path.clone());
@@ -5103,6 +5138,42 @@ fn build_workspace_snapshot(state: &LspState, focus_uri: &str) -> Option<Workspa
         module_ids_by_path,
         index: None,
     })
+}
+
+fn doc_overrides(state: &LspState) -> HashMap<PathBuf, String> {
+    let mut overrides = HashMap::new();
+    for (uri, text) in &state.docs {
+        if let Some(path) = uri_to_path(uri) {
+            let key = path.canonicalize().unwrap_or(path);
+            overrides.insert(key, text.clone());
+        }
+    }
+    overrides
+}
+
+fn resolve_workspace_context(root_path: &Path, focus: Option<&Path>) -> Option<(PathBuf, PathBuf)> {
+    if let Some(path) = focus {
+        if path.is_file() || path.is_dir() {
+            if let Some(manifest_root) = nearest_manifest_root(path) {
+                if let Some(entry_path) = resolve_entry_path(&manifest_root, focus) {
+                    return Some((manifest_root, entry_path));
+                }
+            }
+        }
+    }
+    let entry_path = resolve_entry_path(root_path, focus)?;
+    let workspace_root = workspace_root_dir(root_path, &entry_path);
+    Some((workspace_root, entry_path))
+}
+
+fn nearest_manifest_root(path: &Path) -> Option<PathBuf> {
+    let start = if path.is_file() { path.parent()? } else { path };
+    for ancestor in start.ancestors() {
+        if ancestor.join("fuse.toml").exists() {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+    None
 }
 
 fn workspace_root_dir(root_path: &Path, entry_path: &Path) -> PathBuf {
