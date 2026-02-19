@@ -77,6 +77,7 @@ Supported forms:
 ```fuse
 import Foo
 import Utils from "./utils"
+import Shared from "root:lib/shared"
 import {A, B} from "./lib"
 import Auth from "dep:Auth/lib"
 ```
@@ -86,6 +87,7 @@ Notes:
 - module imports are qualified (`Foo.value`, `Foo.Type`)
 - named imports bring symbols into local scope
 - type references can be module-qualified (`Foo.User`)
+- `root:` imports resolve from package root (`fuse.toml` directory)
 
 ---
 

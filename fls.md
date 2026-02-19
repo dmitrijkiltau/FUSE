@@ -411,6 +411,7 @@ Resolution rules:
 - `import Foo` loads `Foo.fuse` from the current file directory.
 - `import X from "path"` loads `path` relative to current file; `.fuse` is added if missing.
 - `import {A, B} from "path"` loads module and imports listed names into local scope.
+- `import X from "root:path/to/module"` loads from package root (`fuse.toml` directory); if no manifest is found, root falls back to the entry module directory.
 
 Notes:
 
@@ -423,6 +424,7 @@ Notes:
 - duplicate function names across different modules are allowed
 - module-qualified type references are valid in type positions (`Foo.User`, `Foo.Config`)
 - dependency modules use `dep:` import paths (for example, `dep:Auth/lib`)
+- root-qualified modules use `root:` import paths (for example, `root:lib/auth`)
 
 See also: [Services and declaration syntax](#services-and-declaration-syntax), [FUSE overview](fuse.md).
 

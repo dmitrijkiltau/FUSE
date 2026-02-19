@@ -333,3 +333,65 @@ fn wrap(err: StdError.Error) -> StdError.Error:
     lsp.shutdown();
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn lsp_incrementally_loads_new_root_prefix_modules_during_relink() {
+    let dir = temp_project_dir("fuse_lsp_root_prefix_incremental");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"src/main.fuse\"\napp = \"Demo\"\n",
+    );
+
+    let main_src = r#"import util from "./util"
+
+fn main():
+  print(util.local(1))
+"#;
+    let util_src = r#"fn local(value: Int) -> Int:
+  return value + 1
+"#;
+    let util_src_v2 = r#"import Extra from "root:lib/extra"
+
+fn local(value: Int) -> Int:
+  return Extra.plus_one(value)
+"#;
+    let extra_src = r#"fn plus_one(value: Int) -> Int:
+  return value + 1
+"#;
+
+    let main_path = dir.join("src").join("main.fuse");
+    let util_path = dir.join("src").join("util.fuse");
+    let extra_path = dir.join("lib").join("extra.fuse");
+    write_project_file(&main_path, main_src);
+    write_project_file(&util_path, util_src);
+    write_project_file(&extra_path, extra_src);
+
+    let root_uri = path_to_uri(&dir);
+    let main_uri = path_to_uri(&main_path);
+    let util_uri = path_to_uri(&util_path);
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+
+    lsp.open_document(&main_uri, main_src, 1);
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+    assert_eq!(workspace_builds(&mut lsp), 1);
+
+    lsp.open_document(&util_uri, util_src, 1);
+    assert!(lsp.wait_diagnostics(&util_uri).is_empty());
+    assert_eq!(workspace_builds(&mut lsp), 1);
+
+    lsp.change_document(&util_uri, util_src_v2, 2);
+    let util_diags = lsp.wait_diagnostics(&util_uri);
+    assert!(
+        util_diags.is_empty(),
+        "newly introduced root: imports should relink incrementally"
+    );
+    assert_eq!(
+        workspace_builds(&mut lsp),
+        1,
+        "new root: import paths should not force full workspace rebuild"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}

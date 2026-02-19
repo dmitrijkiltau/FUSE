@@ -28,6 +28,7 @@ Server: `crates/fusec/src/bin/fuse-lsp.rs`
 - dependency-graph-aware partial relinking for import/export shape changes when targets are already in the workspace graph
 - incremental module loading for newly introduced local import paths during relink (avoids full-reload fallback for new in-workspace files)
 - incremental relink support for newly introduced `dep:` import paths (avoids full-reload fallback for dependency modules present on disk)
+- incremental relink support for newly introduced `root:` import paths (avoids full-reload fallback for package-root modules present on disk)
 - incremental materialization of `std.Error` during relink when newly introduced in edited modules (avoids pseudo-module fallback reload)
 - cancellation handling validated for request bursts (`$/cancelRequest` contract)
 - responsiveness budgets validated for large multi-file completion workloads

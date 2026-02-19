@@ -183,6 +183,7 @@ struct ModuleLoader {
     modules: HashMap<ModuleId, ModuleUnit>,
     visiting: HashSet<PathBuf>,
     deps: HashMap<String, PathBuf>,
+    workspace_root: PathBuf,
     source_overrides: HashMap<PathBuf, String>,
     diags: Diagnostics,
     global_names: HashMap<String, (ModuleId, Span)>,
@@ -196,6 +197,7 @@ impl ModuleLoader {
             modules: HashMap::new(),
             visiting: HashSet::new(),
             deps: deps.clone(),
+            workspace_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             source_overrides: HashMap::new(),
             diags: Diagnostics::default(),
             global_names: HashMap::new(),
@@ -221,6 +223,7 @@ impl ModuleLoader {
             modules: HashMap::new(),
             visiting: HashSet::new(),
             deps: deps.clone(),
+            workspace_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             source_overrides,
             diags: Diagnostics::default(),
             global_names: HashMap::new(),
@@ -228,6 +231,7 @@ impl ModuleLoader {
     }
 
     fn insert_root(&mut self, path: &Path, src: &str) -> Option<ModuleId> {
+        self.workspace_root = workspace_root_for_entry(path);
         self.load_module(path, Some(src), Span::default())
     }
 
@@ -616,6 +620,18 @@ impl ModuleLoader {
             }
             return path;
         }
+        if let Some(rel) = raw.strip_prefix("root:") {
+            if rel.is_empty() {
+                self.diags.error(span, "root imports require root:<path>");
+                return base_dir.join(raw);
+            }
+            if let Some(path) = self.resolve_root_path(rel) {
+                return path;
+            }
+            self.diags
+                .error(span, "root import path escapes workspace root");
+            return base_dir.join(raw);
+        }
         let mut path = PathBuf::from(raw);
         if path.extension().is_none() {
             path.set_extension("fuse");
@@ -624,6 +640,33 @@ impl ModuleLoader {
             path = base_dir.join(path);
         }
         path
+    }
+
+    fn resolve_root_path(&self, rel: &str) -> Option<PathBuf> {
+        let rel = Path::new(rel);
+        if rel.is_absolute() {
+            return None;
+        }
+        let mut normalized_rel = PathBuf::new();
+        for comp in rel.components() {
+            match comp {
+                std::path::Component::CurDir => {}
+                std::path::Component::Normal(seg) => normalized_rel.push(seg),
+                std::path::Component::ParentDir => {
+                    if !normalized_rel.pop() {
+                        return None;
+                    }
+                }
+                std::path::Component::RootDir | std::path::Component::Prefix(_) => return None,
+            }
+        }
+        if normalized_rel.as_os_str().is_empty() {
+            return None;
+        }
+        if normalized_rel.extension().is_none() {
+            normalized_rel.set_extension("fuse");
+        }
+        Some(self.workspace_root.join(normalized_rel))
     }
 
     fn load_std_module(&mut self, name: &str, span: Span) -> Option<ModuleId> {
@@ -644,6 +687,27 @@ impl ModuleLoader {
             path.to_path_buf()
         }
     }
+}
+
+fn workspace_root_for_entry(path: &Path) -> PathBuf {
+    let start = if path.is_dir() {
+        path.to_path_buf()
+    } else if let Some(parent) = path.parent() {
+        parent.to_path_buf()
+    } else {
+        PathBuf::from(".")
+    };
+    let start = if let Ok(canon) = start.canonicalize() {
+        canon
+    } else {
+        start
+    };
+    for ancestor in start.ancestors() {
+        if ancestor.join("fuse.toml").exists() {
+            return ancestor.to_path_buf();
+        }
+    }
+    start
 }
 
 fn split_qualified_name(name: &str) -> Option<(&str, &str)> {

@@ -399,6 +399,7 @@ struct WorkspaceCache {
 struct WorkspaceSnapshot {
     registry: ModuleRegistry,
     overrides: HashMap<PathBuf, String>,
+    workspace_root: PathBuf,
     dep_roots: HashMap<String, PathBuf>,
     loader_diags: Vec<Diag>,
     module_ids_by_path: HashMap<PathBuf, usize>,
@@ -536,6 +537,7 @@ fn try_partial_relink_for_structural_change(
     let mut path_to_id = snapshot.module_ids_by_path.clone();
     let mut affected = collect_modules_for_structural_relink(
         &snapshot.registry,
+        &snapshot.workspace_root,
         &snapshot.dep_roots,
         &path_to_id,
         changed_module_id,
@@ -655,6 +657,7 @@ fn try_partial_relink_for_structural_change(
 
 fn collect_modules_for_structural_relink(
     registry: &ModuleRegistry,
+    workspace_root: &Path,
     dep_roots: &HashMap<String, PathBuf>,
     path_to_id: &HashMap<PathBuf, usize>,
     changed_module_id: usize,
@@ -665,7 +668,7 @@ fn collect_modules_for_structural_relink(
     if !export_changed {
         return affected;
     }
-    let reverse = build_reverse_import_graph(registry, dep_roots, path_to_id);
+    let reverse = build_reverse_import_graph(registry, workspace_root, dep_roots, path_to_id);
     let mut stack = vec![changed_module_id];
     while let Some(target) = stack.pop() {
         let Some(dependents) = reverse.get(&target) else {
@@ -682,6 +685,7 @@ fn collect_modules_for_structural_relink(
 
 fn build_reverse_import_graph(
     registry: &ModuleRegistry,
+    workspace_root: &Path,
     dep_roots: &HashMap<String, PathBuf>,
     path_to_id: &HashMap<PathBuf, usize>,
 ) -> HashMap<usize, HashSet<usize>> {
@@ -697,9 +701,13 @@ fn build_reverse_import_graph(
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
-        for target in
-            declared_import_targets_for_program(&unit.program, &base_dir, dep_roots, path_to_id)
-        {
+        for target in declared_import_targets_for_program(
+            &unit.program,
+            &base_dir,
+            workspace_root,
+            dep_roots,
+            path_to_id,
+        ) {
             reverse.entry(target).or_default().insert(module_id);
         }
     }
@@ -709,6 +717,7 @@ fn build_reverse_import_graph(
 fn declared_import_targets_for_program(
     program: &Program,
     base_dir: &Path,
+    workspace_root: &Path,
     dep_roots: &HashMap<String, PathBuf>,
     path_to_id: &HashMap<PathBuf, usize>,
 ) -> HashSet<usize> {
@@ -717,7 +726,9 @@ fn declared_import_targets_for_program(
         let Item::Import(decl) = item else {
             continue;
         };
-        if let Some(target) = import_target_for_spec(base_dir, dep_roots, &decl.spec, path_to_id) {
+        if let Some(target) =
+            import_target_for_spec(base_dir, workspace_root, dep_roots, &decl.spec, path_to_id)
+        {
             out.insert(target);
         }
     }
@@ -726,6 +737,7 @@ fn declared_import_targets_for_program(
 
 fn import_target_for_spec(
     base_dir: &Path,
+    workspace_root: &Path,
     dep_roots: &HashMap<String, PathBuf>,
     spec: &ImportSpec,
     path_to_id: &HashMap<PathBuf, usize>,
@@ -741,7 +753,7 @@ fn import_target_for_spec(
             if let Some(path) = resolve_dep_import_path(dep_roots, &path.value) {
                 return path_to_id.get(&path).copied();
             }
-            resolve_import_path_value(base_dir, &path.value)
+            resolve_import_path_value(base_dir, workspace_root, &path.value)
                 .and_then(|path| path_to_id.get(&path).copied())
         }
     }
@@ -755,12 +767,16 @@ fn resolve_module_name_import_path(base_dir: &Path, name: &str) -> PathBuf {
     normalized_path(path.as_path())
 }
 
-fn resolve_import_path_value(base_dir: &Path, raw: &str) -> Option<PathBuf> {
+fn resolve_import_path_value(base_dir: &Path, workspace_root: &Path, raw: &str) -> Option<PathBuf> {
     if raw == "std.Error" {
         return Some(PathBuf::from("<std.Error>"));
     }
     if raw.starts_with("dep:") {
         return None;
+    }
+    if raw.starts_with("root:") {
+        let rel = parse_root_import(raw)?;
+        return resolve_root_import_path(workspace_root, rel);
     }
     let mut path = PathBuf::from(raw);
     if path.extension().is_none() {
@@ -781,6 +797,14 @@ fn parse_dep_import(raw: &str) -> Option<(&str, &str)> {
     Some((dep, rel))
 }
 
+fn parse_root_import(raw: &str) -> Option<&str> {
+    let rel = raw.strip_prefix("root:")?;
+    if rel.is_empty() {
+        return None;
+    }
+    Some(rel)
+}
+
 fn resolve_dep_import_path(dep_roots: &HashMap<String, PathBuf>, raw: &str) -> Option<PathBuf> {
     let (dep, rel) = parse_dep_import(raw)?;
     let dep_root = dep_roots.get(dep)?;
@@ -789,6 +813,35 @@ fn resolve_dep_import_path(dep_roots: &HashMap<String, PathBuf>, raw: &str) -> O
         path.set_extension("fuse");
     }
     Some(normalized_path(path.as_path()))
+}
+
+fn resolve_root_import_path(workspace_root: &Path, raw: &str) -> Option<PathBuf> {
+    let rel = Path::new(raw);
+    if rel.is_absolute() {
+        return None;
+    }
+    let mut normalized_rel = PathBuf::new();
+    for comp in rel.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(seg) => normalized_rel.push(seg),
+            std::path::Component::ParentDir => {
+                if !normalized_rel.pop() {
+                    return None;
+                }
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => return None,
+        }
+    }
+    if normalized_rel.as_os_str().is_empty() {
+        return None;
+    }
+    if normalized_rel.extension().is_none() {
+        normalized_rel.set_extension("fuse");
+    }
+    Some(normalized_path(
+        workspace_root.join(normalized_rel).as_path(),
+    ))
 }
 
 fn build_module_links_for_registry(
@@ -990,8 +1043,31 @@ fn resolve_import_target_for_relink(
             ensure_module_loaded_for_relink(snapshot, path_to_id, &dep_path, next_module_diags)?;
         return Ok(Some((id, loaded_now)));
     }
-    let Some(path) = resolve_import_path_value(base_dir, raw) else {
-        return Ok(None);
+    let path = if raw.starts_with("root:") {
+        let Some(rel) = parse_root_import(raw) else {
+            diags.push(Diag {
+                level: Level::Error,
+                message: "root imports require root:<path>".to_string(),
+                span,
+                path: None,
+            });
+            return Ok(None);
+        };
+        let Some(path) = resolve_root_import_path(&snapshot.workspace_root, rel) else {
+            diags.push(Diag {
+                level: Level::Error,
+                message: "root import path escapes workspace root".to_string(),
+                span,
+                path: None,
+            });
+            return Ok(None);
+        };
+        path
+    } else {
+        let Some(path) = resolve_import_path_value(base_dir, &snapshot.workspace_root, raw) else {
+            return Ok(None);
+        };
+        path
     };
     let (id, loaded_now) =
         ensure_module_loaded_for_relink(snapshot, path_to_id, &path, next_module_diags)?;
@@ -5021,6 +5097,7 @@ fn build_workspace_snapshot(state: &LspState, focus_uri: &str) -> Option<Workspa
     Some(WorkspaceSnapshot {
         registry,
         overrides,
+        workspace_root,
         dep_roots,
         loader_diags,
         module_ids_by_path,
