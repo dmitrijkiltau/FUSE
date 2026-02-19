@@ -9,7 +9,10 @@ use fusec::ast::{
     TypeDecl, TypeDerive, TypeRef, TypeRefKind, UnaryOp,
 };
 use fusec::diag::{Diag, Level};
-use fusec::loader::{ModuleRegistry, load_program_with_modules_and_deps_and_overrides};
+use fusec::loader::{
+    ModuleExports, ModuleLink, ModuleMap, ModuleRegistry,
+    load_program_with_modules_and_deps_and_overrides,
+};
 use fusec::parse_source;
 use fusec::sema;
 use fusec::span::Span;
@@ -449,37 +452,705 @@ fn try_incremental_module_update(state: &mut LspState, uri: &str, text: Option<&
     let Some(unit) = cache.snapshot.registry.modules.get(&module_id) else {
         return false;
     };
-    if requires_full_workspace_reload(&unit.program, &next_program) {
+    let prev_program = unit.program.clone();
+    let import_changed =
+        module_import_signature(&prev_program) != module_import_signature(&next_program);
+    let export_changed =
+        module_export_signature(&prev_program) != module_export_signature(&next_program);
+    if has_unexpanded_type_derives(&prev_program) || has_unexpanded_type_derives(&next_program) {
         return false;
     }
+
+    if import_changed || export_changed {
+        if !try_partial_relink_for_structural_change(
+            &mut cache.snapshot,
+            module_id,
+            &module_key,
+            next_program,
+            parse_diags,
+            export_changed,
+        ) {
+            return false;
+        }
+        cache.snapshot.index = None;
+        return true;
+    }
+
     let Some(unit) = cache.snapshot.registry.modules.get_mut(&module_id) else {
         return false;
     };
     unit.program = next_program;
+    unit.exports = module_exports_from_program(&unit.program);
     fusec::frontend::canonicalize::canonicalize_registry(&mut cache.snapshot.registry);
-    replace_loader_diags_for_module(&mut cache.snapshot.loader_diags, &module_key, parse_diags);
+
+    let mut module_diags = HashMap::new();
+    module_diags.insert(module_key, parse_diags);
+    replace_loader_diags_for_modules(&mut cache.snapshot.loader_diags, &module_diags);
+    refresh_global_duplicate_symbol_diags(
+        &mut cache.snapshot.loader_diags,
+        &cache.snapshot.registry,
+    );
+
     cache.snapshot.index = None;
     true
 }
 
-fn replace_loader_diags_for_module(
-    loader_diags: &mut Vec<Diag>,
-    module_path: &Path,
-    next: Vec<Diag>,
-) {
-    loader_diags.retain(|diag| match diag.path.as_ref() {
-        Some(path) => normalized_path(path.as_path()) != module_path,
-        None => true,
-    });
-    loader_diags.extend(next);
+fn try_partial_relink_for_structural_change(
+    snapshot: &mut WorkspaceSnapshot,
+    changed_module_id: usize,
+    changed_module_path: &Path,
+    changed_program: Program,
+    changed_parse_diags: Vec<Diag>,
+    export_changed: bool,
+) -> bool {
+    let mut path_to_id = snapshot.module_ids_by_path.clone();
+    let mut affected = collect_modules_for_structural_relink(
+        &snapshot.registry,
+        &path_to_id,
+        changed_module_id,
+        export_changed,
+    );
+    affected.insert(changed_module_id);
+
+    let mut affected_sorted: Vec<usize> = affected.iter().copied().collect();
+    affected_sorted.sort_unstable();
+
+    let mut staged_programs: HashMap<usize, Program> = HashMap::new();
+    let mut next_module_diags: HashMap<PathBuf, Vec<Diag>> = HashMap::new();
+    next_module_diags.insert(changed_module_path.to_path_buf(), changed_parse_diags);
+
+    for module_id in &affected_sorted {
+        if *module_id == changed_module_id {
+            if has_unexpanded_type_derives(&changed_program) {
+                return false;
+            }
+            staged_programs.insert(*module_id, changed_program.clone());
+            continue;
+        }
+        let Some(unit) = snapshot.registry.modules.get(module_id) else {
+            return false;
+        };
+        if unit.path.to_string_lossy().starts_with('<') {
+            staged_programs.insert(*module_id, unit.program.clone());
+            continue;
+        }
+        let module_path = normalized_path(unit.path.as_path());
+        let source = if let Some(override_text) = snapshot.overrides.get(&module_path) {
+            override_text.clone()
+        } else {
+            match std::fs::read_to_string(&module_path) {
+                Ok(text) => text,
+                Err(_) => return false,
+            }
+        };
+        let (program, mut parse_diags) = parse_source(&source);
+        if has_unexpanded_type_derives(&program) {
+            return false;
+        }
+        for diag in &mut parse_diags {
+            diag.path = Some(module_path.clone());
+        }
+        next_module_diags.insert(module_path, parse_diags);
+        staged_programs.insert(*module_id, program);
+    }
+
+    for module_id in &affected_sorted {
+        let Some(program) = staged_programs.remove(module_id) else {
+            return false;
+        };
+        let Some(unit) = snapshot.registry.modules.get_mut(module_id) else {
+            return false;
+        };
+        unit.program = program;
+        unit.exports = module_exports_from_program(&unit.program);
+    }
+
+    let mut pending_links: HashMap<usize, (ModuleMap, HashMap<String, ModuleLink>)> =
+        HashMap::new();
+    let mut relink_queue = affected_sorted.clone();
+    let mut queued: HashSet<usize> = relink_queue.iter().copied().collect();
+    while let Some(module_id) = relink_queue.pop() {
+        let Some((module_map, import_items, relink_diags, newly_loaded_ids)) =
+            build_module_links_for_registry(
+                snapshot,
+                module_id,
+                &mut path_to_id,
+                &mut next_module_diags,
+            )
+        else {
+            return false;
+        };
+        let Some(path) = snapshot
+            .registry
+            .modules
+            .get(&module_id)
+            .map(|unit| unit.path.clone())
+        else {
+            return false;
+        };
+        let module_path = normalized_path(path.as_path());
+        next_module_diags
+            .entry(module_path)
+            .or_default()
+            .extend(relink_diags);
+        pending_links.insert(module_id, (module_map, import_items));
+
+        for new_id in newly_loaded_ids {
+            if queued.insert(new_id) {
+                relink_queue.push(new_id);
+            }
+        }
+    }
+
+    for (module_id, (module_map, import_items)) in pending_links {
+        let Some(unit) = snapshot.registry.modules.get_mut(&module_id) else {
+            return false;
+        };
+        unit.modules = module_map;
+        unit.import_items = import_items;
+    }
+
+    snapshot.module_ids_by_path = path_to_id;
+
+    if has_import_cycle(&snapshot.registry) {
+        return false;
+    }
+
+    fusec::frontend::canonicalize::canonicalize_registry(&mut snapshot.registry);
+    replace_loader_diags_for_modules(&mut snapshot.loader_diags, &next_module_diags);
+    refresh_global_duplicate_symbol_diags(&mut snapshot.loader_diags, &snapshot.registry);
+    true
 }
 
-fn requires_full_workspace_reload(previous: &Program, next: &Program) -> bool {
-    if has_unexpanded_type_derives(previous) || has_unexpanded_type_derives(next) {
-        return true;
+fn collect_modules_for_structural_relink(
+    registry: &ModuleRegistry,
+    path_to_id: &HashMap<PathBuf, usize>,
+    changed_module_id: usize,
+    export_changed: bool,
+) -> HashSet<usize> {
+    let mut affected = HashSet::new();
+    affected.insert(changed_module_id);
+    if !export_changed {
+        return affected;
     }
-    module_import_signature(previous) != module_import_signature(next)
-        || module_export_signature(previous) != module_export_signature(next)
+    let reverse = build_reverse_import_graph(registry, path_to_id);
+    let mut stack = vec![changed_module_id];
+    while let Some(target) = stack.pop() {
+        let Some(dependents) = reverse.get(&target) else {
+            continue;
+        };
+        for dependent in dependents {
+            if affected.insert(*dependent) {
+                stack.push(*dependent);
+            }
+        }
+    }
+    affected
+}
+
+fn build_reverse_import_graph(
+    registry: &ModuleRegistry,
+    path_to_id: &HashMap<PathBuf, usize>,
+) -> HashMap<usize, HashSet<usize>> {
+    let mut reverse: HashMap<usize, HashSet<usize>> = HashMap::new();
+    let mut ids: Vec<usize> = registry.modules.keys().copied().collect();
+    ids.sort_unstable();
+    for module_id in ids {
+        let Some(unit) = registry.modules.get(&module_id) else {
+            continue;
+        };
+        let base_dir = unit
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        for target in declared_import_targets_for_program(&unit.program, &base_dir, path_to_id) {
+            reverse.entry(target).or_default().insert(module_id);
+        }
+    }
+    reverse
+}
+
+fn declared_import_targets_for_program(
+    program: &Program,
+    base_dir: &Path,
+    path_to_id: &HashMap<PathBuf, usize>,
+) -> HashSet<usize> {
+    let mut out = HashSet::new();
+    for item in &program.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        if let Some(target) = import_target_for_spec(base_dir, &decl.spec, path_to_id) {
+            out.insert(target);
+        }
+    }
+    out
+}
+
+fn import_target_for_spec(
+    base_dir: &Path,
+    spec: &ImportSpec,
+    path_to_id: &HashMap<PathBuf, usize>,
+) -> Option<usize> {
+    match spec {
+        ImportSpec::Module { name } => {
+            let path = resolve_module_name_import_path(base_dir, &name.name);
+            path_to_id.get(&path).copied()
+        }
+        ImportSpec::ModuleFrom { path, .. }
+        | ImportSpec::NamedFrom { path, .. }
+        | ImportSpec::AliasFrom { path, .. } => resolve_import_path_value(base_dir, &path.value)
+            .and_then(|path| path_to_id.get(&path).copied()),
+    }
+}
+
+fn resolve_module_name_import_path(base_dir: &Path, name: &str) -> PathBuf {
+    let mut path = base_dir.join(name);
+    if path.extension().is_none() {
+        path.set_extension("fuse");
+    }
+    normalized_path(path.as_path())
+}
+
+fn resolve_import_path_value(base_dir: &Path, raw: &str) -> Option<PathBuf> {
+    if raw == "std.Error" {
+        return Some(PathBuf::from("<std.Error>"));
+    }
+    if raw.starts_with("dep:") {
+        return None;
+    }
+    let mut path = PathBuf::from(raw);
+    if path.extension().is_none() {
+        path.set_extension("fuse");
+    }
+    if path.is_relative() {
+        path = base_dir.join(path);
+    }
+    Some(normalized_path(path.as_path()))
+}
+
+fn build_module_links_for_registry(
+    snapshot: &mut WorkspaceSnapshot,
+    module_id: usize,
+    path_to_id: &mut HashMap<PathBuf, usize>,
+    next_module_diags: &mut HashMap<PathBuf, Vec<Diag>>,
+) -> Option<(
+    ModuleMap,
+    HashMap<String, ModuleLink>,
+    Vec<Diag>,
+    Vec<usize>,
+)> {
+    let (unit_path, unit_program) = {
+        let unit = snapshot.registry.modules.get(&module_id)?;
+        (unit.path.clone(), unit.program.clone())
+    };
+    let base_dir = unit_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let mut module_map = ModuleMap::default();
+    let mut import_items = HashMap::new();
+    let mut import_item_spans: HashMap<String, Span> = HashMap::new();
+    let mut diags = Vec::new();
+    let mut newly_loaded_ids = Vec::new();
+
+    for item in &unit_program.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        match &decl.spec {
+            ImportSpec::Module { name } => {
+                let target = resolve_module_name_import_path(&base_dir, &name.name);
+                let Ok((target_id, loaded_now)) = ensure_module_loaded_for_relink(
+                    snapshot,
+                    path_to_id,
+                    &target,
+                    next_module_diags,
+                ) else {
+                    return None;
+                };
+                if loaded_now {
+                    newly_loaded_ids.push(target_id);
+                }
+                module_map
+                    .modules
+                    .entry(name.name.clone())
+                    .or_insert_with(|| module_link_for_registry(&snapshot.registry, target_id));
+            }
+            ImportSpec::ModuleFrom { name, path } => {
+                let target_id = match resolve_import_target_for_relink(
+                    &base_dir,
+                    &path.value,
+                    path.span,
+                    snapshot,
+                    path_to_id,
+                    &mut diags,
+                    next_module_diags,
+                ) {
+                    Ok(Some((target, loaded_now))) => {
+                        if loaded_now {
+                            newly_loaded_ids.push(target);
+                        }
+                        target
+                    }
+                    Ok(None) => continue,
+                    Err(()) => return None,
+                };
+                module_map
+                    .modules
+                    .entry(name.name.clone())
+                    .or_insert_with(|| module_link_for_registry(&snapshot.registry, target_id));
+            }
+            ImportSpec::AliasFrom { alias, path, .. } => {
+                let target_id = match resolve_import_target_for_relink(
+                    &base_dir,
+                    &path.value,
+                    path.span,
+                    snapshot,
+                    path_to_id,
+                    &mut diags,
+                    next_module_diags,
+                ) {
+                    Ok(Some((target, loaded_now))) => {
+                        if loaded_now {
+                            newly_loaded_ids.push(target);
+                        }
+                        target
+                    }
+                    Ok(None) => continue,
+                    Err(()) => return None,
+                };
+                module_map
+                    .modules
+                    .entry(alias.name.clone())
+                    .or_insert_with(|| module_link_for_registry(&snapshot.registry, target_id));
+            }
+            ImportSpec::NamedFrom { names, path } => {
+                let target_id = match resolve_import_target_for_relink(
+                    &base_dir,
+                    &path.value,
+                    path.span,
+                    snapshot,
+                    path_to_id,
+                    &mut diags,
+                    next_module_diags,
+                ) {
+                    Ok(Some((target, loaded_now))) => {
+                        if loaded_now {
+                            newly_loaded_ids.push(target);
+                        }
+                        target
+                    }
+                    Ok(None) => continue,
+                    Err(()) => return None,
+                };
+                let Some(target_exports) = snapshot
+                    .registry
+                    .modules
+                    .get(&target_id)
+                    .map(|unit| &unit.exports)
+                else {
+                    return None;
+                };
+                for name in names {
+                    if let Some(prev_span) = import_item_spans.get(&name.name).copied() {
+                        diags.push(Diag {
+                            level: Level::Error,
+                            message: format!("duplicate import {}", name.name),
+                            span: name.span,
+                            path: Some(unit_path.clone()),
+                        });
+                        diags.push(Diag {
+                            level: Level::Error,
+                            message: format!("previous import of {} here", name.name),
+                            span: prev_span,
+                            path: Some(unit_path.clone()),
+                        });
+                        continue;
+                    }
+                    if !module_exports_contains(target_exports, &name.name) {
+                        diags.push(Diag {
+                            level: Level::Error,
+                            message: format!("unknown import {} in {}", name.name, path.value),
+                            span: name.span,
+                            path: Some(unit_path.clone()),
+                        });
+                        continue;
+                    }
+                    import_items.insert(
+                        name.name.clone(),
+                        module_link_for_registry(&snapshot.registry, target_id),
+                    );
+                    import_item_spans.insert(name.name.clone(), name.span);
+                }
+            }
+        }
+    }
+
+    newly_loaded_ids.sort_unstable();
+    newly_loaded_ids.dedup();
+    Some((module_map, import_items, diags, newly_loaded_ids))
+}
+
+fn resolve_import_target_for_relink(
+    base_dir: &Path,
+    raw: &str,
+    span: Span,
+    snapshot: &mut WorkspaceSnapshot,
+    path_to_id: &mut HashMap<PathBuf, usize>,
+    diags: &mut Vec<Diag>,
+    next_module_diags: &mut HashMap<PathBuf, Vec<Diag>>,
+) -> Result<Option<(usize, bool)>, ()> {
+    if raw.starts_with("dep:") {
+        let rest = raw.trim_start_matches("dep:");
+        let Some((dep, rel)) = rest.split_once('/') else {
+            diags.push(Diag {
+                level: Level::Error,
+                message: "dependency imports require dep:<name>/<path>".to_string(),
+                span,
+                path: None,
+            });
+            return Ok(None);
+        };
+        if dep.is_empty() || rel.is_empty() {
+            diags.push(Diag {
+                level: Level::Error,
+                message: "dependency imports require dep:<name>/<path>".to_string(),
+                span,
+                path: None,
+            });
+            return Ok(None);
+        }
+        diags.push(Diag {
+            level: Level::Error,
+            message: format!("unknown dependency {dep}"),
+            span,
+            path: None,
+        });
+        return Ok(None);
+    }
+    let Some(path) = resolve_import_path_value(base_dir, raw) else {
+        return Ok(None);
+    };
+    let (id, loaded_now) =
+        ensure_module_loaded_for_relink(snapshot, path_to_id, &path, next_module_diags)?;
+    Ok(Some((id, loaded_now)))
+}
+
+fn ensure_module_loaded_for_relink(
+    snapshot: &mut WorkspaceSnapshot,
+    path_to_id: &mut HashMap<PathBuf, usize>,
+    path: &Path,
+    next_module_diags: &mut HashMap<PathBuf, Vec<Diag>>,
+) -> Result<(usize, bool), ()> {
+    let key = normalized_path(path);
+    if let Some(id) = path_to_id.get(&key).copied() {
+        return Ok((id, false));
+    }
+    if key.to_string_lossy().starts_with('<') {
+        return Err(());
+    }
+    let source = if let Some(override_text) = snapshot.overrides.get(&key) {
+        override_text.clone()
+    } else {
+        std::fs::read_to_string(&key).map_err(|_| ())?
+    };
+    let (program, mut parse_diags) = parse_source(&source);
+    if has_unexpanded_type_derives(&program) {
+        return Err(());
+    }
+    for diag in &mut parse_diags {
+        diag.path = Some(key.clone());
+    }
+    let next_id = snapshot
+        .registry
+        .modules
+        .keys()
+        .copied()
+        .max()
+        .map_or(1, |id| id.saturating_add(1));
+    let unit = fusec::loader::ModuleUnit {
+        id: next_id,
+        path: key.clone(),
+        program,
+        modules: ModuleMap::default(),
+        import_items: HashMap::new(),
+        exports: ModuleExports::default(),
+    };
+    snapshot.registry.modules.insert(next_id, unit);
+    let Some(unit) = snapshot.registry.modules.get_mut(&next_id) else {
+        return Err(());
+    };
+    unit.exports = module_exports_from_program(&unit.program);
+    path_to_id.insert(key.clone(), next_id);
+    next_module_diags.insert(key, parse_diags);
+    Ok((next_id, true))
+}
+
+fn replace_loader_diags_for_modules(
+    loader_diags: &mut Vec<Diag>,
+    next_by_module: &HashMap<PathBuf, Vec<Diag>>,
+) {
+    let module_paths: HashSet<PathBuf> = next_by_module.keys().cloned().collect();
+    loader_diags.retain(|diag| match diag.path.as_ref() {
+        Some(path) => !module_paths.contains(&normalized_path(path.as_path())),
+        None => true,
+    });
+    for diags in next_by_module.values() {
+        loader_diags.extend(diags.clone());
+    }
+}
+
+fn refresh_global_duplicate_symbol_diags(loader_diags: &mut Vec<Diag>, registry: &ModuleRegistry) {
+    loader_diags.retain(|diag| !is_global_duplicate_symbol_diag(diag));
+    loader_diags.extend(collect_global_duplicate_symbol_diags(registry));
+}
+
+fn is_global_duplicate_symbol_diag(diag: &Diag) -> bool {
+    diag.message.starts_with("duplicate symbol: ")
+        || (diag.message.starts_with("previous definition of ") && diag.message.ends_with(" here"))
+}
+
+fn collect_global_duplicate_symbol_diags(registry: &ModuleRegistry) -> Vec<Diag> {
+    let mut out = Vec::new();
+    let mut ids: Vec<usize> = registry.modules.keys().copied().collect();
+    ids.sort_unstable();
+    let mut seen: HashMap<String, (usize, PathBuf, Span)> = HashMap::new();
+    for module_id in ids {
+        let Some(unit) = registry.modules.get(&module_id) else {
+            continue;
+        };
+        if unit.path.to_string_lossy() == "<std.Error>" {
+            continue;
+        }
+        for item in &unit.program.items {
+            let symbol = match item {
+                Item::Type(decl) => Some((decl.name.name.clone(), decl.name.span)),
+                Item::Enum(decl) => Some((decl.name.name.clone(), decl.name.span)),
+                Item::Config(decl) => Some((decl.name.name.clone(), decl.name.span)),
+                Item::Service(decl) => Some((decl.name.name.clone(), decl.name.span)),
+                Item::App(decl) => Some((decl.name.value.clone(), decl.name.span)),
+                _ => None,
+            };
+            let Some((name, span)) = symbol else {
+                continue;
+            };
+            if let Some((prev_id, prev_path, prev_span)) = seen.get(&name) {
+                if *prev_id != module_id {
+                    out.push(Diag {
+                        level: Level::Error,
+                        message: format!("duplicate symbol: {name}"),
+                        span,
+                        path: Some(unit.path.clone()),
+                    });
+                    out.push(Diag {
+                        level: Level::Error,
+                        message: format!("previous definition of {name} here"),
+                        span: *prev_span,
+                        path: Some(prev_path.clone()),
+                    });
+                }
+                continue;
+            }
+            seen.insert(name, (module_id, unit.path.clone(), span));
+        }
+    }
+    out
+}
+
+fn has_import_cycle(registry: &ModuleRegistry) -> bool {
+    fn visit(
+        node: usize,
+        registry: &ModuleRegistry,
+        active: &mut HashSet<usize>,
+        done: &mut HashSet<usize>,
+    ) -> bool {
+        if done.contains(&node) {
+            return false;
+        }
+        if !active.insert(node) {
+            return true;
+        }
+        let Some(unit) = registry.modules.get(&node) else {
+            active.remove(&node);
+            done.insert(node);
+            return false;
+        };
+        let mut deps = HashSet::new();
+        for link in unit.modules.modules.values() {
+            deps.insert(link.id);
+        }
+        for link in unit.import_items.values() {
+            deps.insert(link.id);
+        }
+        for dep in deps {
+            if visit(dep, registry, active, done) {
+                return true;
+            }
+        }
+        active.remove(&node);
+        done.insert(node);
+        false
+    }
+
+    let mut active = HashSet::new();
+    let mut done = HashSet::new();
+    for module_id in registry.modules.keys().copied() {
+        if visit(module_id, registry, &mut active, &mut done) {
+            return true;
+        }
+    }
+    false
+}
+
+fn module_exports_from_program(program: &Program) -> ModuleExports {
+    let mut exports = ModuleExports::default();
+    for item in &program.items {
+        match item {
+            Item::Type(decl) => {
+                exports.types.insert(decl.name.name.clone());
+            }
+            Item::Enum(decl) => {
+                exports.enums.insert(decl.name.name.clone());
+            }
+            Item::Fn(decl) => {
+                exports.functions.insert(decl.name.name.clone());
+            }
+            Item::Config(decl) => {
+                exports.configs.insert(decl.name.name.clone());
+            }
+            Item::Service(decl) => {
+                exports.services.insert(decl.name.name.clone());
+            }
+            Item::App(decl) => {
+                exports.apps.insert(decl.name.value.clone());
+            }
+            _ => {}
+        }
+    }
+    exports
+}
+
+fn module_exports_contains(exports: &ModuleExports, name: &str) -> bool {
+    exports.types.contains(name)
+        || exports.enums.contains(name)
+        || exports.functions.contains(name)
+        || exports.configs.contains(name)
+        || exports.services.contains(name)
+        || exports.apps.contains(name)
+}
+
+fn module_link_for_registry(registry: &ModuleRegistry, module_id: usize) -> ModuleLink {
+    let exports = registry
+        .modules
+        .get(&module_id)
+        .map(|unit| unit.exports.clone())
+        .unwrap_or_default();
+    ModuleLink {
+        id: module_id,
+        exports,
+    }
 }
 
 fn has_unexpanded_type_derives(program: &Program) -> bool {

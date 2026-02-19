@@ -63,11 +63,16 @@ fn main():
   let total = util.f0002(value)
   print(total)
 "#;
+    let extra_src = r#"fn plus_one(value: Int) -> Int:
+  return value + 1
+"#;
 
     let util_path = dir.join("util.fuse");
     let main_path = dir.join("main.fuse");
+    let extra_path = dir.join("extra.fuse");
     write_project_file(&util_path, &util_src);
     write_project_file(&main_path, main_src);
+    write_project_file(&extra_path, extra_src);
 
     let root_uri = path_to_uri(&dir);
     let util_uri = path_to_uri(&util_path);
@@ -135,8 +140,8 @@ fn main():
     assert!(lsp.wait_diagnostics(&util_uri).is_empty());
     assert_eq!(
         workspace_builds(&mut lsp),
-        2,
-        "export-shape changes should fall back to full workspace rebuild"
+        1,
+        "export-shape changes should be relinked without full workspace rebuild"
     );
 
     let _ = lsp.request(
@@ -145,25 +150,62 @@ fn main():
     );
     assert_eq!(
         workspace_builds(&mut lsp),
+        1,
+        "post-relink requests should reuse workspace snapshot"
+    );
+
+    let util_src_v3 = format!(
+        "import extra from \"./extra\"\n{util_src_v2}\nfn probe_extra(value: Int) -> Int:\n  return extra.plus_one(value)\n"
+    );
+    lsp.change_document(&util_uri, &util_src_v3, 3);
+    let util_diags = lsp.wait_diagnostics(&util_uri);
+    assert!(
+        util_diags.is_empty(),
+        "newly introduced existing module imports should relink incrementally"
+    );
+    assert_eq!(
+        workspace_builds(&mut lsp),
+        1,
+        "importing a previously unseen but existing module should avoid full reload fallback"
+    );
+
+    let _ = lsp.request(
+        "textDocument/completion",
+        completion_params(&main_uri, line, col + "util.".len()),
+    );
+    assert_eq!(
+        workspace_builds(&mut lsp),
+        1,
+        "post-relink requests should reuse workspace snapshot"
+    );
+
+    let util_src_v4 = format!("{util_src_v3}\nimport missing from \"./missing\"\n");
+    lsp.change_document(&util_uri, &util_src_v4, 4);
+    let util_diags = lsp.wait_diagnostics(&util_uri);
+    assert!(
+        !util_diags.is_empty(),
+        "unknown module import should still report diagnostics after fallback reload"
+    );
+    assert_eq!(
+        workspace_builds(&mut lsp),
         2,
-        "post-fallback requests should reuse rebuilt workspace snapshot"
+        "importing an unresolved module path should still fall back to a full reload"
     );
 
     lsp.close_document(&util_uri);
     assert_eq!(
         workspace_builds(&mut lsp),
         2,
-        "close should invalidate cache without forcing immediate rebuild"
+        "close should invalidate cache without immediate rebuild"
     );
-
     let _ = lsp.request(
         "textDocument/completion",
         completion_params(&main_uri, line, col + "util.".len()),
     );
     assert_eq!(
         workspace_builds(&mut lsp),
-        3,
-        "post-close request should rebuild once back to disk module state"
+        2,
+        "post-close request should reuse incrementally relinked disk module state"
     );
 
     lsp.shutdown();

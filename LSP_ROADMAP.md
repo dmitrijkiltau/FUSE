@@ -25,6 +25,8 @@ Server: `crates/fusec/src/bin/fuse-lsp.rs`
 - shared workspace snapshot cache for diagnostics + index requests (single workspace load per document revision)
 - manifest-rooted entry resolution for non-entry files in workspace projects (improves cross-file cache reuse)
 - fine-grained module-level cache patching for non-structural edits with structural-change fallback reloads
+- dependency-graph-aware partial relinking for import/export shape changes when targets are already in the workspace graph
+- incremental module loading for newly introduced local import paths during relink (avoids full-reload fallback for new in-workspace files)
 - cancellation handling validated for request bursts (`$/cancelRequest` contract)
 - responsiveness budgets validated for large multi-file completion workloads
 
@@ -59,4 +61,5 @@ For the current phase, editor support means:
 
 ## Next improvements (planned)
 
-1. Dependency-graph-aware partial relinking when import/export shape changes (reduce current full-reload fallback surface).
+1. Incremental relink support for `dep:` imports (currently still falls back for newly introduced dependency paths).
+1. Incremental materialization of not-yet-loaded std modules during relink (currently still falls back if missing from cache graph).
