@@ -211,3 +211,125 @@ fn main():
     lsp.shutdown();
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn lsp_incrementally_loads_new_dependency_modules_during_relink() {
+    let dir = temp_project_dir("fuse_lsp_dep_incremental");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n\n[dependencies]\nAuth = { path = \"./deps/auth\" }\n",
+    );
+
+    let main_src = r#"import util from "./util"
+
+fn main():
+  print(util.local(1))
+"#;
+    let util_src = r#"fn local(value: Int) -> Int:
+  return value + 1
+"#;
+    let util_src_v2 = r#"import Auth from "dep:Auth/lib"
+
+fn local(value: Int) -> Int:
+  return Auth.plus_one(value)
+"#;
+    let dep_src = r#"fn plus_one(value: Int) -> Int:
+  return value + 1
+"#;
+
+    let main_path = dir.join("main.fuse");
+    let util_path = dir.join("util.fuse");
+    let dep_path = dir.join("deps").join("auth").join("lib.fuse");
+    write_project_file(&main_path, main_src);
+    write_project_file(&util_path, util_src);
+    write_project_file(&dep_path, dep_src);
+
+    let root_uri = path_to_uri(&dir);
+    let main_uri = path_to_uri(&main_path);
+    let util_uri = path_to_uri(&util_path);
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+
+    lsp.open_document(&main_uri, main_src, 1);
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+    assert_eq!(workspace_builds(&mut lsp), 1);
+
+    lsp.open_document(&util_uri, util_src, 1);
+    assert!(lsp.wait_diagnostics(&util_uri).is_empty());
+    assert_eq!(workspace_builds(&mut lsp), 1);
+
+    lsp.change_document(&util_uri, util_src_v2, 2);
+    let util_diags = lsp.wait_diagnostics(&util_uri);
+    assert!(
+        util_diags.is_empty(),
+        "newly introduced dep imports should relink incrementally"
+    );
+    assert_eq!(
+        workspace_builds(&mut lsp),
+        1,
+        "new dependency import paths should not force full workspace rebuild"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn lsp_incrementally_materializes_std_modules_during_relink() {
+    let dir = temp_project_dir("fuse_lsp_std_incremental");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    );
+
+    let main_src = r#"import util from "./util"
+
+fn main():
+  print(util.local(1))
+"#;
+    let util_src = r#"fn local(value: Int) -> Int:
+  return value + 1
+"#;
+    let util_src_v2 = r#"import StdError from "std.Error"
+
+fn local(value: Int) -> Int:
+  return value + 1
+
+fn wrap(err: StdError.Error) -> StdError.Error:
+  return err
+"#;
+
+    let main_path = dir.join("main.fuse");
+    let util_path = dir.join("util.fuse");
+    write_project_file(&main_path, main_src);
+    write_project_file(&util_path, util_src);
+
+    let root_uri = path_to_uri(&dir);
+    let main_uri = path_to_uri(&main_path);
+    let util_uri = path_to_uri(&util_path);
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+
+    lsp.open_document(&main_uri, main_src, 1);
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+    assert_eq!(workspace_builds(&mut lsp), 1);
+
+    lsp.open_document(&util_uri, util_src, 1);
+    assert!(lsp.wait_diagnostics(&util_uri).is_empty());
+    assert_eq!(workspace_builds(&mut lsp), 1);
+
+    lsp.change_document(&util_uri, util_src_v2, 2);
+    let util_diags = lsp.wait_diagnostics(&util_uri);
+    assert!(
+        util_diags.is_empty(),
+        "new std module imports should relink incrementally"
+    );
+    assert_eq!(
+        workspace_builds(&mut lsp),
+        1,
+        "std module materialization should not force full workspace rebuild"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}

@@ -27,6 +27,8 @@ Server: `crates/fusec/src/bin/fuse-lsp.rs`
 - fine-grained module-level cache patching for non-structural edits with structural-change fallback reloads
 - dependency-graph-aware partial relinking for import/export shape changes when targets are already in the workspace graph
 - incremental module loading for newly introduced local import paths during relink (avoids full-reload fallback for new in-workspace files)
+- incremental relink support for newly introduced `dep:` import paths (avoids full-reload fallback for dependency modules present on disk)
+- incremental materialization of `std.Error` during relink when newly introduced in edited modules (avoids pseudo-module fallback reload)
 - cancellation handling validated for request bursts (`$/cancelRequest` contract)
 - responsiveness budgets validated for large multi-file completion workloads
 
@@ -61,5 +63,4 @@ For the current phase, editor support means:
 
 ## Next improvements (planned)
 
-1. Incremental relink support for `dep:` imports (currently still falls back for newly introduced dependency paths).
-1. Incremental materialization of not-yet-loaded std modules during relink (currently still falls back if missing from cache graph).
+1. Extend dependency-root parsing coverage for additional manifest dependency syntaxes if/when they become part of the package spec surface.

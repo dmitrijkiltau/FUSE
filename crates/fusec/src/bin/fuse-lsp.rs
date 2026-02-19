@@ -85,6 +85,35 @@ const COMPLETION_BUILTIN_TYPES: [&str; 14] = [
     "Unit", "Int", "Float", "Bool", "String", "Bytes", "Html", "Id", "Email", "Error", "List",
     "Map", "Task", "Range",
 ];
+const STD_ERROR_MODULE_SOURCE: &str = r#"
+type Error:
+  code: String
+  message: String
+
+type ValidationField:
+  path: String
+  code: String
+  message: String
+
+type Validation:
+  message: String
+  fields: List<ValidationField>
+
+type BadRequest:
+  message: String
+
+type Unauthorized:
+  message: String
+
+type Forbidden:
+  message: String
+
+type NotFound:
+  message: String
+
+type Conflict:
+  message: String
+"#;
 
 fn main() -> io::Result<()> {
     let mut stdin = io::stdin().lock();
@@ -370,6 +399,7 @@ struct WorkspaceCache {
 struct WorkspaceSnapshot {
     registry: ModuleRegistry,
     overrides: HashMap<PathBuf, String>,
+    dep_roots: HashMap<String, PathBuf>,
     loader_diags: Vec<Diag>,
     module_ids_by_path: HashMap<PathBuf, usize>,
     index: Option<WorkspaceIndex>,
@@ -506,6 +536,7 @@ fn try_partial_relink_for_structural_change(
     let mut path_to_id = snapshot.module_ids_by_path.clone();
     let mut affected = collect_modules_for_structural_relink(
         &snapshot.registry,
+        &snapshot.dep_roots,
         &path_to_id,
         changed_module_id,
         export_changed,
@@ -624,6 +655,7 @@ fn try_partial_relink_for_structural_change(
 
 fn collect_modules_for_structural_relink(
     registry: &ModuleRegistry,
+    dep_roots: &HashMap<String, PathBuf>,
     path_to_id: &HashMap<PathBuf, usize>,
     changed_module_id: usize,
     export_changed: bool,
@@ -633,7 +665,7 @@ fn collect_modules_for_structural_relink(
     if !export_changed {
         return affected;
     }
-    let reverse = build_reverse_import_graph(registry, path_to_id);
+    let reverse = build_reverse_import_graph(registry, dep_roots, path_to_id);
     let mut stack = vec![changed_module_id];
     while let Some(target) = stack.pop() {
         let Some(dependents) = reverse.get(&target) else {
@@ -650,6 +682,7 @@ fn collect_modules_for_structural_relink(
 
 fn build_reverse_import_graph(
     registry: &ModuleRegistry,
+    dep_roots: &HashMap<String, PathBuf>,
     path_to_id: &HashMap<PathBuf, usize>,
 ) -> HashMap<usize, HashSet<usize>> {
     let mut reverse: HashMap<usize, HashSet<usize>> = HashMap::new();
@@ -664,7 +697,9 @@ fn build_reverse_import_graph(
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
-        for target in declared_import_targets_for_program(&unit.program, &base_dir, path_to_id) {
+        for target in
+            declared_import_targets_for_program(&unit.program, &base_dir, dep_roots, path_to_id)
+        {
             reverse.entry(target).or_default().insert(module_id);
         }
     }
@@ -674,6 +709,7 @@ fn build_reverse_import_graph(
 fn declared_import_targets_for_program(
     program: &Program,
     base_dir: &Path,
+    dep_roots: &HashMap<String, PathBuf>,
     path_to_id: &HashMap<PathBuf, usize>,
 ) -> HashSet<usize> {
     let mut out = HashSet::new();
@@ -681,7 +717,7 @@ fn declared_import_targets_for_program(
         let Item::Import(decl) = item else {
             continue;
         };
-        if let Some(target) = import_target_for_spec(base_dir, &decl.spec, path_to_id) {
+        if let Some(target) = import_target_for_spec(base_dir, dep_roots, &decl.spec, path_to_id) {
             out.insert(target);
         }
     }
@@ -690,6 +726,7 @@ fn declared_import_targets_for_program(
 
 fn import_target_for_spec(
     base_dir: &Path,
+    dep_roots: &HashMap<String, PathBuf>,
     spec: &ImportSpec,
     path_to_id: &HashMap<PathBuf, usize>,
 ) -> Option<usize> {
@@ -700,8 +737,13 @@ fn import_target_for_spec(
         }
         ImportSpec::ModuleFrom { path, .. }
         | ImportSpec::NamedFrom { path, .. }
-        | ImportSpec::AliasFrom { path, .. } => resolve_import_path_value(base_dir, &path.value)
-            .and_then(|path| path_to_id.get(&path).copied()),
+        | ImportSpec::AliasFrom { path, .. } => {
+            if let Some(path) = resolve_dep_import_path(dep_roots, &path.value) {
+                return path_to_id.get(&path).copied();
+            }
+            resolve_import_path_value(base_dir, &path.value)
+                .and_then(|path| path_to_id.get(&path).copied())
+        }
     }
 }
 
@@ -726,6 +768,25 @@ fn resolve_import_path_value(base_dir: &Path, raw: &str) -> Option<PathBuf> {
     }
     if path.is_relative() {
         path = base_dir.join(path);
+    }
+    Some(normalized_path(path.as_path()))
+}
+
+fn parse_dep_import(raw: &str) -> Option<(&str, &str)> {
+    let rest = raw.strip_prefix("dep:")?;
+    let (dep, rel) = rest.split_once('/')?;
+    if dep.is_empty() || rel.is_empty() {
+        return None;
+    }
+    Some((dep, rel))
+}
+
+fn resolve_dep_import_path(dep_roots: &HashMap<String, PathBuf>, raw: &str) -> Option<PathBuf> {
+    let (dep, rel) = parse_dep_import(raw)?;
+    let dep_root = dep_roots.get(dep)?;
+    let mut path = dep_root.join(rel);
+    if path.extension().is_none() {
+        path.set_extension("fuse");
     }
     Some(normalized_path(path.as_path()))
 }
@@ -903,8 +964,7 @@ fn resolve_import_target_for_relink(
     next_module_diags: &mut HashMap<PathBuf, Vec<Diag>>,
 ) -> Result<Option<(usize, bool)>, ()> {
     if raw.starts_with("dep:") {
-        let rest = raw.trim_start_matches("dep:");
-        let Some((dep, rel)) = rest.split_once('/') else {
+        let Some((dep, rel)) = parse_dep_import(raw) else {
             diags.push(Diag {
                 level: Level::Error,
                 message: "dependency imports require dep:<name>/<path>".to_string(),
@@ -913,22 +973,22 @@ fn resolve_import_target_for_relink(
             });
             return Ok(None);
         };
-        if dep.is_empty() || rel.is_empty() {
+        let Some(dep_root) = snapshot.dep_roots.get(dep) else {
             diags.push(Diag {
                 level: Level::Error,
-                message: "dependency imports require dep:<name>/<path>".to_string(),
+                message: format!("unknown dependency {dep}"),
                 span,
                 path: None,
             });
             return Ok(None);
+        };
+        let mut dep_path = dep_root.join(rel);
+        if dep_path.extension().is_none() {
+            dep_path.set_extension("fuse");
         }
-        diags.push(Diag {
-            level: Level::Error,
-            message: format!("unknown dependency {dep}"),
-            span,
-            path: None,
-        });
-        return Ok(None);
+        let (id, loaded_now) =
+            ensure_module_loaded_for_relink(snapshot, path_to_id, &dep_path, next_module_diags)?;
+        return Ok(Some((id, loaded_now)));
     }
     let Some(path) = resolve_import_path_value(base_dir, raw) else {
         return Ok(None);
@@ -947,6 +1007,38 @@ fn ensure_module_loaded_for_relink(
     let key = normalized_path(path);
     if let Some(id) = path_to_id.get(&key).copied() {
         return Ok((id, false));
+    }
+    if key.to_string_lossy() == "<std.Error>" {
+        let (program, mut parse_diags) = parse_source(STD_ERROR_MODULE_SOURCE);
+        if has_unexpanded_type_derives(&program) {
+            return Err(());
+        }
+        for diag in &mut parse_diags {
+            diag.path = Some(key.clone());
+        }
+        let next_id = snapshot
+            .registry
+            .modules
+            .keys()
+            .copied()
+            .max()
+            .map_or(1, |id| id.saturating_add(1));
+        let unit = fusec::loader::ModuleUnit {
+            id: next_id,
+            path: key.clone(),
+            program,
+            modules: ModuleMap::default(),
+            import_items: HashMap::new(),
+            exports: ModuleExports::default(),
+        };
+        snapshot.registry.modules.insert(next_id, unit);
+        let Some(unit) = snapshot.registry.modules.get_mut(&next_id) else {
+            return Err(());
+        };
+        unit.exports = module_exports_from_program(&unit.program);
+        path_to_id.insert(key.clone(), next_id);
+        next_module_diags.insert(key, parse_diags);
+        return Ok((next_id, true));
     }
     if key.to_string_lossy().starts_with('<') {
         return Err(());
@@ -4896,6 +4988,8 @@ fn build_workspace_snapshot(state: &LspState, focus_uri: &str) -> Option<Workspa
         .and_then(uri_to_path)
         .or_else(|| focus_path.clone())?;
     let entry_path = resolve_entry_path(&root_path, focus_path.as_deref())?;
+    let workspace_root = workspace_root_dir(&root_path, &entry_path);
+    let dep_roots = resolve_dependency_roots_for_workspace(&workspace_root);
     let mut overrides = HashMap::new();
     for (uri, text) in &state.docs {
         if let Some(path) = uri_to_path(uri) {
@@ -4913,7 +5007,7 @@ fn build_workspace_snapshot(state: &LspState, focus_uri: &str) -> Option<Workspa
     let (registry, loader_diags) = load_program_with_modules_and_deps_and_overrides(
         &entry_path,
         &root_text,
-        &HashMap::new(),
+        &dep_roots,
         &overrides,
     );
     let mut module_ids_by_path = HashMap::new();
@@ -4927,10 +5021,21 @@ fn build_workspace_snapshot(state: &LspState, focus_uri: &str) -> Option<Workspa
     Some(WorkspaceSnapshot {
         registry,
         overrides,
+        dep_roots,
         loader_diags,
         module_ids_by_path,
         index: None,
     })
+}
+
+fn workspace_root_dir(root_path: &Path, entry_path: &Path) -> PathBuf {
+    if root_path.is_dir() {
+        return root_path.to_path_buf();
+    }
+    if let Some(parent) = entry_path.parent() {
+        return parent.to_path_buf();
+    }
+    root_path.to_path_buf()
 }
 
 fn resolve_entry_path(root_path: &Path, focus: Option<&Path>) -> Option<PathBuf> {
@@ -4966,8 +5071,8 @@ fn read_manifest_entry(root: &Path) -> Option<PathBuf> {
     let manifest = root.join("fuse.toml");
     let contents = std::fs::read_to_string(&manifest).ok()?;
     let mut in_package = false;
-    for line in contents.lines() {
-        let line = line.trim();
+    for raw_line in contents.lines() {
+        let line = strip_toml_comment(raw_line).trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -4991,6 +5096,172 @@ fn read_manifest_entry(root: &Path) -> Option<PathBuf> {
         return Some(root.join(value));
     }
     None
+}
+
+fn resolve_dependency_roots_for_workspace(workspace_root: &Path) -> HashMap<String, PathBuf> {
+    let manifest = workspace_root.join("fuse.toml");
+    let contents = match std::fs::read_to_string(&manifest) {
+        Ok(contents) => contents,
+        Err(_) => return HashMap::new(),
+    };
+
+    let mut roots = HashMap::new();
+    let mut in_dependencies = false;
+    let mut dependency_table: Option<String> = None;
+
+    for raw_line in contents.lines() {
+        let line = strip_toml_comment(raw_line).trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if line.starts_with('[') && line.ends_with(']') {
+            in_dependencies = false;
+            dependency_table = None;
+            let header = line[1..line.len() - 1].trim();
+            if header == "dependencies" {
+                in_dependencies = true;
+            } else if let Some(dep_name) = header.strip_prefix("dependencies.") {
+                let dep_name = unquote_toml_key(dep_name.trim());
+                if !dep_name.is_empty() {
+                    dependency_table = Some(dep_name);
+                }
+            }
+            continue;
+        }
+
+        if let Some(dep_name) = dependency_table.as_deref() {
+            let Some((key, value)) = split_toml_assignment(line) else {
+                continue;
+            };
+            if unquote_toml_key(key) != "path" {
+                continue;
+            }
+            let Some(path) = parse_toml_string(value) else {
+                continue;
+            };
+            roots.insert(
+                dep_name.to_string(),
+                dependency_root_path(workspace_root, &path),
+            );
+            continue;
+        }
+
+        if !in_dependencies {
+            continue;
+        }
+        let Some((dep_name_raw, dep_value_raw)) = split_toml_assignment(line) else {
+            continue;
+        };
+        let dep_name = unquote_toml_key(dep_name_raw);
+        if dep_name.is_empty() {
+            continue;
+        }
+        let Some(path) = resolve_dependency_path_value(dep_value_raw) else {
+            continue;
+        };
+        roots.insert(dep_name, dependency_root_path(workspace_root, &path));
+    }
+
+    roots
+}
+
+fn resolve_dependency_path_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    if let Some(path) = parse_toml_string(value) {
+        if looks_like_path_dependency(&path) {
+            return Some(path);
+        }
+        return None;
+    }
+    if !(value.starts_with('{') && value.ends_with('}')) {
+        return None;
+    }
+    let inner = &value[1..value.len() - 1];
+    for part in inner.split(',') {
+        let Some((key, path_value)) = split_toml_assignment(part) else {
+            continue;
+        };
+        if unquote_toml_key(key) != "path" {
+            continue;
+        }
+        return parse_toml_string(path_value);
+    }
+    None
+}
+
+fn dependency_root_path(workspace_root: &Path, raw_path: &str) -> PathBuf {
+    let path = PathBuf::from(raw_path);
+    let joined = if path.is_absolute() {
+        path
+    } else {
+        workspace_root.join(path)
+    };
+    normalized_path(joined.as_path())
+}
+
+fn split_toml_assignment(line: &str) -> Option<(&str, &str)> {
+    let mut parts = line.splitn(2, '=');
+    let key = parts.next()?.trim();
+    let value = parts.next()?.trim();
+    if key.is_empty() || value.is_empty() {
+        return None;
+    }
+    Some((key, value))
+}
+
+fn parse_toml_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.len() < 2 {
+        return None;
+    }
+    let quote = value.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    if !value.ends_with(quote) {
+        return None;
+    }
+    Some(value[1..value.len() - 1].to_string())
+}
+
+fn unquote_toml_key(key: &str) -> String {
+    let key = key.trim();
+    if key.len() >= 2
+        && ((key.starts_with('"') && key.ends_with('"'))
+            || (key.starts_with('\'') && key.ends_with('\'')))
+    {
+        return key[1..key.len() - 1].to_string();
+    }
+    key.to_string()
+}
+
+fn strip_toml_comment(line: &str) -> &str {
+    let mut in_quote: Option<char> = None;
+    for (idx, ch) in line.char_indices() {
+        if ch == '"' || ch == '\'' {
+            if let Some(active) = in_quote {
+                if active == ch {
+                    in_quote = None;
+                }
+            } else {
+                in_quote = Some(ch);
+            }
+            continue;
+        }
+        if ch == '#' && in_quote.is_none() {
+            return &line[..idx];
+        }
+    }
+    line
+}
+
+fn looks_like_path_dependency(value: &str) -> bool {
+    value.starts_with("./")
+        || value.starts_with("../")
+        || value.starts_with('/')
+        || value.contains('/')
+        || value.contains('\\')
 }
 
 fn find_first_fuse_file(root: &Path) -> Option<PathBuf> {
