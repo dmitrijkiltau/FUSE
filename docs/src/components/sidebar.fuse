@@ -7,6 +7,8 @@ fn sidebar_link(href: String, label: String, is_active: Bool) -> Html:
 fn spec_sidebar(active_slug: String) -> Html:
   return aside({"class": "sidebar", "id": "sidebar", "aria-label": "Reference navigation"}):
     nav(class="sidebar-nav"):
+      sidebar_link("/specs/onboarding", "Onboarding Guide", active_slug == "onboarding")
+      sidebar_link("/specs/boundary-contracts", "Boundary Contracts", active_slug == "boundary-contracts")
       sidebar_link("/specs/reference", "Developer Reference", active_slug == "reference")
     div(class="toc", id="toc")
 

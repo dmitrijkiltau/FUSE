@@ -1,11 +1,12 @@
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use fuse_rt::json;
+mod support;
+use support::net::{find_free_port, skip_if_loopback_unavailable};
 
 fn example_path(name: &str) -> String {
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -41,31 +42,6 @@ fn run_example_with_args(backend: &str, example: &str, args: &[&str]) -> std::pr
         cmd.arg(arg);
     }
     cmd.output().expect("failed to run fusec")
-}
-
-fn find_free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test port");
-    listener.local_addr().unwrap().port()
-}
-
-fn can_bind_loopback() -> bool {
-    static CAN_BIND: OnceLock<bool> = OnceLock::new();
-    *CAN_BIND.get_or_init(|| match TcpListener::bind("127.0.0.1:0") {
-        Ok(listener) => {
-            drop(listener);
-            true
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => false,
-        Err(err) => panic!("failed to probe loopback bind capability: {err}"),
-    })
-}
-
-fn skip_if_loopback_unavailable(test_name: &str) -> bool {
-    if can_bind_loopback() {
-        return false;
-    }
-    eprintln!("skipping {test_name}: loopback bind is not permitted in this environment");
-    true
 }
 
 fn send_http_request_with_retry(port: u16, request: &str) -> (u16, String) {

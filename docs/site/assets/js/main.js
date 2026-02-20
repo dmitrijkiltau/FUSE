@@ -144,6 +144,8 @@ function transformSeeAlso(container) {
 // Transform .md links to docs site URLs
 function transformMdLinks(container) {
   const specRoutes = {
+    "onboarding.md": "/specs/onboarding",
+    "boundary-contracts.md": "/specs/boundary-contracts",
     "reference.md": "/specs/reference",
   };
 
@@ -313,6 +315,8 @@ function generateToc(container, tocEl) {
 // Load and render markdown spec
 async function loadSpec(slug, container) {
   const specMap = {
+    onboarding: "/site/specs/onboarding.md",
+    "boundary-contracts": "/site/specs/boundary-contracts.md",
     reference: "/site/specs/reference.md",
   };
 

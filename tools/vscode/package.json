@@ -1,7 +1,7 @@
 {
   "name": "fuse-vscode",
   "displayName": "Fuse Language",
-  "description": "Syntax highlighting for Fuse",
+  "description": "Syntax highlighting and LSP support for Fuse",
   "version": "0.0.2",
   "publisher": "fuse",
   "main": "./extension.js",

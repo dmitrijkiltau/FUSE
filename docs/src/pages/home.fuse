@@ -7,6 +7,16 @@ fn home_page() -> Html:
       p(class="lead"): "Write intent. Get software."
       p(class="subtitle"): "A small, strict language for CLI apps and HTTP services with built-in config, validation, JSON binding, and OpenAPI generation."
 
+    section(class="quick-links"):
+      h2(): "Install and Run"
+      div(class="card-grid"):
+        a({"href": "/downloads/fuse-pre-alpha-linux-x64.zip", "class": "card", "download": "fuse-pre-alpha-linux-x64.zip"}):
+          h3(): "Download Pre-Alpha ZIP"
+          p(): "Direct download: Linux x64 bundle built by docs/Dockerfile with fuse and fuse-lsp."
+        a(href="/specs/reference", class="card"):
+          h3(): "Docker Docs Runtime"
+          p(): "Run docs in Docker and generate download artifacts during image build."
+
     section(class="quick-start"):
       h2(): "Quick Start"
       div(class="code-example"):
@@ -39,6 +49,12 @@ fn home_page() -> Html:
     section(class="quick-links"):
       h2(): "Documentation"
       div(class="card-grid"):
+        a(href="/specs/onboarding", class="card"):
+          h3(): "Onboarding Guide"
+          p(): "Generated from FUSE source comments and code snippets."
+        a(href="/specs/boundary-contracts", class="card"):
+          h3(): "Boundary Contracts"
+          p(): "Typed request/response boundaries and error mapping patterns."
         a(href="/specs/reference", class="card"):
           h3(): "Developer Reference"
           p(): "Language, runtime, and tooling behavior in one place."

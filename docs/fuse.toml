@@ -8,3 +8,6 @@ openapi = "site/openapi.json"
 
 [serve]
 static_dir = "."
+
+[assets.hooks]
+before_build = "../scripts/generate_guide_docs.sh"

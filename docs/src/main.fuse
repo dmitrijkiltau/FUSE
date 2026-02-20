@@ -2,7 +2,7 @@ import DocsApi from "./api"
 import Meta from "./meta"
 
 config Docs:
-  port: Int = env("PORT") ?? 4080
+  port: String = env("PORT") ?? "4080"
 
 app "Docs":
   log("info", "${Meta.title()} listening on http://localhost:${Docs.port}")

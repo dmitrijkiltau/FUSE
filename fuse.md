@@ -11,13 +11,17 @@ This document is the overview. It explains the model and how to navigate the res
 
 Primary references while working in this codebase:
 
+- `IDENTITY_CHARTER.md` defines language identity, hard boundaries, and "will not do" constraints.
 - `fls.md` is the source of truth for language syntax and static semantics (lexer, grammar, AST shape, type system, module rules).
 - `runtime.md` is the source of truth for runtime semantics (validation, JSON/config/CLI/HTTP binding, errors, builtins, DB, task model).
 - `scope.md` defines constraints, roadmap priorities, and explicit non-goals.
+- `EXTENSIBILITY_BOUNDARIES.md` defines allowed extension surfaces and stability boundaries.
+- `BENCHMARKS.md` defines real-world workload benchmarks and metric collection.
+- `VERSIONING_POLICY.md` defines language/runtime/tooling versioning and compatibility guarantees.
 
-If a detail appears in multiple docs, treat `fls.md` as authoritative for syntax/static rules and `runtime.md` as authoritative for runtime behavior.
+If a detail appears in multiple docs, treat `IDENTITY_CHARTER.md` as authoritative for identity/scope boundaries, `fls.md` for syntax/static rules, and `runtime.md` for runtime behavior.
 
-See also: [What FUSE optimizes for](#what-fuse-optimizes-for), [Guiding idea](#guiding-idea).
+See also: [What FUSE optimizes for](#what-fuse-optimizes-for), [Guiding idea](#guiding-idea), [FUSE identity charter](IDENTITY_CHARTER.md).
 
 ---
 
@@ -92,7 +96,7 @@ FUSE currently ships with:
 - AST interpreter backend
 - VM backend
 - native backend path targeting VM-compatible semantics
-- module imports (including dependency imports via `dep:`)
+- module imports (relative paths, package-root paths via `root:`, and dependency paths via `dep:`)
 - module-scoped function symbols (local-first, then named-import resolution)
 - package tooling via `fuse.toml` and `fuse` commands
 
@@ -123,6 +127,7 @@ Pipeline:
 
 Authority/parity release gates:
 
+- `./scripts/semantic_suite.sh` (parser/sema/boundary semantic contract suite)
 - `./scripts/authority_parity.sh` (explicit semantic-authority suite)
 - `./scripts/release_smoke.sh` (includes authority parity + full smoke checks)
 

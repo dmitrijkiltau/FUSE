@@ -190,3 +190,64 @@ fn main(name: String):
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn root_prefix_imports_resolve_from_manifest_root_across_backends() {
+    let dir = temp_project_dir("root_prefix");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_file(
+        &dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "src/main.fuse"
+app = "Demo"
+"#,
+    );
+    let main_path = dir.join("src").join("main.fuse");
+    write_file(
+        &dir.join("lib").join("greetings.fuse"),
+        r#"
+fn greet() -> String:
+  return "root"
+"#,
+    );
+    write_file(
+        &main_path,
+        r#"
+import Greetings from "root:lib/greetings"
+
+fn main() -> String:
+  return Greetings.greet()
+"#,
+    );
+
+    let src = fs::read_to_string(&main_path).expect("read root source");
+    let (registry, diags) = fusec::load_program_with_modules(&main_path, &src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let (_analysis, sema_diags) = fusec::sema::analyze_registry(&registry);
+    assert!(
+        sema_diags.is_empty(),
+        "unexpected sema diagnostics: {sema_diags:?}"
+    );
+
+    let mut interp = Interpreter::with_registry(&registry);
+    let ast = interp
+        .call_function_with_named_args("main", &HashMap::new())
+        .expect("ast call failed");
+
+    let ir = fusec::ir::lower::lower_registry(&registry).expect("vm lowering failed");
+    let mut vm = Vm::new(&ir);
+    let vm_value = vm.call_function("main", vec![]).expect("vm call failed");
+
+    let native = compile_registry(&registry).expect("native lowering failed");
+    let mut native_vm = NativeVm::new(&native);
+    let native_value = native_vm
+        .call_function("main", vec![])
+        .expect("native call failed");
+
+    assert_eq!(as_string(ast), "root");
+    assert_eq!(as_string(vm_value), "root");
+    assert_eq!(as_string(native_value), "root");
+
+    let _ = fs::remove_dir_all(&dir);
+}

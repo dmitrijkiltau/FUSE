@@ -1,0 +1,60 @@
+# FUSE Onboarding (Generated from Source)
+
+Start from typed contracts and ship a small HTTP service.
+This page is generated from FUSE source comments + code blocks.
+
+_Generated from `docs/src/guides/onboarding.fuse` by `scripts/generate_guide_docs.sh`._
+
+
+## 1) Declare typed config
+`config` gives one place for runtime settings and environment overrides.
+```fuse
+config App:
+  port: Int = env("APP_PORT") ?? 3000
+
+```
+
+## 2) Define boundary contracts
+These types are reused for validation, JSON binding, and OpenAPI.
+```fuse
+type UserCreate:
+  email: Email
+  name: String(1..80)
+
+type User:
+  id: String
+  email: Email
+  name: String(1..80)
+
+```
+
+## 3) Add a typed service
+Route path params and bodies are typed at declaration time.
+```fuse
+import { NotFound } from std.Error
+
+fn load_user(id: Id) -> User?:
+  return null
+
+service Users at "/api":
+  get "/users/{id: Id}" -> User!NotFound:
+    let user = load_user(id) ?! NotFound(message="user not found")
+    return user
+
+  post "/users" body UserCreate -> User:
+    return User(id="user-1", email=body.email, name=body.name)
+
+```
+
+## 4) Start the app
+```fuse
+app "Users":
+  serve(App.port)
+
+```
+
+## 5) Package commands
+- `fuse check`
+- `fuse run`
+- `fuse build`
+

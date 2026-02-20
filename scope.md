@@ -6,6 +6,10 @@ and where near-term effort is going.
 Companion references for implementation work:
 
 - `fuse.md` gives the product-level overview
+- `IDENTITY_CHARTER.md` defines non-negotiable language identity boundaries
+- `EXTENSIBILITY_BOUNDARIES.md` defines allowed extension surfaces and stability boundaries
+- `BENCHMARKS.md` defines real-world workload benchmarks and metric collection
+- `VERSIONING_POLICY.md` defines language/runtime/tooling compatibility and deprecation rules
 - `fls.md` specifies language and static-semantics details
 - `runtime.md` specifies execution/runtime behavior
 
@@ -62,6 +66,7 @@ FUSE is currently scoped as a strict, typed language with integrated boundary/ru
 - service-oriented package workflow (`fuse check/run/dev/test/build`)
 
 Detailed behavior is intentionally kept out of this doc and lives in `fls.md` and `runtime.md`.
+Identity guardrails are defined in `IDENTITY_CHARTER.md`.
 
 See also: [Formal language specification](fls.md), [Runtime semantics](runtime.md#runtime-surface-and-ownership).
 
@@ -87,12 +92,13 @@ See also: [Backends](runtime.md#backends), [Builtins and runtime subsystems](run
 ---
 
 ## Non-goals (explicit)
-
 - full ORM / heavyweight query language
-- macro system
-- broad metaprogramming beyond basic derivation forms
+- user macro/metaprogramming system
+- user-defined generics / polymorphism systems
+- runtime reflection/introspection features that alter language behavior
 - custom operator overloading
-- multiple inheritance at MVP
+- inheritance-heavy object model features
+- backend-specific semantic dialects
 - "everything async by default"
 
-See also: [Guiding idea](fuse.md#guiding-idea), [FUSE overview](fuse.md).
+See also: [FUSE identity charter](IDENTITY_CHARTER.md), [Guiding idea](fuse.md#guiding-idea), [FUSE overview](fuse.md).

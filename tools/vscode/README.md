@@ -15,11 +15,21 @@ Then in the VS Code Command Palette:
 - Select `/home/dima/Projects/fuse/tools/vscode`
 - Reload
 
-## LSP (diagnostics + formatting + UX)
+## LSP (diagnostics + navigation + completion + refactor)
 
 This extension now starts `fuse-lsp` directly.
 Semantic highlighting is enabled by default for `[fuse]`, so LSP token colors override
 TextMate scopes when the server is available.
+
+Current LSP feature baseline:
+
+- diagnostics on open/change/close
+- formatting
+- hover + go-to-definition + references
+- rename refactor
+- completion/autocomplete
+- semantic tokens + inlay hints
+- code actions (unresolved import quick fixes, config-field scaffold quick fixes, organize imports)
 
 ### Local dev
 
@@ -57,18 +67,31 @@ Notes:
 - Run the LSP inside WSL (so it can access the repo and binaries).
 - If VS Code asks for a workspace/root, use the repo root.
 
-### Shipping the LSP binary
+### Packaging workflow
 
-For packaging, copy the platform binary into:
-
-```
-tools/vscode/bin/<platform>/fuse-lsp
-```
-
-Examples:
+Build and package the extension payload (including bundled `fuse-lsp`):
 
 ```
-tools/vscode/bin/linux-x64/fuse-lsp
-tools/vscode/bin/macos-arm64/fuse-lsp
-tools/vscode/bin/windows-x64/fuse-lsp.exe
+./scripts/package_vscode_extension.sh --platform linux-x64
 ```
+
+Release-mode build + package:
+
+```
+./scripts/package_vscode_extension.sh --platform linux-x64 --release
+```
+
+This script:
+
+1. builds `dist/fuse-lsp` (unless `--skip-build`),
+2. copies it to `tools/vscode/bin/<platform>/fuse-lsp` (or `.exe` on Windows),
+3. verifies path resolution priority (`bundled > workspace dist > PATH`),
+4. emits `dist/fuse-vscode-<platform>.tgz`.
+
+### Release checklist
+
+1. Run `./scripts/build_dist.sh --release`.
+2. Run `./scripts/package_vscode_extension.sh --platform <platform> --release`.
+3. Verify `tools/vscode/bin/<platform>/fuse-lsp` exists and is executable.
+4. Verify `dist/fuse-vscode-<platform>.tgz` exists.
+5. Install/test the packaged extension in a clean VS Code profile.
