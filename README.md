@@ -146,6 +146,7 @@ Release smoke checks:
 
 `release_smoke.sh` runs `authority_parity.sh` first and fails on any AST/VM/native semantic parity regression.
 It also includes the LSP suite gate (`scripts/lsp_suite.sh`).
+CI enforces this gate via `.github/workflows/pre-release-gate.yml` on pull requests and pushes to `main`.
 
 Build distributable binaries:
 
