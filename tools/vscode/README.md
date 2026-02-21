@@ -4,15 +4,15 @@ This folder provides syntax highlighting for `.fuse` files and a built-in Fuse L
 
 ## Syntax highlighting
 
-Install the extension from this folder (WSL):
+Install the extension from this folder:
 
 ```
-code /home/dima/Projects/fuse
+code <path-to-fuse-repo>
 ```
 
 Then in the VS Code Command Palette:
 - **Developer: Install Extension from Location...**
-- Select `/home/dima/Projects/fuse/tools/vscode`
+- Select the `tools/vscode` directory inside the repo
 - Reload
 
 ## LSP (diagnostics + navigation + completion + refactor)

@@ -58,3 +58,13 @@ Files:
 - `examples/assign_field.fuse`: struct field assignment.
 - `examples/assign_index.fuse`: list/map index assignment.
 - `examples/range_demo.fuse`: range expressions (inclusive lists).
+- `examples/enum_match.fuse`: enum declarations and match expressions.
+- `examples/float_compare.fuse`: float comparison semantics.
+- `examples/task_api.fuse`: task API (`task.id`, `task.done`, `task.cancel`).
+- `examples/native_bang_error.fuse`: native backend `?!` error handling.
+- `examples/native_bench.fuse`: native backend performance smoke test.
+- `examples/native_builtins.fuse`: native backend builtin coverage.
+- `examples/native_db.fuse`: native backend DB execution.
+- `examples/native_heap_literals.fuse`: native backend heap-allocated literals.
+- `examples/native_json.fuse`: native backend JSON encode/decode.
+- `examples/native_validation.fuse`: native backend validation behavior.

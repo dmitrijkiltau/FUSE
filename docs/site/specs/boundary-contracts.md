@@ -21,7 +21,7 @@ type Note:
 
 ## 2) Service signatures define HTTP contracts
 - `body NoteCreate` means typed JSON decode + validation at the boundary
-- `-> Note!BadRequest!NotFound` means success + explicit error channels
+- each route declares its own error type (`Note!BadRequest`, `Note!NotFound`)
 ```fuse
 import { BadRequest, NotFound } from std.Error
 

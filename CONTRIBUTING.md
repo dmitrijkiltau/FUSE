@@ -43,6 +43,7 @@ Recommended baseline before opening a PR:
 | Scope or non-goal boundaries | update `scope.md` and/or `IDENTITY_CHARTER.md` |
 | Versioning/deprecation behavior | update `VERSIONING_POLICY.md` and `CHANGELOG.md` |
 | Docs site behavior/content pipeline | update docs source + generated outputs under `docs/site/` |
+| Language/runtime behavior visible in reference docs | update `docs/site/specs/reference.md` (manually maintained, must stay aligned with `fls.md` and `runtime.md`) |
 
 If semantics change and docs are not updated in the same PR, the PR is incomplete.
 
