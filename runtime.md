@@ -17,7 +17,7 @@ This document owns:
 - backend execution behavior
 - runtime error/status/JSON rendering behavior
 - boundary behavior (validation, JSON, config, CLI, HTTP)
-- builtins, DB access, migrations/tests execution, task model, logging
+- builtins, DB access, migrations/tests execution, concurrency model, logging
 
 This document does not re-specify:
 
@@ -339,7 +339,6 @@ See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [
 - `env(name: String) -> String?` returns env var or `null`
 - `asset(path: String) -> String` resolves to hashed/static public URL when asset map is configured
 - `serve(port)` starts HTTP server on `FUSE_HOST:port`
-- `task.id/done/cancel` operate on spawned tasks
 - HTML tag builtins (`html`, `head`, `body`, `div`, `meta`, `button`, ...)
 - `html.text`, `html.raw`, `html.node`, `html.render`
 - `svg.inline(path: String) -> Html`
@@ -449,21 +448,27 @@ Rules:
 ### Concurrency
 
 `spawn:` creates a task and returns `Task<T>` where `T` is block result.
-Tasks execute eagerly today (no true parallelism), but errors are captured and surfaced on `await`.
+Spawned tasks run on a shared worker pool. Execution is asynchronous relative to the caller
+and may overlap with other spawned tasks.
 
 `await expr` waits on a task and yields its result.
 
-Task API:
+Task surface (v0.2.0):
 
-- `task.id(t: Task<T>) -> Id`
-- `task.done(t: Task<T>) -> Bool`
-- `task.cancel(t: Task<T>) -> Bool`
+- `Task<T>` remains an opaque runtime type
+- task helper builtins were removed (`task.id`, `task.done`, `task.cancel`)
+- task values are consumed via `await` only
 
-With eager execution, spawned tasks usually complete immediately; `task.done` is usually `true`
-and `task.cancel` usually returns `false`.
+Spawn determinism restrictions (enforced by semantic analysis):
+
+- no `box` capture/use in `spawn` blocks
+- no runtime side-effect builtins in `spawn` blocks:
+  `db.*`, `serve`, `print`, `log`, `env`, `asset`, `svg.inline`
+- no mutation of captured outer bindings
 
 `box expr` creates a shared mutable cell. Boxed values are transparently dereferenced in most
-expressions; assigning boxed bindings updates shared cell state. Passing a box into `spawn` shares state.
+expressions; assigning boxed bindings updates shared cell state. `spawn` blocks cannot capture or
+use boxed state.
 
 ### Loops
 

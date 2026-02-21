@@ -96,7 +96,7 @@ fn describe_user(user: User) -> String:
 }
 
 #[test]
-fn checks_task_api_types() {
+fn reports_removed_task_api() {
     let src = r#"
 fn main():
   let t = spawn:
@@ -104,9 +104,59 @@ fn main():
   let a = task.id(t)
   let b = task.done(t)
   let c = task.cancel(t)
-  let bad = task.id(1)
 "#;
-    assert_diags(src, &["Error: type mismatch: expected Task<_>, found Int"]);
+    assert_diags(
+        src,
+        &[
+            "Error: task.cancel was removed in v0.2.0; use spawn + await instead",
+            "Error: task.done was removed in v0.2.0; use spawn + await instead",
+            "Error: task.id was removed in v0.2.0; use spawn + await instead",
+        ],
+    );
+}
+
+#[test]
+fn spawn_rejects_side_effect_builtins() {
+    let src = r#"
+fn main():
+  let t = spawn:
+    print("hi")
+  await t
+"#;
+    assert_diags(
+        src,
+        &["Error: spawn blocks cannot call side-effect builtin print"],
+    );
+}
+
+#[test]
+fn spawn_rejects_box_capture() {
+    let src = r#"
+fn main():
+  let shared = box 1
+  let t = spawn:
+    shared
+  await t
+"#;
+    assert_diags(
+        src,
+        &["Error: spawn blocks cannot capture or use box values"],
+    );
+}
+
+#[test]
+fn spawn_rejects_mutating_captured_outer_state() {
+    let src = r#"
+fn main():
+  var total = 0
+  let t = spawn:
+    total = 1
+  await t
+"#;
+    assert_diags(
+        src,
+        &["Error: spawn blocks cannot mutate captured outer state (total)"],
+    );
 }
 
 #[test]

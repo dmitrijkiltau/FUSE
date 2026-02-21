@@ -53,11 +53,19 @@ For current `0.1.x` series:
 - language/runtime/tooling behavior documented for `0.1.x` must remain backward compatible
 - semantic regressions across AST/VM/native are treated as release blockers
 
+`0.2.0` is an explicitly breaking minor that resets parts of the pre-1.0 contract:
+
+- task helper API removal (`task.id/done/cancel`)
+- `spawn` execution and restriction semantics
+- build cache metadata schema bump (`program.meta` v3)
+- VS Code packaging artifact change (`.tgz` -> `.vsix`)
+
 ## Compatibility guarantees
 
 ### Source compatibility
 
 - Programs valid on `0.1.0` must remain valid and equivalent on `0.1.x`.
+- Programs valid on `0.2.0` must remain valid and equivalent on `0.2.x`.
 - If behavior must change incompatibly, release must bump at least `MINOR` and include migration guidance.
 
 ### Runtime behavior compatibility
@@ -69,6 +77,7 @@ For current `0.1.x` series:
 
 - `.fuse/build/program.ir` and `.fuse/build/program.native` are cache artifacts, not portability contracts.
 - Cross-version cache compatibility is not guaranteed; rebuild on version changes is expected.
+- `0.2.0` intentionally invalidates `0.1.x` build cache metadata.
 
 ## Deprecation policy
 
@@ -78,12 +87,17 @@ A contract-facing change must follow all steps:
    - document in `CHANGELOG.md` and the relevant spec doc (`fls.md` or `runtime.md`)
    - provide replacement path
 2. Deprecation window:
-   - keep old behavior for at least one `MINOR` cycle (pre-1.0) or one `MAJOR` cycle (1.0+)
+   - keep old behavior for at least one `MAJOR` cycle (1.0+)
+   - pre-1.0 (`0.x`) breaking minor releases may remove behavior without a full deprecation window,
+     but must include:
+     - explicit breaking notes in `CHANGELOG.md`
+     - compiler/runtime diagnostics with migration hints where possible
+     - a concrete migration guide under `docs/migrations/`
 3. Removal:
    - allowed only on the next breaking release boundary
    - include migration notes and before/after examples
 
-No silent removals of user-facing language/runtime/tooling behavior are allowed.
+No silent removals of user-facing language/runtime/tooling behavior are allowed, including pre-1.0.
 
 ## Release gate requirements
 

@@ -3,7 +3,7 @@
 This document tracks the parser and semantic analysis implemented in `crates/fusec`.
 It is the canonical source for lexical rules, grammar, AST structure, and static type semantics.
 
-Runtime behavior (validation timing, HTTP status mapping, config/CLI parsing, DB/task execution)
+Runtime behavior (validation timing, HTTP status mapping, config/CLI parsing, DB/concurrency execution)
 is intentionally documented in `runtime.md`.
 
 ---
@@ -396,6 +396,16 @@ Constraint forms:
 with listed fields removed. Field types/defaults are preserved for retained fields.
 
 Base types can be module-qualified (`Foo.User`). Unknown base types or fields are errors.
+
+### Spawn static restrictions (v0.2.0)
+
+Inside a `spawn` block, semantic analysis rejects:
+
+- `box` capture/use (including captured outer boxed bindings)
+- runtime side-effect builtins (`db.*`, `serve`, `print`, `log`, `env`, `asset`, `svg.inline`)
+- mutation of captured outer bindings
+
+These restrictions are part of the language contract for deterministic cross-backend concurrency.
 
 See also: [Imports and modules (current)](#imports-and-modules-current), [Runtime semantics](runtime.md), [Scope + constraints](scope.md).
 

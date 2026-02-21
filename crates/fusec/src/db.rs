@@ -378,7 +378,7 @@ fn param_to_sql(param: &Value) -> Result<SqlValue, String> {
         Value::Bool(v) => Ok(SqlValue::Integer(if v { 1 } else { 0 })),
         Value::String(v) => Ok(SqlValue::Text(v)),
         Value::Bytes(v) => Ok(SqlValue::Blob(v)),
-        Value::Boxed(inner) => param_to_sql(&inner.borrow()),
+        Value::Boxed(inner) => param_to_sql(&inner.lock().expect("box lock")),
         Value::ResultOk(inner) => param_to_sql(&inner),
         Value::ResultErr(inner) => param_to_sql(&inner),
         other => Err(format!(
@@ -396,7 +396,7 @@ fn validate_param_value(value: &Value) -> Result<(), String> {
         | Value::Bool(_)
         | Value::String(_)
         | Value::Bytes(_) => Ok(()),
-        Value::Boxed(inner) => validate_param_value(&inner.borrow()),
+        Value::Boxed(inner) => validate_param_value(&inner.lock().expect("box lock")),
         Value::ResultOk(inner) => validate_param_value(&inner),
         Value::ResultErr(inner) => validate_param_value(&inner),
         other => Err(format!(

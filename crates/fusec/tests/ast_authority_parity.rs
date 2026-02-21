@@ -2,17 +2,22 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fusec::interp::{Interpreter, Value};
 use fusec::native::{NativeVm, compile_registry};
 use fusec::vm::Vm;
 
-fn unique_suffix() -> u128 {
-    SystemTime::now()
+static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn unique_suffix() -> String {
+    let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")
-        .as_nanos()
+        .as_nanos();
+    let counter = UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{nanos}-{counter}-{}", std::process::id())
 }
 
 fn write_temp_file(tag: &str, ext: &str, contents: &str) -> PathBuf {

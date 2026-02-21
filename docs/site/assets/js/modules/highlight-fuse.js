@@ -69,9 +69,6 @@ export default function defineFuseLanguage(hljs) {
     "query.exec",
     "query.sql",
     "query.params",
-    "task.id",
-    "task.done",
-    "task.cancel",
   ].join(" ");
 
   return {

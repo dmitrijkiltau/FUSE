@@ -114,7 +114,7 @@ fn native_heap_literals_smoke() {
         "expected JIT for make_boxed"
     );
     match boxed {
-        Value::Boxed(inner) => match &*inner.borrow() {
+        Value::Boxed(inner) => match &*inner.lock().expect("box lock") {
             Value::String(text) => assert_eq!(text, "boxed"),
             other => panic!("unexpected boxed inner value: {other:?}"),
         },

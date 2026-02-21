@@ -1,11 +1,8 @@
-# box shared state across spawn/await
+# box mutation demo
 
 fn main():
   let counter = box 0
-  let task = spawn:
-    counter = counter + 1
-    counter
-  let _ = await task
+  counter = counter + 1
   print(counter)
 
 app "box":

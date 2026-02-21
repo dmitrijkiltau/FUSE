@@ -36,7 +36,7 @@ measure_cmd_ms() {
   fi
   end_ns="$(now_ns)"
   rm -f "$log_file"
-  printf -v "$__ms_var" "%d" $(((end_ns - start_ns) / 1000000))
+  printf -v "$__ms_var" "%s" "$(awk -v ns="$((end_ns - start_ns))" 'BEGIN { printf "%.3f", (ns / 1000000) }')"
 }
 
 measure_cmd_ms_with_status() {
@@ -50,7 +50,7 @@ measure_cmd_ms_with_status() {
   status=$?
   set -e
   end_ns="$(now_ns)"
-  printf -v "$__ms_var" "%d" $(((end_ns - start_ns) / 1000000))
+  printf -v "$__ms_var" "%s" "$(awk -v ns="$((end_ns - start_ns))" 'BEGIN { printf "%.3f", (ns / 1000000) }')"
   printf -v "$__status_var" "%d" "$status"
 }
 
@@ -78,7 +78,7 @@ http_request_status_ms() {
 
   status="${response%% *}"
   seconds="${response##* }"
-  ms="$(awk -v s="$seconds" 'BEGIN { printf "%d", (s * 1000) }')"
+  ms="$(awk -v s="$seconds" 'BEGIN { printf "%.3f", (s * 1000) }')"
   echo "$status $ms"
 }
 
@@ -154,6 +154,14 @@ if [[ "$probe_code" -ne 0 ]]; then
   exit 1
 fi
 
+# Warm up route and DB path before recording request metrics.
+curl -sS -o /dev/null --max-time 3 "http://127.0.0.1:${PORT}/api/notes" || true
+curl -sS -o /dev/null --max-time 3 \
+  -X POST \
+  -H 'content-type: application/json' \
+  --data '{"title":"bench-warmup","content":"warm"}' \
+  "http://127.0.0.1:${PORT}/api/notes" || true
+
 read -r status_list notes_get_list_ms <<<"$(http_request_status_ms GET "http://127.0.0.1:${PORT}/api/notes")"
 if [[ "$status_list" != "200" ]]; then
   echo "GET /api/notes expected 200, got $status_list" >&2
@@ -182,11 +190,7 @@ if [[ "$status_root" != "200" ]]; then
   exit 1
 fi
 
-if (( notes_post_invalid_ms >= notes_post_ok_ms )); then
-  notes_contract_delta_ms=$((notes_post_invalid_ms - notes_post_ok_ms))
-else
-  notes_contract_delta_ms=$((notes_post_ok_ms - notes_post_invalid_ms))
-fi
+notes_validation_error_overhead_ms="$(awk -v a="$notes_post_invalid_ms" -v b="$notes_post_ok_ms" 'BEGIN { d = a - b; if (d < 0) d = -d; printf "%.3f", d }')"
 
 kill "$SERVER_PID" >/dev/null 2>&1 || true
 wait "$SERVER_PID" >/dev/null 2>&1 || true
@@ -210,7 +214,7 @@ cat >"$METRICS_JSON" <<EOF
     "request_post_valid_ms": $notes_post_ok_ms,
     "request_post_invalid_ms": $notes_post_invalid_ms,
     "request_frontend_root_ms": $notes_frontend_get_ms,
-    "contract_validation_delta_ms": $notes_contract_delta_ms
+    "request_validation_error_overhead_abs_ms": $notes_validation_error_overhead_ms
   }
 }
 EOF
@@ -232,7 +236,7 @@ EOF
   print_row "Runtime: notes-api" "POST /api/notes (valid body)" "${notes_post_ok_ms} ms"
   print_row "Runtime: notes-api" "POST /api/notes (invalid body, 400)" "${notes_post_invalid_ms} ms"
   print_row "Frontend integration" "GET / (index)" "${notes_frontend_get_ms} ms"
-  print_row "Contract cost signal" "|invalid-valid| delta" "${notes_contract_delta_ms} ms"
+  print_row "Runtime: notes-api" "validation error overhead abs(POST invalid - POST valid)" "${notes_validation_error_overhead_ms} ms"
   echo
   echo "Raw JSON metrics: \`$METRICS_JSON\`"
 } >"$METRICS_MD"

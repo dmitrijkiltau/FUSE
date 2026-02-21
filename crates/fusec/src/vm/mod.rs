@@ -1,10 +1,9 @@
-use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate as rt_validate};
 
@@ -101,6 +100,28 @@ fn min_log_level() -> LogLevel {
         .ok()
         .and_then(|raw| parse_log_level(&raw))
         .unwrap_or(LogLevel::Info)
+}
+
+pub(crate) fn run_vm_spawn_task(
+    program: IrProgram,
+    configs: HashMap<String, HashMap<String, Value>>,
+    name: String,
+    args: Vec<Value>,
+) -> TaskResult {
+    let Some(func) = program.functions.get(&name).cloned() else {
+        return TaskResult::Runtime(format!("unknown function {name}"));
+    };
+    let mut vm = Vm::new(&program);
+    vm.configs = configs;
+    match vm.exec_function(&func, args) {
+        Ok(val) => match vm.wrap_function_result(&func, val) {
+            Ok(value) => TaskResult::Ok(value),
+            Err(VmError::Error(err_val)) => TaskResult::Error(err_val),
+            Err(VmError::Runtime(msg)) => TaskResult::Runtime(msg),
+        },
+        Err(VmError::Error(err_val)) => TaskResult::Error(err_val),
+        Err(VmError::Runtime(msg)) => TaskResult::Runtime(msg),
+    }
 }
 
 pub struct Vm<'a> {
@@ -355,7 +376,7 @@ impl<'a> Vm<'a> {
                         return Err(VmError::Runtime(format!("invalid local slot {slot}")));
                     }
                     if let Value::Boxed(cell) = &frame.locals[slot] {
-                        *cell.borrow_mut() = value.unboxed();
+                        *cell.lock().expect("box lock") = value.unboxed();
                     } else {
                         frame.locals[slot] = value;
                     }
@@ -453,22 +474,12 @@ impl<'a> Vm<'a> {
                         args.push(frame.pop()?);
                     }
                     args.reverse();
-                    let func = self
-                        .program
-                        .functions
-                        .get(&name)
-                        .ok_or_else(|| VmError::Runtime(format!("unknown function {name}")))?;
-                    let result = match self.exec_function(func, args) {
-                        Ok(val) => {
-                            let value = self.wrap_function_result(func, val)?;
-                            TaskResult::Ok(value)
-                        }
-                        Err(VmError::Error(err_val)) => TaskResult::Error(err_val),
-                        Err(VmError::Runtime(msg)) => TaskResult::Runtime(msg),
-                    };
-                    frame
-                        .stack
-                        .push(Value::Task(Task::from_task_result(result)));
+                    let program = self.program.clone();
+                    let configs = self.configs.clone();
+                    let task_name = name.clone();
+                    let task =
+                        Task::spawn_async(move || run_vm_spawn_task(program, configs, task_name, args));
+                    frame.stack.push(Value::Task(task));
                 }
                 Instr::Await => {
                     let value = frame.pop()?;
@@ -547,7 +558,7 @@ impl<'a> Vm<'a> {
                     let value = frame.pop()?;
                     let boxed = match value {
                         Value::Boxed(_) => value,
-                        other => Value::Boxed(Rc::new(RefCell::new(other))),
+                        other => Value::Boxed(Arc::new(Mutex::new(other))),
                     };
                     frame.stack.push(boxed);
                 }
@@ -628,7 +639,7 @@ impl<'a> Vm<'a> {
                     let updated = match base {
                         Value::Boxed(cell) => {
                             {
-                                let mut inner = cell.borrow_mut();
+                                let mut inner = cell.lock().expect("box lock");
                                 match &mut *inner {
                                     Value::Struct { fields, .. } => {
                                         fields.insert(field_name.clone(), value);
@@ -661,7 +672,7 @@ impl<'a> Vm<'a> {
                     let updated = match base {
                         Value::Boxed(cell) => {
                             {
-                                let mut inner = cell.borrow_mut();
+                                let mut inner = cell.lock().expect("box lock");
                                 match &mut *inner {
                                     Value::List(items) => {
                                         let idx = self.list_index(&index)?;
@@ -1336,24 +1347,6 @@ impl<'a> Vm<'a> {
                 let params = query.params().map_err(VmError::Runtime)?;
                 Ok(Value::List(params))
             }
-            "task.id" => match args.get(0) {
-                Some(Value::Task(task)) => Ok(Value::String(format!("task-{}", task.id()))),
-                _ => Err(VmError::Runtime(
-                    "task.id expects a Task argument".to_string(),
-                )),
-            },
-            "task.done" => match args.get(0) {
-                Some(Value::Task(task)) => Ok(Value::Bool(task.is_done())),
-                _ => Err(VmError::Runtime(
-                    "task.done expects a Task argument".to_string(),
-                )),
-            },
-            "task.cancel" => match args.get(0) {
-                Some(Value::Task(task)) => Ok(Value::Bool(task.cancel())),
-                _ => Err(VmError::Runtime(
-                    "task.cancel expects a Task argument".to_string(),
-                )),
-            },
             "assert" => {
                 let cond = match args.get(0) {
                     Some(Value::Bool(value)) => *value,

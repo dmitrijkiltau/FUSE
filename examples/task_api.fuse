@@ -1,16 +1,11 @@
 fn main():
-  let t = spawn:
+  let left = spawn:
     40 + 2
-  let id = task.id(t)
-  let done = task.done(t)
-  let cancelled = task.cancel(t)
-  let value = await t
-  assert(done, "task should be done eagerly")
-  assert(!cancelled, "task.cancel should be false for completed tasks")
-  print(id)
-  print(done)
-  print(cancelled)
-  print(value)
+  let right = spawn:
+    8
+  let a = await left
+  let b = await right
+  print(a + b)
 
 app "task_api":
   main()

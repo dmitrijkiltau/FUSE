@@ -32,14 +32,14 @@ APP_PORT=4000 ./scripts/fuse run examples/http_users.fuse
 | `types_patterns.fuse` | Enums, structs, and pattern matching (Option/Result) |
 | `project_demo.fuse` | Config env overrides, refined types, enums, and match |
 | `interp_demo.fuse` | String interpolation |
-| `spawn_await_box.fuse` | Spawn/await/box parity demo |
-| `box_shared.fuse` | Shared `box` state across tasks |
+| `spawn_await_box.fuse` | Spawn/await parity demo |
+| `box_shared.fuse` | Shared `box` state mutation |
 | `assign_field.fuse` | Struct field assignment |
 | `assign_index.fuse` | List/map index assignment |
 | `range_demo.fuse` | Range expressions (inclusive lists) |
 | `enum_match.fuse` | Enum declarations and match expressions |
 | `float_compare.fuse` | Float comparison semantics |
-| `task_api.fuse` | Task API (`task.id`, `task.done`, `task.cancel`) |
+| `task_api.fuse` | Spawn/await task workflow |
 
 ## Native backend examples
 

@@ -19,6 +19,7 @@ mod runtime_svg;
 pub mod runtime_types;
 pub mod sema;
 pub mod span;
+mod task_pool;
 pub mod token;
 pub mod vm;
 

@@ -2,6 +2,40 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.0] - Unreleased
+
+### Breaking
+
+- Task helper builtins removed: `task.id`, `task.done`, `task.cancel`.
+- Concurrency semantics changed: `spawn` now executes on a worker pool (no eager completion model).
+- `spawn` blocks now reject:
+  - `box` capture/use
+  - runtime side-effect builtins (`db.*`, `serve`, `print`, `log`, `env`, `asset`, `svg.inline`)
+  - mutation of captured outer state
+- Build cache metadata format bumped to `program.meta` v3 (content-hash validation).
+- VS Code package artifact switched from `.tgz` payload to installable `.vsix`.
+
+### Added
+
+- Shared task scheduler module used by AST/VM/native spawn execution paths.
+- Hash-based cache validation for module graph sources, `fuse.toml`, and `fuse.lock`.
+- Cached `fuse run` fast-path now supports CLI program args after `--`.
+- VSIX integrity verification script: `scripts/verify_vscode_vsix.sh`.
+- Benchmark regression gate script: `scripts/check_use_case_bench_regression.sh`.
+- Migration guide: `docs/migrations/0.1-to-0.2.md`.
+
+### Changed
+
+- Release smoke gate now includes:
+  - use-case benchmark collection
+  - benchmark regression enforcement vs checked-in baseline
+  - VSIX package build and validation
+- Benchmark metrics now record millisecond values with sub-ms precision.
+
+### Migration
+
+- See `docs/migrations/0.1-to-0.2.md` for required source/tooling updates.
+
 ## [0.1.0] - 2026-02-21
 
 ### Added

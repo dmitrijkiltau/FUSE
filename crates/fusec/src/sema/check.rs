@@ -29,6 +29,7 @@ pub struct Checker<'a> {
     env: TypeEnv,
     fn_cache: HashMap<(ModuleId, String), FnSig>,
     current_return: Option<Ty>,
+    spawn_scope_markers: Vec<usize>,
 }
 
 impl<'a> Checker<'a> {
@@ -78,6 +79,7 @@ impl<'a> Checker<'a> {
             env,
             fn_cache: HashMap::new(),
             current_return: None,
+            spawn_scope_markers: Vec::new(),
         }
     }
 
@@ -225,6 +227,20 @@ impl<'a> Checker<'a> {
         last
     }
 
+    fn in_spawn_scope(&self) -> bool {
+        !self.spawn_scope_markers.is_empty()
+    }
+
+    fn is_outer_capture(&self, name: &str) -> bool {
+        let Some(marker) = self.spawn_scope_markers.last().copied() else {
+            return false;
+        };
+        let Some((_, depth)) = self.env.lookup_with_depth(name) else {
+            return false;
+        };
+        depth < marker
+    }
+
     fn check_stmt(&mut self, stmt: &Stmt) -> Ty {
         match &stmt.kind {
             StmtKind::Let { name, ty, expr } => {
@@ -256,6 +272,18 @@ impl<'a> Checker<'a> {
                 Ty::Unit
             }
             StmtKind::Assign { target, expr } => {
+                if self.in_spawn_scope() {
+                    if let Some(root) = lvalue_root_name(target) {
+                        if self.is_outer_capture(root) {
+                            self.diags.error(
+                                target.span,
+                                format!(
+                                    "spawn blocks cannot mutate captured outer state ({root})"
+                                ),
+                            );
+                        }
+                    }
+                }
                 let target_ty = self.check_lvalue(target);
                 let value_ty = self.check_expr(expr);
                 if !self.is_assignable(&value_ty, &target_ty) {
@@ -369,6 +397,14 @@ impl<'a> Checker<'a> {
                 if let ExprKind::Ident(ident) = &callee.kind {
                     if self.should_use_html_tag_builtin(&ident.name) {
                         return self.check_html_tag_call(expr.span, &ident.name, args);
+                    }
+                }
+                if self.in_spawn_scope() {
+                    if let Some(forbidden) = spawn_forbidden_builtin(callee) {
+                        self.diags.error(
+                            expr.span,
+                            format!("spawn blocks cannot call side-effect builtin {forbidden}"),
+                        );
                     }
                 }
                 if let ExprKind::Member { base, name } = &callee.kind {
@@ -536,7 +572,10 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Spawn { block } => {
+                let marker = self.env.depth();
+                self.spawn_scope_markers.push(marker);
                 let block_ty = self.check_block(block);
+                self.spawn_scope_markers.pop();
                 Ty::Task(Box::new(block_ty))
             }
             ExprKind::Await { expr: inner } => {
@@ -552,6 +591,12 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Box { expr: inner } => {
+                if self.in_spawn_scope() {
+                    self.diags.error(
+                        expr.span,
+                        "spawn blocks cannot use box values (capture/share is forbidden)",
+                    );
+                }
                 let inner_ty = self.check_expr(inner);
                 Ty::Boxed(Box::new(inner_ty))
             }
@@ -940,30 +985,14 @@ impl<'a> Checker<'a> {
     }
 
     fn lookup_task_member(&mut self, name: &crate::ast::Ident) -> Ty {
-        let task_arg = Ty::Task(Box::new(Ty::Unknown));
-        match name.name.as_str() {
-            "id" => Ty::Fn(FnSig {
-                params: vec![ParamSig {
-                    name: "task".to_string(),
-                    ty: task_arg,
-                    has_default: false,
-                }],
-                ret: Box::new(Ty::Id),
-            }),
-            "done" | "cancel" => Ty::Fn(FnSig {
-                params: vec![ParamSig {
-                    name: "task".to_string(),
-                    ty: task_arg,
-                    has_default: false,
-                }],
-                ret: Box::new(Ty::Bool),
-            }),
-            _ => {
-                self.diags
-                    .error(name.span, format!("unknown task method {}", name.name));
-                Ty::Unknown
-            }
-        }
+        self.diags.error(
+            name.span,
+            format!(
+                "task.{} was removed in v0.2.0; use spawn + await instead",
+                name.name
+            ),
+        );
+        Ty::Unknown
     }
 
     fn lookup_config_field(&mut self, type_name: &str, field: &str, span: Span) -> Ty {
@@ -1265,6 +1294,12 @@ impl<'a> Checker<'a> {
 
     fn resolve_ident_expr(&mut self, ident: &crate::ast::Ident) -> Ty {
         if let Some(var) = self.env.lookup(&ident.name) {
+            if self.in_spawn_scope() && matches!(var.ty, Ty::Boxed(_)) {
+                self.diags.error(
+                    ident.span,
+                    "spawn blocks cannot capture or use box values",
+                );
+            }
             return Self::unbox_transparent(var.ty.clone());
         }
         if let Some(link) = self.import_items.get(&ident.name) {
@@ -2131,6 +2166,38 @@ impl<'a> Checker<'a> {
     }
 }
 
+fn lvalue_root_name(target: &Expr) -> Option<&str> {
+    match &target.kind {
+        ExprKind::Ident(ident) => Some(ident.name.as_str()),
+        ExprKind::Member { base, .. }
+        | ExprKind::OptionalMember { base, .. }
+        | ExprKind::Index { base, .. }
+        | ExprKind::OptionalIndex { base, .. } => lvalue_root_name(base),
+        _ => None,
+    }
+}
+
+fn spawn_forbidden_builtin(callee: &Expr) -> Option<&'static str> {
+    match &callee.kind {
+        ExprKind::Ident(ident) => match ident.name.as_str() {
+            "print" => Some("print"),
+            "log" => Some("log"),
+            "env" => Some("env"),
+            "asset" => Some("asset"),
+            "serve" => Some("serve"),
+            _ => None,
+        },
+        ExprKind::Member { base, name } => match &base.kind {
+            ExprKind::Ident(ident) if ident.name == "db" => Some("db.*"),
+            ExprKind::Ident(ident) if ident.name == "svg" && name.name == "inline" => {
+                Some("svg.inline")
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn split_qualified_type_name(name: &str) -> Option<(&str, &str)> {
     let mut parts = name.split('.');
     let module = parts.next()?;
@@ -2172,6 +2239,10 @@ impl TypeEnv {
         }
     }
 
+    fn depth(&self) -> usize {
+        self.scopes.len()
+    }
+
     fn insert_builtin(&mut self, name: &str) {
         let _ = self.insert(name, Ty::Unknown, false);
     }
@@ -2194,6 +2265,15 @@ impl TypeEnv {
         for scope in self.scopes.iter().rev() {
             if let Some(var) = scope.vars.get(name) {
                 return Some(var);
+            }
+        }
+        None
+    }
+
+    fn lookup_with_depth(&self, name: &str) -> Option<(&VarInfo, usize)> {
+        for (idx, scope) in self.scopes.iter().enumerate().rev() {
+            if let Some(var) = scope.vars.get(name) {
+                return Some((var, idx));
             }
         }
         None

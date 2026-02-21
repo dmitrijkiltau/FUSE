@@ -1,7 +1,12 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::Deserialize;
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn temp_project_dir() -> PathBuf {
     let mut dir = std::env::temp_dir();
@@ -9,8 +14,35 @@ fn temp_project_dir() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    dir.push(format!("fuse_project_cli_test_{nanos}"));
+    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    dir.push(format!("fuse_project_cli_test_{nanos}_{counter}_{pid}"));
     dir
+}
+
+#[derive(Debug, Deserialize)]
+struct TestIrMeta {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    native_cache_version: u32,
+    #[serde(default)]
+    files: Vec<TestIrFileMeta>,
+    #[serde(default)]
+    manifest_hash: Option<String>,
+    #[serde(default)]
+    lock_hash: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestIrFileMeta {
+    path: String,
+    #[serde(default)]
+    hash: String,
+}
+
+fn is_hex_sha1(raw: &str) -> bool {
+    raw.len() == 40 && raw.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 #[test]
@@ -405,6 +437,209 @@ exit 42
         "stderr: {stderr}"
     );
     assert!(stderr.contains("hook exploded"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_writes_hash_based_meta_v3() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("fuse.lock"),
+        r#"
+version = 1
+"#,
+    )
+    .expect("write fuse.lock");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse build");
+    if !output.status.success() {
+        panic!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    let meta_path = dir.join(".fuse").join("build").join("program.meta");
+    let bytes = fs::read(&meta_path).expect("read program.meta");
+    let meta: TestIrMeta = bincode::deserialize(&bytes).expect("decode program.meta");
+
+    assert_eq!(meta.version, 3, "meta: {meta:?}");
+    assert!(meta.native_cache_version > 0, "meta: {meta:?}");
+    assert!(
+        meta.manifest_hash.as_deref().is_some_and(is_hex_sha1),
+        "meta: {meta:?}"
+    );
+    assert!(
+        meta.lock_hash.as_deref().is_some_and(is_hex_sha1),
+        "meta: {meta:?}"
+    );
+    assert!(!meta.files.is_empty(), "meta: {meta:?}");
+    for file in &meta.files {
+        assert!(!file.path.is_empty(), "meta file entry: {file:?}");
+        assert!(is_hex_sha1(&file.hash), "meta file entry: {file:?}");
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn run_rebuilds_when_content_changes_even_if_mtime_is_preserved() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+
+    let before = r#"
+fn main():
+  print("old")
+
+app "Demo":
+  main()
+"#;
+    let after = r#"
+fn main():
+  print("new")
+
+app "Demo":
+  main()
+"#;
+    assert_eq!(before.len(), after.len(), "fixture length mismatch");
+    fs::write(dir.join("main.fuse"), before).expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse build");
+    if !build.status.success() {
+        panic!("stderr: {}", String::from_utf8_lossy(&build.stderr));
+    }
+
+    let stamp = dir.join("mtime.stamp");
+    fs::write(&stamp, "stamp").expect("write mtime stamp");
+    let touch_stamp = Command::new("touch")
+        .arg("-r")
+        .arg(dir.join("main.fuse"))
+        .arg(&stamp)
+        .output()
+        .expect("touch stamp");
+    assert!(
+        touch_stamp.status.success(),
+        "touch stamp stderr: {}",
+        String::from_utf8_lossy(&touch_stamp.stderr)
+    );
+
+    fs::write(dir.join("main.fuse"), after).expect("rewrite main.fuse");
+    let touch_main = Command::new("touch")
+        .arg("-r")
+        .arg(&stamp)
+        .arg(dir.join("main.fuse"))
+        .output()
+        .expect("touch main");
+    assert!(
+        touch_main.status.success(),
+        "touch main stderr: {}",
+        String::from_utf8_lossy(&touch_main.stderr)
+    );
+
+    let run = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse run");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "new");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_accepts_program_args_after_build() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+fn main(name: String = "world"):
+  print(name)
+
+app "Demo":
+  main()
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse build");
+    if !build.status.success() {
+        panic!("stderr: {}", String::from_utf8_lossy(&build.stderr));
+    }
+
+    let run = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--")
+        .arg("--name=cache")
+        .output()
+        .expect("run fuse run with args");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "cache");
 
     let _ = fs::remove_dir_all(&dir);
 }

@@ -1374,7 +1374,6 @@ impl FuncBuilder {
                 ExprKind::Member { base, name } => {
                     if let ExprKind::Ident(ident) = &base.kind {
                         if ident.name == "db"
-                            || ident.name == "task"
                             || ident.name == "json"
                             || ident.name == "html"
                             || ident.name == "svg"

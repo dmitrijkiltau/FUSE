@@ -13,7 +13,7 @@ Primary references while working in this codebase:
 
 - `IDENTITY_CHARTER.md` defines language identity, hard boundaries, and "will not do" constraints.
 - `fls.md` is the source of truth for language syntax and static semantics (lexer, grammar, AST shape, type system, module rules).
-- `runtime.md` is the source of truth for runtime semantics (validation, JSON/config/CLI/HTTP binding, errors, builtins, DB, task model).
+- `runtime.md` is the source of truth for runtime semantics (validation, JSON/config/CLI/HTTP binding, errors, builtins, DB, and `spawn`/`await` concurrency model).
 - `scope.md` defines constraints, roadmap priorities, and explicit non-goals.
 - `EXTENSIBILITY_BOUNDARIES.md` defines allowed extension surfaces and stability boundaries.
 - `BENCHMARKS.md` defines real-world workload benchmarks and metric collection.

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use fuse_rt::error::{ValidationError, ValidationField};
 use fuse_rt::json as rt_json;
 use serde::{Deserialize, Serialize};
 
@@ -136,14 +137,17 @@ struct IrMeta {
     native_cache_version: u32,
     #[serde(default)]
     files: Vec<IrFileMeta>,
+    #[serde(default)]
+    manifest_hash: Option<String>,
+    #[serde(default)]
+    lock_hash: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct IrFileMeta {
     path: String,
-    modified_secs: u64,
-    modified_nanos: u32,
-    size: u64,
+    #[serde(default)]
+    hash: String,
 }
 
 struct BuildArtifacts {
@@ -160,6 +164,12 @@ struct CommonArgs {
     backend: Option<String>,
     program_args: Vec<String>,
     clean: bool,
+}
+
+#[derive(Default)]
+struct RawProgramArgs {
+    values: HashMap<String, Vec<String>>,
+    bools: HashMap<String, bool>,
 }
 
 enum Command {
@@ -307,23 +317,28 @@ fn run(args: Vec<String>) -> i32 {
         }
     }
 
-    match command {
-        Command::Run if common.program_args.is_empty() => match backend {
+    if matches!(command, Command::Run) {
+        match backend {
             Some(RunBackend::Ast) => {}
             Some(RunBackend::Native) => {
                 if let Some(native) = try_load_native(manifest_dir.as_deref()) {
                     apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
-                    return run_native_program(native, app.as_deref());
+                    return run_native_program(
+                        native,
+                        app.as_deref(),
+                        &entry,
+                        &deps,
+                        &common.program_args,
+                    );
                 }
             }
             _ => {
                 if let Some(ir) = try_load_ir(manifest_dir.as_deref()) {
                     apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
-                    return run_vm_ir(ir, app.as_deref());
+                    return run_vm_ir(ir, app.as_deref(), &entry, &deps, &common.program_args);
                 }
             }
-        },
-        _ => {}
+        }
     }
 
     match command {
@@ -1629,18 +1644,11 @@ fn run_build(
         eprintln!("{err}");
         return 1;
     }
-    let mut check_args = Vec::new();
-    check_args.push("--check".to_string());
-    check_args.push(entry.to_string_lossy().to_string());
-    let code = fusec::cli::run_with_deps(check_args, Some(deps));
-    if code != 0 {
-        return code;
-    }
     if let Err(err) = run_asset_pipeline(manifest, manifest_dir) {
         eprintln!("{err}");
         return 1;
     }
-    let artifacts = match compile_artifacts(entry, deps) {
+    let artifacts = match compile_artifacts(entry, manifest_dir, deps) {
         Ok(artifacts) => artifacts,
         Err(err) => {
             eprintln!("{err}");
@@ -2079,6 +2087,7 @@ fn find_latest_rlib(dir: &Path, prefix: &str) -> Result<PathBuf, String> {
 
 fn compile_artifacts(
     entry: &Path,
+    manifest_dir: Option<&Path>,
     deps: &HashMap<String, PathBuf>,
 ) -> Result<BuildArtifacts, String> {
     let src = fs::read_to_string(entry)
@@ -2086,6 +2095,11 @@ fn compile_artifacts(
     let (registry, diags) = fusec::load_program_with_modules_and_deps(entry, &src, deps);
     if !diags.is_empty() {
         emit_diags(&diags);
+        return Err("build failed".to_string());
+    }
+    let (_analysis, sema_diags) = fusec::sema::analyze_registry(&registry);
+    if !sema_diags.is_empty() {
+        emit_diags(&sema_diags);
         return Err("build failed".to_string());
     }
     let ir = fusec::ir::lower::lower_registry(&registry).map_err(|errors| {
@@ -2099,7 +2113,7 @@ fn compile_artifacts(
         out
     })?;
     let native = fusec::native::NativeProgram::from_ir(ir.clone());
-    let meta = build_ir_meta(&registry)?;
+    let meta = build_ir_meta(&registry, manifest_dir)?;
     Ok(BuildArtifacts { ir, native, meta })
 }
 
@@ -2138,7 +2152,7 @@ fn try_load_ir(manifest_dir: Option<&Path>) -> Option<fusec::ir::Program> {
     let path = build_dir.join("program.ir");
     let meta_path = build_dir.join("program.meta");
     let meta = load_ir_meta(&meta_path)?;
-    if !ir_meta_is_valid(&meta) {
+    if !ir_meta_is_valid(&meta, manifest_dir) {
         return None;
     }
     let bytes = fs::read(&path).ok()?;
@@ -2150,7 +2164,7 @@ fn try_load_native(manifest_dir: Option<&Path>) -> Option<fusec::native::NativeP
     let path = build_dir.join("program.native");
     let meta_path = build_dir.join("program.meta");
     let meta = load_ir_meta(&meta_path)?;
-    if !ir_meta_is_valid(&meta) {
+    if !ir_meta_is_valid(&meta, manifest_dir) {
         return None;
     }
     let bytes = fs::read(&path).ok()?;
@@ -2161,25 +2175,275 @@ fn try_load_native(manifest_dir: Option<&Path>) -> Option<fusec::native::NativeP
     Some(native)
 }
 
-fn run_vm_ir(ir: fusec::ir::Program, app: Option<&str>) -> i32 {
+fn run_vm_ir(
+    ir: fusec::ir::Program,
+    app: Option<&str>,
+    entry: &Path,
+    deps: &HashMap<String, PathBuf>,
+    program_args: &[String],
+) -> i32 {
     let mut vm = fusec::vm::Vm::new(&ir);
-    match vm.run_app(app) {
+    if program_args.is_empty() {
+        return match vm.run_app(app) {
+            Ok(_) => 0,
+            Err(err) => {
+                eprintln!("run error: {err}");
+                1
+            }
+        };
+    }
+    let (entry_name, args) = match prepare_cached_cli_call(entry, deps, program_args) {
+        Ok(value) => value,
+        Err(code) => return code,
+    };
+    match vm.call_function(&entry_name, args) {
         Ok(_) => 0,
         Err(err) => {
-            eprintln!("run error: {err}");
-            1
+            emit_error_json_message(&err);
+            2
         }
     }
 }
 
-fn run_native_program(program: fusec::native::NativeProgram, app: Option<&str>) -> i32 {
+fn run_native_program(
+    program: fusec::native::NativeProgram,
+    app: Option<&str>,
+    entry: &Path,
+    deps: &HashMap<String, PathBuf>,
+    program_args: &[String],
+) -> i32 {
     let mut vm = fusec::native::NativeVm::new(&program);
-    match vm.run_app(app) {
+    if program_args.is_empty() {
+        return match vm.run_app(app) {
+            Ok(_) => 0,
+            Err(err) => {
+                eprintln!("run error: {err}");
+                1
+            }
+        };
+    }
+    let (entry_name, args) = match prepare_cached_cli_call(entry, deps, program_args) {
+        Ok(value) => value,
+        Err(code) => return code,
+    };
+    match vm.call_function(&entry_name, args) {
         Ok(_) => 0,
         Err(err) => {
-            eprintln!("run error: {err}");
-            1
+            emit_error_json_message(&err);
+            2
         }
+    }
+}
+
+fn prepare_cached_cli_call(
+    entry: &Path,
+    deps: &HashMap<String, PathBuf>,
+    program_args: &[String],
+) -> Result<(String, Vec<fusec::interp::Value>), i32> {
+    let src = match fs::read_to_string(entry) {
+        Ok(src) => src,
+        Err(err) => {
+            eprintln!("failed to read {}: {err}", entry.display());
+            return Err(1);
+        }
+    };
+    let (registry, diags) = fusec::load_program_with_modules_and_deps(entry, &src, deps);
+    if !diags.is_empty() {
+        emit_diags_with_fallback(&diags, Some((entry, &src)));
+        return Err(1);
+    }
+    let root = match registry.root() {
+        Some(root) => root,
+        None => {
+            eprintln!("no root module loaded");
+            return Err(1);
+        }
+    };
+    let main_decl = root.program.items.iter().find_map(|item| match item {
+        fusec::ast::Item::Fn(decl) if decl.name.name == "main" => Some(decl),
+        _ => None,
+    });
+    let Some(main_decl) = main_decl else {
+        eprintln!("no root fn main found for CLI binding");
+        return Err(1);
+    };
+
+    let raw = match parse_program_args(program_args) {
+        Ok(raw) => raw,
+        Err(err) => {
+            emit_validation_error("$", "invalid_args", &err);
+            return Err(2);
+        }
+    };
+
+    let mut interp = fusec::interp::Interpreter::with_registry(&registry);
+    let mut args_map = HashMap::new();
+    let mut errors = Vec::new();
+    let param_names: HashSet<String> = main_decl
+        .params
+        .iter()
+        .map(|param| param.name.name.clone())
+        .collect();
+    for (name, _) in raw.values.iter() {
+        if !param_names.contains(name) {
+            errors.push(ValidationField {
+                path: name.clone(),
+                code: "unknown_flag".to_string(),
+                message: "unknown flag".to_string(),
+            });
+        }
+    }
+    for (name, _) in raw.bools.iter() {
+        if !param_names.contains(name) {
+            errors.push(ValidationField {
+                path: name.clone(),
+                code: "unknown_flag".to_string(),
+                message: "unknown flag".to_string(),
+            });
+        }
+    }
+    for param in &main_decl.params {
+        let name = &param.name.name;
+        if let Some(flag) = raw.bools.get(name) {
+            if !is_bool_type(&param.ty) {
+                errors.push(ValidationField {
+                    path: name.clone(),
+                    code: "invalid_type".to_string(),
+                    message: "expected Bool flag".to_string(),
+                });
+                continue;
+            }
+            args_map.insert(name.clone(), fusec::interp::Value::Bool(*flag));
+            continue;
+        }
+        if let Some(values) = raw.values.get(name) {
+            if values.len() != 1 {
+                errors.push(ValidationField {
+                    path: name.clone(),
+                    code: "invalid_type".to_string(),
+                    message: "multiple values not supported".to_string(),
+                });
+                continue;
+            }
+            match interp.parse_cli_value(&param.ty, &values[0]) {
+                Ok(value) => {
+                    args_map.insert(name.clone(), value);
+                }
+                Err(msg) => {
+                    errors.push(ValidationField {
+                        path: name.clone(),
+                        code: "invalid_value".to_string(),
+                        message: msg,
+                    });
+                }
+            }
+            continue;
+        }
+        if param.default.is_none() && !is_optional(&param.ty) {
+            errors.push(ValidationField {
+                path: name.clone(),
+                code: "missing_field".to_string(),
+                message: "missing flag".to_string(),
+            });
+        }
+    }
+    if !errors.is_empty() {
+        emit_validation_error_fields(errors);
+        return Err(2);
+    }
+    let args = match interp.prepare_call_with_named_args("main", &args_map) {
+        Ok(args) => args,
+        Err(err) => {
+            emit_error_json_message(&err);
+            return Err(2);
+        }
+    };
+    let entry_name = fusec::ir::lower::canonical_function_name(registry.root, "main");
+    Ok((entry_name, args))
+}
+
+fn parse_program_args(args: &[String]) -> Result<RawProgramArgs, String> {
+    let mut values: HashMap<String, Vec<String>> = HashMap::new();
+    let mut bools: HashMap<String, bool> = HashMap::new();
+    let mut idx = 0usize;
+    while idx < args.len() {
+        let arg = &args[idx];
+        if !arg.starts_with("--") {
+            return Err(format!("unexpected argument: {arg}"));
+        }
+        if let Some((name, val)) = arg.strip_prefix("--").and_then(|s| s.split_once('=')) {
+            values
+                .entry(name.to_string())
+                .or_default()
+                .push(val.to_string());
+            idx += 1;
+            continue;
+        }
+        if let Some(name) = arg.strip_prefix("--no-") {
+            bools.insert(name.to_string(), false);
+            idx += 1;
+            continue;
+        }
+        let name = arg.trim_start_matches("--");
+        if idx + 1 < args.len() && !args[idx + 1].starts_with("--") {
+            values
+                .entry(name.to_string())
+                .or_default()
+                .push(args[idx + 1].clone());
+            idx += 2;
+        } else {
+            bools.insert(name.to_string(), true);
+            idx += 1;
+        }
+    }
+    Ok(RawProgramArgs { values, bools })
+}
+
+fn is_optional(ty: &fusec::ast::TypeRef) -> bool {
+    match &ty.kind {
+        fusec::ast::TypeRefKind::Optional(_) => true,
+        fusec::ast::TypeRefKind::Generic { base, .. } => base.name == "Option",
+        _ => false,
+    }
+}
+
+fn is_bool_type(ty: &fusec::ast::TypeRef) -> bool {
+    match &ty.kind {
+        fusec::ast::TypeRefKind::Simple(ident) => ident.name == "Bool",
+        fusec::ast::TypeRefKind::Refined { base, .. } => base.name == "Bool",
+        fusec::ast::TypeRefKind::Optional(inner) => is_bool_type(inner),
+        fusec::ast::TypeRefKind::Generic { base, args } => {
+            if base.name == "Option" && args.len() == 1 {
+                is_bool_type(&args[0])
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+fn emit_validation_error(path: &str, code: &str, message: &str) {
+    emit_validation_error_fields(vec![ValidationField {
+        path: path.to_string(),
+        code: code.to_string(),
+        message: message.to_string(),
+    }]);
+}
+
+fn emit_validation_error_fields(fields: Vec<ValidationField>) {
+    let err = ValidationError {
+        message: "validation failed".to_string(),
+        fields,
+    };
+    eprintln!("{}", rt_json::encode(&err.to_json()));
+}
+
+fn emit_error_json_message(message: &str) {
+    if message.trim_start().starts_with('{') {
+        eprintln!("{message}");
+    } else {
+        emit_validation_error("$", "runtime_error", message);
     }
 }
 
@@ -2200,22 +2464,29 @@ fn clean_build_dir(manifest_dir: Option<&Path>) -> Result<(), String> {
     Ok(())
 }
 
-fn build_ir_meta(registry: &fusec::ModuleRegistry) -> Result<IrMeta, String> {
+fn build_ir_meta(registry: &fusec::ModuleRegistry, manifest_dir: Option<&Path>) -> Result<IrMeta, String> {
     let mut files = Vec::new();
     for unit in registry.modules.values() {
-        let stamp = file_stamp(&unit.path)?;
         files.push(IrFileMeta {
             path: unit.path.to_string_lossy().to_string(),
-            modified_secs: stamp.modified_secs,
-            modified_nanos: stamp.modified_nanos,
-            size: stamp.size,
+            hash: file_hash_hex(&unit.path)?,
         });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    let manifest_hash = manifest_dir
+        .map(|dir| dir.join("fuse.toml"))
+        .and_then(|path| optional_file_hash_hex(&path).transpose())
+        .transpose()?;
+    let lock_hash = manifest_dir
+        .map(|dir| dir.join("fuse.lock"))
+        .and_then(|path| optional_file_hash_hex(&path).transpose())
+        .transpose()?;
     Ok(IrMeta {
-        version: 2,
+        version: 3,
         native_cache_version: fusec::native::CACHE_VERSION,
         files,
+        manifest_hash,
+        lock_hash,
     })
 }
 
@@ -2224,24 +2495,39 @@ fn load_ir_meta(path: &Path) -> Option<IrMeta> {
     bincode::deserialize(&bytes).ok()
 }
 
-fn ir_meta_is_valid(meta: &IrMeta) -> bool {
-    if meta.version != 2 || meta.files.is_empty() {
+fn ir_meta_is_valid(meta: &IrMeta, manifest_dir: Option<&Path>) -> bool {
+    if meta.version != 3 || meta.files.is_empty() {
         return false;
     }
     if meta.native_cache_version != fusec::native::CACHE_VERSION {
         return false;
     }
     for file in &meta.files {
-        let stamp = match file_stamp(Path::new(&file.path)) {
-            Ok(stamp) => stamp,
+        let hash = match file_hash_hex(Path::new(&file.path)) {
+            Ok(hash) => hash,
             Err(_) => return false,
         };
-        if stamp.modified_secs != file.modified_secs
-            || stamp.modified_nanos != file.modified_nanos
-            || stamp.size != file.size
-        {
+        if hash != file.hash {
             return false;
         }
+    }
+    let current_manifest_hash = manifest_dir
+        .map(|dir| dir.join("fuse.toml"))
+        .and_then(|path| optional_file_hash_hex(&path).transpose())
+        .transpose()
+        .ok()
+        .flatten();
+    if meta.manifest_hash != current_manifest_hash {
+        return false;
+    }
+    let current_lock_hash = manifest_dir
+        .map(|dir| dir.join("fuse.lock"))
+        .and_then(|path| optional_file_hash_hex(&path).transpose())
+        .transpose()
+        .ok()
+        .flatten();
+    if meta.lock_hash != current_lock_hash {
+        return false;
     }
     true
 }
@@ -2267,6 +2553,27 @@ fn file_stamp(path: &Path) -> Result<FileStamp, String> {
         modified_nanos: duration.subsec_nanos(),
         size: metadata.len(),
     })
+}
+
+fn file_hash_hex(path: &Path) -> Result<String, String> {
+    let bytes =
+        fs::read(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    Ok(hash_hex(&sha1_digest(&bytes)))
+}
+
+fn optional_file_hash_hex(path: &Path) -> Result<Option<String>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(file_hash_hex(path)?))
+}
+
+fn hash_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 fn emit_diags(diags: &[fusec::diag::Diag]) {
