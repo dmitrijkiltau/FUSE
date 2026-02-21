@@ -522,6 +522,7 @@ Usage:
 Output:
 
 - `[LEVEL] message` to stderr
+  (`LEVEL` token may be ANSI-colored; honors `FUSE_COLOR=auto|always|never` and `NO_COLOR`)
 - JSON logs are emitted as a single stderr line
 
 Filtering:

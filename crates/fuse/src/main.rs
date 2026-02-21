@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as ProcessCommand};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -30,6 +31,7 @@ options:
   --file <path>           Entry file override
   --app <name>            App name override
   --backend <ast|vm|native>  Backend override (run only)
+  --color <auto|always|never>  Colorized CLI output policy
   --clean                 Remove .fuse/build before building (build only)
 "#;
 
@@ -162,6 +164,7 @@ struct CommonArgs {
     entry: Option<String>,
     app: Option<String>,
     backend: Option<String>,
+    color: Option<ColorChoice>,
     program_args: Vec<String>,
     clean: bool,
 }
@@ -190,6 +193,97 @@ enum RunBackend {
     Native,
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum ColorChoice {
+    Auto,
+    Always,
+    Never,
+}
+
+impl ColorChoice {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "auto" => Some(Self::Auto),
+            "always" => Some(Self::Always),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+
+    fn as_env_value(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Always => "always",
+            Self::Never => "never",
+        }
+    }
+}
+
+static COLOR_MODE: AtomicU8 = AtomicU8::new(0);
+
+fn apply_color_choice(choice: ColorChoice) {
+    let mode = match choice {
+        ColorChoice::Always => 2,
+        ColorChoice::Never => 0,
+        ColorChoice::Auto => {
+            if env::var_os("NO_COLOR").is_some() {
+                0
+            } else if color_auto_is_tty() {
+                1
+            } else {
+                0
+            }
+        }
+    };
+    COLOR_MODE.store(mode, Ordering::Relaxed);
+    unsafe {
+        env::set_var("FUSE_COLOR", choice.as_env_value());
+    }
+}
+
+fn color_auto_is_tty() -> bool {
+    if let Some(force) = env::var_os("FUSE_COLOR_FORCE_TTY") {
+        return force == "1";
+    }
+    std::io::stderr().is_terminal()
+}
+
+fn color_enabled() -> bool {
+    COLOR_MODE.load(Ordering::Relaxed) != 0
+}
+
+fn ansi_paint(text: &str, code: &str) -> String {
+    if color_enabled() {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_string()
+    }
+}
+
+fn style_error(text: &str) -> String {
+    ansi_paint(text, "31;1")
+}
+
+fn style_warning(text: &str) -> String {
+    ansi_paint(text, "33;1")
+}
+
+fn style_header(text: &str) -> String {
+    ansi_paint(text, "36;1")
+}
+
+fn emit_cli_error(message: &str) {
+    eprintln!("{}", style_error(message));
+}
+
+fn emit_cli_warning(message: &str) {
+    eprintln!("{}", style_warning(message));
+}
+
+fn dev_prefix() -> String {
+    style_header("[dev]")
+}
+
 impl RunBackend {
     fn parse(name: &str) -> Option<Self> {
         match name {
@@ -216,8 +310,9 @@ fn main() {
 }
 
 fn run(args: Vec<String>) -> i32 {
+    apply_color_choice(ColorChoice::Auto);
     if args.is_empty() {
-        eprintln!("{USAGE}");
+        eprintln!("{}", style_header(USAGE));
         return 1;
     }
     let (cmd, rest) = args.split_first().unwrap();
@@ -231,26 +326,30 @@ fn run(args: Vec<String>) -> i32 {
         "openapi" => Command::Openapi,
         "migrate" => Command::Migrate,
         _ => {
-            eprintln!("unknown command: {cmd}");
-            eprintln!("{USAGE}");
+            emit_cli_error(&format!("unknown command: {cmd}"));
+            eprintln!("{}", style_header(USAGE));
             return 1;
         }
     };
+    if let Some(choice) = discover_color_choice(rest) {
+        apply_color_choice(choice);
+    }
     let allow_program_args = matches!(command, Command::Run);
     let allow_clean = matches!(command, Command::Build);
     let common = match parse_common_args(rest, allow_program_args, allow_clean) {
         Ok(args) => args,
         Err(err) => {
-            eprintln!("{err}");
-            eprintln!("{USAGE}");
+            emit_cli_error(&err);
+            eprintln!("{}", style_header(USAGE));
             return 1;
         }
     };
+    apply_color_choice(common.color.unwrap_or(ColorChoice::Auto));
 
     let (manifest, manifest_dir) = match load_manifest(common.manifest_path.as_deref()) {
         Ok(value) => value,
         Err(err) => {
-            eprintln!("{err}");
+            emit_cli_error(&err);
             return 1;
         }
     };
@@ -261,7 +360,7 @@ fn run(args: Vec<String>) -> i32 {
     let entry = match entry {
         Ok(entry) => entry,
         Err(err) => {
-            eprintln!("{err}");
+            emit_cli_error(&err);
             return 1;
         }
     };
@@ -281,7 +380,7 @@ fn run(args: Vec<String>) -> i32 {
         match RunBackend::parse(&name) {
             Some(backend) => Some(backend),
             None => {
-                eprintln!("unknown backend: {name}");
+                emit_cli_error(&format!("unknown backend: {name}"));
                 return 1;
             }
         }
@@ -294,7 +393,7 @@ fn run(args: Vec<String>) -> i32 {
     let deps = match resolve_dependencies(manifest.as_ref(), manifest_dir.as_deref()) {
         Ok(deps) => deps,
         Err(err) => {
-            eprintln!("{err}");
+            emit_cli_error(&err);
             return 1;
         }
     };
@@ -312,7 +411,7 @@ fn run(args: Vec<String>) -> i32 {
             &deps,
             dev_mode,
         ) {
-            eprintln!("{err}");
+            emit_cli_error(&err);
             return 1;
         }
     }
@@ -416,6 +515,26 @@ fn run(args: Vec<String>) -> i32 {
     }
 }
 
+fn discover_color_choice(args: &[String]) -> Option<ColorChoice> {
+    let mut idx = 0usize;
+    while idx < args.len() {
+        let arg = &args[idx];
+        if arg == "--" {
+            break;
+        }
+        if arg == "--color" {
+            idx += 1;
+            let value = args.get(idx)?;
+            return ColorChoice::parse(value);
+        }
+        if let Some(value) = arg.strip_prefix("--color=") {
+            return ColorChoice::parse(value);
+        }
+        idx += 1;
+    }
+    None
+}
+
 fn configure_openapi_ui_env(
     entry: &Path,
     manifest: Option<&Manifest>,
@@ -504,22 +623,22 @@ fn run_dev(
     let reload = match ReloadHub::start() {
         Ok(reload) => reload,
         Err(err) => {
-            eprintln!("dev error: {err}");
+            emit_cli_error(&format!("dev error: {err}"));
             return 1;
         }
     };
     let ws_url = reload.ws_url();
-    eprintln!("[dev] live reload websocket: {ws_url}");
+    eprintln!("{} live reload websocket: {ws_url}", dev_prefix());
 
     if let Err(err) = run_asset_pipeline(manifest, manifest_dir) {
-        eprintln!("[dev] {err}");
+        eprintln!("{} {}", dev_prefix(), style_error(&err));
     }
 
     let mut snapshot = build_dev_snapshot(entry, manifest, manifest_dir, deps);
     let mut child = match spawn_dev_child(entry, manifest_dir, app, backend, &ws_url) {
         Ok(child) => Some(child),
         Err(err) => {
-            eprintln!("{err}");
+            emit_cli_error(&err);
             None
         }
     };
@@ -532,7 +651,10 @@ fn run_dev(
             match proc.try_wait() {
                 Ok(Some(status)) => {
                     if !child_exit_reported {
-                        eprintln!("[dev] app exited ({status}); waiting for changes...");
+                        eprintln!(
+                            "{} app exited ({status}); waiting for changes...",
+                            dev_prefix()
+                        );
                         child_exit_reported = true;
                     }
                     child = None;
@@ -540,7 +662,7 @@ fn run_dev(
                 Ok(None) => {}
                 Err(err) => {
                     if !child_exit_reported {
-                        eprintln!("[dev] failed to poll app process: {err}");
+                        eprintln!("{} failed to poll app process: {err}", dev_prefix());
                         child_exit_reported = true;
                     }
                     child = None;
@@ -554,9 +676,9 @@ fn run_dev(
         }
 
         snapshot = next_snapshot;
-        eprintln!("[dev] change detected, restarting...");
+        eprintln!("{} change detected, restarting...", dev_prefix());
         if let Err(err) = run_asset_pipeline(manifest, manifest_dir) {
-            eprintln!("[dev] {err}");
+            eprintln!("{} {}", dev_prefix(), style_error(&err));
         }
         child_exit_reported = false;
         if let Some(mut proc) = child.take() {
@@ -569,7 +691,7 @@ fn run_dev(
                 reload.broadcast_reload();
             }
             Err(err) => {
-                eprintln!("{err}");
+                emit_cli_error(&err);
             }
         }
     }
@@ -1416,7 +1538,7 @@ fn apply_dotenv(manifest_dir: Option<&Path>) {
         Ok(contents) => contents,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
         Err(err) => {
-            eprintln!("failed to read {}: {err}", path.display());
+            emit_cli_warning(&format!("failed to read {}: {err}", path.display()));
             return;
         }
     };
@@ -1522,6 +1644,30 @@ fn parse_common_args(
                 return Err("--backend expects a name".to_string());
             };
             out.backend = Some(name.clone());
+            idx += 1;
+            continue;
+        }
+        if arg == "--color" {
+            idx += 1;
+            let Some(choice) = args.get(idx) else {
+                return Err("--color expects auto, always, or never".to_string());
+            };
+            let Some(parsed) = ColorChoice::parse(choice) else {
+                return Err(format!(
+                    "invalid --color value: {choice} (expected auto|always|never)"
+                ));
+            };
+            out.color = Some(parsed);
+            idx += 1;
+            continue;
+        }
+        if let Some(choice) = arg.strip_prefix("--color=") {
+            let Some(parsed) = ColorChoice::parse(choice) else {
+                return Err(format!(
+                    "invalid --color value: {choice} (expected auto|always|never)"
+                ));
+            };
+            out.color = Some(parsed);
             idx += 1;
             continue;
         }
@@ -1635,35 +1781,35 @@ fn run_build(
 ) -> i32 {
     if clean {
         if let Err(err) = clean_build_dir(manifest_dir) {
-            eprintln!("{err}");
+            emit_cli_error(&err);
             return 1;
         }
         return 0;
     }
     if let Err(err) = run_before_build_hook(manifest, manifest_dir) {
-        eprintln!("{err}");
+        emit_cli_error(&err);
         return 1;
     }
     if let Err(err) = run_asset_pipeline(manifest, manifest_dir) {
-        eprintln!("{err}");
+        emit_cli_error(&err);
         return 1;
     }
     let artifacts = match compile_artifacts(entry, manifest_dir, deps) {
         Ok(artifacts) => artifacts,
         Err(err) => {
-            eprintln!("{err}");
+            emit_cli_error(&err);
             return 1;
         }
     };
     if let Err(err) = write_compiled_artifacts(manifest_dir, &artifacts) {
-        eprintln!("{err}");
+        emit_cli_error(&err);
         return 1;
     }
     if let Some(native_bin) =
         manifest.and_then(|m| m.build.as_ref().and_then(|b| b.native_bin.clone()))
     {
         if let Err(err) = write_native_binary(manifest_dir, &artifacts.native, app, &native_bin) {
-            eprintln!("{err}");
+            emit_cli_error(&err);
             return 1;
         }
     }
@@ -1681,14 +1827,14 @@ fn run_build(
             match env::current_dir() {
                 Ok(dir) => dir.join(path),
                 Err(err) => {
-                    eprintln!("cwd error: {err}");
+                    emit_cli_error(&format!("cwd error: {err}"));
                     return 1;
                 }
             }
         }
     };
     if let Err(err) = write_openapi(entry, &out_path, deps) {
-        eprintln!("{err}");
+        emit_cli_error(&err);
         return 1;
     }
     0
@@ -1698,7 +1844,7 @@ fn run_project_check(entry: &Path, deps: &HashMap<String, PathBuf>) -> i32 {
     let files = match collect_project_files(entry, deps) {
         Ok(files) => files,
         Err(err) => {
-            eprintln!("{err}");
+            emit_cli_error(&err);
             return 1;
         }
     };
@@ -1707,7 +1853,7 @@ fn run_project_check(entry: &Path, deps: &HashMap<String, PathBuf>) -> i32 {
         let src = match fs::read_to_string(&file) {
             Ok(src) => src,
             Err(err) => {
-                eprintln!("failed to read {}: {err}", file.display());
+                emit_cli_error(&format!("failed to read {}: {err}", file.display()));
                 return 1;
             }
         };
@@ -1730,7 +1876,7 @@ fn run_project_fmt(entry: &Path, deps: &HashMap<String, PathBuf>) -> i32 {
     let files = match collect_project_files(entry, deps) {
         Ok(files) => files,
         Err(err) => {
-            eprintln!("{err}");
+            emit_cli_error(&err);
             return 1;
         }
     };
@@ -1738,14 +1884,14 @@ fn run_project_fmt(entry: &Path, deps: &HashMap<String, PathBuf>) -> i32 {
         let src = match fs::read_to_string(&file) {
             Ok(src) => src,
             Err(err) => {
-                eprintln!("failed to read {}: {err}", file.display());
+                emit_cli_error(&format!("failed to read {}: {err}", file.display()));
                 return 1;
             }
         };
         let formatted = fusec::format::format_source(&src);
         if formatted != src {
             if let Err(err) = fs::write(&file, formatted) {
-                eprintln!("failed to write {}: {err}", file.display());
+                emit_cli_error(&format!("failed to write {}: {err}", file.display()));
                 return 1;
             }
         }
@@ -2187,7 +2333,7 @@ fn run_vm_ir(
         return match vm.run_app(app) {
             Ok(_) => 0,
             Err(err) => {
-                eprintln!("run error: {err}");
+                emit_cli_error(&format!("run error: {err}"));
                 1
             }
         };
@@ -2217,7 +2363,7 @@ fn run_native_program(
         return match vm.run_app(app) {
             Ok(_) => 0,
             Err(err) => {
-                eprintln!("run error: {err}");
+                emit_cli_error(&format!("run error: {err}"));
                 1
             }
         };
@@ -2243,7 +2389,7 @@ fn prepare_cached_cli_call(
     let src = match fs::read_to_string(entry) {
         Ok(src) => src,
         Err(err) => {
-            eprintln!("failed to read {}: {err}", entry.display());
+            emit_cli_error(&format!("failed to read {}: {err}", entry.display()));
             return Err(1);
         }
     };
@@ -2255,7 +2401,7 @@ fn prepare_cached_cli_call(
     let root = match registry.root() {
         Some(root) => root,
         None => {
-            eprintln!("no root module loaded");
+            emit_cli_error("no root module loaded");
             return Err(1);
         }
     };
@@ -2264,7 +2410,7 @@ fn prepare_cached_cli_call(
         _ => None,
     });
     let Some(main_decl) = main_decl else {
-        eprintln!("no root fn main found for CLI binding");
+        emit_cli_error("no root fn main found for CLI binding");
         return Err(1);
     };
 
@@ -2586,11 +2732,15 @@ fn emit_diags_with_fallback(diags: &[fusec::diag::Diag], fallback: Option<(&Path
     }
 }
 
+fn styled_diag_level(level: &fusec::diag::Level) -> String {
+    match level {
+        fusec::diag::Level::Error => style_error("error"),
+        fusec::diag::Level::Warning => style_warning("warning"),
+    }
+}
+
 fn emit_diag(diag: &fusec::diag::Diag, fallback: Option<(&Path, &str)>) {
-    let level = match diag.level {
-        fusec::diag::Level::Error => "error",
-        fusec::diag::Level::Warning => "warning",
-    };
+    let level = styled_diag_level(&diag.level);
     if let Some(path) = &diag.path {
         if let Ok(src) = fs::read_to_string(path) {
             let (line, col, line_text) = line_info(&src, diag.span.start);
@@ -2602,7 +2752,11 @@ fn emit_diag(diag: &fusec::diag::Diag, fallback: Option<(&Path, &str)>) {
                 col
             );
             eprintln!("  {line_text}");
-            eprintln!("  {}^", " ".repeat(col.saturating_sub(1)));
+            eprintln!(
+                "  {}{}",
+                " ".repeat(col.saturating_sub(1)),
+                style_error("^")
+            );
             return;
         }
         eprintln!("{level}: {} ({})", diag.message, path.display());
@@ -2618,7 +2772,11 @@ fn emit_diag(diag: &fusec::diag::Diag, fallback: Option<(&Path, &str)>) {
             col
         );
         eprintln!("  {line_text}");
-        eprintln!("  {}^", " ".repeat(col.saturating_sub(1)));
+        eprintln!(
+            "  {}{}",
+            " ".repeat(col.saturating_sub(1)),
+            style_error("^")
+        );
         return;
     }
     eprintln!(

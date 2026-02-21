@@ -104,6 +104,50 @@ fn run_with_stdin(dir: &Path, stdin_text: &str) -> std::process::Output {
     child.wait_with_output().expect("wait fuse run with stdin")
 }
 
+fn write_broken_project(dir: &Path) {
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  let id: Missing = 1
+"#,
+    )
+    .expect("write main.fuse");
+}
+
+fn write_logging_project(dir: &Path) {
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  log("info", "runtime-log")
+"#,
+    )
+    .expect("write main.fuse");
+}
+
+fn contains_ansi(raw: &str) -> bool {
+    raw.contains("\u{1b}[")
+}
+
 fn overwrite_cached_ir_from_source(dir: &Path, source: &str) {
     let source_path = dir.join("__cache_override__.fuse");
     fs::write(&source_path, source).expect("write cache override source");
@@ -918,6 +962,177 @@ version = 2
         String::from_utf8_lossy(&run.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "source-lock");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_color_always_emits_ansi_sequences() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_broken_project(&dir);
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("always")
+        .output()
+        .expect("run fuse check");
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(contains_ansi(&stderr), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_color_never_emits_plain_text_only() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_broken_project(&dir);
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("never")
+        .env("FUSE_COLOR_FORCE_TTY", "1")
+        .output()
+        .expect("run fuse check");
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!contains_ansi(&stderr), "stderr: {stderr}");
+    assert!(stderr.contains("error"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn no_color_disables_color_in_auto_mode() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_broken_project(&dir);
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let auto_color = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("auto")
+        .env("FUSE_COLOR_FORCE_TTY", "1")
+        .env_remove("NO_COLOR")
+        .output()
+        .expect("run fuse check auto");
+    assert!(
+        !auto_color.status.success(),
+        "check unexpectedly succeeded (auto)"
+    );
+    let auto_stderr = String::from_utf8_lossy(&auto_color.stderr);
+    assert!(contains_ansi(&auto_stderr), "stderr: {auto_stderr}");
+
+    let no_color = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("auto")
+        .env("FUSE_COLOR_FORCE_TTY", "1")
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run fuse check no color");
+    assert!(
+        !no_color.status.success(),
+        "check unexpectedly succeeded (no color)"
+    );
+    let no_color_stderr = String::from_utf8_lossy(&no_color.stderr);
+    assert!(
+        !contains_ansi(&no_color_stderr),
+        "stderr: {no_color_stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_color_always_colorizes_runtime_log_lines() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_logging_project(&dir);
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("always")
+        .output()
+        .expect("run fuse run");
+    assert!(
+        output.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("runtime-log"), "stderr: {stderr}");
+    assert!(contains_ansi(&stderr), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn no_color_disables_runtime_log_color_in_auto_mode() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_logging_project(&dir);
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let auto_color = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("auto")
+        .env("FUSE_COLOR_FORCE_TTY", "1")
+        .env_remove("NO_COLOR")
+        .output()
+        .expect("run fuse run auto");
+    assert!(
+        auto_color.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&auto_color.stderr)
+    );
+    let auto_stderr = String::from_utf8_lossy(&auto_color.stderr);
+    assert!(auto_stderr.contains("runtime-log"), "stderr: {auto_stderr}");
+    assert!(contains_ansi(&auto_stderr), "stderr: {auto_stderr}");
+
+    let no_color = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("auto")
+        .env("FUSE_COLOR_FORCE_TTY", "1")
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run fuse run no color");
+    assert!(
+        no_color.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&no_color.stderr)
+    );
+    let no_color_stderr = String::from_utf8_lossy(&no_color.stderr);
+    assert!(no_color_stderr.contains("runtime-log"), "stderr: {no_color_stderr}");
+    assert!(
+        !contains_ansi(&no_color_stderr),
+        "stderr: {no_color_stderr}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

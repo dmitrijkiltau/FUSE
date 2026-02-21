@@ -2396,7 +2396,10 @@ extern "C" fn fuse_native_builtin_log(
                 .map(|val| val.to_string_value())
                 .collect::<Vec<_>>()
                 .join(" ");
-            eprintln!("[{}] {}", level.label(), message);
+            eprintln!(
+                "{}",
+                crate::runtime_io::format_log_text_line(level.label(), &message)
+            );
         }
     }
 

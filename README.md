@@ -61,6 +61,12 @@ Compatibility is defined by documented behavior in `fls.md`, `runtime.md`, `scop
 | `fuse migrate` | Run database migrations |
 | `fuse lsp` | Start the language server |
 
+Global CLI output option:
+
+- `--color auto|always|never` controls ANSI colors for diagnostics/status output and runtime
+  `log(...)` level tags.
+  `auto` is default and respects `NO_COLOR`.
+
 Packages use a `fuse.toml` manifest. Minimal example:
 
 ```toml

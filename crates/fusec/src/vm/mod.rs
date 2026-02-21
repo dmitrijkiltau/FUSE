@@ -928,7 +928,10 @@ impl<'a> Vm<'a> {
                             .map(|val| val.to_string_value())
                             .collect::<Vec<_>>()
                             .join(" ");
-                        eprintln!("[{}] {}", level.label(), message);
+                        eprintln!(
+                            "{}",
+                            crate::runtime_io::format_log_text_line(level.label(), &message)
+                        );
                     }
                 }
                 Ok(Value::Unit)

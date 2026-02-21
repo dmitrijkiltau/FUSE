@@ -30,3 +30,73 @@ pub(crate) fn read_input_line(prompt: &str) -> Result<String, String> {
     }
     Ok(line)
 }
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum RuntimeColorChoice {
+    Auto,
+    Always,
+    Never,
+}
+
+impl RuntimeColorChoice {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "always" => Some(Self::Always),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+}
+
+pub(crate) fn format_log_text_line(level: &str, message: &str) -> String {
+    format!("[{}] {}", style_log_level(level), message)
+}
+
+fn style_log_level(level: &str) -> String {
+    let code = match level {
+        "TRACE" => "90",
+        "DEBUG" => "36",
+        "INFO" => "32",
+        "WARN" => "33;1",
+        "ERROR" => "31;1",
+        _ => return level.to_string(),
+    };
+    ansi_paint(level, code)
+}
+
+fn ansi_paint(text: &str, code: &str) -> String {
+    if runtime_color_enabled() {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_string()
+    }
+}
+
+fn runtime_color_enabled() -> bool {
+    match runtime_color_choice() {
+        RuntimeColorChoice::Always => true,
+        RuntimeColorChoice::Never => false,
+        RuntimeColorChoice::Auto => {
+            if std::env::var_os("NO_COLOR").is_some() {
+                false
+            } else {
+                stderr_is_tty()
+            }
+        }
+    }
+}
+
+fn runtime_color_choice() -> RuntimeColorChoice {
+    std::env::var("FUSE_COLOR")
+        .ok()
+        .and_then(|raw| RuntimeColorChoice::parse(&raw))
+        .unwrap_or(RuntimeColorChoice::Auto)
+}
+
+fn stderr_is_tty() -> bool {
+    if let Some(force) = std::env::var_os("FUSE_COLOR_FORCE_TTY") {
+        return force == "1";
+    }
+    io::stderr().is_terminal()
+}
