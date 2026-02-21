@@ -1,5 +1,7 @@
 # FUSE Developer Reference
 
+_Auto-generated from `fls.md`, `runtime.md`, and `scope.md` by `scripts/generate_guide_docs.sh`._
+
 This document is the reference for building applications with FUSE.
 If you are new to FUSE, start with [Onboarding Guide](onboarding.md) and [Boundary Contracts](boundary-contracts.md) before this reference.
 
@@ -58,77 +60,104 @@ Core expression features:
 - concurrency forms: `spawn`, `await`, `box`
 
 ---
-
 ## Types
 
-Built-in scalar/base types:
+- `Int`, `Float`, `Bool`, `String`, `Bytes`, `Html`
+- `Id`, `Email`
+- `Error`
+- `List<T>`, `Map<K,V>`, `Option<T>`, `Result<T,E>`
+- user-defined `type` and `enum` are nominal
 
-- `Int`, `Float`, `Bool`, `String`
-- `Id`, `Email`, `Bytes`, `Html`, `Error`
+Reserved namespace:
 
-Built-in generic types:
-
-- `List<T>`, `Map<K,V>`, `Option<T>`, `Result<T,E>`, `Task<T>`
+- `std.Error.*` is reserved for standardized runtime error behavior.
 
 Type shorthand:
 
-- `T?` -> `Option<T>`
-- `T!` -> `Result<T, Error>`
-- `T!E` -> `Result<T, E>`
+- `T?` desugars to `Option<T>`.
+- `null` is the optional empty value.
+- `x ?? y` is null-coalescing.
+- `x?.field` and `x?[idx]` are optional access forms.
+- `Some` / `None` are valid match patterns.
+
+Result types:
+
+- `T!` desugars to `Result<T, Error>`.
+- `T!E` desugars to `Result<T, E>`.
+- `expr ?! err` applies bang-chain error conversion.
+- `expr ?!` uses default/propagated error behavior (runtime details in `runtime.md`).
 
 Refinements:
+
+Refinements attach predicates to primitive base types in type positions:
 
 - `String(1..80)`
 - `Int(0..130)`
 - `Float(0.0..1.0)`
+- `String(regex("^[a-z0-9_-]+$"))`
+- `String(1..80, regex("^[a-z]"), predicate(is_slug))`
+
+Constraint forms:
+
+- range literals (`1..80`, `0..130`, `0.0..1.0`)
+- `regex("<pattern>")` on string-like bases
+- `predicate(<fn_ident>)` where the function signature is `fn(<base>) -> Bool`
 
 Type derivation:
 
-```fuse
-type PublicUser = User without password, secret
-```
+`type PublicUser = User without password, secret` creates a new nominal type derived from `User`
+with listed fields removed. Field types/defaults are preserved for retained fields.
+
+Base types can be module-qualified (`Foo.User`). Unknown base types or fields are errors.
 
 ---
 
 ## Imports and Modules
 
-Supported forms:
+`import` declarations are resolved at load time.
 
-```fuse
-import Foo
-import Utils from "./utils"
-import Shared from "root:lib/shared"
-import {A, B} from "./lib"
-import Auth from "dep:Auth/lib"
-```
+- Module imports register an alias for qualified access (`Foo.bar`, `Foo.Config.field`, `Foo.Enum.Variant`).
+- Named imports bring specific items into local scope.
+
+Resolution rules:
+
+- `import Foo` loads `Foo.fuse` from the current file directory.
+- `import X from "path"` loads `path` relative to current file; `.fuse` is added if missing.
+- `import {A, B} from "path"` loads module and imports listed names into local scope.
+- `import X from "root:path/to/module"` loads from package root (`fuse.toml` directory); if no manifest is found, root falls back to the entry module directory.
 
 Notes:
 
-- module imports are qualified (`Foo.value`, `Foo.Type`)
-- named imports bring symbols into local scope
-- type references can be module-qualified (`Foo.User`)
-- `root:` imports resolve from package root (`fuse.toml` directory)
+- module imports do not automatically import all members into local scope
+- named imports do not create a module alias
+- function symbols are module-scoped (not global across all loaded modules)
+- unqualified function calls resolve in this order: current module, then named imports
+- module-qualified calls (`Foo.bar`) resolve against the referenced module alias
+- duplicate named imports in one module are load-time errors
+- duplicate function names across different modules are allowed
+- module-qualified type references are valid in type positions (`Foo.User`, `Foo.Config`)
+- dependency modules use `dep:` import paths (for example, `dep:Auth/lib`)
+- root-qualified modules use `root:` import paths (for example, `root:lib/auth`)
 
 ---
 
 ## Services and HTTP Contracts
 
-Service routes are typed at declaration time:
+Route syntax uses typed path params inside the route string, for example:
 
 ```fuse
-service Api at "/api":
-  get "/users/{id: Id}" -> User:
-    return load_user(id)
-
-  post "/users" body UserCreate -> User:
-    return create_user(body)
+get "/users/{id: Id}" -> User:
+  ...
 ```
 
-Rules:
+The `body` keyword introduces the request body type:
 
-- path params are typed inside route path placeholders
-- `body` binds typed JSON payload
-- return type defines response contract
+```fuse
+post "/users" body UserCreate -> User:
+  ...
+```
+
+Binding/encoding/error semantics for routes are runtime behavior and are defined in `runtime.md`.
 
 ---
 
@@ -136,37 +165,93 @@ Rules:
 
 ### Validation and boundary enforcement
 
-Validation is applied at runtime in:
+Validation is applied at runtime in these places:
 
-- struct construction
-- HTTP body decode
+- struct literal construction (`Type(...)`)
+- JSON decode for HTTP body
 - config loading
-- CLI binding
+- CLI flag binding
 - route parameter parsing
 
-Default/null behavior:
+There is no global "validate on assignment" mode.
 
-- missing field with default -> default applied
+#### Default values
+
+Defaults are applied before validation:
+
+- missing field with default -> default is used
 - missing optional field -> `null`
-- explicit `null` remains `null`
+- explicit `null` stays `null` (even if a default exists)
+
+#### Built-in refinements
+
+Refinements support range, regex, and predicate constraints:
+
+- `String(1..80)` length constraint
+- `String(regex("^[a-z0-9_-]+$"))` pattern constraint
+- `String(1..80, regex("^[a-z]"), predicate(is_slug))` mixed constraints, left-to-right
+- `Int(0..130)` numeric range
+- `Float(0.0..1.0)` numeric range
+
+Rules:
+
+- `regex("...")` is valid on string-like refined bases (`String`, `Id`, `Email`).
+- `predicate(fn_name)` requires a function signature `fn(<base>) -> Bool`.
+
+#### `Id` and `Email`
+
+- `Id` is a non-empty string.
+- `Email` uses a simple `local@domain` check with a `.` in the domain.
 
 ### JSON behavior
 
-- structs encode/decode as JSON objects
-- unknown fields are rejected on decode
+#### Structs
+
+- encode to JSON objects with declared field names
+- all fields are included (including defaults)
+- `null` represents optional empty value
+
+#### Struct decoding
+
+- missing field with default -> default value
+- missing field with no default -> error
 - optional fields accept missing or `null`
-- enums use tagged object shape (`type` + optional `data`)
+- unknown fields -> error
 
-Type notes:
+#### Enums
 
-- `Bytes` is base64 text at JSON/config/CLI boundaries
-- `Html` responses are rendered as text
-- runtime `Map<K,V>` requires `K = String`
-- `Result<T,E>` uses tagged JSON decode (`{"type":"Ok"|"Err","data":...}`)
+Enums use a tagged object format:
+
+```json
+{ "type": "Variant", "data": ... }
+```
+
+Rules:
+
+- no payload: omit `data`
+- single payload: `data` is the value
+- multiple payloads: `data` is an array
+
+#### Built-in types and generics
+
+- `String`, `Id`, `Email` -> JSON string
+- `Bytes` -> JSON base64 string (standard alphabet with `=` padding)
+- `Html` -> JSON string via `html.render(...)` output
+- `Bool`, `Int`, `Float` -> JSON number/bool
+- `List<T>` -> JSON array
+- `Map<K,V>` -> JSON object (runtime requires `K = String`)
+- user-defined `struct` and `enum` decode with same validation model as struct literals
+- `Result<T,E>` -> tagged object:
+  - `{"type":"Ok","data":...}` decodes as `Ok(T)`
+  - `{"type":"Err","data":...}` decodes as `Err(E)`
+
+`Bytes` use base64 text at JSON/config/CLI boundaries. Runtime values are raw bytes.
+`Html` values are runtime trees and are not parsed from config/env/CLI.
 
 ### Errors and HTTP status mapping
 
-Recognized runtime error names:
+The runtime recognizes a small set of error struct names for standardized HTTP status mapping
+and error JSON formatting. These live under a reserved namespace:
 
 - `std.Error.Validation`
 - `std.Error`
@@ -176,45 +261,121 @@ Recognized runtime error names:
 - `std.Error.NotFound`
 - `std.Error.Conflict`
 
-Status mapping:
+Names outside `std.Error.*` do not participate in this standardized mapping/formatting behavior.
 
-- validation/bad request -> `400`
-- unauthorized -> `401`
-- forbidden -> `403`
-- not found -> `404`
-- conflict -> `409`
-- unknown error types -> `500`
+Status mapping uses the error name first, then `std.Error.status` if present:
+
+- `std.Error.Validation` -> 400
+- `std.Error.BadRequest` -> 400
+- `std.Error.Unauthorized` -> 401
+- `std.Error.Forbidden` -> 403
+- `std.Error.NotFound` -> 404
+- `std.Error.Conflict` -> 409
+- `std.Error` with `status: Int` -> that status
+- anything else -> 500
 
 `expr ?! err` behavior:
 
-- `Option<T>` `None` -> `Err(err)`
-- `Result<T,E>` `Err` -> mapped to `err`
-- `expr ?!` without explicit error uses default/propagated behavior
+- `T!` is `Result<T, Error>`.
+- `T!E` is `Result<T, E>`.
+
+`expr ?! err` rules:
+
+- If `expr` is `Option<T>` and is `None`, return `Err(err)`.
+- If `expr` is `Result<T, E>` and is `Err`, replace the error with `err`.
+- If `expr ?!` omits `err`, `Option` uses a default error, and `Result` propagates the existing error.
 
 ### Config and CLI binding
 
-Config resolution order:
+Config values resolve in this order:
 
-1. environment variables
-2. config file (`config.toml` or `FUSE_CONFIG`)
+1. environment variables (override config file)
+2. config file (default `config.toml`, overridable via `FUSE_CONFIG`)
 3. default expressions
+
+The `fuse` CLI also loads `.env` from the package directory (if present) and injects any missing
+variables before this resolution. Existing environment variables are never overridden by `.env`.
+
+Config file format is a minimal TOML-like subset:
+
+```toml
+[App]
+port = 3000
+dbUrl = "sqlite://app.db"
+```
+
+Notes:
+
+- only section headers and `key = value` pairs are supported
+- values are parsed as strings (with basic `"` escapes), then converted using env-var conversion rules
+
+Env override naming derives from config and field names:
+
+- `App.port` -> `APP_PORT`
+- `dbUrl` -> `DB_URL`
+- hyphens become underscores; camelCase splits to `SNAKE_CASE`
+
+Type support levels for config values (env and file values):
+
+- **Full**: scalars (`Int`, `Float`, `Bool`, `String`, `Id`, `Email`, `Bytes`) and `Option<T>`.
+- **Structured via JSON text**: `List<T>`, `Map<String,V>`, user-defined `struct`, user-defined `enum`.
+- **Rejected**: `Html`, `Map<K,V>` where `K != String`, `Result<T,E>`.
+
+Compatibility notes:
+
+- `Bytes` must be valid base64 text; invalid base64 is a validation error.
+- for structured values, parse failures (invalid JSON/type mismatch/unknown field) surface as
+  validation errors on the target field path.
 
 CLI binding:
 
-- supports `--flag`, `--no-flag`, `--flag=value`, `--flag value`
-- unknown or repeated flags are validation errors
-- when args are present, `fn main` is invoked directly and `app` block is skipped
+CLI binding is enabled when program args are passed after the file (or after `--`):
+
+```bash
+fusec --run file.fuse -- --name=Codex
+```
+
+Rules:
+
+- flags only (no positional arguments)
+- `--flag value` and `--flag=value` are supported
+- `--flag` sets `Bool` to `true`; `--no-flag` sets it to `false`
+- unknown flags are validation errors
+- multiple values for the same flag are rejected
+- binding calls `fn main` from the root module directly; `app` block is ignored when program args are present
+
+Type support levels mirror config/env parsing:
+
+- **Full**: scalar types and `Option<T>`.
+- **Structured via JSON text**: `List<T>`, `Map<String,V>`, user-defined `struct`, user-defined `enum`.
+- **Rejected**: `Html`, `Map<K,V>` with non-`String` keys, `Result<T,E>`.
+
+For `Bytes`, CLI values must be base64 text.
+
+Validation errors are printed as JSON on stderr and usually exit with code 2.
 
 ---
 
 ## Builtins
 
-General builtins:
+- `print(value)` prints stringified value to stdout
+- `log(...)` writes log lines to stderr (see Logging)
+- `db.exec/query/one` execute SQL against configured DB
+- `db.from(table)` builds parameterized queries
+- `assert(cond, message?)` throws runtime error when `cond` is false
+- `env(name: String) -> String?` returns env var or `null`
+- `asset(path: String) -> String` resolves to hashed/static public URL when asset map is configured
+- `serve(port)` starts HTTP server on `FUSE_HOST:port`
+- `task.id/done/cancel` operate on spawned tasks
+- HTML tag builtins (`html`, `head`, `body`, `div`, `meta`, `button`, ...)
+- `html.text`, `html.raw`, `html.node`, `html.render`
+- `svg.inline(path: String) -> Html`
 
-- `print`, `log`, `assert`, `env`, `serve`
-- `asset`, `svg.inline`
-- html constructors/helpers (`html`, `div`, `html.text`, `html.raw`, `html.node`, `html.render`)
-- task helpers (`task.id`, `task.done`, `task.cancel`)
+Compile-time sugar affecting HTML builtins:
+
+- HTML block syntax (`div(): ...`) lowers to normal calls with explicit attrs + `List<Html>` children
+- bare string literals in HTML blocks lower to `html.text(...)`
+- attribute shorthand (`div(class="hero")`) lowers to attrs maps
 
 Database builtins:
 
@@ -286,17 +447,14 @@ docker compose -f docs/docker-compose.yml up --build
 
 ## Runtime Environment Variables
 
-Common runtime knobs:
-
-- `FUSE_HOST`
-- `FUSE_SERVICE`
-- `FUSE_MAX_REQUESTS`
-- `FUSE_CONFIG`
-- `FUSE_OPENAPI_JSON_PATH`, `FUSE_OPENAPI_UI_PATH`
-- `FUSE_ASSET_MAP`
-- `FUSE_VITE_PROXY_URL`
-- `FUSE_SVG_DIR`
-- `FUSE_LOG`
+- `FUSE_HOST` (default `127.0.0.1`) controls bind host
+- `FUSE_SERVICE` selects service when multiple are declared
+- `FUSE_MAX_REQUESTS` stops server after N requests (useful for tests)
+- `FUSE_DEV_RELOAD_WS_URL` enables dev HTML script injection (`/__reload` client)
+- `FUSE_OPENAPI_JSON_PATH` + `FUSE_OPENAPI_UI_PATH` enable built-in OpenAPI UI serving
+- `FUSE_ASSET_MAP` provides logical-path -> public-URL mappings for `asset(path)`
+- `FUSE_VITE_PROXY_URL` enables fallback proxying of unknown routes to Vite dev server
+- `FUSE_SVG_DIR` overrides SVG base directory for `svg.inline`
 
 ---
 
