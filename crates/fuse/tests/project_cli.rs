@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -43,6 +43,56 @@ struct TestIrFileMeta {
 
 fn is_hex_sha1(raw: &str) -> bool {
     raw.len() == 40 && raw.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+fn write_basic_manifest_project(dir: &Path, main_source: &str) {
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(dir.join("main.fuse"), main_source).expect("write main.fuse");
+}
+
+fn run_build_project(dir: &Path) {
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(dir)
+        .output()
+        .expect("run fuse build");
+    if !build.status.success() {
+        panic!("stderr: {}", String::from_utf8_lossy(&build.stderr));
+    }
+}
+
+fn run_with_named_arg(dir: &Path, arg: &str) -> std::process::Output {
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(dir)
+        .arg("--")
+        .arg(arg)
+        .output()
+        .expect("run fuse run with args")
+}
+
+fn overwrite_cached_ir_from_source(dir: &Path, source: &str) {
+    let source_path = dir.join("__cache_override__.fuse");
+    fs::write(&source_path, source).expect("write cache override source");
+    let (registry, diags) = fusec::load_program_with_modules(&source_path, source);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let ir = fusec::ir::lower::lower_registry(&registry).expect("lower cache override source");
+    let ir_bytes = bincode::serialize(&ir).expect("encode cache override ir");
+    fs::write(dir.join(".fuse").join("build").join("program.ir"), ir_bytes)
+        .expect("write cache override ir");
+    let _ = fs::remove_file(source_path);
 }
 
 #[test]
@@ -640,6 +690,137 @@ app "Demo":
         String::from_utf8_lossy(&run.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "cache");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_with_program_args_uses_cached_ir_when_valid() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let source_program = r#"
+fn main(name: String = "world"):
+  print("source-" + name)
+
+app "Demo":
+  main()
+"#;
+    write_basic_manifest_project(&dir, source_program);
+    run_build_project(&dir);
+
+    let cached_program = r#"
+fn main(name: String = "world"):
+  print("cache-" + name)
+
+app "Demo":
+  main()
+"#;
+    overwrite_cached_ir_from_source(&dir, cached_program);
+
+    let run = run_with_named_arg(&dir, "--name=hit");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "cache-hit");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_invalidates_cached_ir_when_manifest_changes() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let source_program = r#"
+fn main(name: String = "world"):
+  print("source-" + name)
+
+app "Demo":
+  main()
+"#;
+    write_basic_manifest_project(&dir, source_program);
+    run_build_project(&dir);
+
+    let cached_program = r#"
+fn main(name: String = "world"):
+  print("cache-" + name)
+
+app "Demo":
+  main()
+"#;
+    overwrite_cached_ir_from_source(&dir, cached_program);
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+# manifest hash bump
+"#,
+    )
+    .expect("rewrite fuse.toml");
+
+    let run = run_with_named_arg(&dir, "--name=manifest");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "source-manifest");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_invalidates_cached_ir_when_lockfile_changes() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let source_program = r#"
+fn main(name: String = "world"):
+  print("source-" + name)
+
+app "Demo":
+  main()
+"#;
+    write_basic_manifest_project(&dir, source_program);
+    fs::write(
+        dir.join("fuse.lock"),
+        r#"
+version = 1
+"#,
+    )
+    .expect("write fuse.lock");
+    run_build_project(&dir);
+
+    let cached_program = r#"
+fn main(name: String = "world"):
+  print("cache-" + name)
+
+app "Demo":
+  main()
+"#;
+    overwrite_cached_ir_from_source(&dir, cached_program);
+
+    fs::write(
+        dir.join("fuse.lock"),
+        r#"
+version = 2
+"#,
+    )
+    .expect("rewrite fuse.lock");
+
+    let run = run_with_named_arg(&dir, "--name=lock");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "source-lock");
 
     let _ = fs::remove_dir_all(&dir);
 }
