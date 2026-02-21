@@ -238,7 +238,9 @@ impl Canonicalizer {
                     self.canonicalize_expr(&mut arg.value, scope);
                 }
                 if let ExprKind::Ident(ident) = &callee.kind {
-                    if self.should_use_html_tag_builtin(&ident.name, scope) {
+                    if self.should_use_html_tag_builtin(&ident.name, scope)
+                        || force_html_input_tag_call(&ident.name, args)
+                    {
                         canonicalize_html_attr_shorthand(args);
                     }
                 }
@@ -302,6 +304,18 @@ impl Canonicalizer {
             self.import_item_names.contains(name),
         )
     }
+}
+
+fn force_html_input_tag_call(name: &str, args: &[CallArg]) -> bool {
+    if name != "input" {
+        return false;
+    }
+    args.iter()
+        .any(|arg| arg.name.is_some() || arg.is_block_sugar)
+        || matches!(
+            args.first().map(|arg| &arg.value.kind),
+            Some(ExprKind::MapLit(_))
+        )
 }
 
 fn canonicalize_html_attr_shorthand(args: &mut Vec<CallArg>) {

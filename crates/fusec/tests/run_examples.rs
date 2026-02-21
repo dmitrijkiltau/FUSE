@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::Command;
+use std::{io::Write, process::Stdio};
 
 fn example_path(name: &str) -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -8,6 +9,27 @@ fn example_path(name: &str) -> PathBuf {
     path.push("examples");
     path.push(name);
     path
+}
+
+fn run_example_with_stdin(backend: &str, example: &str, stdin_text: &str) -> std::process::Output {
+    let exe = env!("CARGO_BIN_EXE_fusec");
+    let mut child = Command::new(exe)
+        .arg("--run")
+        .arg("--backend")
+        .arg(backend)
+        .arg(example_path(example))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to run fusec");
+    {
+        let mut stdin = child.stdin.take().expect("missing child stdin");
+        stdin
+            .write_all(stdin_text.as_bytes())
+            .expect("failed to write stdin");
+    }
+    child.wait_with_output().expect("failed to wait for fusec")
 }
 
 #[test]
@@ -75,6 +97,34 @@ fn runs_cli_args_native() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines, vec!["Hello, world"]);
+}
+
+#[test]
+fn runs_cli_input_vm() {
+    let output = run_example_with_stdin("vm", "cli_input.fuse", "Codex\n");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Name: Hello, Codex\n"
+    );
+}
+
+#[test]
+fn runs_cli_input_native() {
+    let output = run_example_with_stdin("native", "cli_input.fuse", "Codex\n");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Name: Hello, Codex\n"
+    );
 }
 
 #[test]

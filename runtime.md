@@ -332,6 +332,7 @@ See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [
 ### Builtins (current)
 
 - `print(value)` prints stringified value to stdout
+- `input(prompt: String = "") -> String` prints optional prompt and reads one line from stdin
 - `log(...)` writes log lines to stderr (see Logging)
 - `db.exec/query/one` execute SQL against configured DB
 - `db.from(table)` builds parameterized queries
@@ -342,6 +343,15 @@ See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [
 - HTML tag builtins (`html`, `head`, `body`, `div`, `meta`, `button`, ...)
 - `html.text`, `html.raw`, `html.node`, `html.render`
 - `svg.inline(path: String) -> Html`
+
+`input` behavior notes:
+
+- prompt text is written without a trailing newline
+- trailing `\n`/`\r\n` is trimmed from the returned line
+- in non-interactive mode with no stdin data, runtime fails with:
+  `input requires stdin data in non-interactive mode`
+- `input()` / `input("...")` resolve to the CLI input builtin; HTML input tags remain available
+  through tag-form calls such as `input(type="text")`
 
 Compile-time sugar affecting HTML builtins:
 
@@ -463,7 +473,7 @@ Spawn determinism restrictions (enforced by semantic analysis):
 
 - no `box` capture/use in `spawn` blocks
 - no runtime side-effect builtins in `spawn` blocks:
-  `db.*`, `serve`, `print`, `log`, `env`, `asset`, `svg.inline`
+  `db.*`, `serve`, `print`, `input`, `log`, `env`, `asset`, `svg.inline`
 - no mutation of captured outer bindings
 
 `box expr` creates a shared mutable cell. Boxed values are transparently dereferenced in most

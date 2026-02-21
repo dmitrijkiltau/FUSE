@@ -44,6 +44,27 @@ fn run_example_with_args(backend: &str, example: &str, args: &[&str]) -> std::pr
     cmd.output().expect("failed to run fusec")
 }
 
+fn run_example_with_stdin(backend: &str, example: &str, stdin_text: &str) -> std::process::Output {
+    let exe = env!("CARGO_BIN_EXE_fusec");
+    let mut child = Command::new(exe)
+        .arg("--run")
+        .arg("--backend")
+        .arg(backend)
+        .arg(example_path(example))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to run fusec");
+    {
+        let mut stdin = child.stdin.take().expect("missing child stdin");
+        stdin
+            .write_all(stdin_text.as_bytes())
+            .expect("failed to write stdin");
+    }
+    child.wait_with_output().expect("failed to wait for fusec")
+}
+
 fn send_http_request_with_retry(port: u16, request: &str) -> (u16, String) {
     let start = Instant::now();
     loop {
@@ -377,6 +398,69 @@ fn parity_cli_binding() {
         String::from_utf8_lossy(&ast.stdout),
         String::from_utf8_lossy(&vm.stdout)
     );
+}
+
+#[test]
+fn parity_cli_input_with_piped_stdin() {
+    let ast = run_example_with_stdin("ast", "cli_input.fuse", "Codex\n");
+    let vm = run_example_with_stdin("vm", "cli_input.fuse", "Codex\n");
+
+    assert!(
+        ast.status.success(),
+        "ast stderr: {}",
+        String::from_utf8_lossy(&ast.stderr)
+    );
+    assert!(
+        vm.status.success(),
+        "vm stderr: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stdout),
+        String::from_utf8_lossy(&vm.stdout)
+    );
+}
+
+#[test]
+fn parity_vm_native_cli_input_with_piped_stdin() {
+    let vm = run_example_with_stdin("vm", "cli_input.fuse", "Codex\n");
+    let native = run_example_with_stdin("native", "cli_input.fuse", "Codex\n");
+
+    assert!(
+        vm.status.success(),
+        "vm stderr: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+    assert!(
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout)
+    );
+}
+
+#[test]
+fn parity_cli_input_without_stdin_reports_stable_error() {
+    let ast = run_example("ast", "cli_input.fuse", &[]);
+    let vm = run_example("vm", "cli_input.fuse", &[]);
+    let native = run_example("native", "cli_input.fuse", &[]);
+
+    assert!(!ast.status.success(), "expected ast failure");
+    assert!(!vm.status.success(), "expected vm failure");
+    assert!(!native.status.success(), "expected native failure");
+
+    let expected = "input requires stdin data in non-interactive mode";
+    let ast_err = String::from_utf8_lossy(&ast.stderr);
+    let vm_err = String::from_utf8_lossy(&vm.stderr);
+    let native_err = String::from_utf8_lossy(&native.stderr);
+    assert!(ast_err.contains(expected), "ast stderr: {ast_err}");
+    assert!(vm_err.contains(expected), "vm stderr: {vm_err}");
+    assert!(native_err.contains(expected), "native stderr: {native_err}");
 }
 
 #[test]

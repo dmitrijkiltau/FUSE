@@ -581,6 +581,20 @@ impl<'a> NativeVm<'a> {
                                     println!("{text}");
                                     stack.push(Value::Unit);
                                 }
+                                "input" => {
+                                    if args.len() > 1 {
+                                        return Err("input expects 0 or 1 arguments".to_string());
+                                    }
+                                    let prompt = match args.first() {
+                                        Some(Value::String(text)) => text.as_str(),
+                                        Some(_) => {
+                                            return Err("input expects a string prompt".to_string());
+                                        }
+                                        None => "",
+                                    };
+                                    let text = crate::runtime_io::read_input_line(prompt)?;
+                                    stack.push(Value::String(text));
+                                }
                                 "log" => {
                                     let mut level = LogLevel::Info;
                                     let mut start_idx = 0usize;

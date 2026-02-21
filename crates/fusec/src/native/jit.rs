@@ -203,6 +203,7 @@ pub(crate) struct HostCalls {
     range: FuncId,
     builtin_log: FuncId,
     builtin_print: FuncId,
+    builtin_input: FuncId,
     builtin_env: FuncId,
     builtin_serve: FuncId,
     builtin_assert: FuncId,
@@ -303,6 +304,10 @@ impl JitRuntime {
         builder.symbol(
             "fuse_native_builtin_print",
             fuse_native_builtin_print as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_input",
+            fuse_native_builtin_input as *const u8,
         );
         builder.symbol(
             "fuse_native_builtin_env",
@@ -738,6 +743,9 @@ impl HostCalls {
         let builtin_print = module
             .declare_function("fuse_native_builtin_print", Linkage::Import, &builtin_sig)
             .expect("declare builtin print hostcall");
+        let builtin_input = module
+            .declare_function("fuse_native_builtin_input", Linkage::Import, &builtin_sig)
+            .expect("declare builtin input hostcall");
         let builtin_env = module
             .declare_function("fuse_native_builtin_env", Linkage::Import, &builtin_sig)
             .expect("declare builtin env hostcall");
@@ -851,6 +859,7 @@ impl HostCalls {
             range,
             builtin_log,
             builtin_print,
+            builtin_input,
             builtin_env,
             builtin_serve,
             builtin_assert,
@@ -2425,6 +2434,50 @@ extern "C" fn fuse_native_builtin_print(
     println!("{text}");
     *out = NativeValue::int(0);
     0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_input(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len > 1 {
+        return builtin_runtime_error(out, heap, "input expects 0 or 1 arguments");
+    }
+
+    let prompt = if len == 0 {
+        String::new()
+    } else {
+        let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+        let heap_ref: &NativeHeap = heap;
+        let Some(value) = args.first() else {
+            return builtin_runtime_error(out, heap, "input expects a string prompt");
+        };
+        let Some(value) = value.to_value(heap_ref) else {
+            return builtin_runtime_error(out, heap, "input expects a string prompt");
+        };
+        match value {
+            Value::String(text) => text,
+            _ => return builtin_runtime_error(out, heap, "input expects a string prompt"),
+        }
+    };
+
+    match crate::runtime_io::read_input_line(&prompt) {
+        Ok(text) => {
+            *out = NativeValue::string(text, heap);
+            0
+        }
+        Err(err) => builtin_runtime_error(out, heap, err),
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -5158,6 +5211,7 @@ fn compile_function<M: Module>(
                         CallKind::Builtin => {
                             let builtin = match name.as_str() {
                                 "print" => hostcalls.builtin_print,
+                                "input" => hostcalls.builtin_input,
                                 "log" => hostcalls.builtin_log,
                                 "env" => hostcalls.builtin_env,
                                 "serve" => hostcalls.builtin_serve,
@@ -6035,6 +6089,7 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
             } if matches!(
                 name.as_str(),
                 "print"
+                    | "input"
                     | "log"
                     | "env"
                     | "serve"
@@ -6571,13 +6626,13 @@ fn analyze_types(
                     let result_kind = match kind {
                         CallKind::Builtin => {
                             match name.as_str() {
-                                "print" | "log" | "env" | "serve" | "assert" | "asset"
-                                | "range" | "db.exec" | "db.query" | "db.one" | "db.from"
-                                | "query.select"
-                                | "query.where" | "query.order_by" | "query.limit"
-                                | "query.one" | "query.all" | "query.exec" | "query.sql"
-                                | "query.params" | "json.encode" | "json.decode" | "html.text"
-                                | "html.raw" | "html.node" | "html.render" | "svg.inline" => {}
+                                "print" | "input" | "log" | "env" | "serve" | "assert"
+                                | "asset" | "range" | "db.exec" | "db.query" | "db.one"
+                                | "db.from" | "query.select" | "query.where" | "query.order_by"
+                                | "query.limit" | "query.one" | "query.all" | "query.exec"
+                                | "query.sql" | "query.params" | "json.encode" | "json.decode"
+                                | "html.text" | "html.raw" | "html.node" | "html.render"
+                                | "svg.inline" => {}
                                 _ => return None,
                             }
                             JitType::Value

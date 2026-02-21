@@ -477,8 +477,9 @@ impl<'a> Vm<'a> {
                     let program = self.program.clone();
                     let configs = self.configs.clone();
                     let task_name = name.clone();
-                    let task =
-                        Task::spawn_async(move || run_vm_spawn_task(program, configs, task_name, args));
+                    let task = Task::spawn_async(move || {
+                        run_vm_spawn_task(program, configs, task_name, args)
+                    });
                     frame.stack.push(Value::Task(task));
                 }
                 Instr::Await => {
@@ -858,7 +859,7 @@ impl<'a> Vm<'a> {
 
     fn eval_builtin(&mut self, name: &str, args: Vec<Value>) -> VmResult<Value> {
         let args: Vec<Value> = args.into_iter().map(|val| val.unboxed()).collect();
-        if html_tags::is_html_tag(name) {
+        if html_tags::is_html_tag(name) && name != "input" {
             return self.eval_html_tag_builtin(name, &args);
         }
         match name {
@@ -866,6 +867,24 @@ impl<'a> Vm<'a> {
                 let text = args.get(0).map(|v| v.to_string_value()).unwrap_or_default();
                 println!("{text}");
                 Ok(Value::Unit)
+            }
+            "input" => {
+                if args.len() > 1 {
+                    return Err(VmError::Runtime(
+                        "input expects 0 or 1 arguments".to_string(),
+                    ));
+                }
+                let prompt = match args.first() {
+                    Some(Value::String(text)) => text.as_str(),
+                    Some(_) => {
+                        return Err(VmError::Runtime(
+                            "input expects a string prompt".to_string(),
+                        ));
+                    }
+                    None => "",
+                };
+                let text = crate::runtime_io::read_input_line(prompt).map_err(VmError::Runtime)?;
+                Ok(Value::String(text))
             }
             "log" => {
                 let mut level = LogLevel::Info;

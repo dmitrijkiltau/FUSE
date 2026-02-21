@@ -50,6 +50,17 @@ impl<'a> Checker<'a> {
         env.insert_builtin("json");
         env.insert_builtin("time");
         env.insert_builtin("print");
+        env.insert_builtin_with_ty(
+            "input",
+            Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "prompt".to_string(),
+                    ty: Ty::String,
+                    has_default: true,
+                }],
+                ret: Box::new(Ty::String),
+            }),
+        );
         env.insert_builtin("assert");
         env.insert_builtin_with_ty(
             "asset",
@@ -277,9 +288,7 @@ impl<'a> Checker<'a> {
                         if self.is_outer_capture(root) {
                             self.diags.error(
                                 target.span,
-                                format!(
-                                    "spawn blocks cannot mutate captured outer state ({root})"
-                                ),
+                                format!("spawn blocks cannot mutate captured outer state ({root})"),
                             );
                         }
                     }
@@ -395,7 +404,9 @@ impl<'a> Checker<'a> {
             ExprKind::Call { callee, args } => {
                 let uses_html_block = args.iter().any(|arg| arg.is_block_sugar);
                 if let ExprKind::Ident(ident) = &callee.kind {
-                    if self.should_use_html_tag_builtin(&ident.name) {
+                    if self.should_use_html_tag_builtin(&ident.name)
+                        || force_html_input_tag_call(&ident.name, args)
+                    {
                         return self.check_html_tag_call(expr.span, &ident.name, args);
                     }
                 }
@@ -1295,10 +1306,8 @@ impl<'a> Checker<'a> {
     fn resolve_ident_expr(&mut self, ident: &crate::ast::Ident) -> Ty {
         if let Some(var) = self.env.lookup(&ident.name) {
             if self.in_spawn_scope() && matches!(var.ty, Ty::Boxed(_)) {
-                self.diags.error(
-                    ident.span,
-                    "spawn blocks cannot capture or use box values",
-                );
+                self.diags
+                    .error(ident.span, "spawn blocks cannot capture or use box values");
             }
             return Self::unbox_transparent(var.ty.clone());
         }
@@ -2177,10 +2186,23 @@ fn lvalue_root_name(target: &Expr) -> Option<&str> {
     }
 }
 
+fn force_html_input_tag_call(name: &str, args: &[CallArg]) -> bool {
+    if name != "input" {
+        return false;
+    }
+    args.iter()
+        .any(|arg| arg.name.is_some() || arg.is_block_sugar)
+        || matches!(
+            args.first().map(|arg| &arg.value.kind),
+            Some(ExprKind::MapLit(_))
+        )
+}
+
 fn spawn_forbidden_builtin(callee: &Expr) -> Option<&'static str> {
     match &callee.kind {
         ExprKind::Ident(ident) => match ident.name.as_str() {
             "print" => Some("print"),
+            "input" => Some("input"),
             "log" => Some("log"),
             "env" => Some("env"),
             "asset" => Some("asset"),

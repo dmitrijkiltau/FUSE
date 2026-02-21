@@ -269,10 +269,12 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
-        let builtin_names = ["print", "env", "serve", "log", "assert", "asset", "svg"]
-            .into_iter()
-            .map(|s| s.to_string())
-            .collect();
+        let builtin_names = [
+            "print", "input", "env", "serve", "log", "assert", "asset", "svg",
+        ]
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
         Self {
             program,
             module_id,
@@ -1331,7 +1333,9 @@ impl FuncBuilder {
             }
             ExprKind::Call { callee, args } => match &callee.kind {
                 ExprKind::Ident(ident) => {
-                    if self.should_use_html_tag_builtin(&ident.name) {
+                    if self.should_use_html_tag_builtin(&ident.name)
+                        || force_html_input_tag_call(&ident.name, args)
+                    {
                         self.lower_html_tag_builtin_call(&ident.name, args);
                         return;
                     }
@@ -1661,7 +1665,7 @@ impl FuncBuilder {
             false,
             self.fn_decls.contains_key(name),
             self.config_names.contains(name),
-            self.imported_names.contains(name),
+            self.imported_names.contains(name) || name == "input",
         )
     }
 
@@ -1907,4 +1911,16 @@ impl FuncBuilder {
             Literal::Null => Const::Null,
         }
     }
+}
+
+fn force_html_input_tag_call(name: &str, args: &[crate::ast::CallArg]) -> bool {
+    if name != "input" {
+        return false;
+    }
+    args.iter()
+        .any(|arg| arg.name.is_some() || arg.is_block_sugar)
+        || matches!(
+            args.first().map(|arg| &arg.value.kind),
+            Some(crate::ast::ExprKind::MapLit(_))
+        )
 }

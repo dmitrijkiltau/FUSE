@@ -460,6 +460,18 @@ fn is_query_method(name: &str) -> bool {
     )
 }
 
+fn force_html_input_tag_call(name: &str, args: &[crate::ast::CallArg]) -> bool {
+    if name != "input" {
+        return false;
+    }
+    args.iter()
+        .any(|arg| arg.name.is_some() || arg.is_block_sugar)
+        || matches!(
+            args.first().map(|arg| &arg.value.kind),
+            Some(crate::ast::ExprKind::MapLit(_))
+        )
+}
+
 fn min_log_level() -> LogLevel {
     std::env::var("FUSE_LOG")
         .ok()
@@ -1427,7 +1439,9 @@ impl Interpreter {
             }
             ExprKind::Call { callee, args } => {
                 if let ExprKind::Ident(ident) = &callee.kind {
-                    if self.should_use_html_tag_builtin(&ident.name) {
+                    if self.should_use_html_tag_builtin(&ident.name)
+                        || force_html_input_tag_call(&ident.name, args)
+                    {
                         if let Some(message) = self.validate_html_tag_named_args(args) {
                             return Err(ExecError::Runtime(message.to_string()));
                         }
@@ -1634,7 +1648,7 @@ impl Interpreter {
             return Ok(Value::Config(name.to_string()));
         }
         match name {
-            "print" | "env" | "serve" | "log" | "db" | "assert" | "asset" | "json"
+            "print" | "input" | "env" | "serve" | "log" | "db" | "assert" | "asset" | "json"
             | "html" | "svg" => Ok(Value::Builtin(name.to_string())),
             _ if html_tags::is_html_tag(name) => Ok(Value::Builtin(name.to_string())),
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),
@@ -1648,7 +1662,7 @@ impl Interpreter {
             self.resolve_function_ref(self.current_module, name)
                 .is_some(),
             self.config_decls.contains_key(name),
-            false,
+            name == "input",
         )
     }
 
@@ -1685,7 +1699,7 @@ impl Interpreter {
 
     fn eval_builtin(&mut self, name: &str, args: Vec<Value>) -> ExecResult<Value> {
         let args: Vec<Value> = args.into_iter().map(|val| val.unboxed()).collect();
-        if html_tags::is_html_tag(name) {
+        if html_tags::is_html_tag(name) && name != "input" {
             return self.eval_html_tag_builtin(name, &args);
         }
         match name {
@@ -1693,6 +1707,25 @@ impl Interpreter {
                 let text = args.get(0).map(|v| v.to_string_value()).unwrap_or_default();
                 println!("{text}");
                 Ok(Value::Unit)
+            }
+            "input" => {
+                if args.len() > 1 {
+                    return Err(ExecError::Runtime(
+                        "input expects 0 or 1 arguments".to_string(),
+                    ));
+                }
+                let prompt = match args.first() {
+                    Some(Value::String(text)) => text.as_str(),
+                    Some(_) => {
+                        return Err(ExecError::Runtime(
+                            "input expects a string prompt".to_string(),
+                        ));
+                    }
+                    None => "",
+                };
+                let text =
+                    crate::runtime_io::read_input_line(prompt).map_err(ExecError::Runtime)?;
+                Ok(Value::String(text))
             }
             "log" => {
                 let mut level = LogLevel::Info;
@@ -3975,12 +4008,15 @@ impl Interpreter {
                     "unknown predicate function {fn_name} in current module/import scope"
                 ))
             })?;
-        let decl = self.function_decl(&func_ref).ok_or_else(|| {
-            ExecError::Runtime(format!(
-                "unknown function {}::{}",
-                func_ref.module_id, func_ref.name
-            ))
-        })?.clone();
+        let decl = self
+            .function_decl(&func_ref)
+            .ok_or_else(|| {
+                ExecError::Runtime(format!(
+                    "unknown function {}::{}",
+                    func_ref.module_id, func_ref.name
+                ))
+            })?
+            .clone();
         if decl.params.len() != 1 {
             return Err(ExecError::Runtime(format!(
                 "predicate {fn_name} must accept exactly one argument"

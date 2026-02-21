@@ -1,6 +1,7 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -81,6 +82,26 @@ fn run_with_named_arg(dir: &Path, arg: &str) -> std::process::Output {
         .arg(arg)
         .output()
         .expect("run fuse run with args")
+}
+
+fn run_with_stdin(dir: &Path, stdin_text: &str) -> std::process::Output {
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let mut child = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run fuse run with stdin");
+    {
+        let mut stdin = child.stdin.take().expect("missing child stdin");
+        stdin
+            .write_all(stdin_text.as_bytes())
+            .expect("write run stdin");
+    }
+    child.wait_with_output().expect("wait fuse run with stdin")
 }
 
 fn overwrite_cached_ir_from_source(dir: &Path, source: &str) {
@@ -695,6 +716,79 @@ app "Demo":
 }
 
 #[test]
+fn run_supports_input_builtin_with_piped_stdin() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  let name = input("Name: ")
+  print("Hello, " + name)
+"#,
+    )
+    .expect("write main.fuse");
+
+    let run = run_with_stdin(&dir, "Codex\n");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "Name: Hello, Codex\n");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_reports_clear_error_when_input_has_no_stdin_data() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  let _ = input()
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let run = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse run");
+    assert!(!run.status.success(), "run unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("input requires stdin data in non-interactive mode"),
+        "run stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn run_with_program_args_uses_cached_ir_when_valid() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");
@@ -770,7 +864,10 @@ app = "Demo"
         "run stderr: {}",
         String::from_utf8_lossy(&run.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "source-manifest");
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).trim(),
+        "source-manifest"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

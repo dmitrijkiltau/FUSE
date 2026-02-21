@@ -28,6 +28,7 @@ APP_PORT=4000 ./scripts/fuse run examples/http_users.fuse
 |---|---|
 | `cli_hello.fuse` | CLI hello with config defaults |
 | `cli_args.fuse` | CLI args binding (flags and values) |
+| `cli_input.fuse` | CLI stdin input with prompt |
 | `http_users.fuse` | HTTP service with routes and `?!` error handling |
 | `types_patterns.fuse` | Enums, structs, and pattern matching (Option/Result) |
 | `project_demo.fuse` | Config env overrides, refined types, enums, and match |

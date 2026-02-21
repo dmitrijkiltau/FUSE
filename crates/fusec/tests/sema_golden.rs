@@ -130,6 +130,40 @@ fn main():
 }
 
 #[test]
+fn spawn_rejects_input_builtin() {
+    let src = r#"
+fn main():
+  let t = spawn:
+    input("name: ")
+  await t
+"#;
+    assert_diags(
+        src,
+        &["Error: spawn blocks cannot call side-effect builtin input"],
+    );
+}
+
+#[test]
+fn input_builtin_supports_optional_prompt() {
+    let src = r#"
+fn main():
+  let a = input()
+  let b = input("name: ")
+  print(a + b)
+"#;
+    assert_diags(src, &[]);
+}
+
+#[test]
+fn html_input_tag_remains_available_with_named_attrs() {
+    let src = r#"
+fn field() -> Html:
+  return input(type="text")
+"#;
+    assert_diags(src, &[]);
+}
+
+#[test]
 fn spawn_rejects_box_capture() {
     let src = r#"
 fn main():
