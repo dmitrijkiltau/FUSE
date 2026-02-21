@@ -34,7 +34,7 @@ See also: [Lexing + indentation rules](#lexing--indentation-rules), [Runtime sem
 - Identifiers: `[A-Za-z_][A-Za-z0-9_]*`
 - Keywords:
   `app, service, at, get, post, put, patch, delete, fn, type, enum, let, var, return, if, else,
-  match, for, in, while, break, continue, import, from, as, config, migration, table, test,
+  match, for, in, while, break, continue, import, from, as, config, migration, test,
   body, and, or, without, spawn, await, box`
 - Literals:
   - integers (`123`)
@@ -310,6 +310,8 @@ Expressions:
 - `Call(callee, args)` where args are `CallArg { name, value, is_block_sugar }`
 - `Member(base, name)`
 - `OptionalMember(base, name)`
+- `Index(base, index)`
+- `OptionalIndex(base, index)`
 - `StructLit(name, fields)`
 - `ListLit(items)`
 - `MapLit(pairs)`

@@ -14,5 +14,6 @@
   - `fls.md`
   - `scope.md`
   - `runtime.md`
+  - `docs/site/specs/reference.md` (auto-generated; run `scripts/generate_guide_docs.sh` after updating `fls.md`, `runtime.md`, or `scope.md`)
 - Parser fixtures live in `crates/fusec/tests/parser_fixtures.rs`.
 - Semantic analysis golden tests live in `crates/fusec/tests/sema_golden.rs`.
