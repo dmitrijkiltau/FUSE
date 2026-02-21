@@ -1,70 +1,61 @@
 # Examples
 
-These examples are meant to be parsed and sema-checked by `fusec`. Some can also be run with the interpreter via `--run`.
+Sample programs for FUSE. All examples are valid FUSE source files that pass
+`fuse check`. Many can also be executed with `fuse run`.
 
-Check an example:
+## Running examples
 
-```
-scripts/cargo_env.sh cargo run -p fusec -- --check examples/cli_hello.fuse
-```
+```bash
+# Type-check a file
+./scripts/fuse check examples/cli_hello.fuse
 
-Run the CLI example (interpreter MVP):
+# Run with the default backend
+./scripts/fuse run examples/cli_hello.fuse
 
-```
-scripts/cargo_env.sh cargo run -p fusec -- --run examples/cli_hello.fuse
-```
+# Run with a specific backend
+./scripts/fuse run --backend native examples/project_demo.fuse
 
-Run the project demo (AST backend, enum + refined types):
+# Run with environment overrides
+APP_PORT=4000 ./scripts/fuse run examples/http_users.fuse
 
-```
-APP_GREETING=Hey APP_WHO=Codex scripts/cargo_env.sh cargo run -p fusec -- --run --backend ast examples/project_demo.fuse
-```
-
-Run the HTTP users service (AST backend):
-
-```
-APP_PORT=4000 scripts/cargo_env.sh cargo run -p fusec -- --run --backend ast examples/http_users.fuse
+# Check all examples at once
+./scripts/check_examples.sh
 ```
 
-Run the interpolation demo (AST or VM):
+## Language examples
 
-```
-scripts/cargo_env.sh cargo run -p fusec -- --run --backend ast examples/interp_demo.fuse
-scripts/cargo_env.sh cargo run -p fusec -- --run --backend vm examples/interp_demo.fuse
-```
+| File | Topic |
+|---|---|
+| `cli_hello.fuse` | CLI hello with config defaults |
+| `cli_args.fuse` | CLI args binding (flags and values) |
+| `http_users.fuse` | HTTP service with routes and `?!` error handling |
+| `types_patterns.fuse` | Enums, structs, and pattern matching (Option/Result) |
+| `project_demo.fuse` | Config env overrides, refined types, enums, and match |
+| `interp_demo.fuse` | String interpolation |
+| `spawn_await_box.fuse` | Spawn/await/box parity demo |
+| `box_shared.fuse` | Shared `box` state across tasks |
+| `assign_field.fuse` | Struct field assignment |
+| `assign_index.fuse` | List/map index assignment |
+| `range_demo.fuse` | Range expressions (inclusive lists) |
+| `enum_match.fuse` | Enum declarations and match expressions |
+| `float_compare.fuse` | Float comparison semantics |
+| `task_api.fuse` | Task API (`task.id`, `task.done`, `task.cancel`) |
 
-Trigger a validation error (prints error JSON on stderr):
+## Native backend examples
 
-```
-DEMO_FAIL=1 scripts/cargo_env.sh cargo run -p fusec -- --run --backend ast examples/project_demo.fuse
-```
+These exercise the Cranelift JIT backend specifically (`--backend native`):
 
-Check all examples:
+| File | Topic |
+|---|---|
+| `native_bang_error.fuse` | `?!` error handling |
+| `native_bench.fuse` | Performance smoke test |
+| `native_builtins.fuse` | Builtin coverage |
+| `native_db.fuse` | Database execution |
+| `native_heap_literals.fuse` | Heap-allocated literals |
+| `native_json.fuse` | JSON encode/decode |
+| `native_validation.fuse` | Validation behavior |
 
-```
-scripts/check_examples.sh
-```
+## Package example
 
-Files:
-
-- `examples/cli_hello.fuse`: CLI hello with config defaults.
-- `examples/cli_args.fuse`: CLI args binding (flags + values).
-- `examples/http_users.fuse`: HTTP service with routes and `?!` error handling.
-- `examples/types_patterns.fuse`: enums, structs, and pattern matching (Option/Result).
-- `examples/project_demo.fuse`: config env overrides, refined types, enums, and match.
-- `examples/interp_demo.fuse`: string interpolation (AST + VM).
-- `examples/spawn_await_box.fuse`: spawn/await/box parity demo.
-- `examples/box_shared.fuse`: shared `box` state across tasks.
-- `examples/assign_field.fuse`: struct field assignment.
-- `examples/assign_index.fuse`: list/map index assignment.
-- `examples/range_demo.fuse`: range expressions (inclusive lists).
-- `examples/enum_match.fuse`: enum declarations and match expressions.
-- `examples/float_compare.fuse`: float comparison semantics.
-- `examples/task_api.fuse`: task API (`task.id`, `task.done`, `task.cancel`).
-- `examples/native_bang_error.fuse`: native backend `?!` error handling.
-- `examples/native_bench.fuse`: native backend performance smoke test.
-- `examples/native_builtins.fuse`: native backend builtin coverage.
-- `examples/native_db.fuse`: native backend DB execution.
-- `examples/native_heap_literals.fuse`: native backend heap-allocated literals.
-- `examples/native_json.fuse`: native backend JSON encode/decode.
-- `examples/native_validation.fuse`: native backend validation behavior.
+The `notes-api/` directory is a full package with `fuse.toml`, HTML templates,
+static assets, and SCSS compilation. See [notes-api/README.md](notes-api/README.md).

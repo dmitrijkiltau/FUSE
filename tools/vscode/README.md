@@ -1,71 +1,54 @@
-# Fuse VS Code tools
+# Fuse VS Code Extension
 
-This folder provides syntax highlighting for `.fuse` files and a built-in Fuse LSP client.
+Syntax highlighting and LSP integration for `.fuse` files.
 
-## Syntax highlighting
+## Installation
 
-Install the extension from this folder:
+1. Open the VS Code Command Palette
+2. Run **Developer: Install Extension from Location...**
+3. Select the `tools/vscode` directory inside the repo
+4. Reload
 
-```
-code <path-to-fuse-repo>
-```
+## LSP features
 
-Then in the VS Code Command Palette:
-- **Developer: Install Extension from Location...**
-- Select the `tools/vscode` directory inside the repo
-- Reload
+The extension starts the `fuse-lsp` binary automatically. Semantic highlighting is
+enabled by default, so LSP token colors override TextMate scopes when the server is
+available.
 
-## LSP (diagnostics + navigation + completion + refactor)
+Supported capabilities:
 
-This extension now starts `fuse-lsp` directly.
-Semantic highlighting is enabled by default for `[fuse]`, so LSP token colors override
-TextMate scopes when the server is available.
+- Diagnostics (on open, change, and close)
+- Formatting
+- Hover, go-to-definition, and references
+- Rename
+- Completion / autocomplete
+- Semantic tokens and inlay hints
+- Code actions (unresolved import fixes, config-field scaffolding, organize imports)
 
-Current LSP feature baseline:
+### Binary resolution
 
-- diagnostics on open/change/close
-- formatting
-- hover + go-to-definition + references
-- rename refactor
-- completion/autocomplete
-- semantic tokens + inlay hints
-- code actions (unresolved import quick fixes, config-field scaffold quick fixes, organize imports)
-
-### Local dev
-
-1) Build the dist binaries (includes `fuse-lsp`):
-
-```
-scripts/build_dist.sh
-```
-
-2) Install extension dependencies:
-
-```
-cd tools/vscode
-npm install
-```
-
-3) Install the extension from this folder (as above).
-
-By default the extension looks for:
+The extension searches for `fuse-lsp` in order:
 
 1. `tools/vscode/bin/<platform>/fuse-lsp` (if you bundle it)
 2. `dist/fuse-lsp` in the current workspace folder (and parent folders)
 3. `fuse-lsp` on `PATH`
 
-You can override with the setting:
+Override with the `fuse.lspPath` setting. The **Fuse LSP** output channel logs
+the resolved binary path on startup.
 
+### Local development
+
+```bash
+# Build dist binaries (includes fuse-lsp)
+./scripts/build_dist.sh
+
+# Install extension dependencies
+cd tools/vscode && npm install
 ```
-fuse.lspPath
-```
 
-To verify which binary is used, open the **Fuse LSP** output channel; it logs
-`Using fuse-lsp: <path>`.
+Then install the extension as described above.
 
-Notes:
-- Run the LSP inside WSL (so it can access the repo and binaries).
-- If VS Code asks for a workspace/root, use the repo root.
+> On WSL, run the LSP inside WSL so it can access the repo and binaries.
 
 ### Packaging workflow
 

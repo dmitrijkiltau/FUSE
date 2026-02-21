@@ -1,203 +1,181 @@
 # FUSE
 
-FUSE is a small, strict language + toolchain for small CLIs and HTTP services with built-in
-config loading, validation, JSON binding, and OpenAPI generation.
+FUSE is a small, strict language for building CLI apps and HTTP services with
+built-in config loading, validation, JSON binding, and OpenAPI generation.
 
-Status:
+```fuse
+config App:
+  port: Int = env("PORT") ?? 3000
 
-- parser + semantic analysis + AST/VM backends are usable
-- native backend is available (`--backend native`) with VM-compatible runtime semantics
-- function symbols are module-scoped (duplicate function names across modules are supported)
+type UserCreate:
+  email: Email
+  name: String(1..80)
 
-## v0.1 stability contract
+service Users at "/api":
+  post "/users" body UserCreate -> UserCreate:
+    return body
 
-For `0.1.x`, compatibility is defined by currently documented supported behavior in:
+app "users":
+  serve(App.port)
+```
 
-- `fls.md` (syntax + static semantics)
-- `runtime.md` (runtime semantics + boundary behavior)
-- `scope.md` (project constraints and non-goals)
-- `VERSIONING_POLICY.md` (versioning, compatibility, and deprecation rules)
+## Status
+
+FUSE v0.1.0 is released. Parser, semantic analysis, AST interpreter, VM, and native backends
+are usable. The LSP server provides diagnostics, completions, navigation, refactoring, and
+code actions in VS Code.
+
+For `0.1.x`, compatibility is defined by documented behavior in `fls.md`, `runtime.md`,
+`scope.md`, and `VERSIONING_POLICY.md`.
 
 ## Requirements
 
 - Rust toolchain (stable)
-- SQLite dev libs (via `rusqlite`)
+- SQLite development libraries (`libsqlite3-dev` / `sqlite-devel`)
 
 ## Quick start
 
-Run a single file:
-
-```
+```bash
+# Run a single file
 ./scripts/fuse run examples/project_demo.fuse
-```
 
-Run a package (directory with `fuse.toml`):
-
-```
+# Run a package
 ./scripts/fuse run examples/notes-api
-```
 
-Run package in watch mode (`fuse dev`) with live reload:
-
-```
+# Watch mode with live reload
 ./scripts/fuse dev examples/notes-api
-```
 
-OpenAPI UI is auto-exposed in dev at `/docs` (configurable via `[serve].openapi_path`).
-
-Start the LSP:
-
-```
+# Start the language server
 ./scripts/fuse lsp
 ```
 
-## Package tooling
+## Package commands
 
-`fuse` reads `fuse.toml` (current directory or `--manifest-path`) and uses `package.entry` for
-`fuse run` / `fuse dev` / `fuse test`.
+| Command | Description |
+|---|---|
+| `fuse check` | Type-check and validate a project |
+| `fuse run` | Run a file or package |
+| `fuse dev` | Run with file watching and live reload |
+| `fuse test` | Run in-language test blocks |
+| `fuse build` | Produce build artifacts |
+| `fuse migrate` | Run database migrations |
+| `fuse lsp` | Start the language server |
 
-Common package features:
+Packages use a `fuse.toml` manifest. Minimal example:
 
-- `[serve].openapi_ui` / `openapi_path` for OpenAPI UI serving
-- `[assets]` (`scss`, `css`, `watch`, `hash`) for external `sass` orchestration
-- `[assets.hooks].before_build` for pre-build external hooks
-- `[vite]` (`dev_url`, `dist_dir`) for dev proxy fallback and production static defaults
+```toml
+[package]
+entry = "src/main.fuse"
+app = "Api"
+backend = "native"
+```
 
-Use `asset("css/app.css")` to resolve logical asset paths to hashed URLs, and
-`svg.inline("icons/name")` to inline SVG from `assets/svg` (or `FUSE_SVG_DIR`) as `Html`.
-Html tag builtins are available directly (`div`, `section`, `meta`, ...), with block DSL sugar
-(`div(): ...`), string-literal child lowering (`"x"` -> `html.text("x")` in Html blocks), and
-attribute shorthand (`div(class="hero", type="button")` -> attrs map). Named args can also be
-written one-per-line without commas. Underscores in shorthand names are normalized to dashes
-(`aria_label` -> `aria-label`, `data_view` -> `data-view`).
+### Manifest sections
 
-Build artifacts and caches:
+- `[package]` — entry point, app name, backend selection
+- `[serve]` — `openapi_ui`, `openapi_path` for built-in OpenAPI UI
+- `[assets]` — SCSS/CSS compilation, file watching, content hashing
+- `[assets.hooks]` — `before_build` for external pre-build hooks
+- `[vite]` — `dev_url` for dev proxy fallback, `dist_dir` for production statics
+- `[dependencies]` — package dependencies
 
-- `.fuse/build/program.ir`
-- `.fuse/build/program.native`
+### Build artifacts
 
-Use `fuse build --clean` to clear `.fuse/build`.
+Build outputs are stored in `.fuse/build/` (`program.ir`, `program.native`).
+Use `fuse build --clean` to clear the cache.
 
 ## Config loading
 
-Resolution order:
+Config values are resolved in order:
 
-1. environment variables
-2. `config.toml` (default; override via `FUSE_CONFIG`)
-3. default expressions in `config` blocks
+1. Environment variables
+2. Config file (`config.toml` by default; override with `FUSE_CONFIG`)
+3. Default expressions in `config` blocks
 
-The CLI loads `.env` from the package directory and only sets missing environment variables.
+The CLI loads `.env` from the package directory and sets only missing variables.
 
-## Build and test
+## Development
 
-Default test command:
+### Build and test
 
-```
+```bash
+# Compiler tests (default)
 ./scripts/cargo_env.sh cargo test -p fusec
-```
 
-Run AST semantic authority/parity gates:
-
-```
-./scripts/authority_parity.sh
-```
-
-Run semantic contract suite:
-
-```
-./scripts/semantic_suite.sh
-```
-
-Run LSP contract + UX suite:
-
-```
-./scripts/lsp_suite.sh
-```
-
-Run dedicated LSP performance/reliability checks:
-
-```
-./scripts/lsp_perf_reliability.sh
-```
-
-Run deterministic LSP workspace-incremental cache checks:
-
-```
-./scripts/lsp_workspace_incremental.sh
-```
-
-Run real-world benchmark/use-case harness:
-
-```
-./scripts/use_case_bench.sh
-```
-
-Run all `fuse` CLI tests:
-
-```
+# CLI tests
 ./scripts/cargo_env.sh cargo test -p fuse
 ```
 
-Release smoke checks:
+Always run Cargo through `scripts/cargo_env.sh` to avoid cross-device link errors.
 
-```
-./scripts/release_smoke.sh
-```
+### Quality gates
 
-`release_smoke.sh` runs `authority_parity.sh` first and fails on any AST/VM/native semantic parity regression.
-It also includes the LSP suite gate (`scripts/lsp_suite.sh`).
-CI enforces this gate via `.github/workflows/pre-release-gate.yml` on pull requests and pushes to `main`.
+| Gate | Command | Purpose |
+|---|---|---|
+| Semantic suite | `./scripts/semantic_suite.sh` | Parser, type system, and boundary contract tests |
+| Authority parity | `./scripts/authority_parity.sh` | AST/VM/native semantic equivalence |
+| LSP suite | `./scripts/lsp_suite.sh` | LSP contracts, navigation, completions, code actions |
+| LSP performance | `./scripts/lsp_perf_reliability.sh` | Cancellation handling and responsiveness budgets |
+| LSP incremental | `./scripts/lsp_workspace_incremental.sh` | Workspace cache correctness |
+| Benchmarks | `./scripts/use_case_bench.sh` | Real-world workload metrics |
+| Release smoke | `./scripts/release_smoke.sh` | Full pre-release gate (includes all above) |
 
-Build distributable binaries:
+CI enforces the release smoke gate via `.github/workflows/pre-release-gate.yml`.
 
-```
-./scripts/build_dist.sh
-```
+### Distribution
 
-Package VS Code extension payload with bundled `fuse-lsp`:
+```bash
+# Build release binaries
+./scripts/build_dist.sh --release
 
-```
+# Package VS Code extension with bundled LSP
 ./scripts/package_vscode_extension.sh --platform linux-x64
-```
 
-Generate docs guides from commented FUSE sources:
-
-```
+# Regenerate docs site guides
 ./scripts/generate_guide_docs.sh
-./scripts/fuse build --manifest-path docs
 ```
 
 ## Repo structure
 
-- `crates/fusec` - compiler, parser/sema, VM, native runtime/JIT, LSP
-- `crates/fuse` - package-oriented CLI wrapper around `fusec`
-- `examples/` - sample programs/packages
-- `docs/` - docs site package (UI, assets, and docs app)
-- `tools/vscode` - VS Code extension assets
+| Path | Contents |
+|---|---|
+| `crates/fusec` | Compiler: parser, semantic analysis, VM, native runtime/JIT, LSP |
+| `crates/fuse` | Package-oriented CLI wrapper |
+| `crates/fuse-rt` | Shared runtime library |
+| `examples/` | Sample programs and packages |
+| `docs/` | Documentation site (source, assets, generated specs) |
+| `tools/vscode/` | VS Code extension (syntax highlighting + LSP client) |
 
-## Specs
+## Documentation
 
-- `IDENTITY_CHARTER.md` - language identity, hard boundaries, and explicit non-goals
-- `fuse.md` - project overview + package tooling
-- `fls.md` - formal language specification
-- `runtime.md` - runtime semantics and builtin behavior
-- `scope.md` - project scope and non-goals
-- `EXTENSIBILITY_BOUNDARIES.md` - allowed/disallowed extension surfaces and stability tiers
-- `LSP_ROADMAP.md` - editor/LSP capability baseline and follow-up plan
-- `BENCHMARKS.md` - real-world workload matrix and benchmark metric definitions
-- `VERSIONING_POLICY.md` - language/runtime/tooling compatibility and deprecation policy
-- `CONTRIBUTING.md` - contribution workflow, review standards, and RFC requirements
+### Language and runtime specs
 
-## Contributing
+| Document | Scope |
+|---|---|
+| `fuse.md` | Product overview and doc navigation |
+| `fls.md` | Formal language specification (syntax, grammar, AST, type system) |
+| `runtime.md` | Runtime semantics (validation, JSON, config, HTTP, builtins, DB) |
+| `scope.md` | Project constraints, roadmap, and non-goals |
 
-- `CONTRIBUTING.md` - contribution standards, required checks, and RFC criteria
-- `GOVERNANCE.md` - maintainer roles, escalation path, and decision model
-- `CODE_OF_CONDUCT.md` - contributor behavior and moderation policy
-- `SECURITY.md` - vulnerability disclosure and response policy
-- `rfcs/README.md` - RFC lifecycle and indexing
-- `rfcs/0000-template.md` - RFC authoring template
-- `.github/pull_request_template.md` - PR checklist and review contract
-- `.github/ISSUE_TEMPLATE/` - issue intake templates for bugs and RFC-track proposals
+### Project governance
+
+| Document | Scope |
+|---|---|
+| `IDENTITY_CHARTER.md` | Language identity boundaries and "will not do" list |
+| `EXTENSIBILITY_BOUNDARIES.md` | Allowed extension surfaces and stability tiers |
+| `VERSIONING_POLICY.md` | Compatibility guarantees and deprecation rules |
+| `BENCHMARKS.md` | Workload matrix and benchmark definitions |
+| `LSP_ROADMAP.md` | Editor capability baseline and planned improvements |
+
+### Contributing
+
+| Document | Scope |
+|---|---|
+| `CONTRIBUTING.md` | Contribution standards, required checks, and RFC criteria |
+| `GOVERNANCE.md` | Maintainer roles, decision model, and escalation |
+| `CODE_OF_CONDUCT.md` | Contributor behavior expectations |
+| `SECURITY.md` | Vulnerability disclosure and response policy |
+| `rfcs/` | RFC process, template, and index |
 
 ## License
 
