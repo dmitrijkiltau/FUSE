@@ -4,6 +4,19 @@ Syntax highlighting and LSP integration for `.fuse` files.
 
 ## Installation
 
+Download the extension archive for your platform from the
+[GitHub release](https://github.com/dmitrijkiltau/FUSE/releases) page, then:
+
+```bash
+# Extract the archive
+tar -xzf fuse-vscode-linux-x64.tgz
+
+# Install from the extracted directory
+code --install-extension fuse-vscode
+```
+
+Alternatively, install from source:
+
 1. Open the VS Code Command Palette
 2. Run **Developer: Install Extension from Location...**
 3. Select the `tools/vscode` directory inside the repo

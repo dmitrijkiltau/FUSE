@@ -1,9 +1,25 @@
 {
   "name": "fuse-vscode",
   "displayName": "Fuse Language",
-  "description": "Syntax highlighting and LSP support for Fuse",
-  "version": "0.0.2",
+  "description": "Syntax highlighting and LSP support for the Fuse programming language",
+  "version": "0.1.0",
   "publisher": "fuse",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/dmitrijkiltau/FUSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dmitrijkiltau/FUSE.git",
+    "directory": "tools/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/dmitrijkiltau/FUSE/issues"
+  },
+  "keywords": [
+    "fuse",
+    "language",
+    "lsp",
+    "syntax-highlighting"
+  ],
   "main": "./extension.js",
   "engines": {
     "vscode": "^1.80.0"

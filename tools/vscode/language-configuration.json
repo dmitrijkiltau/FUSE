@@ -24,7 +24,7 @@
     {"open": "<", "close": ">"}
   ],
   "indentationRules": {
-    "increaseIndentPattern": "^\\s*(fn|type|enum|config|service|app|migration|table|test|if|else|else\\s+if|for|while|match|get|post|put|patch|delete|spawn)\\b.*:\\s*(#.*)?$",
+    "increaseIndentPattern": "^\\s*(fn|type|enum|config|service|app|migration|test|if|else|else\\s+if|for|while|match|get|post|put|patch|delete|spawn)\\b.*:\\s*(#.*)?$",
     "decreaseIndentPattern": "^\\s*(else|break|continue|return)\\b"
   },
   "wordPattern": "[A-Za-z_][A-Za-z0-9_]*"

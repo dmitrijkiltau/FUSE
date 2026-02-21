@@ -133,7 +133,7 @@
         },
         {
           "name": "keyword.declaration.fuse",
-          "match": "\\b(fn|type|enum|config|service|app|migration|table|test)\\b"
+          "match": "\\b(fn|type|enum|config|service|app|migration|test)\\b"
         },
         {
           "name": "keyword.other.fuse",
@@ -177,7 +177,7 @@
       "patterns": [
         {
           "name": "meta.definition.fuse",
-          "match": "^\\s*(type|enum|config|migration|table)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
+          "match": "^\\s*(type|enum|config|migration)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
           "captures": {
             "1": {"name": "keyword.declaration.fuse"},
             "2": {"name": "entity.name.type.fuse"}
