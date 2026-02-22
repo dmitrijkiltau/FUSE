@@ -41,6 +41,7 @@ const FUSE_ASSET_MAP_ENV: &str = "FUSE_ASSET_MAP";
 const BUILD_TARGET_FINGERPRINT: &str = env!("FUSE_BUILD_TARGET");
 const BUILD_RUSTC_FINGERPRINT: &str = env!("FUSE_BUILD_RUSTC_VERSION");
 const BUILD_CLI_VERSION_FINGERPRINT: &str = env!("CARGO_PKG_VERSION");
+const AOT_SEMANTIC_CONTRACT_VERSION: &str = "aot-v1";
 
 #[derive(Debug, Deserialize)]
 struct Manifest {
@@ -2147,6 +2148,11 @@ fn write_native_runner(
     } else {
         default_matches.push_str("        _ => Err(format!(\"unknown config default {name}\")),\n");
     }
+    let target_literal = format!("{BUILD_TARGET_FINGERPRINT:?}");
+    let rustc_literal = format!("{BUILD_RUSTC_FINGERPRINT:?}");
+    let cli_literal = format!("{BUILD_CLI_VERSION_FINGERPRINT:?}");
+    let contract_literal = format!("{AOT_SEMANTIC_CONTRACT_VERSION:?}");
+    let runtime_cache_version = fusec::native::CACHE_VERSION;
     let source = format!(
         r#"use fusec::interp::format_error_value;
 use fusec::native::value::{{NativeHeap, NativeValue}};
@@ -2168,6 +2174,45 @@ unsafe extern "C" {{
 const INTERNED_STRINGS: &[&str] = {interned};
 const CONFIG_BYTES: &[u8] = {config_blob};
 const TYPE_BYTES: &[u8] = {type_blob};
+const AOT_BUILD_TARGET: &str = {target_literal};
+const AOT_BUILD_RUSTC: &str = {rustc_literal};
+const AOT_BUILD_CLI: &str = {cli_literal};
+const AOT_RUNTIME_CACHE_VERSION: u32 = {runtime_cache_version};
+const AOT_SEMANTIC_CONTRACT: &str = {contract_literal};
+
+fn build_info_line() -> String {{
+    format!(
+        "target={{}} rustc={{}} cli={{}} runtime_cache={{}} contract={{}}",
+        AOT_BUILD_TARGET,
+        AOT_BUILD_RUSTC,
+        AOT_BUILD_CLI,
+        AOT_RUNTIME_CACHE_VERSION,
+        AOT_SEMANTIC_CONTRACT
+    )
+}}
+
+fn sanitize_message(raw: &str) -> String {{
+    raw.replace('\n', "\\n").replace('\r', "\\r")
+}}
+
+fn emit_fatal(class: &str, message: &str) {{
+    eprintln!(
+        "fatal: class={{}} message={{}} {{}}",
+        class,
+        sanitize_message(message),
+        build_info_line()
+    );
+}}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {{
+    if let Some(msg) = payload.downcast_ref::<&str>() {{
+        return (*msg).to_string();
+    }}
+    if let Some(msg) = payload.downcast_ref::<String>() {{
+        return msg.clone();
+    }}
+    "panic".to_string()
+}}
 
 fn call_native(entry: EntryFn, heap: &mut NativeHeap) -> Result<fusec::interp::Value, String> {{
     let mut out = NativeValue::null();
@@ -2217,23 +2262,35 @@ fn load_types(heap: &mut NativeHeap) -> Result<(), String> {{
     load_types_for_binary(types.iter(), heap)
 }}
 
-fn main() {{
+fn run_program() -> Result<(), String> {{
     let mut heap = NativeHeap::new();
     for value in INTERNED_STRINGS {{
         heap.intern_string((*value).to_string());
     }}
-    if let Err(err) = load_types(&mut heap) {{
-        eprintln!("run error: {{err}}");
-        std::process::exit(1);
+    load_types(&mut heap)?;
+    load_configs(&mut heap)?;
+    call_native(fuse_entry, &mut heap)?;
+    Ok(())
+}}
+
+fn main() {{
+    if std::env::var("FUSE_AOT_BUILD_INFO").ok().as_deref() == Some("1") {{
+        println!("{{}}", build_info_line());
+        return;
     }}
-    if let Err(err) = load_configs(&mut heap) {{
-        eprintln!("run error: {{err}}");
-        std::process::exit(1);
-    }}
-    if let Err(err) = call_native(fuse_entry, &mut heap) {{
-        eprintln!("run error: {{err}}");
-        std::process::exit(1);
-    }}
+    let status = match std::panic::catch_unwind(run_program) {{
+        Ok(Ok(())) => 0,
+        Ok(Err(err)) => {{
+            emit_fatal("runtime_fatal", &err);
+            1
+        }}
+        Err(payload) => {{
+            let msg = panic_message(payload.as_ref());
+            emit_fatal("panic", &msg);
+            101
+        }}
+    }};
+    std::process::exit(status);
 }}
 "#
     );

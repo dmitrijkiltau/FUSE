@@ -122,6 +122,8 @@ Implementation artifacts:
 
 Objective: produce standalone deployable binaries with VM-compatible semantics.
 
+Status: Implemented (2026-02-22)
+
 Deliverables:
 
 - AOT compiler pipeline integrated into `fuse build --aot`.
@@ -141,6 +143,19 @@ Exit criteria:
 
 - AOT binary runs without requiring Rust toolchain on target host
 - semantic parity suite passes for AOT on primary host platform
+
+Implementation artifacts:
+
+- Standalone AOT build path and direct binary execution:
+  - `crates/fuse/src/main.rs`
+  - `scripts/release_smoke.sh`
+- Embedded AOT build metadata:
+  - `target`, `rustc`, `cli`, `runtime_cache`, `contract`
+  - surfaced via `FUSE_AOT_BUILD_INFO=1`
+- Hardened fatal handling:
+  - stable fatal envelopes for `runtime_fatal` and `panic`
+- Integration tests that run produced AOT binaries directly:
+  - `crates/fuse/tests/project_cli.rs`
 
 ### Milestone 3: Cross-Platform and Reproducible Artifacts
 

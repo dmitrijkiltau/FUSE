@@ -2077,6 +2077,95 @@ app "Demo":
 }
 
 #[test]
+fn build_aot_build_info_env_prints_embedded_metadata() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let aot = default_aot_binary_path(&dir);
+    let info = Command::new(&aot)
+        .env("FUSE_AOT_BUILD_INFO", "1")
+        .output()
+        .expect("run aot binary with build info env");
+    assert!(
+        info.status.success(),
+        "info stderr: {}",
+        String::from_utf8_lossy(&info.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&info.stdout);
+    assert!(stdout.contains("target="), "stdout: {stdout}");
+    assert!(stdout.contains("rustc="), "stdout: {stdout}");
+    assert!(stdout.contains("cli="), "stdout: {stdout}");
+    assert!(stdout.contains("runtime_cache="), "stdout: {stdout}");
+    assert!(stdout.contains("contract="), "stdout: {stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_runtime_error_uses_stable_fatal_envelope() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  assert(false, "boom")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let aot = default_aot_binary_path(&dir);
+    let run = Command::new(&aot).output().expect("run aot binary");
+    assert_eq!(run.status.code(), Some(1), "status: {:?}", run.status);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("fatal: class=runtime_fatal"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("assert failed: boom"), "stderr: {stderr}");
+    assert!(stderr.contains("target="), "stderr: {stderr}");
+    assert!(stderr.contains("contract="), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn test_emits_consistent_step_headers() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");

@@ -62,6 +62,10 @@ Source -> Parser -> AST -> Lowering passes -> Canonical program
 Native backend note:
 
 - If native compilation/execution fails for a function, the run fails (no automatic backend fallback).
+- `fuse build --aot` emits a standalone native executable wrapper over compiled native artifacts.
+  The wrapper embeds build metadata (`target`, `rustc`, `cli`, `runtime_cache`, `contract`),
+  exposes it via `FUSE_AOT_BUILD_INFO=1`, and emits fatal envelopes as:
+  `fatal: class=<runtime_fatal|panic> message=<...> <build-info>`.
 
 ### Function symbol resolution
 

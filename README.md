@@ -148,8 +148,13 @@ Deployable AOT output:
 
 - `fuse build --aot` emits `.fuse/build/program.aot` (`.exe` on Windows) by default.
 - `[build].native_bin` overrides the AOT output path and remains supported.
+- AOT binaries embed build metadata:
+  `target`, `rustc`, `cli`, `runtime_cache`, and `contract`.
+  Use `FUSE_AOT_BUILD_INFO=1 <aot-binary>` to print this metadata and exit.
 - AOT build/link failures are deterministic command failures with `error:` diagnostics and
   `[build] failed` step footer.
+- Runtime failures in AOT binaries emit a stable fatal envelope:
+  `fatal: class=<runtime_fatal|panic> message=<...> <build-info>`.
 
 Use `fuse build --clean` to clear the cache.
 
