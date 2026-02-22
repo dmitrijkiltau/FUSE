@@ -88,6 +88,13 @@ function flattenMetrics(src, prefix = "", out = {}) {
   return out;
 }
 
+function isIsoUtcTimestamp(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value);
+}
+
 const currentPath = process.env.CURRENT_JSON;
 const baselinePath = process.env.BASELINE_JSON;
 
@@ -96,6 +103,26 @@ const baselineRaw = readJson(baselinePath);
 
 if (!baselineRaw.metrics || typeof baselineRaw.metrics !== "object") {
   console.error(`invalid baseline format in ${baselinePath}: missing object field "metrics"`);
+  process.exit(1);
+}
+
+const baselineSchemaVersion = Number(baselineRaw.schema_version);
+if (!Number.isInteger(baselineSchemaVersion) || baselineSchemaVersion < 1) {
+  console.error(`invalid baseline format in ${baselinePath}: schema_version must be an integer >= 1`);
+  process.exit(1);
+}
+
+if (!isIsoUtcTimestamp(baselineRaw.generated_utc)) {
+  console.error(
+    `invalid baseline format in ${baselinePath}: generated_utc must be an ISO-8601 UTC timestamp (YYYY-MM-DDTHH:MM:SSZ)`
+  );
+  process.exit(1);
+}
+
+if (typeof baselineRaw.refresh_rationale !== "string" || baselineRaw.refresh_rationale.trim().length < 12) {
+  console.error(
+    `invalid baseline format in ${baselinePath}: refresh_rationale must be a non-empty rationale note (>= 12 chars)`
+  );
   process.exit(1);
 }
 

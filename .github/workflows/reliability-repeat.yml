@@ -1,0 +1,43 @@
+name: Reliability Repeat
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reliability-repeat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repeat-gates:
+    name: Repeat Parity/LSP/Bench Gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      CARGO_INCREMENTAL: 0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run reliability repeat gate
+        run: ./scripts/reliability_repeat.sh --iterations 2

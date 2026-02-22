@@ -8,6 +8,12 @@ Run the benchmark harness:
 scripts/use_case_bench.sh
 ```
 
+Median-of-3 mode (used by reliability repeat CI for lower host-noise sensitivity):
+
+```bash
+scripts/use_case_bench.sh --median-of-3
+```
+
 Outputs:
 
 - `.fuse/bench/use_case_metrics.md`
@@ -48,4 +54,23 @@ Baseline + thresholds live in `benchmarks/use_case_baseline.json`.
 - The harness intentionally checks status codes so failures are semantic regressions, not only performance noise.
 - Runtime HTTP metrics are required for this benchmark; the script fails if the service cannot be started or reached on loopback.
 - `scripts/release_smoke.sh` retries benchmark collection/check once if the first regression check fails, to filter transient host jitter without changing baseline thresholds.
+- `scripts/reliability_repeat.sh` uses `--median-of-3` when collecting benchmark metrics.
 - This benchmark set is complementary to semantic parity gates (`scripts/semantic_suite.sh`, `scripts/authority_parity.sh`).
+
+## Baseline refresh policy
+
+`benchmarks/use_case_baseline.json` is a contract file and should only be refreshed when:
+
+- performance changes are intentional and persistent, or
+- harness methodology changed (for example, metric definition or collection mode changes).
+
+Required process for baseline refreshes:
+
+1. Obtain explicit maintainer approval in the PR before updating the baseline values.
+2. Run `scripts/use_case_bench.sh` (or `scripts/use_case_bench.sh --median-of-3` if that is the target mode) on the same host class used for comparison.
+3. Update baseline metric values and metadata:
+   - `generated_utc` must be a fresh ISO-8601 UTC timestamp.
+   - `refresh_rationale` must explain why the refresh is required.
+4. Run `scripts/check_use_case_bench_regression.sh` to validate format + thresholds after the update.
+
+`scripts/check_use_case_bench_regression.sh` enforces the required metadata fields (`generated_utc`, `refresh_rationale`) so baseline updates are auditable.

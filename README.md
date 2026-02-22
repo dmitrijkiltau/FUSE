@@ -166,7 +166,8 @@ Always run Cargo through `scripts/cargo_env.sh` to avoid cross-device link error
 | LSP suite | `./scripts/lsp_suite.sh` | LSP contracts, navigation, completions, code actions |
 | LSP performance | `./scripts/lsp_perf_reliability.sh` | Cancellation handling and responsiveness budgets |
 | LSP incremental | `./scripts/lsp_workspace_incremental.sh` | Workspace cache correctness |
-| Benchmarks | `./scripts/use_case_bench.sh` | Real-world workload metrics |
+| Benchmarks | `./scripts/use_case_bench.sh` | Real-world workload metrics (`--median-of-3` available for reliability runs) |
+| Reliability repeat | `./scripts/reliability_repeat.sh --iterations 2` | Repeat-run stability checks for parity/LSP/benchmark-sensitive paths |
 | Release smoke | `./scripts/release_smoke.sh` | Full pre-release gate (includes all above) |
 
 CI enforces the release smoke gate via `.github/workflows/pre-release-gate.yml`.
@@ -235,6 +236,7 @@ code --install-extension dist/fuse-vscode-linux-x64.vsix
 | `IDENTITY_CHARTER.md` | Language identity boundaries and "will not do" list |
 | `EXTENSIBILITY_BOUNDARIES.md` | Allowed extension surfaces and stability tiers |
 | `VERSIONING_POLICY.md` | Compatibility guarantees and deprecation rules |
+| `FLAKE_TRIAGE.md` | Checklist for diagnosing and closing intermittent CI/test failures |
 | `BENCHMARKS.md` | Workload matrix and benchmark definitions |
 | `LSP_ROADMAP.md` | Editor capability baseline and planned improvements |
 

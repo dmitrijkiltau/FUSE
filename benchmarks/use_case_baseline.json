@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "generated_utc": "2026-02-21T12:37:20Z",
+  "refresh_rationale": "Initial 0.2.0 release-branch baseline capture for use-case benchmark regression gating.",
   "notes": "Baseline captured with scripts/use_case_bench.sh on the release branch host. Limits are intentionally tolerant to account for machine/load variance while still catching major latency regressions.",
   "metrics": {
     "cli_project_demo.check_ms": {
