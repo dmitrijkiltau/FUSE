@@ -1,6 +1,6 @@
 [package]
 name = "fuse"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "CLI for building and running FUSE language packages."
 repository = "https://github.com/dmitrijkiltau/fuse"
