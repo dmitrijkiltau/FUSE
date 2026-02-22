@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 — 2026-02-22
+
+### Changed
+
+- Release metadata updated to `0.4.0`.
+- Release packaging/docs align with the `v0.4.0` artifact + verification flow.
+
 ## 0.3.2 — 2026-02-22
 
 ### Changed

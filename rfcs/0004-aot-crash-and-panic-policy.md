@@ -5,7 +5,7 @@
 - Created: 2026-02-22
 - Updated: 2026-02-22
 - Related PRs: TBD
-- Related issues: AOT_PRODUCTION_PLAN.md
+- Related issues: v0.4.0 AOT production rollout
 
 ## Summary
 
@@ -77,4 +77,3 @@ Mitigation:
 
 - 2026-02-22: Proposed
 - 2026-02-22: Accepted
-

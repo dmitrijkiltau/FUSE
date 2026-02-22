@@ -5,7 +5,7 @@
 - Created: 2026-02-22
 - Updated: 2026-02-22
 - Related PRs: TBD
-- Related issues: AOT_PRODUCTION_PLAN.md
+- Related issues: v0.4.0 AOT production rollout
 
 ## Summary
 
@@ -51,7 +51,6 @@ Rejected because it is not uniformly feasible across supported targets.
 
 ## Documentation updates
 
-- `AOT_PRODUCTION_PLAN.md`
 - `AOT_CONTRACT.md`
 - `RELEASE.md` (release artifact expectations)
 
@@ -75,4 +74,3 @@ Mitigation:
 
 - 2026-02-22: Proposed
 - 2026-02-22: Accepted
-

@@ -5,7 +5,7 @@
 - Created: 2026-02-22
 - Updated: 2026-02-22
 - Related PRs: TBD
-- Related issues: AOT_PRODUCTION_PLAN.md
+- Related issues: v0.4.0 AOT production rollout
 
 ## Summary
 
@@ -62,7 +62,6 @@ Rejected because it is not enforceable in CI/release gates.
 ## Documentation updates
 
 - `AOT_CONTRACT.md`
-- `AOT_PRODUCTION_PLAN.md`
 - `RELEASE.md`
 
 ## Risks
@@ -83,4 +82,3 @@ Mitigation:
 
 - 2026-02-22: Proposed
 - 2026-02-22: Accepted
-
