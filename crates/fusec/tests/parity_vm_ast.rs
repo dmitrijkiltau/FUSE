@@ -70,14 +70,42 @@ fn send_http_request_with_retry(port: u16, request: &str) -> (u16, String) {
     loop {
         match TcpStream::connect(format!("127.0.0.1:{port}")) {
             Ok(mut stream) => {
-                stream
-                    .write_all(request.as_bytes())
-                    .expect("failed to write request");
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                if let Err(err) = stream.write_all(request.as_bytes()) {
+                    let last_error = format!("write failed: {err}");
+                    if start.elapsed() > Duration::from_secs(2) {
+                        panic!(
+                            "server did not produce a stable response on 127.0.0.1:{port} (last error: {})",
+                            last_error
+                        );
+                    }
+                    thread::sleep(Duration::from_millis(25));
+                    continue;
+                }
                 stream.shutdown(std::net::Shutdown::Write).ok();
                 let mut buffer = String::new();
-                stream
-                    .read_to_string(&mut buffer)
-                    .expect("failed to read response");
+                if let Err(err) = stream.read_to_string(&mut buffer) {
+                    let last_error = format!("read failed: {err}");
+                    if start.elapsed() > Duration::from_secs(2) {
+                        panic!(
+                            "server did not produce a stable response on 127.0.0.1:{port} (last error: {})",
+                            last_error
+                        );
+                    }
+                    thread::sleep(Duration::from_millis(25));
+                    continue;
+                }
+                if buffer.trim().is_empty() {
+                    let last_error = "empty response";
+                    if start.elapsed() > Duration::from_secs(2) {
+                        panic!(
+                            "server did not produce a stable response on 127.0.0.1:{port} (last error: {})",
+                            last_error
+                        );
+                    }
+                    thread::sleep(Duration::from_millis(25));
+                    continue;
+                }
                 let mut lines = buffer.split("\r\n");
                 let status_line = lines.next().unwrap_or("");
                 let status = status_line
@@ -94,9 +122,13 @@ fn send_http_request_with_retry(port: u16, request: &str) -> (u16, String) {
                     .to_string();
                 return (status, body);
             }
-            Err(_) => {
+            Err(err) => {
+                let last_error = format!("connect failed: {err}");
                 if start.elapsed() > Duration::from_secs(2) {
-                    panic!("server did not start on 127.0.0.1:{port}");
+                    panic!(
+                        "server did not start on 127.0.0.1:{port} (last error: {})",
+                        last_error
+                    );
                 }
                 thread::sleep(Duration::from_millis(25));
             }
