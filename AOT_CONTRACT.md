@@ -47,5 +47,6 @@ These targets are enforced as release-go/no-go criteria for the AOT rollout.
 2. Any threshold relaxation requires written rationale in the PR.
 3. Contract updates must be reflected in:
    - `AOT_PRODUCTION_PLAN.md`
+   - `AOT_REPRODUCIBILITY.md`
    - `RELEASE.md` (release gate checklist)
    - relevant RFC status/decision logs.

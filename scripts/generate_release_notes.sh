@@ -125,6 +125,7 @@ $(cat "$SECTION_FILE")
 ## Artifacts
 
 - \`fuse-cli-<platform>.tar.gz|.zip\`
+- \`fuse-aot-<platform>.tar.gz|.zip\`
 - \`fuse-vscode-<platform>.vsix\`
 - \`SHA256SUMS\`
 - \`release-artifacts.json\`

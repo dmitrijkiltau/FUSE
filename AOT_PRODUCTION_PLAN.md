@@ -161,6 +161,8 @@ Implementation artifacts:
 
 Objective: make AOT production artifacts publishable across official targets.
 
+Status: Implemented (2026-02-22)
+
 Deliverables:
 
 - AOT release matrix support:
@@ -182,6 +184,23 @@ Exit criteria:
 
 - release workflow emits verified AOT bundles for all supported targets
 - reproducibility checks pass within defined tolerances
+
+Implementation artifacts:
+
+- AOT artifact packaging and verification:
+  - `scripts/package_aot_artifact.sh`
+  - `scripts/verify_aot_artifact.sh`
+- Release/checksum/release-note pipeline integration:
+  - `.github/workflows/release-artifacts.yml`
+  - `scripts/generate_release_checksums.sh`
+  - `scripts/generate_release_notes.sh`
+- Smoke/regression coverage:
+  - `scripts/release_smoke.sh`
+  - `scripts/packaging_verifier_regression.sh`
+- Operator documentation updates:
+  - `README.md`
+  - `RELEASE.md`
+  - `AOT_REPRODUCIBILITY.md`
 
 ### Milestone 4: Performance, Reliability, and Operability Hardening
 
