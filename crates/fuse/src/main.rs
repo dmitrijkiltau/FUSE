@@ -2343,10 +2343,15 @@ fn link_native_binary(
             .parent()
             .ok_or_else(|| "runner path missing parent".to_string())?,
     )?;
-    let script = repo_root.join("scripts").join("cargo_env.sh");
-    let mut build_cmd = ProcessCommand::new(&script);
+    let (target_dir, rustc_tmpdir, cargo_incremental) = prepare_toolchain_env(&repo_root)?;
+    let mut build_cmd = ProcessCommand::new("cargo");
+    apply_toolchain_env(
+        &mut build_cmd,
+        &target_dir,
+        &rustc_tmpdir,
+        &cargo_incremental,
+    );
     build_cmd
-        .arg("cargo")
         .arg("build")
         .arg("-p")
         .arg("fusec")
@@ -2360,24 +2365,25 @@ fn link_native_binary(
     }
     let build_output = build_cmd
         .output()
-        .map_err(|err| format!("failed to run {}: {err}", script.display()))?;
+        .map_err(|err| format!("failed to run cargo build for link dependencies: {err}"))?;
     if !build_output.status.success() {
         return Err(format!(
             "native link: failed to build link dependencies\n{}",
             summarize_command_failure(&build_output)
         ));
     }
-    let target_dir = match env::var("CARGO_TARGET_DIR") {
-        Ok(value) if !value.is_empty() => PathBuf::from(value),
-        _ => repo_root.join("tmp").join("fuse-target"),
-    };
     let profile = if release { "release" } else { "debug" };
     let deps_dir = target_dir.join(profile).join("deps");
     let fusec_rlib = find_latest_rlib(&deps_dir, "libfusec")?;
     let bincode_rlib = find_latest_rlib(&deps_dir, "libbincode")?;
-    let mut rustc_cmd = ProcessCommand::new(&script);
+    let mut rustc_cmd = ProcessCommand::new("rustc");
+    apply_toolchain_env(
+        &mut rustc_cmd,
+        &target_dir,
+        &rustc_tmpdir,
+        &cargo_incremental,
+    );
     rustc_cmd
-        .arg("rustc")
         .arg("--edition=2024")
         .arg(runner)
         .arg("-o")
@@ -2395,7 +2401,7 @@ fn link_native_binary(
     }
     let rustc_output = rustc_cmd
         .output()
-        .map_err(|err| format!("failed to run rustc via {}: {err}", script.display()))?;
+        .map_err(|err| format!("failed to run rustc for native link: {err}"))?;
     if !rustc_output.status.success() {
         return Err(format!(
             "native link: rustc failed\n{}",
@@ -2415,6 +2421,52 @@ fn summarize_command_failure(output: &std::process::Output) -> String {
         return stdout;
     }
     "command failed without output".to_string()
+}
+
+fn prepare_toolchain_env(repo_root: &Path) -> Result<(PathBuf, PathBuf, String), String> {
+    let target_dir = resolve_env_path_or_default(
+        repo_root,
+        "CARGO_TARGET_DIR",
+        repo_root.join("tmp").join("fuse-target"),
+    );
+    let rustc_tmpdir =
+        resolve_env_path_or_default(repo_root, "RUSTC_TMPDIR", target_dir.join("tmp"));
+    fs::create_dir_all(&target_dir)
+        .map_err(|err| format!("failed to create {}: {err}", target_dir.display()))?;
+    fs::create_dir_all(&rustc_tmpdir)
+        .map_err(|err| format!("failed to create {}: {err}", rustc_tmpdir.display()))?;
+    let cargo_incremental = env::var("CARGO_INCREMENTAL")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "0".to_string());
+    Ok((target_dir, rustc_tmpdir, cargo_incremental))
+}
+
+fn resolve_env_path_or_default(repo_root: &Path, key: &str, default: PathBuf) -> PathBuf {
+    let path = env::var(key)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or(default);
+    if path.is_absolute() {
+        path
+    } else {
+        repo_root.join(path)
+    }
+}
+
+fn apply_toolchain_env(
+    cmd: &mut ProcessCommand,
+    target_dir: &Path,
+    rustc_tmpdir: &Path,
+    cargo_incremental: &str,
+) {
+    cmd.env("CARGO_TARGET_DIR", target_dir);
+    cmd.env("RUSTC_TMPDIR", rustc_tmpdir);
+    cmd.env("TMPDIR", rustc_tmpdir);
+    cmd.env("TMP", rustc_tmpdir);
+    cmd.env("TEMP", rustc_tmpdir);
+    cmd.env("CARGO_INCREMENTAL", cargo_incremental);
 }
 
 fn find_repo_root(start: &Path) -> Result<PathBuf, String> {

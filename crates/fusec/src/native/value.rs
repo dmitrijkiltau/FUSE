@@ -176,7 +176,9 @@ impl NativeHeap {
         self.configs.contains_key(config)
     }
 
-    pub fn clone_configs(&self) -> std::collections::HashMap<String, std::collections::HashMap<String, Value>> {
+    pub fn clone_configs(
+        &self,
+    ) -> std::collections::HashMap<String, std::collections::HashMap<String, Value>> {
         self.configs.clone()
     }
 

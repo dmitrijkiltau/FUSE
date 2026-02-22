@@ -2302,7 +2302,9 @@ app "Docs":
     let response = match http_get_with_retry(port, "/api/health", 60) {
         Some(response) => response,
         None => {
-            let output = child.wait_with_output().expect("wait aot child after timeout");
+            let output = child
+                .wait_with_output()
+                .expect("wait aot child after timeout");
             panic!(
                 "failed to query aot health endpoint; stderr: {}",
                 String::from_utf8_lossy(&output.stderr)
@@ -2310,7 +2312,10 @@ app "Docs":
         }
     };
     assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
-    assert!(response.contains("\"status\":\"ok\""), "response: {response}");
+    assert!(
+        response.contains("\"status\":\"ok\""),
+        "response: {response}"
+    );
 
     let output = child.wait_with_output().expect("wait aot child");
     assert!(

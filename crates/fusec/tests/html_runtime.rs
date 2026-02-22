@@ -172,7 +172,9 @@ fn run_http_program_with_env_requests(
     extra_env: &[(String, String)],
     requests: &[&str],
 ) -> Vec<HttpResponse> {
-    let _lock = http_runtime_test_lock().lock().expect("http runtime test lock");
+    let _lock = http_runtime_test_lock()
+        .lock()
+        .expect("http runtime test lock");
     let program_path = write_temp_file("fuse_html_http", "fuse", source);
     let exe = env!("CARGO_BIN_EXE_fusec");
     let mut cmd = Command::new(exe);
