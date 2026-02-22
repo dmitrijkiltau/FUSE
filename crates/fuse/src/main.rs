@@ -2354,12 +2354,9 @@ fn link_native_binary(
     build_cmd
         .arg("build")
         .arg("-p")
-        .arg("fusec")
-        // The generated AOT runner also links against bincode.
-        // Build `fuse` in the same profile to ensure `libbincode*.rlib`
-        // is present in `<target>/<profile>/deps` on clean CI runners.
-        .arg("-p")
-        .arg("fuse");
+        // `fusec` has a direct `bincode` dependency so both rlibs are
+        // available in `<target>/<profile>/deps` for the runner link step.
+        .arg("fusec");
     if release {
         build_cmd.arg("--release");
     }

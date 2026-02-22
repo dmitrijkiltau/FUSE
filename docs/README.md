@@ -21,10 +21,11 @@ Docs are served at <http://localhost:4080>.
 
 ## Run Docs with Docker
 
-The Docker image builds and runs docs using the docs AOT binary.
+The Docker image downloads the `fuse` CLI from GitHub Releases, builds docs with `fuse build --aot --release`, and runs the resulting docs AOT binary.
+Guide docs regeneration is skipped in Docker because generated guides are committed.
 It does not publish downloadable release artifacts.
 Run these commands from the repository root.
-The first `--build` run compiles Rust crates and can take a while; subsequent builds are much faster with Docker layer cache.
+You can override the downloaded CLI version with `--build-arg FUSE_RELEASE_TAG=vX.Y.Z`.
 
 Build the image:
 

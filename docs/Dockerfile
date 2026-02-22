@@ -3,24 +3,27 @@
 FROM rust:slim-bookworm AS builder
 WORKDIR /workspace
 
+ARG FUSE_RELEASE_TAG=v0.4.0
+ARG FUSE_PLATFORM=linux-x64
+
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates pkg-config libsqlite3-dev \
+  && apt-get install -y --no-install-recommends ca-certificates curl tar pkg-config libsqlite3-dev \
   && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL "https://github.com/dmitrijkiltau/FUSE/releases/download/${FUSE_RELEASE_TAG}/fuse-cli-${FUSE_PLATFORM}.tar.gz" -o /tmp/fuse-cli.tar.gz \
+  && tar -xzf /tmp/fuse-cli.tar.gz -C /usr/local/bin fuse \
+  && chmod +x /usr/local/bin/fuse \
+  && rm -f /tmp/fuse-cli.tar.gz
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 COPY scripts/cargo_env.sh ./scripts/cargo_env.sh
-
-RUN chmod +x scripts/cargo_env.sh
-RUN ./scripts/cargo_env.sh cargo build -p fuse --release
-
-COPY fls.md runtime.md scope.md ./
 COPY scripts/generate_guide_docs.sh ./scripts/generate_guide_docs.sh
 COPY docs ./docs
 
-RUN chmod +x scripts/generate_guide_docs.sh
-RUN ./scripts/generate_guide_docs.sh
-RUN ./tmp/fuse-target/release/fuse build --manifest-path docs --aot --release
+RUN chmod +x scripts/cargo_env.sh scripts/generate_guide_docs.sh
+ENV FUSE_SKIP_GUIDE_DOCS=1
+RUN fuse build --manifest-path docs --aot --release
 
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app/docs

@@ -5,6 +5,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="$ROOT/docs/src/guides"
 OUT_DIR="$ROOT/docs/site/specs"
 
+if [[ "${FUSE_SKIP_GUIDE_DOCS:-0}" == "1" ]]; then
+  echo "skipping guide docs generation (FUSE_SKIP_GUIDE_DOCS=1)"
+  exit 0
+fi
+
 if [[ ! -d "$SRC_DIR" ]]; then
   echo "guide source directory not found: $SRC_DIR" >&2
   exit 1
@@ -240,7 +245,8 @@ TOOLING
 
 ## Run Docs with Docker
 
-`docs/Dockerfile` builds and runs docs using the docs AOT binary.
+`docs/Dockerfile` downloads `fuse` from GitHub Releases, builds docs with `fuse build --aot --release`, and runs the resulting docs AOT binary.
+Guide docs generation is skipped in Docker because generated docs are committed.
 Downloadable release artifacts are not served by the docs app; use GitHub Releases instead.
 
 Build the docs image from repository root:

@@ -315,6 +315,7 @@ version = "0.4.0"
 name = "fusec"
 version = "0.4.0"
 dependencies = [
+ "bincode",
  "cranelift-codegen",
  "cranelift-frontend",
  "cranelift-jit",

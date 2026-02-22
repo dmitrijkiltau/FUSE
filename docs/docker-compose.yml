@@ -4,6 +4,9 @@ services:
     build:
       context: ..
       dockerfile: docs/Dockerfile
+      args:
+        FUSE_RELEASE_TAG: v0.4.0
+        FUSE_PLATFORM: linux-x64
     ports:
       - "4080:4080"
     environment:
