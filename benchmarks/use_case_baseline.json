@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "generated_utc": "2026-02-21T12:37:20Z",
+  "notes": "Baseline captured with scripts/use_case_bench.sh on the release branch host. Limits are intentionally tolerant to account for machine/load variance while still catching major latency regressions.",
+  "metrics": {
+    "cli_project_demo.check_ms": {
+      "baseline_ms": 104.916,
+      "max_regression_pct": 0.45,
+      "max_regression_ms": 40.0
+    },
+    "cli_project_demo.run_ok_ms": {
+      "baseline_ms": 112.958,
+      "max_regression_pct": 0.45,
+      "max_regression_ms": 45.0
+    },
+    "cli_project_demo.run_contract_failure_ms": {
+      "baseline_ms": 92.181,
+      "max_regression_pct": 0.5,
+      "max_regression_ms": 40.0
+    },
+    "notes_api.check_cold_ms": {
+      "baseline_ms": 92.264,
+      "max_regression_pct": 0.5,
+      "max_regression_ms": 50.0
+    },
+    "notes_api.check_warm_ms": {
+      "baseline_ms": 98.046,
+      "max_regression_pct": 0.5,
+      "max_regression_ms": 50.0
+    },
+    "notes_api.migrate_ms": {
+      "baseline_ms": 115.0,
+      "max_regression_pct": 0.5,
+      "max_regression_ms": 60.0
+    },
+    "notes_api.request_get_notes_ms": {
+      "baseline_ms": 2.85,
+      "max_regression_pct": 2.5,
+      "max_regression_ms": 8.0
+    },
+    "notes_api.request_post_valid_ms": {
+      "baseline_ms": 20.53,
+      "max_regression_pct": 1.0,
+      "max_regression_ms": 25.0
+    },
+    "notes_api.request_post_invalid_ms": {
+      "baseline_ms": 0.851,
+      "max_regression_pct": 5.0,
+      "max_regression_ms": 10.0
+    },
+    "notes_api.request_frontend_root_ms": {
+      "baseline_ms": 0.946,
+      "max_regression_pct": 5.0,
+      "max_regression_ms": 10.0
+    },
+    "notes_api.request_validation_error_overhead_abs_ms": {
+      "baseline_ms": 19.679,
+      "max_regression_pct": 1.0,
+      "max_regression_ms": 20.0
+    }
+  }
+}

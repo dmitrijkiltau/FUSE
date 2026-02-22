@@ -1,10 +1,9 @@
-# spawn/await/box demo
+# spawn/await demo
 
 fn main():
   let base = 10
   let task = spawn:
-    let inner = box (base + 1)
-    inner
+    base + 1
   let out = await task
   print(out)
 

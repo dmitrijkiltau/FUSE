@@ -1,0 +1,3 @@
+app "InputDemo":
+  let name = input("Name: ")
+  print("Hello, " + name)

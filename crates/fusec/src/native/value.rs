@@ -1,6 +1,5 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use crate::db::Db;
 use crate::interp::{HtmlNode, IteratorValue, Task, TaskResult, Value};
@@ -175,6 +174,10 @@ impl NativeHeap {
 
     pub fn has_config(&self, config: &str) -> bool {
         self.configs.contains_key(config)
+    }
+
+    pub fn clone_configs(&self) -> std::collections::HashMap<String, std::collections::HashMap<String, Value>> {
+        self.configs.clone()
     }
 
     pub fn collect_garbage(&mut self) {
@@ -465,7 +468,7 @@ impl NativeValue {
                 Some(Self::result_err(inner, heap))
             }
             Value::Boxed(value) => {
-                let inner = value.borrow();
+                let inner = value.lock().expect("box lock");
                 let boxed = Self::from_value(&inner, heap)?;
                 Some(Self::boxed(boxed, heap))
             }
@@ -480,7 +483,7 @@ impl NativeValue {
                 let task = TaskValue {
                     id: task.id(),
                     done: task.is_done(),
-                    cancelled: task.is_cancelled(),
+                    cancelled: false,
                     result,
                 };
                 Some(Self::task(task, heap))
@@ -581,7 +584,7 @@ impl NativeValue {
                 }
                 HeapValue::Boxed(value) => {
                     let inner = value.to_value(heap)?;
-                    Some(Value::Boxed(Rc::new(RefCell::new(inner))))
+                    Some(Value::Boxed(Arc::new(Mutex::new(inner))))
                 }
                 HeapValue::Task(task) => {
                     let result = match &task.result {
@@ -589,12 +592,7 @@ impl NativeValue {
                         TaskResultValue::Error(value) => TaskResult::Error(value.to_value(heap)?),
                         TaskResultValue::Runtime(message) => TaskResult::Runtime(message.clone()),
                     };
-                    Some(Value::Task(Task::from_state(
-                        task.id,
-                        task.done,
-                        task.cancelled,
-                        result,
-                    )))
+                    Some(Value::Task(Task::from_task_result(result)))
                 }
             },
         }

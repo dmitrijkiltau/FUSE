@@ -203,14 +203,12 @@ pub(crate) struct HostCalls {
     range: FuncId,
     builtin_log: FuncId,
     builtin_print: FuncId,
+    builtin_input: FuncId,
     builtin_env: FuncId,
     builtin_serve: FuncId,
     builtin_assert: FuncId,
     builtin_asset: FuncId,
     config_get: FuncId,
-    task_id: FuncId,
-    task_done: FuncId,
-    task_cancel: FuncId,
     db_exec: FuncId,
     db_query: FuncId,
     db_one: FuncId,
@@ -308,6 +306,10 @@ impl JitRuntime {
             fuse_native_builtin_print as *const u8,
         );
         builder.symbol(
+            "fuse_native_builtin_input",
+            fuse_native_builtin_input as *const u8,
+        );
+        builder.symbol(
             "fuse_native_builtin_env",
             fuse_native_builtin_env as *const u8,
         );
@@ -326,12 +328,6 @@ impl JitRuntime {
         builder.symbol(
             "fuse_native_config_get",
             fuse_native_config_get as *const u8,
-        );
-        builder.symbol("fuse_native_task_id", fuse_native_task_id as *const u8);
-        builder.symbol("fuse_native_task_done", fuse_native_task_done as *const u8);
-        builder.symbol(
-            "fuse_native_task_cancel",
-            fuse_native_task_cancel as *const u8,
         );
         builder.symbol(
             "fuse_native_json_encode",
@@ -747,6 +743,9 @@ impl HostCalls {
         let builtin_print = module
             .declare_function("fuse_native_builtin_print", Linkage::Import, &builtin_sig)
             .expect("declare builtin print hostcall");
+        let builtin_input = module
+            .declare_function("fuse_native_builtin_input", Linkage::Import, &builtin_sig)
+            .expect("declare builtin input hostcall");
         let builtin_env = module
             .declare_function("fuse_native_builtin_env", Linkage::Import, &builtin_sig)
             .expect("declare builtin env hostcall");
@@ -762,15 +761,6 @@ impl HostCalls {
         let config_get = module
             .declare_function("fuse_native_config_get", Linkage::Import, &builtin_sig)
             .expect("declare config get hostcall");
-        let task_id = module
-            .declare_function("fuse_native_task_id", Linkage::Import, &builtin_sig)
-            .expect("declare task id hostcall");
-        let task_done = module
-            .declare_function("fuse_native_task_done", Linkage::Import, &builtin_sig)
-            .expect("declare task done hostcall");
-        let task_cancel = module
-            .declare_function("fuse_native_task_cancel", Linkage::Import, &builtin_sig)
-            .expect("declare task cancel hostcall");
         let db_exec = module
             .declare_function("fuse_native_db_exec", Linkage::Import, &builtin_sig)
             .expect("declare db exec hostcall");
@@ -869,14 +859,12 @@ impl HostCalls {
             range,
             builtin_log,
             builtin_print,
+            builtin_input,
             builtin_env,
             builtin_serve,
             builtin_assert,
             builtin_asset,
             config_get,
-            task_id,
-            task_done,
-            task_cancel,
             db_exec,
             db_query,
             db_one,
@@ -2408,7 +2396,10 @@ extern "C" fn fuse_native_builtin_log(
                 .map(|val| val.to_string_value())
                 .collect::<Vec<_>>()
                 .join(" ");
-            eprintln!("[{}] {}", level.label(), message);
+            eprintln!(
+                "{}",
+                crate::runtime_io::format_log_text_line(level.label(), &message)
+            );
         }
     }
 
@@ -2446,6 +2437,50 @@ extern "C" fn fuse_native_builtin_print(
     println!("{text}");
     *out = NativeValue::int(0);
     0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_input(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len > 1 {
+        return builtin_runtime_error(out, heap, "input expects 0 or 1 arguments");
+    }
+
+    let prompt = if len == 0 {
+        String::new()
+    } else {
+        let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+        let heap_ref: &NativeHeap = heap;
+        let Some(value) = args.first() else {
+            return builtin_runtime_error(out, heap, "input expects a string prompt");
+        };
+        let Some(value) = value.to_value(heap_ref) else {
+            return builtin_runtime_error(out, heap, "input expects a string prompt");
+        };
+        match value {
+            Value::String(text) => text,
+            _ => return builtin_runtime_error(out, heap, "input expects a string prompt"),
+        }
+    };
+
+    match crate::runtime_io::read_input_line(&prompt) {
+        Ok(text) => {
+            *out = NativeValue::string(text, heap);
+            0
+        }
+        Err(err) => builtin_runtime_error(out, heap, err),
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -5179,15 +5214,13 @@ fn compile_function<M: Module>(
                         CallKind::Builtin => {
                             let builtin = match name.as_str() {
                                 "print" => hostcalls.builtin_print,
+                                "input" => hostcalls.builtin_input,
                                 "log" => hostcalls.builtin_log,
                                 "env" => hostcalls.builtin_env,
                                 "serve" => hostcalls.builtin_serve,
                                 "assert" => hostcalls.builtin_assert,
                                 "asset" => hostcalls.builtin_asset,
                                 "range" => hostcalls.range,
-                                "task.id" => hostcalls.task_id,
-                                "task.done" => hostcalls.task_done,
-                                "task.cancel" => hostcalls.task_cancel,
                                 "db.exec" => hostcalls.db_exec,
                                 "db.query" => hostcalls.db_query,
                                 "db.one" => hostcalls.db_one,
@@ -5215,11 +5248,7 @@ fn compile_function<M: Module>(
                                     "unknown builtin"
                                 ),
                             };
-                            let result_kind = match name.as_str() {
-                                "task.done" | "task.cancel" => JitType::Bool,
-                                "task.id" => JitType::Heap,
-                                _ => JitType::Value,
-                            };
+                            let result_kind = JitType::Value;
                             let len_val = builder.ins().iconst(types::I64, count as i64);
                             let func_ref = module.declare_func_in_func(builtin, builder.func);
                             let call = builder
@@ -6063,15 +6092,13 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
             } if matches!(
                 name.as_str(),
                 "print"
+                    | "input"
                     | "log"
                     | "env"
                     | "serve"
                     | "assert"
                     | "asset"
                     | "range"
-                    | "task.id"
-                    | "task.done"
-                    | "task.cancel"
                     | "db.exec"
                     | "db.query"
                     | "db.one"
@@ -6602,20 +6629,16 @@ fn analyze_types(
                     let result_kind = match kind {
                         CallKind::Builtin => {
                             match name.as_str() {
-                                "print" | "log" | "env" | "serve" | "assert" | "asset"
-                                | "range" | "task.id" | "task.done" | "task.cancel" | "db.exec"
-                                | "db.query" | "db.one" | "db.from" | "query.select"
-                                | "query.where" | "query.order_by" | "query.limit"
-                                | "query.one" | "query.all" | "query.exec" | "query.sql"
-                                | "query.params" | "json.encode" | "json.decode" | "html.text"
-                                | "html.raw" | "html.node" | "html.render" | "svg.inline" => {}
+                                "print" | "input" | "log" | "env" | "serve" | "assert"
+                                | "asset" | "range" | "db.exec" | "db.query" | "db.one"
+                                | "db.from" | "query.select" | "query.where" | "query.order_by"
+                                | "query.limit" | "query.one" | "query.all" | "query.exec"
+                                | "query.sql" | "query.params" | "json.encode" | "json.decode"
+                                | "html.text" | "html.raw" | "html.node" | "html.render"
+                                | "svg.inline" => {}
                                 _ => return None,
                             }
-                            match name.as_str() {
-                                "task.done" | "task.cancel" => JitType::Bool,
-                                "task.id" => JitType::Heap,
-                                _ => JitType::Value,
-                            }
+                            JitType::Value
                         }
                         CallKind::Function => {
                             let callee = program

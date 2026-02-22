@@ -1,5 +1,6 @@
 use fusec::interp::Value;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use fusec::native::value::{NativeHeap, NativeTag, NativeValue};
 
@@ -93,7 +94,7 @@ fn native_value_roundtrip_enum() {
 #[test]
 fn native_value_roundtrip_boxed() {
     let mut heap = NativeHeap::new();
-    let value = Value::Boxed(std::rc::Rc::new(std::cell::RefCell::new(Value::Int(7))));
+    let value = Value::Boxed(Arc::new(Mutex::new(Value::Int(7))));
     let native = NativeValue::from_value(&value, &mut heap).expect("encode failed");
     let round = native.to_value(&heap).expect("decode failed");
     assert_value_eq(&value, &round);
@@ -170,7 +171,9 @@ fn assert_value_eq(expected: &Value, actual: &Value) {
             }
         }
         (Value::Boxed(a), Value::Boxed(b)) => {
-            assert_value_eq(&a.borrow(), &b.borrow());
+            let a_guard = a.lock().expect("box lock");
+            let b_guard = b.lock().expect("box lock");
+            assert_value_eq(&a_guard, &b_guard);
         }
         (Value::ResultOk(a), Value::ResultOk(b)) => {
             assert_value_eq(a.as_ref(), b.as_ref());

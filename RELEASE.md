@@ -31,16 +31,20 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
    - `./scripts/release_smoke.sh`
    - Ensure GitHub Actions `Pre-release Gate` passed on the release PR (`.github/workflows/pre-release-gate.yml`).
    - Covers authority/parity gates, `fusec` + `fuse` test suites, release-mode compile checks,
-     package build cache checks, and AST/VM/native backend smoke runs.
+     package build cache checks, AST/VM/native backend smoke runs, benchmark regression checks,
+     and VSIX package validation.
 4. Verify package UX manually (optional but recommended):
    - `./scripts/fuse build`
    - `./scripts/fuse run examples/project_demo.fuse`
 5. Build distributable binaries:
    - `./scripts/build_dist.sh --release` (outputs `dist/fuse` and `dist/fuse-lsp`)
-6. Commit release metadata:
+6. Build publishable VS Code package:
+   - `./scripts/package_vscode_extension.sh --platform <platform> --release`
+   - verify `dist/fuse-vscode-<platform>.vsix`
+7. Commit release metadata:
    - `git add CHANGELOG.md RELEASE.md crates/*/Cargo.toml Cargo.lock`
    - `git commit -m "release: vX.Y.Z"`
-7. Tag release:
+8. Tag release:
    - `git tag vX.Y.Z`
    - `git push origin main --tags`
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 — 2026-02-22
+
+### Changed
+
+- Packaging artifact switched to installable `.vsix` (`dist/fuse-vscode-<platform>.vsix`).
+- Packaging workflow now validates VSIX contents and bundled platform binary integrity.
+
 ## 0.1.0 — 2026-02-21
 
 Initial release, matching FUSE v0.1.0.

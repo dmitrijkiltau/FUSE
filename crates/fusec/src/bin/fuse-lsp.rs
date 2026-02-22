@@ -79,7 +79,7 @@ const COMPLETION_KEYWORDS: [&str; 34] = [
     "without",
     "spawn",
 ];
-const COMPLETION_BUILTIN_RECEIVERS: [&str; 5] = ["db", "task", "json", "html", "svg"];
+const COMPLETION_BUILTIN_RECEIVERS: [&str; 4] = ["db", "json", "html", "svg"];
 const COMPLETION_BUILTIN_FUNCTIONS: [&str; 6] = ["print", "env", "serve", "log", "assert", "asset"];
 const COMPLETION_BUILTIN_TYPES: [&str; 14] = [
     "Unit", "Int", "Float", "Bool", "String", "Bytes", "Html", "Id", "Email", "Error", "List",
@@ -2866,7 +2866,6 @@ fn builtin_receiver_methods(receiver: &str) -> &'static [&'static str] {
             "having",
             "count",
         ],
-        "task" => &["id", "done", "cancel"],
         "json" => &["encode", "decode"],
         "html" => &["text", "raw", "node", "render"],
         "svg" => &["inline"],
@@ -3362,7 +3361,7 @@ fn is_type_context(tokens: &[fusec::token::Token], idx: usize) -> bool {
 }
 
 fn is_builtin_receiver(name: &str) -> bool {
-    matches!(name, "db" | "task" | "json" | "html" | "svg")
+    matches!(name, "db" | "json" | "html" | "svg")
 }
 
 fn is_builtin_function_name(name: &str) -> bool {

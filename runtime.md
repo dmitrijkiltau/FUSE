@@ -17,7 +17,7 @@ This document owns:
 - backend execution behavior
 - runtime error/status/JSON rendering behavior
 - boundary behavior (validation, JSON, config, CLI, HTTP)
-- builtins, DB access, migrations/tests execution, task model, logging
+- builtins, DB access, migrations/tests execution, concurrency model, logging
 
 This document does not re-specify:
 
@@ -294,6 +294,12 @@ For `Bytes`, CLI values must be base64 text.
 
 Validation errors are printed as JSON on stderr and usually exit with code 2.
 
+`fuse` CLI wrapper output contract (`check|run|build|test`):
+
+- emits stderr step markers: `[command] start` and `[command] ok|failed|validation failed`
+- keeps JSON validation payloads uncolored/machine-readable
+- `run` CLI argument validation failures exit with code `2`
+
 ### HTTP runtime
 
 #### Routing
@@ -332,6 +338,7 @@ See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [
 ### Builtins (current)
 
 - `print(value)` prints stringified value to stdout
+- `input(prompt: String = "") -> String` prints optional prompt and reads one line from stdin
 - `log(...)` writes log lines to stderr (see Logging)
 - `db.exec/query/one` execute SQL against configured DB
 - `db.from(table)` builds parameterized queries
@@ -339,10 +346,18 @@ See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [
 - `env(name: String) -> String?` returns env var or `null`
 - `asset(path: String) -> String` resolves to hashed/static public URL when asset map is configured
 - `serve(port)` starts HTTP server on `FUSE_HOST:port`
-- `task.id/done/cancel` operate on spawned tasks
 - HTML tag builtins (`html`, `head`, `body`, `div`, `meta`, `button`, ...)
 - `html.text`, `html.raw`, `html.node`, `html.render`
 - `svg.inline(path: String) -> Html`
+
+`input` behavior notes:
+
+- prompt text is written without a trailing newline
+- trailing `\n`/`\r\n` is trimmed from the returned line
+- in non-interactive mode with no stdin data, runtime fails with:
+  `input requires stdin data in non-interactive mode`
+- `input()` / `input("...")` resolve to the CLI input builtin; HTML input tags remain available
+  through tag-form calls such as `input(type="text")`
 
 Compile-time sugar affecting HTML builtins:
 
@@ -449,21 +464,27 @@ Rules:
 ### Concurrency
 
 `spawn:` creates a task and returns `Task<T>` where `T` is block result.
-Tasks execute eagerly today (no true parallelism), but errors are captured and surfaced on `await`.
+Spawned tasks run on a shared worker pool. Execution is asynchronous relative to the caller
+and may overlap with other spawned tasks.
 
 `await expr` waits on a task and yields its result.
 
-Task API:
+Task surface (v0.2.0):
 
-- `task.id(t: Task<T>) -> Id`
-- `task.done(t: Task<T>) -> Bool`
-- `task.cancel(t: Task<T>) -> Bool`
+- `Task<T>` remains an opaque runtime type
+- task helper builtins were removed (`task.id`, `task.done`, `task.cancel`)
+- task values are consumed via `await` only
 
-With eager execution, spawned tasks usually complete immediately; `task.done` is usually `true`
-and `task.cancel` usually returns `false`.
+Spawn determinism restrictions (enforced by semantic analysis):
+
+- no `box` capture/use in `spawn` blocks
+- no runtime side-effect builtins in `spawn` blocks:
+  `db.*`, `serve`, `print`, `input`, `log`, `env`, `asset`, `svg.inline`
+- no mutation of captured outer bindings
 
 `box expr` creates a shared mutable cell. Boxed values are transparently dereferenced in most
-expressions; assigning boxed bindings updates shared cell state. Passing a box into `spawn` shares state.
+expressions; assigning boxed bindings updates shared cell state. `spawn` blocks cannot capture or
+use boxed state.
 
 ### Loops
 
@@ -507,6 +528,7 @@ Usage:
 Output:
 
 - `[LEVEL] message` to stderr
+  (`LEVEL` token may be ANSI-colored; honors `FUSE_COLOR=auto|always|never` and `NO_COLOR`)
 - JSON logs are emitted as a single stderr line
 
 Filtering:

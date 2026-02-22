@@ -4,15 +4,12 @@ Syntax highlighting and LSP integration for `.fuse` files.
 
 ## Installation
 
-Download the extension archive for your platform from the
+Download the `.vsix` for your platform from the
 [GitHub release](https://github.com/dmitrijkiltau/FUSE/releases) page, then:
 
 ```bash
-# Extract the archive
-tar -xzf fuse-vscode-linux-x64.tgz
-
-# Install from the extracted directory
-code --install-extension fuse-vscode
+# Install the extension package
+code --install-extension fuse-vscode-linux-x64.vsix
 ```
 
 Alternatively, install from source:
@@ -82,12 +79,13 @@ This script:
 1. builds `dist/fuse-lsp` (unless `--skip-build`),
 2. copies it to `tools/vscode/bin/<platform>/fuse-lsp` (or `.exe` on Windows),
 3. verifies path resolution priority (`bundled > workspace dist > PATH`),
-4. emits `dist/fuse-vscode-<platform>.tgz`.
+4. emits `dist/fuse-vscode-<platform>.vsix`,
+5. validates VSIX package contents and bundled binary integrity.
 
 ### Release checklist
 
 1. Run `./scripts/build_dist.sh --release`.
 2. Run `./scripts/package_vscode_extension.sh --platform <platform> --release`.
 3. Verify `tools/vscode/bin/<platform>/fuse-lsp` exists and is executable.
-4. Verify `dist/fuse-vscode-<platform>.tgz` exists.
+4. Verify `dist/fuse-vscode-<platform>.vsix` exists.
 5. Install/test the packaged extension in a clean VS Code profile.

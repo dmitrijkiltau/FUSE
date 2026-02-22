@@ -21,12 +21,13 @@ app "users":
 
 ## Status
 
-FUSE v0.1.0 is released. Parser, semantic analysis, AST interpreter, VM, and native backends
-are usable. The LSP server provides diagnostics, completions, navigation, refactoring, and
-code actions in VS Code.
+FUSE v0.1.0 is released. This branch is the v0.2.0 line and includes intentional breaking
+changes for concurrency (`spawn`/`await` contract reset), build cache metadata, and VS Code
+distribution packaging.
 
-For `0.1.x`, compatibility is defined by documented behavior in `fls.md`, `runtime.md`,
-`scope.md`, and `VERSIONING_POLICY.md`.
+Compatibility is defined by documented behavior in `fls.md`, `runtime.md`, `scope.md`, and
+`VERSIONING_POLICY.md`.
+Upgrade guidance for this breaking minor is in `docs/migrations/0.1-to-0.2.md`.
 
 ## Requirements
 
@@ -61,6 +62,14 @@ For `0.1.x`, compatibility is defined by documented behavior in `fls.md`, `runti
 | `fuse migrate` | Run database migrations |
 | `fuse lsp` | Start the language server |
 
+Global CLI output option:
+
+- `--color auto|always|never` controls ANSI colors for diagnostics/status output and runtime
+  `log(...)` level tags.
+  `auto` is default and respects `NO_COLOR`.
+- `fuse check|run|build|test` emit consistent stderr step markers:
+  `[command] start`, `[command] ok|failed|validation failed`.
+
 Packages use a `fuse.toml` manifest. Minimal example:
 
 ```toml
@@ -82,6 +91,7 @@ backend = "native"
 ### Build artifacts
 
 Build outputs are stored in `.fuse/build/` (`program.ir`, `program.native`).
+Cache validity uses content hashes (module graph + `fuse.toml` + `fuse.lock`) in `program.meta` v3.
 Use `fuse build --clean` to clear the cache.
 
 ## Config loading
@@ -128,8 +138,11 @@ CI enforces the release smoke gate via `.github/workflows/pre-release-gate.yml`.
 # Build release binaries
 ./scripts/build_dist.sh --release
 
-# Package VS Code extension with bundled LSP
+# Package VS Code extension with bundled LSP (.vsix)
 ./scripts/package_vscode_extension.sh --platform linux-x64
+
+# Install the packaged extension
+code --install-extension dist/fuse-vscode-linux-x64.vsix
 
 # Regenerate docs site guides
 ./scripts/generate_guide_docs.sh

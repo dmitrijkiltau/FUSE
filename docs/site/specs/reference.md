@@ -354,11 +354,18 @@ For `Bytes`, CLI values must be base64 text.
 
 Validation errors are printed as JSON on stderr and usually exit with code 2.
 
+`fuse` CLI wrapper output contract (`check|run|build|test`):
+
+- emits stderr step markers: `[command] start` and `[command] ok|failed|validation failed`
+- keeps JSON validation payloads uncolored/machine-readable
+- `run` CLI argument validation failures exit with code `2`
+
 ---
 
 ## Builtins
 
 - `print(value)` prints stringified value to stdout
+- `input(prompt: String = "") -> String` prints optional prompt and reads one line from stdin
 - `log(...)` writes log lines to stderr (see Logging)
 - `db.exec/query/one` execute SQL against configured DB
 - `db.from(table)` builds parameterized queries
@@ -366,10 +373,18 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 - `env(name: String) -> String?` returns env var or `null`
 - `asset(path: String) -> String` resolves to hashed/static public URL when asset map is configured
 - `serve(port)` starts HTTP server on `FUSE_HOST:port`
-- `task.id/done/cancel` operate on spawned tasks
 - HTML tag builtins (`html`, `head`, `body`, `div`, `meta`, `button`, ...)
 - `html.text`, `html.raw`, `html.node`, `html.render`
 - `svg.inline(path: String) -> Html`
+
+`input` behavior notes:
+
+- prompt text is written without a trailing newline
+- trailing `\n`/`\r\n` is trimmed from the returned line
+- in non-interactive mode with no stdin data, runtime fails with:
+  `input requires stdin data in non-interactive mode`
+- `input()` / `input("...")` resolve to the CLI input builtin; HTML input tags remain available
+  through tag-form calls such as `input(type="text")`
 
 Compile-time sugar affecting HTML builtins:
 

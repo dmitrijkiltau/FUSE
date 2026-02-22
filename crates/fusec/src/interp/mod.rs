@@ -1,11 +1,10 @@
-use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path};
-use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 
 use fuse_rt::{
     bytes as rt_bytes, config as rt_config, error as rt_error, json as rt_json,
@@ -48,7 +47,7 @@ pub enum Value {
     Null,
     List(Vec<Value>),
     Map(HashMap<String, Value>),
-    Boxed(Rc<RefCell<Value>>),
+    Boxed(Arc<Mutex<Value>>),
     Query(Query),
     Task(Task),
     Iterator(IteratorValue),
@@ -139,7 +138,7 @@ impl AssignStep {
 
 #[derive(Clone, Debug)]
 pub struct Task {
-    state: Rc<RefCell<TaskState>>,
+    state: Arc<Mutex<TaskState>>,
 }
 
 #[derive(Clone, Debug)]
@@ -154,12 +153,11 @@ impl IteratorValue {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct TaskState {
     id: u64,
-    done: bool,
-    cancelled: bool,
-    result: TaskResult,
+    result: Option<TaskResult>,
+    rx: Option<mpsc::Receiver<TaskResult>>,
 }
 
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
@@ -173,60 +171,101 @@ pub(crate) enum TaskResult {
 
 impl Task {
     pub(crate) fn from_task_result(result: TaskResult) -> Self {
-        Task::from_state(
-            NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
-            true,
-            false,
-            result,
-        )
-    }
-
-    pub(crate) fn from_state(id: u64, done: bool, cancelled: bool, result: TaskResult) -> Self {
         Task {
-            state: Rc::new(RefCell::new(TaskState {
-                id,
-                done,
-                cancelled,
-                result,
+            state: Arc::new(Mutex::new(TaskState {
+                id: NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
+                result: Some(result),
+                rx: None,
             })),
         }
     }
 
-    fn new(result: ExecResult<Value>) -> Self {
-        let result = match result {
-            Ok(value) => TaskResult::Ok(value),
-            Err(ExecError::Return(value)) => TaskResult::Ok(value),
+    pub(crate) fn spawn_async<F>(job: F) -> Self
+    where
+        F: FnOnce() -> TaskResult + Send + 'static,
+    {
+        let (tx, rx) = mpsc::channel::<TaskResult>();
+        crate::task_pool::submit(move || {
+            let _ = tx.send(job());
+        });
+        Task {
+            state: Arc::new(Mutex::new(TaskState {
+                id: NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
+                result: None,
+                rx: Some(rx),
+            })),
+        }
+    }
+
+    pub(crate) fn from_exec_result(result: ExecResult<Value>) -> TaskResult {
+        match result {
+            Ok(value) | Err(ExecError::Return(value)) => TaskResult::Ok(value),
             Err(ExecError::Error(value)) => TaskResult::Error(value),
             Err(ExecError::Runtime(message)) => TaskResult::Runtime(message),
             Err(ExecError::Break) => TaskResult::Runtime("break outside of loop".to_string()),
             Err(ExecError::Continue) => TaskResult::Runtime("continue outside of loop".to_string()),
+        }
+    }
+
+    fn poll(state: &mut TaskState) {
+        if state.result.is_some() {
+            return;
+        }
+        let Some(rx) = state.rx.as_ref() else {
+            return;
         };
-        Task::from_task_result(result)
+        match rx.try_recv() {
+            Ok(result) => {
+                state.result = Some(result);
+                state.rx = None;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                state.result = Some(TaskResult::Runtime(
+                    "task execution failed (worker disconnected)".to_string(),
+                ));
+                state.rx = None;
+            }
+        }
     }
 
     pub(crate) fn result_raw(&self) -> TaskResult {
-        self.state.borrow().result.clone()
+        {
+            let mut state = self.state.lock().expect("task state lock");
+            Self::poll(&mut state);
+            if let Some(result) = state.result.clone() {
+                return result;
+            }
+        }
+
+        let rx = {
+            let mut state = self.state.lock().expect("task state lock");
+            match state.rx.take() {
+                Some(rx) => rx,
+                None => {
+                    return state.result.clone().unwrap_or_else(|| {
+                        TaskResult::Runtime("task state is missing result".to_string())
+                    });
+                }
+            }
+        };
+
+        let result = rx.recv().unwrap_or_else(|_| {
+            TaskResult::Runtime("task execution failed (worker disconnected)".to_string())
+        });
+        let mut state = self.state.lock().expect("task state lock");
+        state.result = Some(result.clone());
+        result
     }
 
     pub fn id(&self) -> u64 {
-        self.state.borrow().id
+        self.state.lock().expect("task state lock").id
     }
 
     pub fn is_done(&self) -> bool {
-        self.state.borrow().done
-    }
-
-    pub(crate) fn is_cancelled(&self) -> bool {
-        self.state.borrow().cancelled
-    }
-
-    pub fn cancel(&self) -> bool {
-        let mut state = self.state.borrow_mut();
-        if state.done || state.cancelled {
-            return false;
-        }
-        state.cancelled = true;
-        true
+        let mut state = self.state.lock().expect("task state lock");
+        Self::poll(&mut state);
+        state.result.is_some()
     }
 
     fn result(&self) -> ExecResult<Value> {
@@ -300,7 +339,7 @@ impl Value {
 
     pub(crate) fn unboxed(&self) -> Value {
         match self {
-            Value::Boxed(cell) => cell.borrow().unboxed(),
+            Value::Boxed(cell) => cell.lock().expect("box lock").unboxed(),
             other => other.clone(),
         }
     }
@@ -421,6 +460,18 @@ fn is_query_method(name: &str) -> bool {
     )
 }
 
+fn force_html_input_tag_call(name: &str, args: &[crate::ast::CallArg]) -> bool {
+    if name != "input" {
+        return false;
+    }
+    args.iter()
+        .any(|arg| arg.name.is_some() || arg.is_block_sugar)
+        || matches!(
+            args.first().map(|arg| &arg.value.kind),
+            Some(crate::ast::ExprKind::MapLit(_))
+        )
+}
+
 fn min_log_level() -> LogLevel {
     std::env::var("FUSE_LOG")
         .ok()
@@ -487,7 +538,7 @@ pub(crate) enum ExecError {
 
 type ExecResult<T> = Result<T, ExecError>;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Env {
     scopes: Vec<HashMap<String, Value>>,
 }
@@ -544,19 +595,19 @@ impl Env {
     }
 }
 
-pub struct Interpreter<'a> {
+pub struct Interpreter {
     env: Env,
     configs: HashMap<String, HashMap<String, Value>>,
     db: Option<Db>,
     regex_cache: HashMap<String, regex::Regex>,
-    functions: HashMap<ModuleId, HashMap<String, &'a FnDecl>>,
-    apps: Vec<&'a AppDecl>,
+    functions: HashMap<ModuleId, HashMap<String, FnDecl>>,
+    apps: Vec<AppDecl>,
     app_owner: HashMap<String, ModuleId>,
-    services: HashMap<String, &'a ServiceDecl>,
+    services: HashMap<String, ServiceDecl>,
     service_owner: HashMap<String, ModuleId>,
-    types: HashMap<String, &'a TypeDecl>,
-    config_decls: HashMap<String, &'a ConfigDecl>,
-    enums: HashMap<String, &'a EnumDecl>,
+    types: HashMap<String, TypeDecl>,
+    config_decls: HashMap<String, ConfigDecl>,
+    enums: HashMap<String, EnumDecl>,
     module_maps: HashMap<ModuleId, ModuleMap>,
     module_import_items: HashMap<ModuleId, HashMap<String, ModuleLink>>,
     config_owner: HashMap<String, ModuleId>,
@@ -581,7 +632,7 @@ pub struct TestOutcome {
     pub message: Option<String>,
 }
 
-impl<'a> crate::runtime_types::RuntimeTypeHost for Interpreter<'a> {
+impl crate::runtime_types::RuntimeTypeHost for Interpreter {
     type Error = ExecError;
 
     fn runtime_error(&self, message: String) -> Self::Error {
@@ -631,13 +682,13 @@ impl<'a> crate::runtime_types::RuntimeTypeHost for Interpreter<'a> {
     }
 }
 
-impl<'a> Interpreter<'a> {
-    pub fn new(program: &'a Program) -> Self {
+impl Interpreter {
+    pub fn new(program: &Program) -> Self {
         Self::with_modules(program, ModuleMap::default())
     }
 
-    pub fn with_modules(program: &'a Program, modules: ModuleMap) -> Self {
-        let mut functions: HashMap<ModuleId, HashMap<String, &'a FnDecl>> = HashMap::new();
+    pub fn with_modules(program: &Program, modules: ModuleMap) -> Self {
+        let mut functions: HashMap<ModuleId, HashMap<String, FnDecl>> = HashMap::new();
         let mut apps = Vec::new();
         let mut app_owner = HashMap::new();
         let mut services = HashMap::new();
@@ -656,25 +707,25 @@ impl<'a> Interpreter<'a> {
                     functions
                         .entry(0)
                         .or_default()
-                        .insert(decl.name.name.clone(), decl);
+                        .insert(decl.name.name.clone(), decl.clone());
                 }
                 Item::App(app) => {
-                    apps.push(app);
+                    apps.push(app.clone());
                     app_owner.insert(app.name.value.clone(), 0);
                 }
                 Item::Service(decl) => {
-                    services.insert(decl.name.name.clone(), decl);
+                    services.insert(decl.name.name.clone(), decl.clone());
                     service_owner.insert(decl.name.name.clone(), 0);
                 }
                 Item::Type(decl) => {
-                    types.insert(decl.name.name.clone(), decl);
+                    types.insert(decl.name.name.clone(), decl.clone());
                 }
                 Item::Config(decl) => {
-                    config_decls.insert(decl.name.name.clone(), decl);
+                    config_decls.insert(decl.name.name.clone(), decl.clone());
                     config_owner.insert(decl.name.name.clone(), 0);
                 }
                 Item::Enum(decl) => {
-                    enums.insert(decl.name.name.clone(), decl);
+                    enums.insert(decl.name.name.clone(), decl.clone());
                 }
                 _ => {}
             }
@@ -699,8 +750,8 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    pub fn with_registry(registry: &'a ModuleRegistry) -> Self {
-        let mut functions: HashMap<ModuleId, HashMap<String, &'a FnDecl>> = HashMap::new();
+    pub fn with_registry(registry: &ModuleRegistry) -> Self {
+        let mut functions: HashMap<ModuleId, HashMap<String, FnDecl>> = HashMap::new();
         let mut apps = Vec::new();
         let mut app_owner = HashMap::new();
         let mut services = HashMap::new();
@@ -721,25 +772,25 @@ impl<'a> Interpreter<'a> {
                         functions
                             .entry(*id)
                             .or_default()
-                            .insert(decl.name.name.clone(), decl);
+                            .insert(decl.name.name.clone(), decl.clone());
                     }
                     Item::App(app) => {
-                        apps.push(app);
+                        apps.push(app.clone());
                         app_owner.insert(app.name.value.clone(), *id);
                     }
                     Item::Service(decl) => {
-                        services.insert(decl.name.name.clone(), decl);
+                        services.insert(decl.name.name.clone(), decl.clone());
                         service_owner.insert(decl.name.name.clone(), *id);
                     }
                     Item::Type(decl) => {
-                        types.insert(decl.name.name.clone(), decl);
+                        types.insert(decl.name.name.clone(), decl.clone());
                     }
                     Item::Config(decl) => {
-                        config_decls.insert(decl.name.name.clone(), decl);
+                        config_decls.insert(decl.name.name.clone(), decl.clone());
                         config_owner.insert(decl.name.name.clone(), *id);
                     }
                     Item::Enum(decl) => {
-                        enums.insert(decl.name.name.clone(), decl);
+                        enums.insert(decl.name.name.clone(), decl.clone());
                     }
                     _ => {}
                 }
@@ -765,17 +816,37 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    fn spawn_worker(&self) -> Self {
+        Self {
+            env: self.env.clone(),
+            configs: self.configs.clone(),
+            db: None,
+            regex_cache: HashMap::new(),
+            functions: self.functions.clone(),
+            apps: self.apps.clone(),
+            app_owner: self.app_owner.clone(),
+            services: self.services.clone(),
+            service_owner: self.service_owner.clone(),
+            types: self.types.clone(),
+            config_decls: self.config_decls.clone(),
+            enums: self.enums.clone(),
+            module_maps: self.module_maps.clone(),
+            module_import_items: self.module_import_items.clone(),
+            config_owner: self.config_owner.clone(),
+            current_module: self.current_module,
+        }
+    }
+
     fn has_function_in_module(&self, module_id: ModuleId, name: &str) -> bool {
         self.functions
             .get(&module_id)
             .is_some_and(|items| items.contains_key(name))
     }
 
-    fn function_decl(&self, func: &FunctionRef) -> Option<&'a FnDecl> {
+    fn function_decl(&self, func: &FunctionRef) -> Option<&FnDecl> {
         self.functions
             .get(&func.module_id)
             .and_then(|items| items.get(&func.name))
-            .copied()
     }
 
     fn resolve_function_ref(&self, module_id: ModuleId, name: &str) -> Option<FunctionRef> {
@@ -804,12 +875,12 @@ impl<'a> Interpreter<'a> {
             self.apps
                 .iter()
                 .find(|app| app.name.value == name)
-                .copied()
+                .cloned()
                 .ok_or_else(|| format!("app not found: {name}"))?
         } else {
             self.apps
                 .first()
-                .copied()
+                .cloned()
                 .ok_or_else(|| "no app found".to_string())?
         };
         let prev_module = self.current_module;
@@ -940,7 +1011,7 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    pub(crate) fn prepare_call_with_named_args(
+    pub fn prepare_call_with_named_args(
         &mut self,
         name: &str,
         args: &HashMap<String, Value>,
@@ -954,7 +1025,7 @@ impl<'a> Interpreter<'a> {
             }
         };
         let decl = match self.function_decl(&func_ref) {
-            Some(decl) => decl,
+            Some(decl) => decl.clone(),
             None => {
                 return Err(format!(
                     "unknown function {}::{}",
@@ -1035,7 +1106,7 @@ impl<'a> Interpreter<'a> {
             }
         };
         let decl = match self.function_decl(&func_ref) {
-            Some(decl) => decl,
+            Some(decl) => decl.clone(),
             None => {
                 return Err(format!(
                     "unknown function {}::{}",
@@ -1128,7 +1199,7 @@ impl<'a> Interpreter<'a> {
         let config_path =
             std::env::var("FUSE_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
         let file_values = rt_config::load_config_file(&config_path).map_err(ExecError::Runtime)?;
-        let decls: Vec<&ConfigDecl> = self.config_decls.values().copied().collect();
+        let decls: Vec<ConfigDecl> = self.config_decls.values().cloned().collect();
         for decl in decls {
             let name = decl.name.name.clone();
             let prev_module = self.current_module;
@@ -1368,7 +1439,9 @@ impl<'a> Interpreter<'a> {
             }
             ExprKind::Call { callee, args } => {
                 if let ExprKind::Ident(ident) = &callee.kind {
-                    if self.should_use_html_tag_builtin(&ident.name) {
+                    if self.should_use_html_tag_builtin(&ident.name)
+                        || force_html_input_tag_call(&ident.name, args)
+                    {
                         if let Some(message) = self.validate_html_tag_named_args(args) {
                             return Err(ExecError::Runtime(message.to_string()));
                         }
@@ -1493,8 +1566,16 @@ impl<'a> Interpreter<'a> {
             }
             ExprKind::BangChain { expr, error } => self.eval_bang_chain(expr, error.as_deref()),
             ExprKind::Spawn { block } => {
-                let result = self.eval_block(block);
-                Ok(Value::Task(Task::new(result)))
+                let mut worker = self.spawn_worker();
+                let captured_env = self.env.clone();
+                let current_module = self.current_module;
+                let block = block.clone();
+                let task = Task::spawn_async(move || {
+                    worker.env = captured_env;
+                    worker.current_module = current_module;
+                    Task::from_exec_result(worker.eval_block(&block))
+                });
+                Ok(Value::Task(task))
             }
             ExprKind::Await { expr } => {
                 let value = self.eval_expr(expr)?;
@@ -1507,7 +1588,7 @@ impl<'a> Interpreter<'a> {
                 let value = self.eval_expr(expr)?;
                 match value {
                     Value::Boxed(_) => Ok(value),
-                    other => Ok(Value::Boxed(Rc::new(RefCell::new(other)))),
+                    other => Ok(Value::Boxed(Arc::new(Mutex::new(other)))),
                 }
             }
         }
@@ -1567,7 +1648,7 @@ impl<'a> Interpreter<'a> {
             return Ok(Value::Config(name.to_string()));
         }
         match name {
-            "print" | "env" | "serve" | "log" | "db" | "assert" | "asset" | "task" | "json"
+            "print" | "input" | "env" | "serve" | "log" | "db" | "assert" | "asset" | "json"
             | "html" | "svg" => Ok(Value::Builtin(name.to_string())),
             _ if html_tags::is_html_tag(name) => Ok(Value::Builtin(name.to_string())),
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),
@@ -1581,7 +1662,7 @@ impl<'a> Interpreter<'a> {
             self.resolve_function_ref(self.current_module, name)
                 .is_some(),
             self.config_decls.contains_key(name),
-            false,
+            name == "input",
         )
     }
 
@@ -1618,7 +1699,7 @@ impl<'a> Interpreter<'a> {
 
     fn eval_builtin(&mut self, name: &str, args: Vec<Value>) -> ExecResult<Value> {
         let args: Vec<Value> = args.into_iter().map(|val| val.unboxed()).collect();
-        if html_tags::is_html_tag(name) {
+        if html_tags::is_html_tag(name) && name != "input" {
             return self.eval_html_tag_builtin(name, &args);
         }
         match name {
@@ -1626,6 +1707,25 @@ impl<'a> Interpreter<'a> {
                 let text = args.get(0).map(|v| v.to_string_value()).unwrap_or_default();
                 println!("{text}");
                 Ok(Value::Unit)
+            }
+            "input" => {
+                if args.len() > 1 {
+                    return Err(ExecError::Runtime(
+                        "input expects 0 or 1 arguments".to_string(),
+                    ));
+                }
+                let prompt = match args.first() {
+                    Some(Value::String(text)) => text.as_str(),
+                    Some(_) => {
+                        return Err(ExecError::Runtime(
+                            "input expects a string prompt".to_string(),
+                        ));
+                    }
+                    None => "",
+                };
+                let text =
+                    crate::runtime_io::read_input_line(prompt).map_err(ExecError::Runtime)?;
+                Ok(Value::String(text))
             }
             "log" => {
                 let mut level = LogLevel::Info;
@@ -1669,7 +1769,10 @@ impl<'a> Interpreter<'a> {
                             .map(|val| val.to_string_value())
                             .collect::<Vec<_>>()
                             .join(" ");
-                        eprintln!("[{}] {}", level.label(), message);
+                        eprintln!(
+                            "{}",
+                            crate::runtime_io::format_log_text_line(level.label(), &message)
+                        );
                     }
                 }
                 Ok(Value::Unit)
@@ -2149,24 +2252,6 @@ impl<'a> Interpreter<'a> {
                 let params = query.params().map_err(ExecError::Runtime)?;
                 Ok(Value::List(params))
             }
-            "task.id" => match args.get(0) {
-                Some(Value::Task(task)) => Ok(Value::String(format!("task-{}", task.id()))),
-                _ => Err(ExecError::Runtime(
-                    "task.id expects a Task argument".to_string(),
-                )),
-            },
-            "task.done" => match args.get(0) {
-                Some(Value::Task(task)) => Ok(Value::Bool(task.is_done())),
-                _ => Err(ExecError::Runtime(
-                    "task.done expects a Task argument".to_string(),
-                )),
-            },
-            "task.cancel" => match args.get(0) {
-                Some(Value::Task(task)) => Ok(Value::Bool(task.cancel())),
-                _ => Err(ExecError::Runtime(
-                    "task.cancel expects a Task argument".to_string(),
-                )),
-            },
             "assert" => {
                 let cond = match args.get(0) {
                     Some(Value::Bool(value)) => *value,
@@ -2286,7 +2371,7 @@ impl<'a> Interpreter<'a> {
 
     fn eval_function(&mut self, func: &FunctionRef, args: Vec<Value>) -> ExecResult<Value> {
         let decl = match self.function_decl(func) {
-            Some(decl) => decl,
+            Some(decl) => decl.clone(),
             None => {
                 return Err(ExecError::Runtime(format!(
                     "unknown function {}::{}",
@@ -2408,7 +2493,7 @@ impl<'a> Interpreter<'a> {
         Ok(Value::Unit)
     }
 
-    fn select_service(&self) -> ExecResult<&'a ServiceDecl> {
+    fn select_service(&self) -> ExecResult<&ServiceDecl> {
         if self.services.is_empty() {
             return Err(ExecError::Runtime("no service declared".to_string()));
         }
@@ -2416,11 +2501,10 @@ impl<'a> Interpreter<'a> {
             return self
                 .services
                 .get(&name)
-                .copied()
                 .ok_or_else(|| ExecError::Runtime(format!("service not found: {name}")));
         }
         if self.services.len() == 1 {
-            return Ok(*self.services.values().next().unwrap());
+            return Ok(self.services.values().next().unwrap());
         }
         Err(ExecError::Runtime(
             "multiple services declared; set FUSE_SERVICE".to_string(),
@@ -2877,10 +2961,6 @@ impl<'a> Interpreter<'a> {
                 "encode" | "decode" => Ok(Value::Builtin(format!("json.{field}"))),
                 _ => Err(ExecError::Runtime(format!("unknown json method {field}"))),
             },
-            Value::Builtin(name) if name == "task" => match field {
-                "id" | "done" | "cancel" => Ok(Value::Builtin(format!("task.{field}"))),
-                _ => Err(ExecError::Runtime(format!("unknown task method {field}"))),
-            },
             Value::Builtin(name) if name == "html" => match field {
                 "text" | "raw" | "node" | "render" => Ok(Value::Builtin(format!("html.{field}"))),
                 _ => Err(ExecError::Runtime(format!("unknown html method {field}"))),
@@ -3012,7 +3092,7 @@ impl<'a> Interpreter<'a> {
 
     fn eval_struct_lit(&mut self, name: &Ident, fields: &[StructField]) -> ExecResult<Value> {
         let decl = match self.types.get(&name.name) {
-            Some(decl) => *decl,
+            Some(decl) => decl.clone(),
             None => return Err(ExecError::Runtime(format!("unknown type {}", name.name))),
         };
         let mut values = HashMap::new();
@@ -3085,7 +3165,7 @@ impl<'a> Interpreter<'a> {
         match &target.kind {
             ExprKind::Ident(ident) => {
                 if let Some(Value::Boxed(cell)) = self.env.get(&ident.name) {
-                    *cell.borrow_mut() = value.unboxed();
+                    *cell.lock().expect("box lock") = value.unboxed();
                     return Ok(());
                 }
                 if !self.env.assign(&ident.name, value) {
@@ -3169,7 +3249,7 @@ impl<'a> Interpreter<'a> {
         }
         match target {
             Value::Boxed(cell) => {
-                let mut inner = cell.borrow_mut();
+                let mut inner = cell.lock().expect("box lock");
                 return Self::assign_in_value(&mut inner, path, value);
             }
             Value::Null => {
@@ -3931,12 +4011,15 @@ impl<'a> Interpreter<'a> {
                     "unknown predicate function {fn_name} in current module/import scope"
                 ))
             })?;
-        let decl = self.function_decl(&func_ref).ok_or_else(|| {
-            ExecError::Runtime(format!(
-                "unknown function {}::{}",
-                func_ref.module_id, func_ref.name
-            ))
-        })?;
+        let decl = self
+            .function_decl(&func_ref)
+            .ok_or_else(|| {
+                ExecError::Runtime(format!(
+                    "unknown function {}::{}",
+                    func_ref.module_id, func_ref.name
+                ))
+            })?
+            .clone();
         if decl.params.len() != 1 {
             return Err(ExecError::Runtime(format!(
                 "predicate {fn_name} must accept exactly one argument"

@@ -1,7 +1,13 @@
 use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::Deserialize;
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn temp_project_dir() -> PathBuf {
     let mut dir = std::env::temp_dir();
@@ -9,8 +15,149 @@ fn temp_project_dir() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    dir.push(format!("fuse_project_cli_test_{nanos}"));
+    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    dir.push(format!("fuse_project_cli_test_{nanos}_{counter}_{pid}"));
     dir
+}
+
+#[derive(Debug, Deserialize)]
+struct TestIrMeta {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    native_cache_version: u32,
+    #[serde(default)]
+    files: Vec<TestIrFileMeta>,
+    #[serde(default)]
+    manifest_hash: Option<String>,
+    #[serde(default)]
+    lock_hash: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestIrFileMeta {
+    path: String,
+    #[serde(default)]
+    hash: String,
+}
+
+fn is_hex_sha1(raw: &str) -> bool {
+    raw.len() == 40 && raw.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+fn write_basic_manifest_project(dir: &Path, main_source: &str) {
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(dir.join("main.fuse"), main_source).expect("write main.fuse");
+}
+
+fn run_build_project(dir: &Path) {
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(dir)
+        .output()
+        .expect("run fuse build");
+    if !build.status.success() {
+        panic!("stderr: {}", String::from_utf8_lossy(&build.stderr));
+    }
+}
+
+fn run_with_named_arg(dir: &Path, arg: &str) -> std::process::Output {
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(dir)
+        .arg("--")
+        .arg(arg)
+        .output()
+        .expect("run fuse run with args")
+}
+
+fn run_with_stdin(dir: &Path, stdin_text: &str) -> std::process::Output {
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let mut child = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run fuse run with stdin");
+    {
+        let mut stdin = child.stdin.take().expect("missing child stdin");
+        stdin
+            .write_all(stdin_text.as_bytes())
+            .expect("write run stdin");
+    }
+    child.wait_with_output().expect("wait fuse run with stdin")
+}
+
+fn write_broken_project(dir: &Path) {
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  let id: Missing = 1
+"#,
+    )
+    .expect("write main.fuse");
+}
+
+fn write_logging_project(dir: &Path) {
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  log("info", "runtime-log")
+"#,
+    )
+    .expect("write main.fuse");
+}
+
+fn contains_ansi(raw: &str) -> bool {
+    raw.contains("\u{1b}[")
+}
+
+fn overwrite_cached_ir_from_source(dir: &Path, source: &str) {
+    let source_path = dir.join("__cache_override__.fuse");
+    fs::write(&source_path, source).expect("write cache override source");
+    let (registry, diags) = fusec::load_program_with_modules(&source_path, source);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let ir = fusec::ir::lower::lower_registry(&registry).expect("lower cache override source");
+    let ir_bytes = bincode::serialize(&ir).expect("encode cache override ir");
+    fs::write(dir.join(".fuse").join("build").join("program.ir"), ir_bytes)
+        .expect("write cache override ir");
+    let _ = fs::remove_file(source_path);
 }
 
 #[test]
@@ -407,4 +554,729 @@ exit 42
     assert!(stderr.contains("hook exploded"), "stderr: {stderr}");
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_writes_hash_based_meta_v3() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("fuse.lock"),
+        r#"
+version = 1
+"#,
+    )
+    .expect("write fuse.lock");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse build");
+    if !output.status.success() {
+        panic!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    let meta_path = dir.join(".fuse").join("build").join("program.meta");
+    let bytes = fs::read(&meta_path).expect("read program.meta");
+    let meta: TestIrMeta = bincode::deserialize(&bytes).expect("decode program.meta");
+
+    assert_eq!(meta.version, 3, "meta: {meta:?}");
+    assert!(meta.native_cache_version > 0, "meta: {meta:?}");
+    assert!(
+        meta.manifest_hash.as_deref().is_some_and(is_hex_sha1),
+        "meta: {meta:?}"
+    );
+    assert!(
+        meta.lock_hash.as_deref().is_some_and(is_hex_sha1),
+        "meta: {meta:?}"
+    );
+    assert!(!meta.files.is_empty(), "meta: {meta:?}");
+    for file in &meta.files {
+        assert!(!file.path.is_empty(), "meta file entry: {file:?}");
+        assert!(is_hex_sha1(&file.hash), "meta file entry: {file:?}");
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn run_rebuilds_when_content_changes_even_if_mtime_is_preserved() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+
+    let before = r#"
+fn main():
+  print("old")
+
+app "Demo":
+  main()
+"#;
+    let after = r#"
+fn main():
+  print("new")
+
+app "Demo":
+  main()
+"#;
+    assert_eq!(before.len(), after.len(), "fixture length mismatch");
+    fs::write(dir.join("main.fuse"), before).expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse build");
+    if !build.status.success() {
+        panic!("stderr: {}", String::from_utf8_lossy(&build.stderr));
+    }
+
+    let stamp = dir.join("mtime.stamp");
+    fs::write(&stamp, "stamp").expect("write mtime stamp");
+    let touch_stamp = Command::new("touch")
+        .arg("-r")
+        .arg(dir.join("main.fuse"))
+        .arg(&stamp)
+        .output()
+        .expect("touch stamp");
+    assert!(
+        touch_stamp.status.success(),
+        "touch stamp stderr: {}",
+        String::from_utf8_lossy(&touch_stamp.stderr)
+    );
+
+    fs::write(dir.join("main.fuse"), after).expect("rewrite main.fuse");
+    let touch_main = Command::new("touch")
+        .arg("-r")
+        .arg(&stamp)
+        .arg(dir.join("main.fuse"))
+        .output()
+        .expect("touch main");
+    assert!(
+        touch_main.status.success(),
+        "touch main stderr: {}",
+        String::from_utf8_lossy(&touch_main.stderr)
+    );
+
+    let run = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse run");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "new");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_accepts_program_args_after_build() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+fn main(name: String = "world"):
+  print(name)
+
+app "Demo":
+  main()
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse build");
+    if !build.status.success() {
+        panic!("stderr: {}", String::from_utf8_lossy(&build.stderr));
+    }
+
+    let run = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--")
+        .arg("--name=cache")
+        .output()
+        .expect("run fuse run with args");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "cache");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_supports_input_builtin_with_piped_stdin() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  let name = input("Name: ")
+  print("Hello, " + name)
+"#,
+    )
+    .expect("write main.fuse");
+
+    let run = run_with_stdin(&dir, "Codex\n");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "Name: Hello, Codex\n");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_reports_clear_error_when_input_has_no_stdin_data() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  let _ = input()
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let run = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse run");
+    assert!(!run.status.success(), "run unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("input requires stdin data in non-interactive mode"),
+        "run stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_with_program_args_uses_cached_ir_when_valid() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let source_program = r#"
+fn main(name: String = "world"):
+  print("source-" + name)
+
+app "Demo":
+  main()
+"#;
+    write_basic_manifest_project(&dir, source_program);
+    run_build_project(&dir);
+
+    let cached_program = r#"
+fn main(name: String = "world"):
+  print("cache-" + name)
+
+app "Demo":
+  main()
+"#;
+    overwrite_cached_ir_from_source(&dir, cached_program);
+
+    let run = run_with_named_arg(&dir, "--name=hit");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "cache-hit");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_invalidates_cached_ir_when_manifest_changes() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let source_program = r#"
+fn main(name: String = "world"):
+  print("source-" + name)
+
+app "Demo":
+  main()
+"#;
+    write_basic_manifest_project(&dir, source_program);
+    run_build_project(&dir);
+
+    let cached_program = r#"
+fn main(name: String = "world"):
+  print("cache-" + name)
+
+app "Demo":
+  main()
+"#;
+    overwrite_cached_ir_from_source(&dir, cached_program);
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+# manifest hash bump
+"#,
+    )
+    .expect("rewrite fuse.toml");
+
+    let run = run_with_named_arg(&dir, "--name=manifest");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).trim(),
+        "source-manifest"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_invalidates_cached_ir_when_lockfile_changes() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let source_program = r#"
+fn main(name: String = "world"):
+  print("source-" + name)
+
+app "Demo":
+  main()
+"#;
+    write_basic_manifest_project(&dir, source_program);
+    fs::write(
+        dir.join("fuse.lock"),
+        r#"
+version = 1
+"#,
+    )
+    .expect("write fuse.lock");
+    run_build_project(&dir);
+
+    let cached_program = r#"
+fn main(name: String = "world"):
+  print("cache-" + name)
+
+app "Demo":
+  main()
+"#;
+    overwrite_cached_ir_from_source(&dir, cached_program);
+
+    fs::write(
+        dir.join("fuse.lock"),
+        r#"
+version = 2
+"#,
+    )
+    .expect("rewrite fuse.lock");
+
+    let run = run_with_named_arg(&dir, "--name=lock");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "source-lock");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_color_always_emits_ansi_sequences() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_broken_project(&dir);
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("always")
+        .output()
+        .expect("run fuse check");
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(contains_ansi(&stderr), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_color_never_emits_plain_text_only() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_broken_project(&dir);
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("never")
+        .env("FUSE_COLOR_FORCE_TTY", "1")
+        .output()
+        .expect("run fuse check");
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!contains_ansi(&stderr), "stderr: {stderr}");
+    assert!(stderr.contains("error"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn no_color_disables_color_in_auto_mode() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_broken_project(&dir);
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let auto_color = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("auto")
+        .env("FUSE_COLOR_FORCE_TTY", "1")
+        .env_remove("NO_COLOR")
+        .output()
+        .expect("run fuse check auto");
+    assert!(
+        !auto_color.status.success(),
+        "check unexpectedly succeeded (auto)"
+    );
+    let auto_stderr = String::from_utf8_lossy(&auto_color.stderr);
+    assert!(contains_ansi(&auto_stderr), "stderr: {auto_stderr}");
+
+    let no_color = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("auto")
+        .env("FUSE_COLOR_FORCE_TTY", "1")
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run fuse check no color");
+    assert!(
+        !no_color.status.success(),
+        "check unexpectedly succeeded (no color)"
+    );
+    let no_color_stderr = String::from_utf8_lossy(&no_color.stderr);
+    assert!(
+        !contains_ansi(&no_color_stderr),
+        "stderr: {no_color_stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_color_always_colorizes_runtime_log_lines() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_logging_project(&dir);
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("always")
+        .output()
+        .expect("run fuse run");
+    assert!(
+        output.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("runtime-log"), "stderr: {stderr}");
+    assert!(contains_ansi(&stderr), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn no_color_disables_runtime_log_color_in_auto_mode() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_logging_project(&dir);
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let auto_color = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("auto")
+        .env("FUSE_COLOR_FORCE_TTY", "1")
+        .env_remove("NO_COLOR")
+        .output()
+        .expect("run fuse run auto");
+    assert!(
+        auto_color.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&auto_color.stderr)
+    );
+    let auto_stderr = String::from_utf8_lossy(&auto_color.stderr);
+    assert!(auto_stderr.contains("runtime-log"), "stderr: {auto_stderr}");
+    assert!(contains_ansi(&auto_stderr), "stderr: {auto_stderr}");
+
+    let no_color = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("auto")
+        .env("FUSE_COLOR_FORCE_TTY", "1")
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run fuse run no color");
+    assert!(
+        no_color.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&no_color.stderr)
+    );
+    let no_color_stderr = String::from_utf8_lossy(&no_color.stderr);
+    assert!(no_color_stderr.contains("runtime-log"), "stderr: {no_color_stderr}");
+    assert!(
+        !contains_ansi(&no_color_stderr),
+        "stderr: {no_color_stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_emits_consistent_step_headers() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_broken_project(&dir);
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse check");
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[check] start"), "stderr: {stderr}");
+    assert!(stderr.contains("[check] failed"), "stderr: {stderr}");
+    assert!(stderr.contains("error:"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_emits_consistent_step_headers() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse build");
+    assert!(
+        output.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[build] start"), "stderr: {stderr}");
+    assert!(stderr.contains("[build] ok"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_emits_consistent_step_headers() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+
+test "smoke":
+  assert(1 == 1)
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("test")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse test");
+    assert!(
+        output.status.success(),
+        "test stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[test] start"), "stderr: {stderr}");
+    assert!(stderr.contains("[test] ok"), "stderr: {stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("ok smoke"), "stdout: {stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_validation_errors_use_exit_code_2_and_consistent_step_footer() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+fn main(name: String):
+  print("hello " + name)
+
+app "Demo":
+  main("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("never")
+        .arg("--")
+        .arg("--unknown=1")
+        .output()
+        .expect("run fuse run");
+    assert_eq!(output.status.code(), Some(2), "status: {:?}", output.status);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[run] start"), "stderr: {stderr}");
+    assert!(stderr.contains("[run] validation failed"), "stderr: {stderr}");
+    assert!(stderr.contains("validation failed"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unknown_command_uses_error_prefix() {
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("bad-command")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse bad-command");
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("error: unknown command"), "stderr: {stderr}");
 }

@@ -581,6 +581,20 @@ impl<'a> NativeVm<'a> {
                                     println!("{text}");
                                     stack.push(Value::Unit);
                                 }
+                                "input" => {
+                                    if args.len() > 1 {
+                                        return Err("input expects 0 or 1 arguments".to_string());
+                                    }
+                                    let prompt = match args.first() {
+                                        Some(Value::String(text)) => text.as_str(),
+                                        Some(_) => {
+                                            return Err("input expects a string prompt".to_string());
+                                        }
+                                        None => "",
+                                    };
+                                    let text = crate::runtime_io::read_input_line(prompt)?;
+                                    stack.push(Value::String(text));
+                                }
                                 "log" => {
                                     let mut level = LogLevel::Info;
                                     let mut start_idx = 0usize;
@@ -631,7 +645,13 @@ impl<'a> NativeVm<'a> {
                                                 .map(|val| val.to_string_value())
                                                 .collect::<Vec<_>>()
                                                 .join(" ");
-                                            eprintln!("[{}] {}", level.label(), message);
+                                            eprintln!(
+                                                "{}",
+                                                crate::runtime_io::format_log_text_line(
+                                                    level.label(),
+                                                    &message,
+                                                )
+                                            );
                                         }
                                     }
                                     stack.push(Value::Unit);
@@ -655,39 +675,13 @@ impl<'a> NativeVm<'a> {
                         args.push(stack.pop().ok_or_else(|| "stack underflow".to_string())?);
                     }
                     args.reverse();
-                    let func = self
-                        .program
-                        .ir
-                        .functions
-                        .get(name)
-                        .or_else(|| self.program.ir.apps.get(name))
-                        .or_else(|| {
-                            self.program
-                                .ir
-                                .apps
-                                .values()
-                                .find(|func| func.name == name.as_str())
-                        })
-                        .ok_or_else(|| format!("unknown function {name}"))?;
-                    let result =
-                        match self
-                            .jit
-                            .try_call(&self.program.ir, name, &args, &mut self.heap)
-                        {
-                            Some(Ok(value)) => TaskResult::Ok(wrap_function_result(func, value)),
-                            Some(Err(JitCallError::Error(err_val))) => TaskResult::Error(err_val),
-                            Some(Err(JitCallError::Runtime(message))) => {
-                                TaskResult::Runtime(message)
-                            }
-                            None => {
-                                return Err(format!(
-                                    "native backend could not compile function {}",
-                                    func.name
-                                ));
-                            }
-                        };
-                    self.heap.collect_garbage();
-                    stack.push(Value::Task(Task::from_task_result(result)));
+                    let task_name = name.clone();
+                    let program = self.program.ir.clone();
+                    let configs = self.heap.clone_configs();
+                    let task = Task::spawn_async(move || {
+                        crate::vm::run_vm_spawn_task(program, configs, task_name, args)
+                    });
+                    stack.push(Value::Task(task));
                 }
                 crate::ir::Instr::Await => {
                     let value = stack.pop().ok_or_else(|| "stack underflow".to_string())?;

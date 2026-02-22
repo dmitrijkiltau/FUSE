@@ -3,6 +3,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -53,6 +54,11 @@ fn run_program_with_env(
 fn find_free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind test port");
     listener.local_addr().expect("local addr").port()
+}
+
+fn http_runtime_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 struct HttpResponse {
@@ -166,6 +172,7 @@ fn run_http_program_with_env_requests(
     extra_env: &[(String, String)],
     requests: &[&str],
 ) -> Vec<HttpResponse> {
+    let _lock = http_runtime_test_lock().lock().expect("http runtime test lock");
     let program_path = write_temp_file("fuse_html_http", "fuse", source);
     let exe = env!("CARGO_BIN_EXE_fusec");
     let mut cmd = Command::new(exe);

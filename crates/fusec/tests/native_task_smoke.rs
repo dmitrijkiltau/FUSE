@@ -30,13 +30,6 @@ fn native_task_api_smoke() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
-    assert!(lines.len() >= 4, "expected 4 output lines, got: {stdout}");
-    assert!(
-        lines[0].starts_with("task-"),
-        "expected task id on line 1, got: {}",
-        lines[0]
-    );
-    assert_eq!(lines[1], "true");
-    assert_eq!(lines[2], "false");
-    assert_eq!(lines[3], "42");
+    assert!(!lines.is_empty(), "expected output lines, got: {stdout}");
+    assert_eq!(lines[0], "50");
 }

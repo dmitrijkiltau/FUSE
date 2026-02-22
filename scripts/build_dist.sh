@@ -23,7 +23,13 @@ done
 "$ROOT/scripts/cargo_env.sh" cargo build -p fuse "${BUILD_ARGS[@]}"
 "$ROOT/scripts/cargo_env.sh" cargo build -p fusec --bin fuse-lsp "${BUILD_ARGS[@]}"
 
-BIN_DIR="$ROOT/tmp/fuse-target/$PROFILE"
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/tmp/fuse-target}"
+case "$TARGET_DIR" in
+  /*) ;;
+  *) TARGET_DIR="$ROOT/$TARGET_DIR" ;;
+esac
+
+BIN_DIR="$TARGET_DIR/$PROFILE"
 DIST_DIR="$ROOT/dist"
 mkdir -p "$DIST_DIR"
 

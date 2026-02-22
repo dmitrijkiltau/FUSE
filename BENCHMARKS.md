@@ -13,13 +13,21 @@ Outputs:
 - `.fuse/bench/use_case_metrics.md`
 - `.fuse/bench/use_case_metrics.json`
 
+Regression gate:
+
+```bash
+scripts/check_use_case_bench_regression.sh
+```
+
+Baseline + thresholds live in `benchmarks/use_case_baseline.json`.
+
 ## Workload matrix
 
 | Use case | Target project | Why this workload exists | Metrics collected |
 | --- | --- | --- | --- |
 | CLI tool with config + validation | `examples/project_demo.fuse` | Covers env-backed config, refined types, and runtime contract failures in a command-style app | `check` latency, run latency (valid), run latency (contract failure path) |
 | Non-toy backend API package | `examples/notes-api` | Covers package check/migrate/run flow with HTTP routes, type-checked request/response boundaries, and DB usage | cold/warm check latency, migrate latency, API request latencies (when loopback is available) |
-| Frontend client integration | `examples/notes-api` (`GET /` + API calls) | Covers serving static UI alongside API boundary validation behavior in one service | root document latency, valid/invalid JSON request latency, contract validation delta (when loopback is available) |
+| Frontend client integration | `examples/notes-api` (`GET /` + API calls) | Covers serving static UI alongside API boundary validation behavior in one service | root document latency, valid/invalid JSON request latency, validation-error overhead metric (when loopback is available) |
 
 ## Metric definitions
 
@@ -29,8 +37,9 @@ Outputs:
 - Boundary check times:
   - `POST /api/notes` with valid and invalid JSON bodies
   - invalid payload is expected to fail with `400`
-- Contract enforcement cost:
-  - absolute delta between invalid and valid `POST /api/notes` latency
+- Validation error overhead:
+  - absolute latency delta between invalid and valid `POST /api/notes`
+  - emitted as `request_validation_error_overhead_abs_ms`
   - used as a practical signal for validation/error-mapping overhead
 
 ## Notes
