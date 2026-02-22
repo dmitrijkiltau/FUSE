@@ -130,8 +130,11 @@ where
 fn normalize_error(stderr: &str) -> String {
     let text = stderr.trim();
     let json_text = text.strip_prefix("run error: ").unwrap_or(text);
-    let parsed = json::decode(json_text).expect("expected JSON error");
-    json::encode(&parsed)
+    if json_text.trim_start().starts_with('{') {
+        let parsed = json::decode(json_text).expect("expected JSON error");
+        return json::encode(&parsed);
+    }
+    json_text.trim().to_string()
 }
 
 #[test]
@@ -401,6 +404,46 @@ fn parity_cli_binding() {
 }
 
 #[test]
+fn parity_vm_native_cli_binding() {
+    let args = ["--name=Codex", "--excited"];
+    let vm = run_example_with_args("vm", "cli_args.fuse", &args);
+    let native = run_example_with_args("native", "cli_args.fuse", &args);
+
+    assert!(
+        vm.status.success(),
+        "vm stderr: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+    assert!(
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout)
+    );
+}
+
+#[test]
+fn parity_spawn_error_propagation() {
+    let ast = run_example("ast", "spawn_error.fuse", &[]);
+    let vm = run_example("vm", "spawn_error.fuse", &[]);
+    let native = run_example("native", "spawn_error.fuse", &[]);
+
+    assert!(!ast.status.success(), "expected ast failure");
+    assert!(!vm.status.success(), "expected vm failure");
+    assert!(!native.status.success(), "expected native failure");
+
+    let ast_err = normalize_error(&String::from_utf8_lossy(&ast.stderr));
+    let vm_err = normalize_error(&String::from_utf8_lossy(&vm.stderr));
+    let native_err = normalize_error(&String::from_utf8_lossy(&native.stderr));
+    assert_eq!(ast_err, vm_err);
+    assert_eq!(vm_err, native_err);
+}
+
+#[test]
 fn parity_cli_input_with_piped_stdin() {
     let ast = run_example_with_stdin("ast", "cli_input.fuse", "Codex\n");
     let vm = run_example_with_stdin("vm", "cli_input.fuse", "Codex\n");
@@ -497,6 +540,53 @@ fn parity_project_demo_error() {
     let ast_err = normalize_error(&String::from_utf8_lossy(&ast.stderr));
     let vm_err = normalize_error(&String::from_utf8_lossy(&vm.stderr));
     assert_eq!(ast_err, vm_err);
+}
+
+#[test]
+fn parity_vm_native_project_demo_error() {
+    let envs = [("DEMO_FAIL", "1")];
+    let vm = run_example("vm", "project_demo.fuse", &envs);
+    let native = run_example("native", "project_demo.fuse", &envs);
+
+    assert!(!vm.status.success(), "expected vm failure");
+    assert!(!native.status.success(), "expected native failure");
+
+    let vm_err = normalize_error(&String::from_utf8_lossy(&vm.stderr));
+    let native_err = normalize_error(&String::from_utf8_lossy(&native.stderr));
+    assert_eq!(vm_err, native_err);
+}
+
+#[test]
+fn parity_db_query_builder() {
+    let envs = [("FUSE_DB_URL", "sqlite::memory:")];
+    let ast = run_example("ast", "db_query_builder.fuse", &envs);
+    let vm = run_example("vm", "db_query_builder.fuse", &envs);
+    let native = run_example("native", "db_query_builder.fuse", &envs);
+
+    assert!(
+        ast.status.success(),
+        "ast stderr: {}",
+        String::from_utf8_lossy(&ast.stderr)
+    );
+    assert!(
+        vm.status.success(),
+        "vm stderr: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+    assert!(
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stdout),
+        String::from_utf8_lossy(&vm.stdout)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout)
+    );
 }
 
 #[test]

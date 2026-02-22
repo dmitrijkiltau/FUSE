@@ -36,6 +36,9 @@ options:
 "#;
 
 const FUSE_ASSET_MAP_ENV: &str = "FUSE_ASSET_MAP";
+const BUILD_TARGET_FINGERPRINT: &str = env!("FUSE_BUILD_TARGET");
+const BUILD_RUSTC_FINGERPRINT: &str = env!("FUSE_BUILD_RUSTC_VERSION");
+const BUILD_CLI_VERSION_FINGERPRINT: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Deserialize)]
 struct Manifest {
@@ -143,6 +146,12 @@ struct IrMeta {
     manifest_hash: Option<String>,
     #[serde(default)]
     lock_hash: Option<String>,
+    #[serde(default)]
+    build_target: String,
+    #[serde(default)]
+    rustc_version: String,
+    #[serde(default)]
+    cli_version: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2192,15 +2201,18 @@ fn link_native_binary(runner: &Path, object: &Path, out_path: &Path) -> Result<(
             .ok_or_else(|| "runner path missing parent".to_string())?,
     )?;
     let script = repo_root.join("scripts").join("cargo_env.sh");
-    let status = ProcessCommand::new(&script)
+    let build_output = ProcessCommand::new(&script)
         .arg("cargo")
         .arg("build")
         .arg("-p")
         .arg("fusec")
-        .status()
+        .output()
         .map_err(|err| format!("failed to run {}: {err}", script.display()))?;
-    if !status.success() {
-        return Err("native link: failed to build fusec".to_string());
+    if !build_output.status.success() {
+        return Err(format!(
+            "native link: failed to build fusec\n{}",
+            summarize_command_failure(&build_output)
+        ));
     }
     let target_dir = match env::var("CARGO_TARGET_DIR") {
         Ok(value) if !value.is_empty() => PathBuf::from(value),
@@ -2209,7 +2221,7 @@ fn link_native_binary(runner: &Path, object: &Path, out_path: &Path) -> Result<(
     let deps_dir = target_dir.join("debug").join("deps");
     let fusec_rlib = find_latest_rlib(&deps_dir, "libfusec")?;
     let bincode_rlib = find_latest_rlib(&deps_dir, "libbincode")?;
-    let status = ProcessCommand::new(&script)
+    let rustc_output = ProcessCommand::new(&script)
         .arg("rustc")
         .arg("--edition=2024")
         .arg(runner)
@@ -2223,12 +2235,27 @@ fn link_native_binary(runner: &Path, object: &Path, out_path: &Path) -> Result<(
         .arg(format!("bincode={}", bincode_rlib.display()))
         .arg("-C")
         .arg(format!("link-arg={}", object.display()))
-        .status()
+        .output()
         .map_err(|err| format!("failed to run rustc via {}: {err}", script.display()))?;
-    if !status.success() {
-        return Err("native link: rustc failed".to_string());
+    if !rustc_output.status.success() {
+        return Err(format!(
+            "native link: rustc failed\n{}",
+            summarize_command_failure(&rustc_output)
+        ));
     }
     Ok(())
+}
+
+fn summarize_command_failure(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stdout.is_empty() {
+        return stdout;
+    }
+    "command failed without output".to_string()
 }
 
 fn find_repo_root(start: &Path) -> Result<PathBuf, String> {
@@ -2652,7 +2679,10 @@ fn clean_build_dir(manifest_dir: Option<&Path>) -> Result<(), String> {
     Ok(())
 }
 
-fn build_ir_meta(registry: &fusec::ModuleRegistry, manifest_dir: Option<&Path>) -> Result<IrMeta, String> {
+fn build_ir_meta(
+    registry: &fusec::ModuleRegistry,
+    manifest_dir: Option<&Path>,
+) -> Result<IrMeta, String> {
     let mut files = Vec::new();
     for unit in registry.modules.values() {
         files.push(IrFileMeta {
@@ -2675,6 +2705,9 @@ fn build_ir_meta(registry: &fusec::ModuleRegistry, manifest_dir: Option<&Path>) 
         files,
         manifest_hash,
         lock_hash,
+        build_target: BUILD_TARGET_FINGERPRINT.to_string(),
+        rustc_version: BUILD_RUSTC_FINGERPRINT.to_string(),
+        cli_version: BUILD_CLI_VERSION_FINGERPRINT.to_string(),
     })
 }
 
@@ -2715,6 +2748,15 @@ fn ir_meta_is_valid(meta: &IrMeta, manifest_dir: Option<&Path>) -> bool {
         .ok()
         .flatten();
     if meta.lock_hash != current_lock_hash {
+        return false;
+    }
+    if meta.build_target != BUILD_TARGET_FINGERPRINT {
+        return false;
+    }
+    if meta.rustc_version != BUILD_RUSTC_FINGERPRINT {
+        return false;
+    }
+    if meta.cli_version != BUILD_CLI_VERSION_FINGERPRINT {
         return false;
     }
     true

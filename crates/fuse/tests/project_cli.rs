@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -21,7 +21,7 @@ fn temp_project_dir() -> PathBuf {
     dir
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct TestIrMeta {
     #[serde(default)]
     version: u32,
@@ -33,9 +33,15 @@ struct TestIrMeta {
     manifest_hash: Option<String>,
     #[serde(default)]
     lock_hash: Option<String>,
+    #[serde(default)]
+    build_target: String,
+    #[serde(default)]
+    rustc_version: String,
+    #[serde(default)]
+    cli_version: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct TestIrFileMeta {
     path: String,
     #[serde(default)]
@@ -158,6 +164,18 @@ fn overwrite_cached_ir_from_source(dir: &Path, source: &str) {
     fs::write(dir.join(".fuse").join("build").join("program.ir"), ir_bytes)
         .expect("write cache override ir");
     let _ = fs::remove_file(source_path);
+}
+
+fn read_program_meta(dir: &Path) -> TestIrMeta {
+    let meta_path = dir.join(".fuse").join("build").join("program.meta");
+    let bytes = fs::read(&meta_path).expect("read program.meta");
+    bincode::deserialize(&bytes).expect("decode program.meta")
+}
+
+fn write_program_meta(dir: &Path, meta: &TestIrMeta) {
+    let meta_path = dir.join(".fuse").join("build").join("program.meta");
+    let bytes = bincode::serialize(meta).expect("encode program.meta");
+    fs::write(meta_path, bytes).expect("write program.meta");
 }
 
 #[test]
@@ -596,9 +614,7 @@ app "Demo":
         panic!("stderr: {}", String::from_utf8_lossy(&output.stderr));
     }
 
-    let meta_path = dir.join(".fuse").join("build").join("program.meta");
-    let bytes = fs::read(&meta_path).expect("read program.meta");
-    let meta: TestIrMeta = bincode::deserialize(&bytes).expect("decode program.meta");
+    let meta = read_program_meta(&dir);
 
     assert_eq!(meta.version, 3, "meta: {meta:?}");
     assert!(meta.native_cache_version > 0, "meta: {meta:?}");
@@ -610,11 +626,65 @@ app "Demo":
         meta.lock_hash.as_deref().is_some_and(is_hex_sha1),
         "meta: {meta:?}"
     );
+    assert!(
+        !meta.build_target.trim().is_empty(),
+        "meta target fingerprint missing: {meta:?}"
+    );
+    assert!(
+        !meta.rustc_version.trim().is_empty(),
+        "meta rustc fingerprint missing: {meta:?}"
+    );
+    assert!(
+        !meta.cli_version.trim().is_empty(),
+        "meta cli fingerprint missing: {meta:?}"
+    );
     assert!(!meta.files.is_empty(), "meta: {meta:?}");
     for file in &meta.files {
         assert!(!file.path.is_empty(), "meta file entry: {file:?}");
         assert!(is_hex_sha1(&file.hash), "meta file entry: {file:?}");
     }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_invalidates_cached_ir_when_meta_target_fingerprint_changes() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let source_program = r#"
+fn main(name: String = "world"):
+  print("source-" + name)
+
+app "Demo":
+  main()
+"#;
+    write_basic_manifest_project(&dir, source_program);
+    run_build_project(&dir);
+
+    let cached_program = r#"
+fn main(name: String = "world"):
+  print("cache-" + name)
+
+app "Demo":
+  main()
+"#;
+    overwrite_cached_ir_from_source(&dir, cached_program);
+
+    let mut meta = read_program_meta(&dir);
+    meta.build_target.push_str("-tampered");
+    write_program_meta(&dir, &meta);
+
+    let run = run_with_named_arg(&dir, "--name=fingerprint");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).trim(),
+        "source-fingerprint"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -1128,7 +1198,10 @@ fn no_color_disables_runtime_log_color_in_auto_mode() {
         String::from_utf8_lossy(&no_color.stderr)
     );
     let no_color_stderr = String::from_utf8_lossy(&no_color.stderr);
-    assert!(no_color_stderr.contains("runtime-log"), "stderr: {no_color_stderr}");
+    assert!(
+        no_color_stderr.contains("runtime-log"),
+        "stderr: {no_color_stderr}"
+    );
     assert!(
         !contains_ansi(&no_color_stderr),
         "stderr: {no_color_stderr}"
@@ -1261,7 +1334,10 @@ app "Demo":
     assert_eq!(output.status.code(), Some(2), "status: {:?}", output.status);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("[run] start"), "stderr: {stderr}");
-    assert!(stderr.contains("[run] validation failed"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("[run] validation failed"),
+        "stderr: {stderr}"
+    );
     assert!(stderr.contains("validation failed"), "stderr: {stderr}");
 
     let _ = fs::remove_dir_all(&dir);
@@ -1278,5 +1354,8 @@ fn unknown_command_uses_error_prefix() {
         .expect("run fuse bad-command");
     assert!(!output.status.success(), "command unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("error: unknown command"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("error: unknown command"),
+        "stderr: {stderr}"
+    );
 }

@@ -1,0 +1,26 @@
+config App:
+  dbUrl: String = env("FUSE_DB_URL") ?? "sqlite::memory:"
+
+fn seed():
+  db.exec("create table if not exists notes (id text primary key, title text not null)")
+  db.exec("delete from notes")
+  db.exec("insert into notes (id, title) values (?, ?)", ["n1", "Ada"])
+  db.exec("insert into notes (id, title) values (?, ?)", ["n2", "Bob"])
+
+fn first_title() -> String:
+  let rows = db.from("notes").select(["title"]).where("id", "=", "n1").limit(1).all()
+  return rows[0]["title"]
+
+fn all_titles() -> String:
+  let rows = db.from("notes").select(["title"]).order_by("id", "asc").all()
+  var out = ""
+  for row in rows:
+    if out != "":
+      out = out + ","
+    out = out + row["title"]
+  return out
+
+app "DbQueryBuilder":
+  seed()
+  print(first_title())
+  print(all_titles())

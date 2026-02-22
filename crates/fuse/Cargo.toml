@@ -5,6 +5,7 @@ edition = "2024"
 description = "CLI for building and running FUSE language packages."
 repository = "https://github.com/dmitrijkiltau/fuse"
 license = "Apache-2.0"
+build = "build.rs"
 
 [dependencies]
 bincode = "1.3"
