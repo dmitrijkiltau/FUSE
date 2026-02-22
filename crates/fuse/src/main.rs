@@ -33,6 +33,8 @@ options:
   --backend <ast|vm|native>  Backend override (run only)
   --color <auto|always|never>  Colorized CLI output policy
   --clean                 Remove .fuse/build before building (build only)
+  --aot                   Emit deployable AOT binary (build only)
+  --release               Use release profile for AOT output (build only; requires --aot)
 "#;
 
 const FUSE_ASSET_MAP_ENV: &str = "FUSE_ASSET_MAP";
@@ -176,6 +178,8 @@ struct CommonArgs {
     color: Option<ColorChoice>,
     program_args: Vec<String>,
     clean: bool,
+    aot: bool,
+    release: bool,
 }
 
 #[derive(Default)]
@@ -375,7 +379,8 @@ fn run(args: Vec<String>) -> i32 {
     }
     let allow_program_args = matches!(command, Command::Run);
     let allow_clean = matches!(command, Command::Build);
-    let common = match parse_common_args(rest, allow_program_args, allow_clean) {
+    let allow_build_mode = matches!(command, Command::Build);
+    let common = match parse_common_args(rest, allow_program_args, allow_clean, allow_build_mode) {
         Ok(args) => args,
         Err(err) => {
             emit_cli_error(&err);
@@ -528,6 +533,8 @@ fn run(args: Vec<String>) -> i32 {
             &deps,
             app.as_deref(),
             common.clean,
+            common.aot,
+            common.release,
         ),
         Command::Check => {
             if common.entry.is_none() && manifest.is_some() {
@@ -1649,6 +1656,7 @@ fn parse_common_args(
     args: &[String],
     allow_program_args: bool,
     allow_clean: bool,
+    allow_build_mode: bool,
 ) -> Result<CommonArgs, String> {
     let mut out = CommonArgs::default();
     let mut idx = 0;
@@ -1730,6 +1738,22 @@ fn parse_common_args(
             idx += 1;
             continue;
         }
+        if arg == "--aot" {
+            if !allow_build_mode {
+                return Err("--aot is only supported for fuse build".to_string());
+            }
+            out.aot = true;
+            idx += 1;
+            continue;
+        }
+        if arg == "--release" {
+            if !allow_build_mode {
+                return Err("--release is only supported for fuse build".to_string());
+            }
+            out.release = true;
+            idx += 1;
+            continue;
+        }
         if arg.starts_with("--") {
             return Err(format!("unknown option: {arg}"));
         }
@@ -1747,6 +1771,9 @@ fn parse_common_args(
             continue;
         }
         return Err(format!("unexpected argument: {arg}"));
+    }
+    if out.release && !out.aot {
+        return Err("--release requires --aot (use `fuse build --aot --release`)".to_string());
     }
     Ok(out)
 }
@@ -1829,6 +1856,8 @@ fn run_build(
     deps: &HashMap<String, PathBuf>,
     app: Option<&str>,
     clean: bool,
+    aot: bool,
+    release: bool,
 ) -> i32 {
     if clean {
         if let Err(err) = clean_build_dir(manifest_dir) {
@@ -1856,10 +1885,19 @@ fn run_build(
         emit_cli_error(&err);
         return 1;
     }
-    if let Some(native_bin) =
-        manifest.and_then(|m| m.build.as_ref().and_then(|b| b.native_bin.clone()))
-    {
-        if let Err(err) = write_native_binary(manifest_dir, &artifacts.native, app, &native_bin) {
+    let configured_native_bin =
+        manifest.and_then(|m| m.build.as_ref().and_then(|b| b.native_bin.clone()));
+    let aot_out = configured_native_bin.or_else(|| {
+        if aot {
+            Some(default_aot_output_path())
+        } else {
+            None
+        }
+    });
+    if let Some(native_bin) = aot_out {
+        if let Err(err) =
+            write_native_binary(manifest_dir, &artifacts.native, app, &native_bin, release)
+        {
             emit_cli_error(&err);
             return 1;
         }
@@ -1998,11 +2036,20 @@ fn write_openapi(
     Ok(())
 }
 
+fn default_aot_output_path() -> String {
+    if cfg!(windows) {
+        ".fuse/build/program.aot.exe".to_string()
+    } else {
+        ".fuse/build/program.aot".to_string()
+    }
+}
+
 fn write_native_binary(
     manifest_dir: Option<&Path>,
     program: &fusec::native::NativeProgram,
     app: Option<&str>,
     out_path: &str,
+    release: bool,
 ) -> Result<(), String> {
     let build_dir = build_dir(manifest_dir)?;
     if !build_dir.exists() {
@@ -2037,7 +2084,7 @@ fn write_native_binary(
                 .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
         }
     }
-    link_native_binary(&runner_path, &object_path, &out_path)?;
+    link_native_binary(&runner_path, &object_path, &out_path, release)?;
     Ok(())
 }
 
@@ -2194,18 +2241,24 @@ fn main() {{
     Ok(())
 }
 
-fn link_native_binary(runner: &Path, object: &Path, out_path: &Path) -> Result<(), String> {
+fn link_native_binary(
+    runner: &Path,
+    object: &Path,
+    out_path: &Path,
+    release: bool,
+) -> Result<(), String> {
     let repo_root = find_repo_root(
         runner
             .parent()
             .ok_or_else(|| "runner path missing parent".to_string())?,
     )?;
     let script = repo_root.join("scripts").join("cargo_env.sh");
-    let build_output = ProcessCommand::new(&script)
-        .arg("cargo")
-        .arg("build")
-        .arg("-p")
-        .arg("fusec")
+    let mut build_cmd = ProcessCommand::new(&script);
+    build_cmd.arg("cargo").arg("build").arg("-p").arg("fusec");
+    if release {
+        build_cmd.arg("--release");
+    }
+    let build_output = build_cmd
         .output()
         .map_err(|err| format!("failed to run {}: {err}", script.display()))?;
     if !build_output.status.success() {
@@ -2218,10 +2271,12 @@ fn link_native_binary(runner: &Path, object: &Path, out_path: &Path) -> Result<(
         Ok(value) if !value.is_empty() => PathBuf::from(value),
         _ => repo_root.join("tmp").join("fuse-target"),
     };
-    let deps_dir = target_dir.join("debug").join("deps");
+    let profile = if release { "release" } else { "debug" };
+    let deps_dir = target_dir.join(profile).join("deps");
     let fusec_rlib = find_latest_rlib(&deps_dir, "libfusec")?;
     let bincode_rlib = find_latest_rlib(&deps_dir, "libbincode")?;
-    let rustc_output = ProcessCommand::new(&script)
+    let mut rustc_cmd = ProcessCommand::new(&script);
+    rustc_cmd
         .arg("rustc")
         .arg("--edition=2024")
         .arg(runner)
@@ -2234,7 +2289,11 @@ fn link_native_binary(runner: &Path, object: &Path, out_path: &Path) -> Result<(
         .arg("--extern")
         .arg(format!("bincode={}", bincode_rlib.display()))
         .arg("-C")
-        .arg(format!("link-arg={}", object.display()))
+        .arg(format!("link-arg={}", object.display()));
+    if release {
+        rustc_cmd.arg("-C").arg("opt-level=3");
+    }
+    let rustc_output = rustc_cmd
         .output()
         .map_err(|err| format!("failed to run rustc via {}: {err}", script.display()))?;
     if !rustc_output.status.success() {

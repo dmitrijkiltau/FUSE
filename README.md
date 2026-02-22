@@ -59,7 +59,7 @@ Historical upgrade guidance for the `0.1.x -> 0.2.0` breaking minor is in
 | `fuse run` | Run a file or package |
 | `fuse dev` | Run with file watching and live reload |
 | `fuse test` | Run in-language test blocks |
-| `fuse build` | Produce build artifacts |
+| `fuse build` | Produce build artifacts and optional AOT output |
 | `fuse migrate` | Run database migrations |
 | `fuse lsp` | Start the language server |
 
@@ -70,6 +70,14 @@ Global CLI output option:
   `auto` is default and respects `NO_COLOR`.
 - `fuse check|run|build|test` emit consistent stderr step markers:
   `[command] start`, `[command] ok|failed|validation failed`.
+
+Build-specific options:
+
+- `fuse build --aot` emits a deployable AOT binary using the default output path
+  `.fuse/build/program.aot` (`.fuse/build/program.aot.exe` on Windows) unless
+  `[build].native_bin` is configured.
+- `fuse build --aot --release` uses the release profile for AOT binary generation.
+- `fuse build --release` without `--aot` is rejected.
 
 Packages use a `fuse.toml` manifest. Minimal example:
 
@@ -132,9 +140,17 @@ Lockfile semantics (`fuse.lock`):
 
 ### Build artifacts
 
-Build outputs are stored in `.fuse/build/` (`program.ir`, `program.native`).
+Cache outputs are stored in `.fuse/build/` (`program.ir`, `program.native`).
 Cache validity uses content hashes (module graph + `fuse.toml` + `fuse.lock`) in `program.meta` v3.
 Native/IR cache reuse also requires matching build fingerprints (target triple, Rust toolchain, CLI version).
+
+Deployable AOT output:
+
+- `fuse build --aot` emits `.fuse/build/program.aot` (`.exe` on Windows) by default.
+- `[build].native_bin` overrides the AOT output path and remains supported.
+- AOT build/link failures are deterministic command failures with `error:` diagnostics and
+  `[build] failed` step footer.
+
 Use `fuse build --clean` to clear the cache.
 
 ## Config loading

@@ -158,6 +158,7 @@ Typical commands:
 - `fuse dev`
 - `fuse test`
 - `fuse build`
+- `fuse build --aot`
 
 Minimal manifest:
 

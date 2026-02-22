@@ -178,6 +178,15 @@ fn write_program_meta(dir: &Path, meta: &TestIrMeta) {
     fs::write(meta_path, bytes).expect("write program.meta");
 }
 
+fn default_aot_binary_path(dir: &Path) -> PathBuf {
+    let name = if cfg!(windows) {
+        "program.aot.exe"
+    } else {
+        "program.aot"
+    };
+    dir.join(".fuse").join("build").join(name)
+}
+
 #[test]
 fn fmt_manifest_path_formats_project_module_graph() {
     let dir = temp_project_dir();
@@ -1941,6 +1950,128 @@ app "Demo":
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("[build] start"), "stderr: {stderr}");
     assert!(stderr.contains("[build] ok"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_writes_default_binary_output() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse build --aot");
+    assert!(
+        output.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[build] start"), "stderr: {stderr}");
+    assert!(stderr.contains("[build] ok"), "stderr: {stderr}");
+
+    let aot_path = default_aot_binary_path(&dir);
+    assert!(aot_path.exists(), "expected {}", aot_path.display());
+    assert!(
+        dir.join(".fuse").join("build").join("program.ir").exists(),
+        "expected cached IR artifact"
+    );
+    assert!(
+        dir.join(".fuse")
+            .join("build")
+            .join("program.native")
+            .exists(),
+        "expected cached native artifact"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_release_requires_aot_flag() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--release")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse build --release");
+    assert!(!output.status.success(), "build unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--release requires --aot"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_accepts_release_with_aot_and_clean() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let build_dir = dir.join(".fuse").join("build");
+    fs::create_dir_all(&build_dir).expect("create build dir");
+    fs::write(build_dir.join("stale.txt"), "stale").expect("write stale file");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .arg("--clean")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse build --aot --release --clean");
+    assert!(
+        output.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !build_dir.exists(),
+        "expected clean build path to remove {}",
+        build_dir.display()
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

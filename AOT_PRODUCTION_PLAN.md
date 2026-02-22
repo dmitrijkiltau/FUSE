@@ -81,6 +81,8 @@ Implementation artifacts:
 
 Objective: add AOT as opt-in production mode while preserving fast dev iteration.
 
+Status: Implemented (2026-02-22)
+
 Deliverables:
 
 - CLI surface:
@@ -101,6 +103,20 @@ Exit criteria:
 
 - AOT builds can be produced locally and in CI for at least one host platform
 - JIT workflow remains unchanged for `fuse run`/`fuse dev`
+
+Implementation artifacts:
+
+- CLI flags in `crates/fuse/src/main.rs`:
+  - `fuse build --aot`
+  - `fuse build --aot --release`
+  - validation: `--release` requires `--aot`
+- AOT default output contract:
+  - `.fuse/build/program.aot` (`.exe` on Windows)
+  - `[build].native_bin` remains explicit override
+- CLI contract tests:
+  - `crates/fuse/tests/project_cli.rs`
+- Release smoke coverage of AOT build path:
+  - `scripts/release_smoke.sh`
 
 ### Milestone 2: AOT Backend Core Implementation
 
