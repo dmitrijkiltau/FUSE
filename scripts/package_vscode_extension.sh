@@ -132,6 +132,7 @@ else
 fi
 
 echo "[4/6] Staging extension payload..."
+mkdir -p "$ROOT/tmp"
 STAGE_DIR="$(mktemp -d "$ROOT/tmp/vscode-package.XXXXXX")"
 cleanup() {
   rm -rf "$STAGE_DIR"
