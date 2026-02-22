@@ -275,6 +275,69 @@ fn local(value: Int) -> Int:
 }
 
 #[test]
+fn lsp_resolves_dep_imports_for_dependency_manifest_variants() {
+    let dir = temp_project_dir("fuse_lsp_dep_manifest_variants");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n\n[dependencies]\nAuthString = \"./deps/auth-string\"\nAuthInline = { path = \"./deps/auth-inline\" }\n\n[dependencies.AuthTable]\npath = \"./deps/auth-table\"\n",
+    );
+
+    let main_src = r#"import util from "./util"
+
+fn main():
+  print(util.local(1))
+"#;
+    let util_src = r#"import AuthString from "dep:AuthString/lib"
+import AuthInline from "dep:AuthInline/lib"
+import AuthTable from "dep:AuthTable/lib"
+
+fn local(value: Int) -> Int:
+  let a = AuthString.plus_one(value)
+  let b = AuthInline.plus_one(a)
+  return AuthTable.plus_one(b)
+"#;
+    let dep_src = r#"fn plus_one(value: Int) -> Int:
+  return value + 1
+"#;
+
+    let main_path = dir.join("main.fuse");
+    let util_path = dir.join("util.fuse");
+    let dep_string_path = dir.join("deps").join("auth-string").join("lib.fuse");
+    let dep_inline_path = dir.join("deps").join("auth-inline").join("lib.fuse");
+    let dep_table_path = dir.join("deps").join("auth-table").join("lib.fuse");
+    write_project_file(&main_path, main_src);
+    write_project_file(&util_path, util_src);
+    write_project_file(&dep_string_path, dep_src);
+    write_project_file(&dep_inline_path, dep_src);
+    write_project_file(&dep_table_path, dep_src);
+
+    let root_uri = path_to_uri(&dir);
+    let main_uri = path_to_uri(&main_path);
+    let util_uri = path_to_uri(&util_path);
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+
+    lsp.open_document(&main_uri, main_src, 1);
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+    assert_eq!(workspace_builds(&mut lsp), 1);
+
+    lsp.open_document(&util_uri, util_src, 1);
+    let util_diags = lsp.wait_diagnostics(&util_uri);
+    assert!(
+        util_diags.is_empty(),
+        "dependency manifest syntax variants should resolve dep: imports without diagnostics"
+    );
+    assert_eq!(
+        workspace_builds(&mut lsp),
+        1,
+        "dependency manifest syntax variants should keep workspace snapshot reuse"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn lsp_incrementally_rewires_dependency_import_paths_and_shapes() {
     let dir = temp_project_dir("fuse_lsp_dep_rewire_incremental");
     fs::create_dir_all(&dir).expect("create temp dir");
