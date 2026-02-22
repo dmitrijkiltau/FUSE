@@ -427,6 +427,52 @@ fn parity_vm_native_cli_binding() {
 }
 
 #[test]
+fn parity_log_output_format() {
+    let envs = [("FUSE_COLOR", "never")];
+    let ast = run_example("ast", "log_parity.fuse", &envs);
+    let vm = run_example("vm", "log_parity.fuse", &envs);
+    let native = run_example("native", "log_parity.fuse", &envs);
+
+    assert!(
+        ast.status.success(),
+        "ast stderr: {}",
+        String::from_utf8_lossy(&ast.stderr)
+    );
+    assert!(
+        vm.status.success(),
+        "vm stderr: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+    assert!(
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stderr),
+        String::from_utf8_lossy(&vm.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stderr),
+        String::from_utf8_lossy(&native.stderr)
+    );
+    let log_text = String::from_utf8_lossy(&ast.stderr);
+    assert!(
+        log_text.contains("[INFO] text parity"),
+        "stderr: {log_text}"
+    );
+    assert!(
+        log_text.contains("\"level\":\"info\""),
+        "stderr: {log_text}"
+    );
+    assert!(
+        log_text.contains("\"message\":\"json parity\""),
+        "stderr: {log_text}"
+    );
+}
+
+#[test]
 fn parity_spawn_error_propagation() {
     let ast = run_example("ast", "spawn_error.fuse", &[]);
     let vm = run_example("vm", "spawn_error.fuse", &[]);
