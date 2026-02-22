@@ -9,6 +9,7 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
   - `fls.md`
   - `scope.md`
   - `runtime.md`
+- For AOT production rollout (`v0.4.0` line), enforce the contract and SLO targets in `AOT_CONTRACT.md`.
 - Enforce version bump and compatibility rules from `VERSIONING_POLICY.md`.
 - Features marked planned/unsupported stay out of release criteria.
 
@@ -31,6 +32,7 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
 3. Run smoke checks:
    - `./scripts/authority_parity.sh` (explicit semantic-authority gate)
    - `./scripts/release_smoke.sh`
+   - Verify `AOT_CONTRACT.md` thresholds for release scope that includes AOT production artifacts.
    - Ensure GitHub Actions `Pre-release Gate` passed on the release PR (`.github/workflows/pre-release-gate.yml`).
    - Covers authority/parity gates, `fusec` + `fuse` test suites, release-mode compile checks,
      package build cache checks, AST/VM/native backend smoke runs, benchmark regression checks,
