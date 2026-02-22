@@ -2065,6 +2065,8 @@ fn write_native_binary(
     configs.sort_by(|a, b| a.name.cmp(&b.name));
     let config_bytes =
         bincode::serialize(&configs).map_err(|err| format!("config encode failed: {err}"))?;
+    let program_bytes =
+        bincode::serialize(program).map_err(|err| format!("program encode failed: {err}"))?;
     let mut types: Vec<fusec::ir::TypeInfo> = program.ir.types.values().cloned().collect();
     types.sort_by(|a, b| a.name.cmp(&b.name));
     let type_bytes =
@@ -2074,6 +2076,7 @@ fn write_native_binary(
         &runner_path,
         &artifact.entry_symbol,
         &artifact.interned_strings,
+        &program_bytes,
         &config_bytes,
         &type_bytes,
         &artifact.config_defaults,
@@ -2106,6 +2109,7 @@ fn write_native_runner(
     path: &Path,
     entry_symbol: &str,
     interned_strings: &[String],
+    program_bytes: &[u8],
     config_bytes: &[u8],
     type_bytes: &[u8],
     config_defaults: &[fusec::native::ConfigDefaultSymbol],
@@ -2124,6 +2128,12 @@ fn write_native_runner(
         "&[]".to_string()
     } else {
         let bytes: Vec<String> = config_bytes.iter().map(|b| b.to_string()).collect();
+        format!("&[{}]", bytes.join(", "))
+    };
+    let program_blob = if program_bytes.is_empty() {
+        "&[]".to_string()
+    } else {
+        let bytes: Vec<String> = program_bytes.iter().map(|b| b.to_string()).collect();
         format!("&[{}]", bytes.join(", "))
     };
     let type_blob = if type_bytes.is_empty() {
@@ -2176,6 +2186,7 @@ unsafe extern "C" {{
 {default_decls}
 
 const INTERNED_STRINGS: &[&str] = {interned};
+const PROGRAM_BYTES: &[u8] = {program_blob};
 const CONFIG_BYTES: &[u8] = {config_blob};
 const TYPE_BYTES: &[u8] = {type_blob};
 const AOT_STARTUP_MODE: &str = {mode_literal};
@@ -2278,6 +2289,13 @@ fn load_types(heap: &mut NativeHeap) -> Result<(), String> {{
 }}
 
 fn run_program() -> Result<(), String> {{
+    if PROGRAM_BYTES.is_empty() {{
+        return Err("missing native program metadata".to_string());
+    }}
+    let program: fusec::native::NativeProgram =
+        bincode::deserialize(PROGRAM_BYTES).map_err(|err| format!("program decode failed: {{err}}"))?;
+    let mut runtime_vm = fusec::native::NativeVm::new(&program);
+    let _runtime_context = runtime_vm.enter_runtime_context();
     let mut heap = NativeHeap::new();
     for value in INTERNED_STRINGS {{
         heap.intern_string((*value).to_string());

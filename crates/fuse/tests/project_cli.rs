@@ -1,9 +1,11 @@
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -185,6 +187,31 @@ fn default_aot_binary_path(dir: &Path) -> PathBuf {
         "program.aot"
     };
     dir.join(".fuse").join("build").join(name)
+}
+
+fn reserve_local_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test port");
+    listener.local_addr().expect("read local test addr").port()
+}
+
+fn http_get_with_retry(port: u16, path: &str, attempts: usize) -> Option<String> {
+    for _ in 0..attempts {
+        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) {
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+            let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+            let request = format!(
+                "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+            );
+            if stream.write_all(request.as_bytes()).is_ok() {
+                let mut response = String::new();
+                if stream.read_to_string(&mut response).is_ok() && !response.is_empty() {
+                    return Some(response);
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    None
 }
 
 #[test]
@@ -2212,6 +2239,85 @@ app "Demo":
     assert!(stderr.contains("mode=aot"), "stderr: {stderr}");
     assert!(stderr.contains("profile=release"), "stderr: {stderr}");
     assert!(stderr.contains("contract="), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_service_binary_handles_http_serve_routes() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Docs"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+config App:
+  port: String = env("PORT") ?? "3000"
+
+service DocsApi at "/api":
+  get "/health" -> Map<String, String>:
+    return {"status": "ok"}
+
+app "Docs":
+  serve(App.port)
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let port = reserve_local_port();
+    let aot = default_aot_binary_path(&dir);
+    let child = Command::new(&aot)
+        .env("PORT", port.to_string())
+        .env("FUSE_HOST", "127.0.0.1")
+        .env("FUSE_MAX_REQUESTS", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn aot service");
+
+    let response = match http_get_with_retry(port, "/api/health", 60) {
+        Some(response) => response,
+        None => {
+            let output = child.wait_with_output().expect("wait aot child after timeout");
+            panic!(
+                "failed to query aot health endpoint; stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    };
+    assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
+    assert!(response.contains("\"status\":\"ok\""), "response: {response}");
+
+    let output = child.wait_with_output().expect("wait aot child");
+    assert!(
+        output.status.success(),
+        "aot stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

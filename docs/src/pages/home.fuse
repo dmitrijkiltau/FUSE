@@ -10,12 +10,17 @@ fn home_page() -> Html:
     section(class="quick-links"):
       h2(): "Install and Run"
       div(class="card-grid"):
-        a({"href": "/downloads/fuse-pre-alpha-linux-x64.zip", "class": "card", "download": "fuse-pre-alpha-linux-x64.zip"}):
-          h3(): "Download Pre-Alpha ZIP"
-          p(): "Direct download: Linux x64 bundle built by docs/Dockerfile with fuse and fuse-lsp."
+        a({
+          "href": "https://github.com/dmitrijkiltau/FUSE/releases",
+          "class": "card",
+          "target": "_blank",
+          "rel": "noopener noreferrer"
+        }):
+          h3(): "GitHub Releases"
+          p(): "All downloadable release artifacts are published on the GitHub Releases page."
         a(href="/specs/reference", class="card"):
-          h3(): "Docker Docs Runtime"
-          p(): "Run docs in Docker and generate download artifacts during image build."
+          h3(): "Release Reference"
+          p(): "Release policy, runtime contract, and packaging behavior for v0.4.x."
 
     section(class="quick-start"):
       h2(): "Quick Start"

@@ -275,6 +275,10 @@ pub struct NativeVm<'a> {
     regex_cache: HashMap<String, regex::Regex>,
 }
 
+pub struct NativeRuntimeContextGuard {
+    _guard: jit::VmGuard,
+}
+
 impl<'a> crate::runtime_types::RuntimeTypeHost for NativeVm<'a> {
     type Error = NativeError;
 
@@ -371,6 +375,13 @@ impl<'a> NativeVm<'a> {
         resolve_public_function_name(self.program, name)
             .ok()
             .is_some_and(|resolved| self.jit.has_function(&resolved))
+    }
+
+    pub fn enter_runtime_context(&mut self) -> NativeRuntimeContextGuard {
+        let vm_ptr = self as *mut NativeVm<'_> as *mut NativeVm<'static>;
+        NativeRuntimeContextGuard {
+            _guard: jit::VmGuard::enter(vm_ptr),
+        }
     }
 
     fn call_function_native_only_inner(

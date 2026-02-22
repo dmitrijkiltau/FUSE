@@ -1,6 +1,6 @@
 services:
   docs:
-    image: fuse-docs:pre-alpha
+    image: fuse-docs:0.4.0
     build:
       context: ..
       dockerfile: docs/Dockerfile
