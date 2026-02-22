@@ -172,14 +172,33 @@ CI enforces the release smoke gate via `.github/workflows/pre-release-gate.yml`.
 
 ### Distribution
 
+Canonical artifact names:
+
+| Artifact | Output name |
+|---|---|
+| CLI bundle (Linux/macOS) | `dist/fuse-cli-<platform>.tar.gz` |
+| CLI bundle (Windows) | `dist/fuse-cli-<platform>.zip` |
+| VS Code extension | `dist/fuse-vscode-<platform>.vsix` |
+| Release checksums | `dist/SHA256SUMS` |
+| Release metadata | `dist/release-artifacts.json` |
+
+Supported release matrix platforms:
+`linux-x64`, `macos-x64`, `macos-arm64`, `windows-x64`.
+
 ```bash
 # Build release binaries
 ./scripts/build_dist.sh --release
 
-# Package VS Code extension with bundled LSP (.vsix)
-./scripts/package_vscode_extension.sh --platform linux-x64
+# Package host CLI bundle (archive + integrity check)
+./scripts/package_cli_artifacts.sh --release
 
-# Install the packaged extension
+# Package VS Code extension with bundled LSP (.vsix + integrity check)
+./scripts/package_vscode_extension.sh --release
+
+# Generate checksums and JSON metadata for release publication
+./scripts/generate_release_checksums.sh
+
+# Install a packaged VSIX example
 code --install-extension dist/fuse-vscode-linux-x64.vsix
 
 # Regenerate docs site guides

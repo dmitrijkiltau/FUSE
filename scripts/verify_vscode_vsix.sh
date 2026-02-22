@@ -69,6 +69,7 @@ if [[ ! -f "$VSIX" ]]; then
   exit 1
 fi
 
+mkdir -p "$ROOT/tmp"
 LIST_FILE="$(mktemp "$ROOT/tmp/vsix-list.XXXXXX")"
 cleanup() {
   rm -f "$LIST_FILE"

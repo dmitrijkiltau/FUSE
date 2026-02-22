@@ -32,19 +32,23 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
    - Ensure GitHub Actions `Pre-release Gate` passed on the release PR (`.github/workflows/pre-release-gate.yml`).
    - Covers authority/parity gates, `fusec` + `fuse` test suites, release-mode compile checks,
      package build cache checks, AST/VM/native backend smoke runs, benchmark regression checks,
-     and VSIX package validation.
+     VSIX package validation, and host release artifact/checksum generation.
 4. Verify package UX manually (optional but recommended):
    - `./scripts/fuse build`
    - `./scripts/fuse run examples/project_demo.fuse`
 5. Build distributable binaries:
-   - `./scripts/build_dist.sh --release` (outputs `dist/fuse` and `dist/fuse-lsp`)
-6. Build publishable VS Code package:
+   - `./scripts/build_dist.sh --release` (outputs `dist/fuse[.exe]` and `dist/fuse-lsp[.exe]`)
+6. Build host release artifacts and metadata:
+   - `./scripts/package_cli_artifacts.sh --release` (emits `dist/fuse-cli-<platform>.tar.gz|.zip`)
    - `./scripts/package_vscode_extension.sh --platform <platform> --release`
-   - verify `dist/fuse-vscode-<platform>.vsix`
-7. Commit release metadata:
+   - `./scripts/generate_release_checksums.sh` (emits `dist/SHA256SUMS` and `dist/release-artifacts.json`)
+7. Run the release artifact matrix workflow (`.github/workflows/release-artifacts.yml`):
+   - Trigger on tag push (`v*`) or run manually via `workflow_dispatch`.
+   - Produces verified per-platform artifacts for `linux-x64`, `macos-x64`, `macos-arm64`, `windows-x64`.
+8. Commit release metadata:
    - `git add CHANGELOG.md RELEASE.md crates/*/Cargo.toml Cargo.lock`
    - `git commit -m "release: vX.Y.Z"`
-8. Tag release:
+9. Tag release:
    - `git tag vX.Y.Z`
    - `git push origin main --tags`
 

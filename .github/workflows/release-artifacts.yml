@@ -1,0 +1,117 @@
+name: Release Artifacts
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-artifacts-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux-x64
+          - runner: macos-13
+            platform: macos-x64
+          - runner: macos-14
+            platform: macos-arm64
+          - runner: windows-2022
+            platform: windows-x64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install VS Code extension dependencies
+        shell: bash
+        run: |
+          cd tools/vscode
+          npm ci
+
+      - name: Build and package CLI artifact
+        shell: bash
+        run: |
+          ./scripts/package_cli_artifacts.sh --platform "${{ matrix.platform }}" --release
+
+      - name: Build and package VSIX artifact
+        shell: bash
+        run: |
+          ./scripts/package_vscode_extension.sh --platform "${{ matrix.platform }}" --release --skip-build
+
+      - name: Generate checksums and metadata
+        shell: bash
+        run: |
+          ./scripts/generate_release_checksums.sh
+
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: |
+            dist/fuse-cli-${{ matrix.platform }}.*
+            dist/fuse-vscode-${{ matrix.platform }}.vsix
+            dist/SHA256SUMS
+            dist/release-artifacts.json
+          if-no-files-found: error
+
+  aggregate:
+    name: Aggregate Checksums
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: package
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: tmp/release-artifacts
+
+      - name: Build merged checksum metadata
+        shell: bash
+        run: |
+          mkdir -p dist
+          find tmp/release-artifacts -type f \( -name 'fuse-cli-*' -o -name 'fuse-vscode-*.vsix' \) -exec cp {} dist/ \;
+          ./scripts/generate_release_checksums.sh --dist dist --output dist/SHA256SUMS --metadata dist/release-artifacts.json
+          {
+            echo "## Release Artifact Checksums"
+            echo
+            echo '```txt'
+            cat dist/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload merged metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: |
+            dist/SHA256SUMS
+            dist/release-artifacts.json
+          if-no-files-found: error
