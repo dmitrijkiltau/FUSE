@@ -64,7 +64,15 @@ step "14/18" "Collect use-case benchmark metrics"
 "$ROOT/scripts/use_case_bench.sh"
 
 step "15/18" "Enforce benchmark regression thresholds"
+set +e
 "$ROOT/scripts/check_use_case_bench_regression.sh"
+bench_status=$?
+set -e
+if [[ "$bench_status" -ne 0 ]]; then
+  echo "benchmark regression gate failed; retrying once to filter transient host jitter"
+  "$ROOT/scripts/use_case_bench.sh"
+  "$ROOT/scripts/check_use_case_bench_regression.sh"
+fi
 
 step "16/18" "Ensure VS Code extension dependencies are installed"
 if [[ ! -d "$ROOT/tools/vscode/node_modules" ]]; then

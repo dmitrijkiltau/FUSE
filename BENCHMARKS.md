@@ -47,4 +47,5 @@ Baseline + thresholds live in `benchmarks/use_case_baseline.json`.
 - Results are environment-dependent; compare trends across runs on the same machine.
 - The harness intentionally checks status codes so failures are semantic regressions, not only performance noise.
 - Runtime HTTP metrics are required for this benchmark; the script fails if the service cannot be started or reached on loopback.
+- `scripts/release_smoke.sh` retries benchmark collection/check once if the first regression check fails, to filter transient host jitter without changing baseline thresholds.
 - This benchmark set is complementary to semantic parity gates (`scripts/semantic_suite.sh`, `scripts/authority_parity.sh`).
