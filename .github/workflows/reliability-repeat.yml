@@ -19,7 +19,7 @@ concurrency:
 jobs:
   repeat-gates:
     name: Repeat Parity/LSP/Bench Gates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
