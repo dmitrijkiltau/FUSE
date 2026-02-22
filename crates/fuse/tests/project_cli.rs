@@ -1136,3 +1136,147 @@ fn no_color_disables_runtime_log_color_in_auto_mode() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn check_emits_consistent_step_headers() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_broken_project(&dir);
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse check");
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[check] start"), "stderr: {stderr}");
+    assert!(stderr.contains("[check] failed"), "stderr: {stderr}");
+    assert!(stderr.contains("error:"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_emits_consistent_step_headers() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse build");
+    assert!(
+        output.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[build] start"), "stderr: {stderr}");
+    assert!(stderr.contains("[build] ok"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_emits_consistent_step_headers() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+
+test "smoke":
+  assert(1 == 1)
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("test")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse test");
+    assert!(
+        output.status.success(),
+        "test stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[test] start"), "stderr: {stderr}");
+    assert!(stderr.contains("[test] ok"), "stderr: {stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("ok smoke"), "stdout: {stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_validation_errors_use_exit_code_2_and_consistent_step_footer() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+fn main(name: String):
+  print("hello " + name)
+
+app "Demo":
+  main("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("never")
+        .arg("--")
+        .arg("--unknown=1")
+        .output()
+        .expect("run fuse run");
+    assert_eq!(output.status.code(), Some(2), "status: {:?}", output.status);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[run] start"), "stderr: {stderr}");
+    assert!(stderr.contains("[run] validation failed"), "stderr: {stderr}");
+    assert!(stderr.contains("validation failed"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unknown_command_uses_error_prefix() {
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("bad-command")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse bad-command");
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("error: unknown command"), "stderr: {stderr}");
+}

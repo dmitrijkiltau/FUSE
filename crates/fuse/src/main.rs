@@ -175,6 +175,7 @@ struct RawProgramArgs {
     bools: HashMap<String, bool>,
 }
 
+#[derive(Copy, Clone)]
 enum Command {
     Dev,
     Run,
@@ -273,15 +274,44 @@ fn style_header(text: &str) -> String {
 }
 
 fn emit_cli_error(message: &str) {
-    eprintln!("{}", style_error(message));
+    eprintln!("{}", style_error(&format!("error: {message}")));
 }
 
 fn emit_cli_warning(message: &str) {
-    eprintln!("{}", style_warning(message));
+    eprintln!("{}", style_warning(&format!("warning: {message}")));
 }
 
 fn dev_prefix() -> String {
     style_header("[dev]")
+}
+
+fn command_tag(command: Command) -> Option<&'static str> {
+    match command {
+        Command::Run => Some("run"),
+        Command::Check => Some("check"),
+        Command::Build => Some("build"),
+        Command::Test => Some("test"),
+        Command::Dev | Command::Fmt | Command::Openapi | Command::Migrate => None,
+    }
+}
+
+fn command_prefix(command: Command) -> Option<String> {
+    command_tag(command).map(|tag| style_header(&format!("[{tag}]")))
+}
+
+fn emit_command_step(command: Command, message: &str) {
+    if let Some(prefix) = command_prefix(command) {
+        eprintln!("{prefix} {message}");
+    }
+}
+
+fn finalize_command(command: Command, code: i32) -> i32 {
+    match code {
+        0 => emit_command_step(command, "ok"),
+        2 => emit_command_step(command, "validation failed"),
+        _ => emit_command_step(command, "failed"),
+    }
+    code
 }
 
 impl RunBackend {
@@ -416,31 +446,39 @@ fn run(args: Vec<String>) -> i32 {
         }
     }
 
+    emit_command_step(command, "start");
+
     if matches!(command, Command::Run) {
         match backend {
             Some(RunBackend::Ast) => {}
             Some(RunBackend::Native) => {
                 if let Some(native) = try_load_native(manifest_dir.as_deref()) {
                     apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
-                    return run_native_program(
-                        native,
-                        app.as_deref(),
-                        &entry,
-                        &deps,
-                        &common.program_args,
+                    return finalize_command(
+                        command,
+                        run_native_program(
+                            native,
+                            app.as_deref(),
+                            &entry,
+                            &deps,
+                            &common.program_args,
+                        ),
                     );
                 }
             }
             _ => {
                 if let Some(ir) = try_load_ir(manifest_dir.as_deref()) {
                     apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
-                    return run_vm_ir(ir, app.as_deref(), &entry, &deps, &common.program_args);
+                    return finalize_command(
+                        command,
+                        run_vm_ir(ir, app.as_deref(), &entry, &deps, &common.program_args),
+                    );
                 }
             }
         }
     }
 
-    match command {
+    let code = match command {
         Command::Dev => run_dev(
             &entry,
             manifest.as_ref(),
@@ -484,21 +522,23 @@ fn run(args: Vec<String>) -> i32 {
         ),
         Command::Check => {
             if common.entry.is_none() && manifest.is_some() {
-                return run_project_check(&entry, &deps);
+                run_project_check(&entry, &deps)
+            } else {
+                let mut args = Vec::new();
+                args.push("--check".to_string());
+                args.push(entry.to_string_lossy().to_string());
+                fusec::cli::run_with_deps(args, Some(&deps))
             }
-            let mut args = Vec::new();
-            args.push("--check".to_string());
-            args.push(entry.to_string_lossy().to_string());
-            fusec::cli::run_with_deps(args, Some(&deps))
         }
         Command::Fmt => {
             if common.entry.is_none() && manifest.is_some() {
-                return run_project_fmt(&entry, &deps);
+                run_project_fmt(&entry, &deps)
+            } else {
+                let mut args = Vec::new();
+                args.push("--fmt".to_string());
+                args.push(entry.to_string_lossy().to_string());
+                fusec::cli::run_with_deps(args, Some(&deps))
             }
-            let mut args = Vec::new();
-            args.push("--fmt".to_string());
-            args.push(entry.to_string_lossy().to_string());
-            fusec::cli::run_with_deps(args, Some(&deps))
         }
         Command::Openapi => {
             let mut args = Vec::new();
@@ -512,7 +552,9 @@ fn run(args: Vec<String>) -> i32 {
             args.push(entry.to_string_lossy().to_string());
             fusec::cli::run_with_deps(args, Some(&deps))
         }
-    }
+    };
+
+    finalize_command(command, code)
 }
 
 fn discover_color_choice(args: &[String]) -> Option<ColorChoice> {

@@ -66,6 +66,8 @@ Global CLI output option:
 - `--color auto|always|never` controls ANSI colors for diagnostics/status output and runtime
   `log(...)` level tags.
   `auto` is default and respects `NO_COLOR`.
+- `fuse check|run|build|test` emit consistent stderr step markers:
+  `[command] start`, `[command] ok|failed|validation failed`.
 
 Packages use a `fuse.toml` manifest. Minimal example:
 
