@@ -7,23 +7,11 @@ If you are new to FUSE, start with [Onboarding Guide](onboarding.md) and [Bounda
 
 ---
 
-## Install and Pre-Alpha Downloads
+## Install and Downloads
 
-The docs Docker build generates prebuilt runnables and packages them into this docs app.
-You can download the ZIP directly from the running docs site:
+Release artifacts are published on GitHub Releases:
 
-1. Download: [`/downloads/fuse-pre-alpha-linux-x64.zip`](/downloads/fuse-pre-alpha-linux-x64.zip)
-2. Extract it and add the directory containing `fuse` and `fuse-lsp` to your `PATH`.
-3. Verify:
-
-```bash
-fuse
-```
-
-Direct binary links are also available:
-
-- [`/runnables/linux-x64/fuse`](/runnables/linux-x64/fuse)
-- [`/runnables/linux-x64/fuse-lsp`](/runnables/linux-x64/fuse-lsp)
+- https://github.com/dmitrijkiltau/FUSE/releases
 
 ---
 
@@ -251,7 +239,9 @@ Rules:
 ### Errors and HTTP status mapping
 
 The runtime recognizes a small set of error struct names for standardized HTTP status mapping
-and error JSON formatting. These live under a reserved namespace:
+and error JSON formatting.
+
+Preferred canonical names (from `std.Error`):
 
 - `std.Error.Validation`
 - `std.Error`
@@ -261,17 +251,19 @@ and error JSON formatting. These live under a reserved namespace:
 - `std.Error.NotFound`
 - `std.Error.Conflict`
 
-Names outside `std.Error.*` do not participate in this standardized mapping/formatting behavior.
+Compatibility short names are also recognized (`Validation`, `Error`, `BadRequest`,
+`Unauthorized`, `Forbidden`, `NotFound`, `Conflict`), which commonly occur after named imports.
+Other names do not participate in standardized mapping/formatting behavior.
 
 Status mapping uses the error name first, then `std.Error.status` if present:
 
-- `std.Error.Validation` -> 400
-- `std.Error.BadRequest` -> 400
-- `std.Error.Unauthorized` -> 401
-- `std.Error.Forbidden` -> 403
-- `std.Error.NotFound` -> 404
-- `std.Error.Conflict` -> 409
-- `std.Error` with `status: Int` -> that status
+- `std.Error.Validation` / `Validation` -> 400
+- `std.Error.BadRequest` / `BadRequest` -> 400
+- `std.Error.Unauthorized` / `Unauthorized` -> 401
+- `std.Error.Forbidden` / `Forbidden` -> 403
+- `std.Error.NotFound` / `NotFound` -> 404
+- `std.Error.Conflict` / `Conflict` -> 409
+- `std.Error` / `Error` with `status: Int` -> that status
 - anything else -> 500
 
 `expr ?! err` behavior:
@@ -428,49 +420,23 @@ Compiler/runtime CLI operations include:
 - `[vite]`
 - `[dependencies]`
 
-Dependency contract summary:
-
-- local dependency forms:
-  - `Name = { path = "./deps/name" }`
-  - `Name = "./deps/name"`
-- git dependency forms:
-  - `Name = { git = "...", rev = "..." }`
-  - `Name = { git = "...", tag = "..." }`
-  - `Name = { git = "...", branch = "..." }`
-  - `Name = { git = "...", version = "..." }`
-  - optional `subdir = "..."` for git checkouts
-- rules:
-  - exactly one source (`path` or `git`)
-  - at most one git selector (`rev`/`tag`/`branch`/`version`)
-  - `subdir` only for git dependencies
-  - transitive conflicting specs by dependency name are rejected
-
-Lockfile (`fuse.lock`) summary:
-
-- lockfile version is `1`
-- entries store source + resolved revision/path + requested spec fingerprint
-- unchanged dependency specs keep stable lockfile content
-
 ---
 
 ## Run Docs with Docker
 
-`docs/Dockerfile` builds `fuse` and `fuse-lsp`, then packages:
-
-- `/downloads/fuse-pre-alpha-linux-x64.zip`
-- `/runnables/linux-x64/fuse`
-- `/runnables/linux-x64/fuse-lsp`
+`docs/Dockerfile` builds and runs docs using the docs AOT binary.
+Downloadable release artifacts are not served by the docs app; use GitHub Releases instead.
 
 Build the docs image from repository root:
 
 ```bash
-docker build -f docs/Dockerfile -t fuse-docs:pre-alpha .
+docker build -f docs/Dockerfile -t fuse-docs:0.4.0 .
 ```
 
 Run the docs container:
 
 ```bash
-docker run --rm -p 4080:4080 -e PORT=4080 -e FUSE_HOST=0.0.0.0 fuse-docs:pre-alpha
+docker run --rm -p 4080:4080 -e PORT=4080 -e FUSE_HOST=0.0.0.0 fuse-docs:0.4.0
 ```
 
 Then open <http://localhost:4080>.

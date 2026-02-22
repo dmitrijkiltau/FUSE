@@ -73,23 +73,11 @@ If you are new to FUSE, start with [Onboarding Guide](onboarding.md) and [Bounda
 
 ---
 
-## Install and Pre-Alpha Downloads
+## Install and Downloads
 
-The docs Docker build generates prebuilt runnables and packages them into this docs app.
-You can download the ZIP directly from the running docs site:
+Release artifacts are published on GitHub Releases:
 
-1. Download: [`/downloads/fuse-pre-alpha-linux-x64.zip`](/downloads/fuse-pre-alpha-linux-x64.zip)
-2. Extract it and add the directory containing `fuse` and `fuse-lsp` to your `PATH`.
-3. Verify:
-
-```bash
-fuse
-```
-
-Direct binary links are also available:
-
-- [`/runnables/linux-x64/fuse`](/runnables/linux-x64/fuse)
-- [`/runnables/linux-x64/fuse-lsp`](/runnables/linux-x64/fuse-lsp)
+- https://github.com/dmitrijkiltau/FUSE/releases
 
 ---
 
@@ -252,22 +240,19 @@ TOOLING
 
 ## Run Docs with Docker
 
-`docs/Dockerfile` builds `fuse` and `fuse-lsp`, then packages:
-
-- `/downloads/fuse-pre-alpha-linux-x64.zip`
-- `/runnables/linux-x64/fuse`
-- `/runnables/linux-x64/fuse-lsp`
+`docs/Dockerfile` builds and runs docs using the docs AOT binary.
+Downloadable release artifacts are not served by the docs app; use GitHub Releases instead.
 
 Build the docs image from repository root:
 
 ```bash
-docker build -f docs/Dockerfile -t fuse-docs:pre-alpha .
+docker build -f docs/Dockerfile -t fuse-docs:0.4.0 .
 ```
 
 Run the docs container:
 
 ```bash
-docker run --rm -p 4080:4080 -e PORT=4080 -e FUSE_HOST=0.0.0.0 fuse-docs:pre-alpha
+docker run --rm -p 4080:4080 -e PORT=4080 -e FUSE_HOST=0.0.0.0 fuse-docs:0.4.0
 ```
 
 Then open <http://localhost:4080>.

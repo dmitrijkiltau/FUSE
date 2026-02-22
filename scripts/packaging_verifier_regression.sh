@@ -70,7 +70,7 @@ assert_fails_with() {
   rm -f "$log_file"
 }
 
-echo "[1/4] Validate Windows CLI archive verifier accepts .exe layout..."
+echo "[1/6] Validate Windows CLI archive verifier accepts .exe layout..."
 CLI_GOOD_STAGE="$TMP_DIR/cli-good"
 mkdir -p "$CLI_GOOD_STAGE"
 printf 'bin' >"$CLI_GOOD_STAGE/fuse.exe"
@@ -82,7 +82,7 @@ create_zip_with_entries "$CLI_GOOD_STAGE" "$CLI_GOOD_ZIP" \
   "fuse.exe" "fuse-lsp.exe" "LICENSE" "README.txt"
 "$ROOT/scripts/verify_cli_artifact.sh" --platform windows-x64 --archive "$CLI_GOOD_ZIP"
 
-echo "[2/4] Validate Windows CLI archive verifier rejects missing .exe entries..."
+echo "[2/6] Validate Windows CLI archive verifier rejects missing .exe entries..."
 CLI_BAD_STAGE="$TMP_DIR/cli-bad"
 mkdir -p "$CLI_BAD_STAGE"
 printf 'bin' >"$CLI_BAD_STAGE/fuse"
@@ -96,7 +96,7 @@ assert_fails_with \
   "CLI archive missing expected entry: fuse.exe" \
   "$ROOT/scripts/verify_cli_artifact.sh" --platform windows-x64 --archive "$CLI_BAD_ZIP"
 
-echo "[3/4] Validate Windows VSIX verifier accepts bundled fuse-lsp.exe..."
+echo "[3/6] Validate Windows VSIX verifier accepts bundled fuse-lsp.exe..."
 VSIX_GOOD_STAGE="$TMP_DIR/vsix-good"
 mkdir -p "$VSIX_GOOD_STAGE/extension/bin/windows-x64"
 mkdir -p "$VSIX_GOOD_STAGE/extension/syntaxes"
@@ -118,7 +118,7 @@ create_zip_with_entries "$VSIX_GOOD_STAGE" "$VSIX_GOOD" \
   "extension/bin/windows-x64/fuse-lsp.exe"
 "$ROOT/scripts/verify_vscode_vsix.sh" --platform windows-x64 --vsix "$VSIX_GOOD"
 
-echo "[4/4] Validate Windows VSIX verifier rejects missing fuse-lsp.exe..."
+echo "[4/6] Validate Windows VSIX verifier rejects missing fuse-lsp.exe..."
 VSIX_BAD_STAGE="$TMP_DIR/vsix-bad"
 mkdir -p "$VSIX_BAD_STAGE/extension/bin/windows-x64"
 mkdir -p "$VSIX_BAD_STAGE/extension/syntaxes"
@@ -141,5 +141,31 @@ create_zip_with_entries "$VSIX_BAD_STAGE" "$VSIX_BAD" \
 assert_fails_with \
   "VSIX missing expected entry: extension/bin/windows-x64/fuse-lsp.exe" \
   "$ROOT/scripts/verify_vscode_vsix.sh" --platform windows-x64 --vsix "$VSIX_BAD"
+
+echo "[5/6] Validate Windows AOT archive verifier accepts expected payload..."
+AOT_GOOD_STAGE="$TMP_DIR/aot-good"
+mkdir -p "$AOT_GOOD_STAGE"
+printf 'bin' >"$AOT_GOOD_STAGE/fuse-aot-demo.exe"
+printf 'mode=aot profile=release target=x rustc=y cli=z runtime_cache=1 contract=aot-v1\n' >"$AOT_GOOD_STAGE/AOT_BUILD_INFO.txt"
+printf 'license' >"$AOT_GOOD_STAGE/LICENSE"
+printf 'readme' >"$AOT_GOOD_STAGE/README.txt"
+AOT_GOOD_ZIP="$TMP_DIR/fuse-aot-windows-x64.zip"
+create_zip_with_entries "$AOT_GOOD_STAGE" "$AOT_GOOD_ZIP" \
+  "fuse-aot-demo.exe" "AOT_BUILD_INFO.txt" "LICENSE" "README.txt"
+"$ROOT/scripts/verify_aot_artifact.sh" --platform windows-x64 --archive "$AOT_GOOD_ZIP"
+
+echo "[6/6] Validate Windows AOT archive verifier rejects missing build info fields..."
+AOT_BAD_STAGE="$TMP_DIR/aot-bad"
+mkdir -p "$AOT_BAD_STAGE"
+printf 'bin' >"$AOT_BAD_STAGE/fuse-aot-demo.exe"
+printf 'mode=aot profile=release target=x rustc=y cli=z runtime_cache=1\n' >"$AOT_BAD_STAGE/AOT_BUILD_INFO.txt"
+printf 'license' >"$AOT_BAD_STAGE/LICENSE"
+printf 'readme' >"$AOT_BAD_STAGE/README.txt"
+AOT_BAD_ZIP="$TMP_DIR/fuse-aot-windows-x64-bad.zip"
+create_zip_with_entries "$AOT_BAD_STAGE" "$AOT_BAD_ZIP" \
+  "fuse-aot-demo.exe" "AOT_BUILD_INFO.txt" "LICENSE" "README.txt"
+assert_fails_with \
+  "AOT build info missing expected field: contract=" \
+  "$ROOT/scripts/verify_aot_artifact.sh" --platform windows-x64 --archive "$AOT_BAD_ZIP"
 
 echo "packaging verifier regression checks passed"

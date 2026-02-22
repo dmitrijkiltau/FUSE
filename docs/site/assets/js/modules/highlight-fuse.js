@@ -46,6 +46,7 @@ export default function defineFuseLanguage(hljs) {
   const BUILTIN_TYPES = "Int Float Bool String Id Email Bytes Error Unit Html Option Result List Map Task Range";
   const BUILTINS = [
     "print",
+    "input",
     "log",
     "assert",
     "env",

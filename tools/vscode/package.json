@@ -2,7 +2,7 @@
   "name": "fuse-vscode",
   "displayName": "Fuse Language",
   "description": "Syntax highlighting and LSP support for the Fuse programming language",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "publisher": "fuse",
   "license": "Apache-2.0",
   "homepage": "https://github.com/dmitrijkiltau/FUSE",

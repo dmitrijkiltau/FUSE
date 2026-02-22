@@ -9,6 +9,7 @@ Companion references:
 - `runtime.md` for runtime/boundary semantics
 - `README.md` for release-facing stability contract
 - `RELEASE.md` for release execution steps
+- `AOT_CONTRACT.md` for AOT production contract and SLO targets (`v0.4.0` rollout)
 
 ## Versioned surfaces
 

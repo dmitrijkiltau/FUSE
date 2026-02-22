@@ -543,6 +543,7 @@ function initSidebar() {
 function init() {
   initHighlight();
   initSidebar();
+  highlightCode(document);
 
   // Check for spec content
   const specContent = document.querySelector(".spec-content");

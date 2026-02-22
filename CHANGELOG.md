@@ -2,6 +2,45 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.0] - 2026-02-22
+
+### Added
+
+- AOT production backend release surface and contract hardening:
+  - `fuse build --aot` and `fuse build --aot --release` promoted as production build path
+  - embedded AOT build metadata surfaced via `FUSE_AOT_BUILD_INFO=1`
+  - startup operability trace via `FUSE_AOT_STARTUP_TRACE=1`
+  - stable fatal envelope fields including `class`, `pid`, and build metadata
+- AOT artifact packaging and verification coverage:
+  - AOT archive packaging script: `scripts/package_aot_artifact.sh`
+  - AOT archive verifier: `scripts/verify_aot_artifact.sh`
+  - release packaging regression coverage for CLI/VSIX/AOT payload contracts
+- AOT performance and reliability gates:
+  - benchmark harness: `scripts/aot_perf_bench.sh`
+  - SLO gate: `scripts/check_aot_perf_slo.sh`
+  - reliability/release pipelines now include AOT perf gate coverage and artifact uploads
+- Rollback/operability release guidance:
+  - production rollback playbook: `AOT_ROLLBACK_PLAYBOOK.md`
+  - updated release/runtime docs for AOT production posture
+
+### Changed
+
+- Release artifact matrix policy now targets:
+  - `linux-x64`
+  - `macos-arm64`
+  - `windows-x64`
+- `scripts/release_smoke.sh` now enforces AOT startup/throughput perf collection and SLO checks.
+- `scripts/reliability_repeat.sh` now includes repeated AOT perf SLO validation.
+- Packaging/verification now validates AOT `mode` and `profile` metadata fields.
+- `README.md`, `runtime.md`, `scope.md`, and `RELEASE.md` now reflect AOT-as-production and rollback expectations.
+
+### Migration
+
+- No language source migration is required from `0.3.x` to `0.4.0`.
+- Deployment posture changes:
+  - use AOT artifacts as primary production binaries
+  - keep CLI artifacts available as rollback fallback per `AOT_ROLLBACK_PLAYBOOK.md`
+
 ## [0.3.2] - 2026-02-22
 
 ### Added

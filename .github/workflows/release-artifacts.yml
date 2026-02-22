@@ -33,6 +33,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Derive reproducible metadata timestamp
+        id: source-date
+        shell: bash
+        run: |
+          epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
+
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -55,12 +62,19 @@ jobs:
         run: |
           ./scripts/package_cli_artifacts.sh --platform "${{ matrix.platform }}" --release
 
+      - name: Build and package AOT artifact
+        shell: bash
+        run: |
+          ./scripts/package_aot_artifact.sh --platform "${{ matrix.platform }}" --release --manifest-path .
+
       - name: Build and package VSIX artifact
         shell: bash
         run: |
           ./scripts/package_vscode_extension.sh --platform "${{ matrix.platform }}" --release --skip-build
 
       - name: Generate checksums and metadata
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.epoch }}
         shell: bash
         run: |
           ./scripts/generate_release_checksums.sh
@@ -71,6 +85,7 @@ jobs:
           name: release-${{ matrix.platform }}
           path: |
             dist/fuse-cli-${{ matrix.platform }}.*
+            dist/fuse-aot-${{ matrix.platform }}.*
             dist/fuse-vscode-${{ matrix.platform }}.vsix
             dist/SHA256SUMS
             dist/release-artifacts.json
@@ -78,7 +93,7 @@ jobs:
 
   aggregate:
     name: Aggregate Checksums
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: package
 
@@ -86,16 +101,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Derive reproducible metadata timestamp
+        id: source-date
+        shell: bash
+        run: |
+          epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
+
       - name: Download platform artifacts
         uses: actions/download-artifact@v4
         with:
           path: tmp/release-artifacts
 
       - name: Build merged checksum metadata
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.epoch }}
         shell: bash
         run: |
           mkdir -p dist
-          find tmp/release-artifacts -type f \( -name 'fuse-cli-*' -o -name 'fuse-vscode-*.vsix' \) -exec cp {} dist/ \;
+          find tmp/release-artifacts -type f \( -name 'fuse-cli-*' -o -name 'fuse-aot-*' -o -name 'fuse-vscode-*.vsix' \) -exec cp {} dist/ \;
           ./scripts/generate_release_checksums.sh --dist dist --output dist/SHA256SUMS --metadata dist/release-artifacts.json
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             ./scripts/generate_release_notes.sh --version "${GITHUB_REF_NAME#v}" --tag "${GITHUB_REF_NAME}" --output dist/RELEASE_NOTES.md
@@ -116,6 +140,7 @@ jobs:
           name: release-bundle
           path: |
             dist/fuse-cli-*
+            dist/fuse-aot-*
             dist/fuse-vscode-*.vsix
             dist/SHA256SUMS
             dist/release-artifacts.json
@@ -125,7 +150,7 @@ jobs:
   publish:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: aggregate
     permissions:
@@ -146,6 +171,7 @@ jobs:
           body_path: tmp/release-bundle/RELEASE_NOTES.md
           files: |
             tmp/release-bundle/fuse-cli-*
+            tmp/release-bundle/fuse-aot-*
             tmp/release-bundle/fuse-vscode-*.vsix
             tmp/release-bundle/SHA256SUMS
             tmp/release-bundle/release-artifacts.json
@@ -157,7 +183,7 @@ jobs:
   verify-published:
     name: Verify Published Release Assets
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: publish
     permissions:
@@ -208,17 +234,22 @@ jobs:
           console.log("release metadata manifest coverage checks passed");
           NODE
 
-      - name: Validate VSIX and CLI package integrity
+      - name: Validate VSIX, CLI, and AOT package integrity
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
           cli_archives=(tmp/published-assets/fuse-cli-*.tar.gz tmp/published-assets/fuse-cli-*.zip)
+          aot_archives=(tmp/published-assets/fuse-aot-*.tar.gz tmp/published-assets/fuse-aot-*.zip)
           vsix_archives=(tmp/published-assets/fuse-vscode-*.vsix)
           shopt -u nullglob
 
           if [[ "${#cli_archives[@]}" -eq 0 ]]; then
             echo "no CLI archives found in published release"
+            exit 1
+          fi
+          if [[ "${#aot_archives[@]}" -eq 0 ]]; then
+            echo "no AOT archives found in published release"
             exit 1
           fi
           if [[ "${#vsix_archives[@]}" -eq 0 ]]; then
@@ -232,6 +263,14 @@ jobs:
             platform="${platform%.tar.gz}"
             platform="${platform%.zip}"
             ./scripts/verify_cli_artifact.sh --platform "$platform" --archive "$archive"
+          done
+
+          for archive in "${aot_archives[@]}"; do
+            name="$(basename "$archive")"
+            platform="${name#fuse-aot-}"
+            platform="${platform%.tar.gz}"
+            platform="${platform%.zip}"
+            ./scripts/verify_aot_artifact.sh --platform "$platform" --archive "$archive"
           done
 
           for archive in "${vsix_archives[@]}"; do

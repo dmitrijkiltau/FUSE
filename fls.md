@@ -6,6 +6,11 @@ It is the canonical source for lexical rules, grammar, AST structure, and static
 Runtime behavior (validation timing, HTTP status mapping, config/CLI parsing, DB/concurrency execution)
 is intentionally documented in `runtime.md`.
 
+Normative terms in this document:
+
+- `must` / `must not` indicate required behavior for parser + semantic analysis
+- `may` indicates optional syntax forms accepted by the current parser
+
 ---
 
 ## Scope of this document
@@ -64,7 +69,7 @@ FUSE uses Python-style block structure with strict space rules.
 - Empty lines are ignored.
 - Lines inside parentheses/brackets/braces ignore indentation semantics (implicit line joining).
 
-INDENT/DEDENT algorithm (formal-ish):
+INDENT/DEDENT reference algorithm:
 
 - Maintain a stack `indents` starting with `[0]`.
 - For each logical line not inside `()[]{}`:
@@ -79,11 +84,11 @@ INDENT/DEDENT algorithm (formal-ish):
 - Line comment: `# ...`
 - Doc comment: `## ...` attaches to the next declaration
 
-See also: [Grammar (EBNF-ish)](#grammar-ebnf-ish), [AST model (structural spec)](#ast-model-structural-spec).
+See also: [Grammar (EBNF approximation)](#grammar-ebnf-approximation), [AST model (structural spec)](#ast-model-structural-spec).
 
 ---
 
-## Grammar (EBNF-ish)
+## Grammar (EBNF approximation)
 
 Top level:
 
@@ -101,7 +106,7 @@ TopDecl        := ImportDecl
                 | FnDecl
 
 ImportDecl     := "import" ImportSpec NEWLINE
-ImportSpec     := Ident { "," Ident }
+ImportSpec     := Ident
                 | Ident "from" StringLit
                 | "{" Ident { "," Ident } "}" "from" StringLit
                 | Ident "as" Ident "from" StringLit
@@ -218,7 +223,7 @@ HtmlChildStmt   := Expr NEWLINE
 Patterns:
 
 ```ebnf
-Pattern        := "_" | Literal | Ident [ "(" PatternArgs ")" ]
+Pattern        := "_" | Literal | TypeName [ "(" PatternArgs ")" ]
 PatternArgs    := Pattern { "," Pattern }
                | PatternField { "," PatternField }
 PatternField   := Ident "=" Pattern
@@ -330,7 +335,7 @@ Patterns:
 - `EnumVariant(name, args...)`
 - `Struct(name, fields...)`
 
-See also: [Grammar (EBNF-ish)](#grammar-ebnf-ish), [Type system (current static model)](#type-system-current-static-model).
+See also: [Grammar (EBNF approximation)](#grammar-ebnf-approximation), [Type system (current static model)](#type-system-current-static-model).
 
 ---
 

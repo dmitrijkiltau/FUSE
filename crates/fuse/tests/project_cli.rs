@@ -1,9 +1,11 @@
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -176,6 +178,40 @@ fn write_program_meta(dir: &Path, meta: &TestIrMeta) {
     let meta_path = dir.join(".fuse").join("build").join("program.meta");
     let bytes = bincode::serialize(meta).expect("encode program.meta");
     fs::write(meta_path, bytes).expect("write program.meta");
+}
+
+fn default_aot_binary_path(dir: &Path) -> PathBuf {
+    let name = if cfg!(windows) {
+        "program.aot.exe"
+    } else {
+        "program.aot"
+    };
+    dir.join(".fuse").join("build").join(name)
+}
+
+fn reserve_local_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test port");
+    listener.local_addr().expect("read local test addr").port()
+}
+
+fn http_get_with_retry(port: u16, path: &str, attempts: usize) -> Option<String> {
+    for _ in 0..attempts {
+        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) {
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+            let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+            let request = format!(
+                "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+            );
+            if stream.write_all(request.as_bytes()).is_ok() {
+                let mut response = String::new();
+                if stream.read_to_string(&mut response).is_ok() && !response.is_empty() {
+                    return Some(response);
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    None
 }
 
 #[test]
@@ -1941,6 +1977,347 @@ app "Demo":
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("[build] start"), "stderr: {stderr}");
     assert!(stderr.contains("[build] ok"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_writes_default_binary_output() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse build --aot");
+    assert!(
+        output.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[build] start"), "stderr: {stderr}");
+    assert!(stderr.contains("[build] ok"), "stderr: {stderr}");
+
+    let aot_path = default_aot_binary_path(&dir);
+    assert!(aot_path.exists(), "expected {}", aot_path.display());
+    assert!(
+        dir.join(".fuse").join("build").join("program.ir").exists(),
+        "expected cached IR artifact"
+    );
+    assert!(
+        dir.join(".fuse")
+            .join("build")
+            .join("program.native")
+            .exists(),
+        "expected cached native artifact"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_release_requires_aot_flag() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--release")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse build --release");
+    assert!(!output.status.success(), "build unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--release requires --aot"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_accepts_release_with_aot_and_clean() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let build_dir = dir.join(".fuse").join("build");
+    fs::create_dir_all(&build_dir).expect("create build dir");
+    fs::write(build_dir.join("stale.txt"), "stale").expect("write stale file");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .arg("--clean")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse build --aot --release --clean");
+    assert!(
+        output.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !build_dir.exists(),
+        "expected clean build path to remove {}",
+        build_dir.display()
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_build_info_env_prints_embedded_metadata() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let aot = default_aot_binary_path(&dir);
+    let info = Command::new(&aot)
+        .env("FUSE_AOT_BUILD_INFO", "1")
+        .output()
+        .expect("run aot binary with build info env");
+    assert!(
+        info.status.success(),
+        "info stderr: {}",
+        String::from_utf8_lossy(&info.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&info.stdout);
+    assert!(stdout.contains("mode=aot"), "stdout: {stdout}");
+    assert!(stdout.contains("profile=release"), "stdout: {stdout}");
+    assert!(stdout.contains("target="), "stdout: {stdout}");
+    assert!(stdout.contains("rustc="), "stdout: {stdout}");
+    assert!(stdout.contains("cli="), "stdout: {stdout}");
+    assert!(stdout.contains("runtime_cache="), "stdout: {stdout}");
+    assert!(stdout.contains("contract="), "stdout: {stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_runtime_error_uses_stable_fatal_envelope() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  assert(false, "boom")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let aot = default_aot_binary_path(&dir);
+    let run = Command::new(&aot).output().expect("run aot binary");
+    assert_eq!(run.status.code(), Some(1), "status: {:?}", run.status);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("fatal: class=runtime_fatal"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("pid="), "stderr: {stderr}");
+    assert!(stderr.contains("assert failed: boom"), "stderr: {stderr}");
+    assert!(stderr.contains("mode=aot"), "stderr: {stderr}");
+    assert!(stderr.contains("profile=release"), "stderr: {stderr}");
+    assert!(stderr.contains("target="), "stderr: {stderr}");
+    assert!(stderr.contains("contract="), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_startup_trace_env_emits_operability_header() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let aot = default_aot_binary_path(&dir);
+    let run = Command::new(&aot)
+        .env("FUSE_AOT_STARTUP_TRACE", "1")
+        .output()
+        .expect("run aot binary with startup trace env");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(stderr.contains("startup: pid="), "stderr: {stderr}");
+    assert!(stderr.contains("mode=aot"), "stderr: {stderr}");
+    assert!(stderr.contains("profile=release"), "stderr: {stderr}");
+    assert!(stderr.contains("contract="), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_service_binary_handles_http_serve_routes() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Docs"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+config App:
+  port: String = env("PORT") ?? "3000"
+
+service DocsApi at "/api":
+  get "/health" -> Map<String, String>:
+    return {"status": "ok"}
+
+app "Docs":
+  serve(App.port)
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let port = reserve_local_port();
+    let aot = default_aot_binary_path(&dir);
+    let child = Command::new(&aot)
+        .env("PORT", port.to_string())
+        .env("FUSE_HOST", "127.0.0.1")
+        .env("FUSE_MAX_REQUESTS", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn aot service");
+
+    let response = match http_get_with_retry(port, "/api/health", 60) {
+        Some(response) => response,
+        None => {
+            let output = child.wait_with_output().expect("wait aot child after timeout");
+            panic!(
+                "failed to query aot health endpoint; stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    };
+    assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
+    assert!(response.contains("\"status\":\"ok\""), "response: {response}");
+
+    let output = child.wait_with_output().expect("wait aot child");
+    assert!(
+        output.status.success(),
+        "aot stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

@@ -4,37 +4,37 @@ FROM rust:slim-bookworm AS builder
 WORKDIR /workspace
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates pkg-config libsqlite3-dev libarchive-tools \
+  && apt-get install -y --no-install-recommends ca-certificates pkg-config libsqlite3-dev \
   && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
-COPY scripts ./scripts
+COPY scripts/cargo_env.sh ./scripts/cargo_env.sh
+
+RUN chmod +x scripts/cargo_env.sh
+RUN ./scripts/cargo_env.sh cargo build -p fuse --release
+
+COPY fls.md runtime.md scope.md ./
+COPY scripts/generate_guide_docs.sh ./scripts/generate_guide_docs.sh
 COPY docs ./docs
 
-RUN chmod +x scripts/cargo_env.sh scripts/generate_guide_docs.sh
-RUN ./scripts/cargo_env.sh cargo build -p fuse --release
-RUN ./scripts/cargo_env.sh cargo build -p fusec --release --bin fuse-lsp
+RUN chmod +x scripts/generate_guide_docs.sh
 RUN ./scripts/generate_guide_docs.sh
-RUN ./tmp/fuse-target/release/fuse build --manifest-path docs
-RUN mkdir -p docs/runnables/linux-x64 docs/downloads
-RUN cp ./tmp/fuse-target/release/fuse docs/runnables/linux-x64/fuse
-RUN cp ./tmp/fuse-target/release/fuse-lsp docs/runnables/linux-x64/fuse-lsp
-RUN chmod 0755 docs/runnables/linux-x64/fuse docs/runnables/linux-x64/fuse-lsp
-RUN bsdtar -C docs/runnables/linux-x64 -a -cf docs/downloads/fuse-pre-alpha-linux-x64.zip fuse fuse-lsp
+RUN ./tmp/fuse-target/release/fuse build --manifest-path docs --aot --release
 
 FROM debian:bookworm-slim AS runtime
-WORKDIR /app
+WORKDIR /app/docs
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates libsqlite3-0 \
   && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /workspace/tmp/fuse-target/release/fuse /usr/local/bin/fuse
 COPY --from=builder /workspace/docs /app/docs
+COPY --from=builder /workspace/docs/.fuse/build/program.aot /app/docs/docs-aot
 
 EXPOSE 4080
 ENV PORT=4080
 ENV FUSE_HOST=0.0.0.0
+ENV FUSE_STATIC_DIR=/app/docs
 
-CMD ["fuse", "run", "--manifest-path", "/app/docs"]
+CMD ["./docs-aot"]

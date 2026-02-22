@@ -33,12 +33,15 @@ options:
   --backend <ast|vm|native>  Backend override (run only)
   --color <auto|always|never>  Colorized CLI output policy
   --clean                 Remove .fuse/build before building (build only)
+  --aot                   Emit deployable AOT binary (build only)
+  --release               Use release profile for AOT output (build only; requires --aot)
 "#;
 
 const FUSE_ASSET_MAP_ENV: &str = "FUSE_ASSET_MAP";
 const BUILD_TARGET_FINGERPRINT: &str = env!("FUSE_BUILD_TARGET");
 const BUILD_RUSTC_FINGERPRINT: &str = env!("FUSE_BUILD_RUSTC_VERSION");
 const BUILD_CLI_VERSION_FINGERPRINT: &str = env!("CARGO_PKG_VERSION");
+const AOT_SEMANTIC_CONTRACT_VERSION: &str = "aot-v1";
 
 #[derive(Debug, Deserialize)]
 struct Manifest {
@@ -176,6 +179,8 @@ struct CommonArgs {
     color: Option<ColorChoice>,
     program_args: Vec<String>,
     clean: bool,
+    aot: bool,
+    release: bool,
 }
 
 #[derive(Default)]
@@ -375,7 +380,8 @@ fn run(args: Vec<String>) -> i32 {
     }
     let allow_program_args = matches!(command, Command::Run);
     let allow_clean = matches!(command, Command::Build);
-    let common = match parse_common_args(rest, allow_program_args, allow_clean) {
+    let allow_build_mode = matches!(command, Command::Build);
+    let common = match parse_common_args(rest, allow_program_args, allow_clean, allow_build_mode) {
         Ok(args) => args,
         Err(err) => {
             emit_cli_error(&err);
@@ -528,6 +534,8 @@ fn run(args: Vec<String>) -> i32 {
             &deps,
             app.as_deref(),
             common.clean,
+            common.aot,
+            common.release,
         ),
         Command::Check => {
             if common.entry.is_none() && manifest.is_some() {
@@ -1649,6 +1657,7 @@ fn parse_common_args(
     args: &[String],
     allow_program_args: bool,
     allow_clean: bool,
+    allow_build_mode: bool,
 ) -> Result<CommonArgs, String> {
     let mut out = CommonArgs::default();
     let mut idx = 0;
@@ -1730,6 +1739,22 @@ fn parse_common_args(
             idx += 1;
             continue;
         }
+        if arg == "--aot" {
+            if !allow_build_mode {
+                return Err("--aot is only supported for fuse build".to_string());
+            }
+            out.aot = true;
+            idx += 1;
+            continue;
+        }
+        if arg == "--release" {
+            if !allow_build_mode {
+                return Err("--release is only supported for fuse build".to_string());
+            }
+            out.release = true;
+            idx += 1;
+            continue;
+        }
         if arg.starts_with("--") {
             return Err(format!("unknown option: {arg}"));
         }
@@ -1747,6 +1772,9 @@ fn parse_common_args(
             continue;
         }
         return Err(format!("unexpected argument: {arg}"));
+    }
+    if out.release && !out.aot {
+        return Err("--release requires --aot (use `fuse build --aot --release`)".to_string());
     }
     Ok(out)
 }
@@ -1829,6 +1857,8 @@ fn run_build(
     deps: &HashMap<String, PathBuf>,
     app: Option<&str>,
     clean: bool,
+    aot: bool,
+    release: bool,
 ) -> i32 {
     if clean {
         if let Err(err) = clean_build_dir(manifest_dir) {
@@ -1856,10 +1886,19 @@ fn run_build(
         emit_cli_error(&err);
         return 1;
     }
-    if let Some(native_bin) =
-        manifest.and_then(|m| m.build.as_ref().and_then(|b| b.native_bin.clone()))
-    {
-        if let Err(err) = write_native_binary(manifest_dir, &artifacts.native, app, &native_bin) {
+    let configured_native_bin =
+        manifest.and_then(|m| m.build.as_ref().and_then(|b| b.native_bin.clone()));
+    let aot_out = configured_native_bin.or_else(|| {
+        if aot {
+            Some(default_aot_output_path())
+        } else {
+            None
+        }
+    });
+    if let Some(native_bin) = aot_out {
+        if let Err(err) =
+            write_native_binary(manifest_dir, &artifacts.native, app, &native_bin, release)
+        {
             emit_cli_error(&err);
             return 1;
         }
@@ -1998,11 +2037,20 @@ fn write_openapi(
     Ok(())
 }
 
+fn default_aot_output_path() -> String {
+    if cfg!(windows) {
+        ".fuse/build/program.aot.exe".to_string()
+    } else {
+        ".fuse/build/program.aot".to_string()
+    }
+}
+
 fn write_native_binary(
     manifest_dir: Option<&Path>,
     program: &fusec::native::NativeProgram,
     app: Option<&str>,
     out_path: &str,
+    release: bool,
 ) -> Result<(), String> {
     let build_dir = build_dir(manifest_dir)?;
     if !build_dir.exists() {
@@ -2017,6 +2065,8 @@ fn write_native_binary(
     configs.sort_by(|a, b| a.name.cmp(&b.name));
     let config_bytes =
         bincode::serialize(&configs).map_err(|err| format!("config encode failed: {err}"))?;
+    let program_bytes =
+        bincode::serialize(program).map_err(|err| format!("program encode failed: {err}"))?;
     let mut types: Vec<fusec::ir::TypeInfo> = program.ir.types.values().cloned().collect();
     types.sort_by(|a, b| a.name.cmp(&b.name));
     let type_bytes =
@@ -2026,9 +2076,11 @@ fn write_native_binary(
         &runner_path,
         &artifact.entry_symbol,
         &artifact.interned_strings,
+        &program_bytes,
         &config_bytes,
         &type_bytes,
         &artifact.config_defaults,
+        release,
     )?;
     let out_path = resolve_output_path(manifest_dir, out_path)?;
     if let Some(parent) = out_path.parent() {
@@ -2037,7 +2089,7 @@ fn write_native_binary(
                 .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
         }
     }
-    link_native_binary(&runner_path, &object_path, &out_path)?;
+    link_native_binary(&runner_path, &object_path, &out_path, release)?;
     Ok(())
 }
 
@@ -2057,9 +2109,11 @@ fn write_native_runner(
     path: &Path,
     entry_symbol: &str,
     interned_strings: &[String],
+    program_bytes: &[u8],
     config_bytes: &[u8],
     type_bytes: &[u8],
     config_defaults: &[fusec::native::ConfigDefaultSymbol],
+    release: bool,
 ) -> Result<(), String> {
     let interned = if interned_strings.is_empty() {
         "&[]".to_string()
@@ -2074,6 +2128,12 @@ fn write_native_runner(
         "&[]".to_string()
     } else {
         let bytes: Vec<String> = config_bytes.iter().map(|b| b.to_string()).collect();
+        format!("&[{}]", bytes.join(", "))
+    };
+    let program_blob = if program_bytes.is_empty() {
+        "&[]".to_string()
+    } else {
+        let bytes: Vec<String> = program_bytes.iter().map(|b| b.to_string()).collect();
         format!("&[{}]", bytes.join(", "))
     };
     let type_blob = if type_bytes.is_empty() {
@@ -2100,6 +2160,13 @@ fn write_native_runner(
     } else {
         default_matches.push_str("        _ => Err(format!(\"unknown config default {name}\")),\n");
     }
+    let target_literal = format!("{BUILD_TARGET_FINGERPRINT:?}");
+    let rustc_literal = format!("{BUILD_RUSTC_FINGERPRINT:?}");
+    let cli_literal = format!("{BUILD_CLI_VERSION_FINGERPRINT:?}");
+    let contract_literal = format!("{AOT_SEMANTIC_CONTRACT_VERSION:?}");
+    let mode_literal = "\"aot\"";
+    let profile_literal = if release { "\"release\"" } else { "\"debug\"" };
+    let runtime_cache_version = fusec::native::CACHE_VERSION;
     let source = format!(
         r#"use fusec::interp::format_error_value;
 use fusec::native::value::{{NativeHeap, NativeValue}};
@@ -2119,8 +2186,59 @@ unsafe extern "C" {{
 {default_decls}
 
 const INTERNED_STRINGS: &[&str] = {interned};
+const PROGRAM_BYTES: &[u8] = {program_blob};
 const CONFIG_BYTES: &[u8] = {config_blob};
 const TYPE_BYTES: &[u8] = {type_blob};
+const AOT_STARTUP_MODE: &str = {mode_literal};
+const AOT_BUILD_PROFILE: &str = {profile_literal};
+const AOT_BUILD_TARGET: &str = {target_literal};
+const AOT_BUILD_RUSTC: &str = {rustc_literal};
+const AOT_BUILD_CLI: &str = {cli_literal};
+const AOT_RUNTIME_CACHE_VERSION: u32 = {runtime_cache_version};
+const AOT_SEMANTIC_CONTRACT: &str = {contract_literal};
+
+fn build_info_line() -> String {{
+    format!(
+        "mode={{}} profile={{}} target={{}} rustc={{}} cli={{}} runtime_cache={{}} contract={{}}",
+        AOT_STARTUP_MODE,
+        AOT_BUILD_PROFILE,
+        AOT_BUILD_TARGET,
+        AOT_BUILD_RUSTC,
+        AOT_BUILD_CLI,
+        AOT_RUNTIME_CACHE_VERSION,
+        AOT_SEMANTIC_CONTRACT
+    )
+}}
+
+fn sanitize_message(raw: &str) -> String {{
+    raw.replace('\n', "\\n").replace('\r', "\\r")
+}}
+
+fn emit_fatal(class: &str, message: &str) {{
+    eprintln!(
+        "fatal: class={{}} pid={{}} message={{}} {{}}",
+        class,
+        std::process::id(),
+        sanitize_message(message),
+        build_info_line()
+    );
+}}
+
+fn emit_startup_trace() {{
+    if std::env::var("FUSE_AOT_STARTUP_TRACE").ok().as_deref() == Some("1") {{
+        eprintln!("startup: pid={{}} {{}}", std::process::id(), build_info_line());
+    }}
+}}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {{
+    if let Some(msg) = payload.downcast_ref::<&str>() {{
+        return (*msg).to_string();
+    }}
+    if let Some(msg) = payload.downcast_ref::<String>() {{
+        return msg.clone();
+    }}
+    "panic".to_string()
+}}
 
 fn call_native(entry: EntryFn, heap: &mut NativeHeap) -> Result<fusec::interp::Value, String> {{
     let mut out = NativeValue::null();
@@ -2170,23 +2288,43 @@ fn load_types(heap: &mut NativeHeap) -> Result<(), String> {{
     load_types_for_binary(types.iter(), heap)
 }}
 
-fn main() {{
+fn run_program() -> Result<(), String> {{
+    if PROGRAM_BYTES.is_empty() {{
+        return Err("missing native program metadata".to_string());
+    }}
+    let program: fusec::native::NativeProgram =
+        bincode::deserialize(PROGRAM_BYTES).map_err(|err| format!("program decode failed: {{err}}"))?;
+    let mut runtime_vm = fusec::native::NativeVm::new(&program);
+    let _runtime_context = runtime_vm.enter_runtime_context();
     let mut heap = NativeHeap::new();
     for value in INTERNED_STRINGS {{
         heap.intern_string((*value).to_string());
     }}
-    if let Err(err) = load_types(&mut heap) {{
-        eprintln!("run error: {{err}}");
-        std::process::exit(1);
+    load_types(&mut heap)?;
+    load_configs(&mut heap)?;
+    call_native(fuse_entry, &mut heap)?;
+    Ok(())
+}}
+
+fn main() {{
+    if std::env::var("FUSE_AOT_BUILD_INFO").ok().as_deref() == Some("1") {{
+        println!("{{}}", build_info_line());
+        return;
     }}
-    if let Err(err) = load_configs(&mut heap) {{
-        eprintln!("run error: {{err}}");
-        std::process::exit(1);
-    }}
-    if let Err(err) = call_native(fuse_entry, &mut heap) {{
-        eprintln!("run error: {{err}}");
-        std::process::exit(1);
-    }}
+    emit_startup_trace();
+    let status = match std::panic::catch_unwind(run_program) {{
+        Ok(Ok(())) => 0,
+        Ok(Err(err)) => {{
+            emit_fatal("runtime_fatal", &err);
+            1
+        }}
+        Err(payload) => {{
+            let msg = panic_message(payload.as_ref());
+            emit_fatal("panic", &msg);
+            101
+        }}
+    }};
+    std::process::exit(status);
 }}
 "#
     );
@@ -2194,23 +2332,38 @@ fn main() {{
     Ok(())
 }
 
-fn link_native_binary(runner: &Path, object: &Path, out_path: &Path) -> Result<(), String> {
+fn link_native_binary(
+    runner: &Path,
+    object: &Path,
+    out_path: &Path,
+    release: bool,
+) -> Result<(), String> {
     let repo_root = find_repo_root(
         runner
             .parent()
             .ok_or_else(|| "runner path missing parent".to_string())?,
     )?;
     let script = repo_root.join("scripts").join("cargo_env.sh");
-    let build_output = ProcessCommand::new(&script)
+    let mut build_cmd = ProcessCommand::new(&script);
+    build_cmd
         .arg("cargo")
         .arg("build")
         .arg("-p")
         .arg("fusec")
+        // The generated AOT runner also links against bincode.
+        // Build `fuse` in the same profile to ensure `libbincode*.rlib`
+        // is present in `<target>/<profile>/deps` on clean CI runners.
+        .arg("-p")
+        .arg("fuse");
+    if release {
+        build_cmd.arg("--release");
+    }
+    let build_output = build_cmd
         .output()
         .map_err(|err| format!("failed to run {}: {err}", script.display()))?;
     if !build_output.status.success() {
         return Err(format!(
-            "native link: failed to build fusec\n{}",
+            "native link: failed to build link dependencies\n{}",
             summarize_command_failure(&build_output)
         ));
     }
@@ -2218,10 +2371,12 @@ fn link_native_binary(runner: &Path, object: &Path, out_path: &Path) -> Result<(
         Ok(value) if !value.is_empty() => PathBuf::from(value),
         _ => repo_root.join("tmp").join("fuse-target"),
     };
-    let deps_dir = target_dir.join("debug").join("deps");
+    let profile = if release { "release" } else { "debug" };
+    let deps_dir = target_dir.join(profile).join("deps");
     let fusec_rlib = find_latest_rlib(&deps_dir, "libfusec")?;
     let bincode_rlib = find_latest_rlib(&deps_dir, "libbincode")?;
-    let rustc_output = ProcessCommand::new(&script)
+    let mut rustc_cmd = ProcessCommand::new(&script);
+    rustc_cmd
         .arg("rustc")
         .arg("--edition=2024")
         .arg(runner)
@@ -2234,7 +2389,11 @@ fn link_native_binary(runner: &Path, object: &Path, out_path: &Path) -> Result<(
         .arg("--extern")
         .arg(format!("bincode={}", bincode_rlib.display()))
         .arg("-C")
-        .arg(format!("link-arg={}", object.display()))
+        .arg(format!("link-arg={}", object.display()));
+    if release {
+        rustc_cmd.arg("-C").arg("opt-level=3");
+    }
+    let rustc_output = rustc_cmd
         .output()
         .map_err(|err| format!("failed to run rustc via {}: {err}", script.display()))?;
     if !rustc_output.status.success() {

@@ -1,9 +1,22 @@
 # FUSE
 
-*Write intent. Get software.*
-
 FUSE is a small, strict language for building CLI apps and HTTP services.
-This document is the overview. It explains the model and how to navigate the rest of the docs.
+This document is the product overview and documentation index.
+
+It is intentionally non-normative: use it to orient quickly, then defer to `fls.md` and
+`runtime.md` for behavioral guarantees.
+
+---
+
+## Document role
+
+Use this file to answer:
+
+- what FUSE is optimizing for
+- where to find authoritative specs for syntax, semantics, and runtime behavior
+- what tooling/workflow exists at a high level
+
+Do not use this file as the final authority for parser/runtime edge cases.
 
 ---
 
@@ -19,7 +32,8 @@ Primary references while working in this codebase:
 - `BENCHMARKS.md` defines real-world workload benchmarks and metric collection.
 - `VERSIONING_POLICY.md` defines language/runtime/tooling versioning and compatibility guarantees.
 
-If a detail appears in multiple docs, treat `IDENTITY_CHARTER.md` as authoritative for identity/scope boundaries, `fls.md` for syntax/static rules, and `runtime.md` for runtime behavior.
+If a detail appears in multiple docs, treat `IDENTITY_CHARTER.md` as authoritative for identity
+boundaries, `fls.md` for syntax/static rules, and `runtime.md` for runtime behavior.
 
 See also: [What FUSE optimizes for](#what-fuse-optimizes-for), [Guiding idea](#guiding-idea), [FUSE identity charter](IDENTITY_CHARTER.md).
 
@@ -48,11 +62,11 @@ Runtime surfaces are built in and consistent across backends:
 
 You describe contracts in FUSE types and route signatures. The runtime applies those contracts at boundaries instead of requiring repeated glue code.
 
-See also: [Quick taste](#quick-taste), [Formal language specification](fls.md), [Runtime semantics](runtime.md).
+See also: [Quick examples](#quick-examples), [Formal language specification](fls.md), [Runtime semantics](runtime.md).
 
 ---
 
-## Quick taste
+## Quick examples
 
 ### CLI app
 
@@ -88,7 +102,7 @@ See also: [Runtime semantics](runtime.md), [Formal language specification](fls.m
 
 ---
 
-## Current implementation (summary)
+## Implementation snapshot
 
 FUSE currently ships with:
 
@@ -144,6 +158,8 @@ Typical commands:
 - `fuse dev`
 - `fuse test`
 - `fuse build`
+- `fuse build --aot`
+- `fuse build --aot --release`
 
 Minimal manifest:
 
@@ -162,7 +178,7 @@ Dependency contract highlights:
 - `fuse.lock` records resolved dependency sources for reproducible resolution.
 - conflicting transitive dependency specs by name are rejected deterministically.
 
-See also: [Current implementation (summary)](#current-implementation-summary), [Runtime semantics](runtime.md), [Scope + constraints](scope.md).
+See also: [Implementation snapshot](#implementation-snapshot), [Runtime semantics](runtime.md), [Scope + constraints](scope.md).
 
 ---
 

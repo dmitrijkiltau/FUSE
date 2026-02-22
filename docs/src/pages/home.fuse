@@ -10,12 +10,17 @@ fn home_page() -> Html:
     section(class="quick-links"):
       h2(): "Install and Run"
       div(class="card-grid"):
-        a({"href": "/downloads/fuse-pre-alpha-linux-x64.zip", "class": "card", "download": "fuse-pre-alpha-linux-x64.zip"}):
-          h3(): "Download Pre-Alpha ZIP"
-          p(): "Direct download: Linux x64 bundle built by docs/Dockerfile with fuse and fuse-lsp."
+        a({
+          "href": "https://github.com/dmitrijkiltau/FUSE/releases",
+          "class": "card",
+          "target": "_blank",
+          "rel": "noopener noreferrer"
+        }):
+          h3(): "GitHub Releases"
+          p(): "All downloadable release artifacts are published on the GitHub Releases page."
         a(href="/specs/reference", class="card"):
-          h3(): "Docker Docs Runtime"
-          p(): "Run docs in Docker and generate download artifacts during image build."
+          h3(): "Release Reference"
+          p(): "Release policy, runtime contract, and packaging behavior for v0.4.x."
 
     section(class="quick-start"):
       h2(): "Quick Start"
@@ -79,7 +84,7 @@ fn home_page() -> Html:
           h4(): "Error Handling"
           pre():
             code(class="language-fuse"):
-              html.text("type std.Error.NotFound:\n  message: String\n\nfn get_user(id: Id) -> User!std.Error.NotFound:\n  let user = find(id) ?! std.Error.NotFound(message=\"not found\")\n  return user")
+              html.text("import { NotFound } from std.Error\n\nfn get_user(id: Id) -> User!NotFound:\n  let user = find(id) ?! NotFound(message=\"not found\")\n  return user")
         div(class="example"):
           h4(): "Database"
           pre():

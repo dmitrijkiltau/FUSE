@@ -14,6 +14,7 @@ Options:
   --dist <path>      Artifact directory (default: dist)
   --output <path>    SHA256 output path (default: <dist>/SHA256SUMS)
   --metadata <path>  JSON metadata path (default: <dist>/release-artifacts.json)
+  SOURCE_DATE_EPOCH  Optional unix timestamp for deterministic generatedAtUtc metadata
   -h, --help         Show this help
 USAGE
 }
@@ -104,10 +105,32 @@ sha256_for_file() {
   esac
 }
 
+iso_utc_from_epoch() {
+  local epoch="$1"
+  if date -u -d "@$epoch" +"%Y-%m-%dT%H:%M:%SZ" >/dev/null 2>&1; then
+    date -u -d "@$epoch" +"%Y-%m-%dT%H:%M:%SZ"
+  else
+    date -u -r "$epoch" +"%Y-%m-%dT%H:%M:%SZ"
+  fi
+}
+
+GENERATED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+SOURCE_EPOCH=""
+if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+  if [[ ! "${SOURCE_DATE_EPOCH}" =~ ^[0-9]+$ ]]; then
+    echo "SOURCE_DATE_EPOCH must be an integer unix timestamp" >&2
+    exit 1
+  fi
+  SOURCE_EPOCH="${SOURCE_DATE_EPOCH}"
+  GENERATED_AT="$(iso_utc_from_epoch "$SOURCE_EPOCH")"
+fi
+
 shopt -s nullglob
 candidates=(
   "$DIST_DIR"/fuse-cli-*.tar.gz
   "$DIST_DIR"/fuse-cli-*.zip
+  "$DIST_DIR"/fuse-aot-*.tar.gz
+  "$DIST_DIR"/fuse-aot-*.zip
   "$DIST_DIR"/fuse-vscode-*.vsix
 )
 shopt -u nullglob
@@ -150,7 +173,10 @@ json_escape() {
 TMP_META="$(mktemp "$ROOT/tmp/checksum-meta.XXXXXX")"
 {
   printf '{\n'
-  printf '  "generatedAtUtc": "%s",\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  printf '  "generatedAtUtc": "%s",\n' "$GENERATED_AT"
+  if [[ -n "$SOURCE_EPOCH" ]]; then
+    printf '  "sourceDateEpoch": %s,\n' "$SOURCE_EPOCH"
+  fi
   printf '  "artifacts": [\n'
   for i in "${!sorted_names[@]}"; do
     name="${sorted_names[$i]}"

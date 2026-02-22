@@ -1,6 +1,6 @@
 services:
   docs:
-    image: fuse-docs:pre-alpha
+    image: fuse-docs:0.4.0
     build:
       context: ..
       dockerfile: docs/Dockerfile
@@ -9,3 +9,4 @@ services:
     environment:
       PORT: "4080"
       FUSE_HOST: "0.0.0.0"
+      FUSE_STATIC_DIR: "/app/docs"
