@@ -354,6 +354,12 @@ For `Bytes`, CLI values must be base64 text.
 
 Validation errors are printed as JSON on stderr and usually exit with code 2.
 
+`fuse` CLI wrapper output contract (`check|run|build|test`):
+
+- emits stderr step markers: `[command] start` and `[command] ok|failed|validation failed`
+- keeps JSON validation payloads uncolored/machine-readable
+- `run` CLI argument validation failures exit with code `2`
+
 ---
 
 ## Builtins

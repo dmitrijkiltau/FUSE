@@ -27,6 +27,7 @@ distribution packaging.
 
 Compatibility is defined by documented behavior in `fls.md`, `runtime.md`, `scope.md`, and
 `VERSIONING_POLICY.md`.
+Upgrade guidance for this breaking minor is in `docs/migrations/0.1-to-0.2.md`.
 
 ## Requirements
 

@@ -23,6 +23,8 @@ All notable changes to this project are documented in this file.
 - VSIX integrity verification script: `scripts/verify_vscode_vsix.sh`.
 - Benchmark regression gate script: `scripts/check_use_case_bench_regression.sh`.
 - Migration guide: `docs/migrations/0.1-to-0.2.md`.
+- CLI `input(prompt: String = "") -> String` builtin across AST/VM/native backends.
+- CLI output color policy: `--color auto|always|never` (respects `NO_COLOR`).
 
 ### Changed
 
@@ -31,6 +33,11 @@ All notable changes to this project are documented in this file.
   - benchmark regression enforcement vs checked-in baseline
   - VSIX package build and validation
 - Benchmark metrics now record millisecond values with sub-ms precision.
+- Runtime `log(...)` text level tags now follow CLI color policy while JSON log lines remain plain.
+- `fuse check|run|build|test` now emit consistent stderr step markers:
+  - `[command] start`
+  - `[command] ok|failed|validation failed`
+- CLI diagnostics now use normalized `error:` / `warning:` prefixes.
 
 ### Migration
 
