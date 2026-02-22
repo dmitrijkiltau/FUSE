@@ -8,13 +8,17 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY fls.md runtime.md scope.md ./
 COPY crates ./crates
-COPY scripts ./scripts
+COPY scripts/cargo_env.sh ./scripts/cargo_env.sh
+
+RUN chmod +x scripts/cargo_env.sh
+RUN ./scripts/cargo_env.sh cargo build -p fuse --release
+
+COPY fls.md runtime.md scope.md ./
+COPY scripts/generate_guide_docs.sh ./scripts/generate_guide_docs.sh
 COPY docs ./docs
 
-RUN chmod +x scripts/cargo_env.sh scripts/generate_guide_docs.sh
-RUN ./scripts/cargo_env.sh cargo build -p fuse --release
+RUN chmod +x scripts/generate_guide_docs.sh
 RUN ./scripts/generate_guide_docs.sh
 RUN ./tmp/fuse-target/release/fuse build --manifest-path docs --aot --release
 
@@ -31,5 +35,6 @@ COPY --from=builder /workspace/docs/.fuse/build/program.aot /app/docs/docs-aot
 EXPOSE 4080
 ENV PORT=4080
 ENV FUSE_HOST=0.0.0.0
+ENV FUSE_STATIC_DIR=/app/docs
 
 CMD ["./docs-aot"]

@@ -24,6 +24,7 @@ Docs are served at <http://localhost:4080>.
 The Docker image builds and runs docs using the docs AOT binary.
 It does not publish downloadable release artifacts.
 Run these commands from the repository root.
+The first `--build` run compiles Rust crates and can take a while; subsequent builds are much faster with Docker layer cache.
 
 Build the image:
 
@@ -41,4 +42,10 @@ Or run with Compose:
 
 ```bash
 docker compose -f docs/docker-compose.yml up --build
+```
+
+After the image is built once, start faster without rebuilding:
+
+```bash
+docker compose -f docs/docker-compose.yml up
 ```

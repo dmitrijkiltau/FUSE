@@ -9,3 +9,4 @@ services:
     environment:
       PORT: "4080"
       FUSE_HOST: "0.0.0.0"
+      FUSE_STATIC_DIR: "/app/docs"
