@@ -46,7 +46,7 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
    - `./scripts/generate_release_checksums.sh` (emits `dist/SHA256SUMS` and `dist/release-artifacts.json`)
 7. Run the release artifact matrix workflow (`.github/workflows/release-artifacts.yml`):
    - Trigger on tag push (`v*`) or run manually via `workflow_dispatch`.
-   - Produces verified per-platform artifacts for `linux-x64`, `macos-x64`, `macos-arm64`, `windows-x64`.
+   - Produces verified per-platform artifacts for `linux-x64`, `macos-arm64`, `windows-x64`.
    - On tag refs, publishes GitHub release assets automatically and runs post-publish checksum/package verification.
 8. Commit release metadata:
    - `git add CHANGELOG.md RELEASE.md VERSIONING_POLICY.md README.md crates/*/Cargo.toml Cargo.lock tools/vscode/package*.json tools/vscode/CHANGELOG.md`

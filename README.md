@@ -190,7 +190,7 @@ Canonical artifact names:
 | Release metadata | `dist/release-artifacts.json` |
 
 Supported release matrix platforms:
-`linux-x64`, `macos-x64`, `macos-arm64`, `windows-x64`.
+`linux-x64`, `macos-arm64`, `windows-x64`.
 
 ```bash
 # Build release binaries
