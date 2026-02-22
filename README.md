@@ -21,7 +21,7 @@ app "users":
 
 ## Status
 
-FUSE v0.3.0 is released. This branch tracks the v0.3.x quality/stability line with
+FUSE v0.3.2 is released. This branch tracks the v0.3.x quality/stability line with
 native/backend parity hardening, multi-file tooling reliability, dependency workflow
 contract coverage, and release artifact matrix automation.
 

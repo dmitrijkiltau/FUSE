@@ -24,7 +24,7 @@ jobs:
         include:
           - runner: ubuntu-latest
             platform: linux-x64
-          - runner: macos-13
+          - runner: macos-15-intel
             platform: macos-x64
           - runner: macos-14
             platform: macos-arm64

@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [0.3.0] - 2026-02-22
+## [0.3.2] - 2026-02-22
 
 ### Added
 
@@ -49,7 +49,7 @@ All notable changes to this project are documented in this file.
 
 ### Migration
 
-- No source-breaking migration is required from `0.2.x` to `0.3.0`.
+- No source-breaking migration is required from `0.2.x` to `0.3.2`.
 
 ## [0.2.0] - 2026-02-22
 
