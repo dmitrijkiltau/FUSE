@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -21,7 +21,7 @@ fn temp_project_dir() -> PathBuf {
     dir
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct TestIrMeta {
     #[serde(default)]
     version: u32,
@@ -33,9 +33,15 @@ struct TestIrMeta {
     manifest_hash: Option<String>,
     #[serde(default)]
     lock_hash: Option<String>,
+    #[serde(default)]
+    build_target: String,
+    #[serde(default)]
+    rustc_version: String,
+    #[serde(default)]
+    cli_version: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct TestIrFileMeta {
     path: String,
     #[serde(default)]
@@ -158,6 +164,18 @@ fn overwrite_cached_ir_from_source(dir: &Path, source: &str) {
     fs::write(dir.join(".fuse").join("build").join("program.ir"), ir_bytes)
         .expect("write cache override ir");
     let _ = fs::remove_file(source_path);
+}
+
+fn read_program_meta(dir: &Path) -> TestIrMeta {
+    let meta_path = dir.join(".fuse").join("build").join("program.meta");
+    let bytes = fs::read(&meta_path).expect("read program.meta");
+    bincode::deserialize(&bytes).expect("decode program.meta")
+}
+
+fn write_program_meta(dir: &Path, meta: &TestIrMeta) {
+    let meta_path = dir.join(".fuse").join("build").join("program.meta");
+    let bytes = bincode::serialize(meta).expect("encode program.meta");
+    fs::write(meta_path, bytes).expect("write program.meta");
 }
 
 #[test]
@@ -596,9 +614,7 @@ app "Demo":
         panic!("stderr: {}", String::from_utf8_lossy(&output.stderr));
     }
 
-    let meta_path = dir.join(".fuse").join("build").join("program.meta");
-    let bytes = fs::read(&meta_path).expect("read program.meta");
-    let meta: TestIrMeta = bincode::deserialize(&bytes).expect("decode program.meta");
+    let meta = read_program_meta(&dir);
 
     assert_eq!(meta.version, 3, "meta: {meta:?}");
     assert!(meta.native_cache_version > 0, "meta: {meta:?}");
@@ -610,11 +626,65 @@ app "Demo":
         meta.lock_hash.as_deref().is_some_and(is_hex_sha1),
         "meta: {meta:?}"
     );
+    assert!(
+        !meta.build_target.trim().is_empty(),
+        "meta target fingerprint missing: {meta:?}"
+    );
+    assert!(
+        !meta.rustc_version.trim().is_empty(),
+        "meta rustc fingerprint missing: {meta:?}"
+    );
+    assert!(
+        !meta.cli_version.trim().is_empty(),
+        "meta cli fingerprint missing: {meta:?}"
+    );
     assert!(!meta.files.is_empty(), "meta: {meta:?}");
     for file in &meta.files {
         assert!(!file.path.is_empty(), "meta file entry: {file:?}");
         assert!(is_hex_sha1(&file.hash), "meta file entry: {file:?}");
     }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_invalidates_cached_ir_when_meta_target_fingerprint_changes() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let source_program = r#"
+fn main(name: String = "world"):
+  print("source-" + name)
+
+app "Demo":
+  main()
+"#;
+    write_basic_manifest_project(&dir, source_program);
+    run_build_project(&dir);
+
+    let cached_program = r#"
+fn main(name: String = "world"):
+  print("cache-" + name)
+
+app "Demo":
+  main()
+"#;
+    overwrite_cached_ir_from_source(&dir, cached_program);
+
+    let mut meta = read_program_meta(&dir);
+    meta.build_target.push_str("-tampered");
+    write_program_meta(&dir, &meta);
+
+    let run = run_with_named_arg(&dir, "--name=fingerprint");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).trim(),
+        "source-fingerprint"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -967,6 +1037,684 @@ version = 2
 }
 
 #[test]
+fn check_reports_transitive_dependency_conflicts_with_origin_paths() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[dependencies]
+AuthA = { path = "./deps/auth-a" }
+AuthB = { path = "./deps/auth-b" }
+"#,
+    )
+    .expect("write root fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    )
+    .expect("write main.fuse");
+
+    fs::create_dir_all(dir.join("deps").join("auth-a")).expect("create auth-a");
+    fs::write(
+        dir.join("deps").join("auth-a").join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "AuthA"
+
+[dependencies]
+Shared = { path = "../shared-one" }
+"#,
+    )
+    .expect("write auth-a manifest");
+    fs::write(
+        dir.join("deps").join("auth-a").join("lib.fuse"),
+        r#"
+fn local() -> Int:
+  return 1
+"#,
+    )
+    .expect("write auth-a lib");
+
+    fs::create_dir_all(dir.join("deps").join("auth-b")).expect("create auth-b");
+    fs::write(
+        dir.join("deps").join("auth-b").join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "AuthB"
+
+[dependencies]
+Shared = { path = "../shared-two" }
+"#,
+    )
+    .expect("write auth-b manifest");
+    fs::write(
+        dir.join("deps").join("auth-b").join("lib.fuse"),
+        r#"
+fn local() -> Int:
+  return 2
+"#,
+    )
+    .expect("write auth-b lib");
+
+    fs::create_dir_all(dir.join("deps").join("shared-one")).expect("create shared-one");
+    fs::write(
+        dir.join("deps").join("shared-one").join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "SharedOne"
+"#,
+    )
+    .expect("write shared-one manifest");
+    fs::write(
+        dir.join("deps").join("shared-one").join("lib.fuse"),
+        r#"
+fn value() -> Int:
+  return 10
+"#,
+    )
+    .expect("write shared-one lib");
+
+    fs::create_dir_all(dir.join("deps").join("shared-two")).expect("create shared-two");
+    fs::write(
+        dir.join("deps").join("shared-two").join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "SharedTwo"
+"#,
+    )
+    .expect("write shared-two manifest");
+    fs::write(
+        dir.join("deps").join("shared-two").join("lib.fuse"),
+        r#"
+fn value() -> Int:
+  return 20
+"#,
+    )
+    .expect("write shared-two lib");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse check");
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[FUSE_DEP_CONFLICTING_SPECS]"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("dependency Shared requested with conflicting specs"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("deps/auth-a/fuse.toml"), "stderr: {stderr}");
+    assert!(stderr.contains("deps/auth-b/fuse.toml"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_rejects_dependency_with_multiple_git_reference_fields() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[dependencies]
+Bad = { git = "https://example.com/demo.git", tag = "v1.0.0", branch = "main" }
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse check");
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[FUSE_DEP_GIT_REF_CONFLICT]"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("dependency Bad must specify at most one of rev, tag, branch, version"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_reports_invalid_dependency_source_hint() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[dependencies]
+Bad = "1.2.3"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse check");
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[FUSE_DEP_INVALID_SOURCE]"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("dependency Bad has invalid source \"1.2.3\""),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("use a relative/absolute path or { git = \"...\" }"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_keeps_lockfile_stable_when_dependencies_are_unchanged() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[dependencies]
+Helper = { path = "./deps/helper" }
+"#,
+    )
+    .expect("write root fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    )
+    .expect("write main.fuse");
+    fs::create_dir_all(dir.join("deps").join("helper")).expect("create helper dep");
+    fs::write(
+        dir.join("deps").join("helper").join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "Helper"
+"#,
+    )
+    .expect("write helper manifest");
+    fs::write(
+        dir.join("deps").join("helper").join("lib.fuse"),
+        r#"
+fn prefix(name: String) -> String:
+  return "dep-" + name
+"#,
+    )
+    .expect("write helper lib");
+
+    run_build_project(&dir);
+    let lock_path = dir.join("fuse.lock");
+    let first = fs::read_to_string(&lock_path).expect("read lock after first build");
+    run_build_project(&dir);
+    let second = fs::read_to_string(&lock_path).expect("read lock after second build");
+
+    assert_eq!(first, second, "lockfile should remain stable");
+    assert!(
+        second.contains("[dependencies.Helper]"),
+        "lockfile: {second}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_supports_dependency_manifest_variants() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[dependencies]
+AuthString = "./deps/auth-string"
+AuthInline = { path = "./deps/auth-inline" }
+
+[dependencies.AuthTable]
+path = "./deps/auth-table"
+"#,
+    )
+    .expect("write root fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+import AuthString from "dep:AuthString/lib"
+import AuthInline from "dep:AuthInline/lib"
+import AuthTable from "dep:AuthTable/lib"
+
+app "Demo":
+  let a = AuthString.plus_one(1)
+  let b = AuthInline.plus_one(a)
+  let c = AuthTable.plus_one(b)
+  print(c)
+"#,
+    )
+    .expect("write main.fuse");
+
+    for dep in ["auth-string", "auth-inline", "auth-table"] {
+        let dep_dir = dir.join("deps").join(dep);
+        fs::create_dir_all(&dep_dir).expect("create dep dir");
+        fs::write(
+            dep_dir.join("fuse.toml"),
+            r#"
+[package]
+entry = "lib.fuse"
+app = "Dep"
+"#,
+        )
+        .expect("write dep manifest");
+        fs::write(
+            dep_dir.join("lib.fuse"),
+            r#"
+fn plus_one(value: Int) -> Int:
+  return value + 1
+"#,
+        )
+        .expect("write dep lib");
+    }
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let check = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse check");
+    assert!(
+        check.status.success(),
+        "check stderr: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+
+    let run = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse run");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "4");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_supports_windows_style_dependency_path_separators() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[dependencies]
+Helper = { path = './deps\helper' }
+"#,
+    )
+    .expect("write root fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+import Helper from "dep:Helper/lib"
+
+app "Demo":
+  print(Helper.prefix("ok"))
+"#,
+    )
+    .expect("write main.fuse");
+
+    let helper_dir = dir.join("deps").join("helper");
+    fs::create_dir_all(&helper_dir).expect("create helper dep");
+    fs::write(
+        helper_dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "Helper"
+"#,
+    )
+    .expect("write helper manifest");
+    fs::write(
+        helper_dir.join("lib.fuse"),
+        r#"
+fn prefix(name: String) -> String:
+  return "dep-" + name
+"#,
+    )
+    .expect("write helper lib");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let check = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse check");
+    assert!(
+        check.status.success(),
+        "check stderr: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+
+    let run = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse run");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "dep-ok");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_reports_lockfile_version_error_code_with_remediation_hint() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[dependencies]
+Helper = { path = "./deps/helper" }
+"#,
+    )
+    .expect("write root fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    )
+    .expect("write main.fuse");
+
+    let helper_dir = dir.join("deps").join("helper");
+    fs::create_dir_all(&helper_dir).expect("create helper dep");
+    fs::write(
+        helper_dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "Helper"
+"#,
+    )
+    .expect("write helper manifest");
+    fs::write(
+        helper_dir.join("lib.fuse"),
+        "fn helper() -> Int:\n  return 1\n",
+    )
+    .expect("write helper lib");
+
+    fs::write(
+        dir.join("fuse.lock"),
+        r#"
+version = 99
+"#,
+    )
+    .expect("write fuse.lock");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse check");
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[FUSE_LOCK_UNSUPPORTED_VERSION]"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("delete fuse.lock and rerun 'fuse build'"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_reports_stale_lock_path_with_remediation_hint() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[dependencies]
+Helper = { path = "./deps/helper" }
+"#,
+    )
+    .expect("write root fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    )
+    .expect("write main.fuse");
+
+    let helper_dir = dir.join("deps").join("helper");
+    fs::create_dir_all(&helper_dir).expect("create helper dep");
+    fs::write(
+        helper_dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "Helper"
+"#,
+    )
+    .expect("write helper manifest");
+    fs::write(
+        helper_dir.join("lib.fuse"),
+        "fn helper() -> Int:\n  return 1\n",
+    )
+    .expect("write helper lib");
+
+    let requested = format!("path:{}", dir.join("./deps/helper").display());
+    fs::write(
+        dir.join("fuse.lock"),
+        format!(
+            r#"
+version = 1
+
+[dependencies.Helper]
+source = "path"
+path = "./deps/missing"
+requested = "{requested}"
+"#
+        ),
+    )
+    .expect("write stale fuse.lock");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse check");
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[FUSE_LOCK_ENTRY_PATH_NOT_FOUND]"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("delete fuse.lock and rerun 'fuse build'"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_invalidates_cached_ir_when_dependency_source_changes() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[dependencies]
+Helper = { path = "./deps/helper" }
+"#,
+    )
+    .expect("write root fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+import Helper from "dep:Helper/lib"
+
+fn main(name: String = "world"):
+  print(Helper.prefix(name))
+
+app "Demo":
+  main()
+"#,
+    )
+    .expect("write main.fuse");
+    fs::create_dir_all(dir.join("deps").join("helper")).expect("create helper dep");
+    fs::write(
+        dir.join("deps").join("helper").join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "Helper"
+"#,
+    )
+    .expect("write helper manifest");
+    fs::write(
+        dir.join("deps").join("helper").join("lib.fuse"),
+        r#"
+fn prefix(name: String) -> String:
+  return "source-" + name
+"#,
+    )
+    .expect("write helper lib");
+
+    run_build_project(&dir);
+
+    let cached_program = r#"
+fn main(name: String = "world"):
+  print("cache-" + name)
+
+app "Demo":
+  main()
+"#;
+    overwrite_cached_ir_from_source(&dir, cached_program);
+
+    fs::write(
+        dir.join("deps").join("helper").join("lib.fuse"),
+        r#"
+fn prefix(name: String) -> String:
+  return "dep-" + name
+"#,
+    )
+    .expect("rewrite helper lib");
+
+    let run = run_with_named_arg(&dir, "--name=changed");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "dep-changed");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_color_always_emits_ansi_sequences() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");
@@ -1128,7 +1876,10 @@ fn no_color_disables_runtime_log_color_in_auto_mode() {
         String::from_utf8_lossy(&no_color.stderr)
     );
     let no_color_stderr = String::from_utf8_lossy(&no_color.stderr);
-    assert!(no_color_stderr.contains("runtime-log"), "stderr: {no_color_stderr}");
+    assert!(
+        no_color_stderr.contains("runtime-log"),
+        "stderr: {no_color_stderr}"
+    );
     assert!(
         !contains_ansi(&no_color_stderr),
         "stderr: {no_color_stderr}"
@@ -1261,7 +2012,10 @@ app "Demo":
     assert_eq!(output.status.code(), Some(2), "status: {:?}", output.status);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("[run] start"), "stderr: {stderr}");
-    assert!(stderr.contains("[run] validation failed"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("[run] validation failed"),
+        "stderr: {stderr}"
+    );
     assert!(stderr.contains("validation failed"), "stderr: {stderr}");
 
     let _ = fs::remove_dir_all(&dir);
@@ -1278,5 +2032,8 @@ fn unknown_command_uses_error_prefix() {
         .expect("run fuse bad-command");
     assert!(!output.status.success(), "command unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("error: unknown command"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("error: unknown command"),
+        "stderr: {stderr}"
+    );
 }

@@ -156,6 +156,12 @@ backend = "native"
 
 `fuse.toml` supports additional build/serve/assets/dependency settings. See `README.md` for command details and examples.
 
+Dependency contract highlights:
+
+- `[dependencies]` supports local `path` sources and git sources (`git` with optional `rev` / `tag` / `branch` / `version` and optional `subdir`).
+- `fuse.lock` records resolved dependency sources for reproducible resolution.
+- conflicting transitive dependency specs by name are rejected deterministically.
+
 See also: [Current implementation (summary)](#current-implementation-summary), [Runtime semantics](runtime.md), [Scope + constraints](scope.md).
 
 ---

@@ -154,6 +154,14 @@ fn token_type_at(rows: &[(usize, usize, usize, usize)], line: usize, col: usize)
         .map(|(_, _, _, token_type)| *token_type)
 }
 
+fn line_col_of(text: &str, needle: &str) -> (usize, usize) {
+    let idx = text.find(needle).expect("needle");
+    let line = text[..idx].bytes().filter(|b| *b == b'\n').count();
+    let line_start = text[..idx].rfind('\n').map_or(0, |pos| pos + 1);
+    let col = text[line_start..idx].chars().count();
+    (line, col)
+}
+
 fn wait_diagnostics(stdout: &mut ChildStdout, uri: &str) -> Vec<JsonValue> {
     loop {
         let Some(msg) = read_lsp_message(stdout) else {
@@ -558,6 +566,192 @@ fn main():
         JsonValue::Object(BTreeMap::new()),
     );
     let _ = wait_response(&mut stdout, 8);
+    send_notification(&mut stdin, "exit", JsonValue::Object(BTreeMap::new()));
+    let status = child.wait().expect("wait lsp");
+    assert!(status.success(), "fuse-lsp exited with {status}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn lsp_multi_package_definition_and_references_smoke() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        "[package]\nentry = \"src/main.fuse\"\napp = \"Demo\"\n\n[dependencies]\nAuth = { path = \"./deps/auth\" }\n",
+    )
+    .expect("write fuse.toml");
+
+    let main_src = r#"import Core from "root:lib/core"
+import Auth from "dep:Auth/lib"
+
+fn main():
+  let a = Core.plus_one(1)
+  let b = Auth.plus_one(a)
+  print(b)
+"#;
+    let core_src = r#"fn plus_one(value: Int) -> Int:
+  return value + 1
+"#;
+    let dep_src = r#"fn plus_one(value: Int) -> Int:
+  return value + 1
+"#;
+
+    let main_path = dir.join("src").join("main.fuse");
+    let core_path = dir.join("lib").join("core.fuse");
+    let dep_path = dir.join("deps").join("auth").join("lib.fuse");
+    fs::create_dir_all(main_path.parent().expect("main parent")).expect("create src dir");
+    fs::create_dir_all(core_path.parent().expect("core parent")).expect("create lib dir");
+    fs::create_dir_all(dep_path.parent().expect("dep parent")).expect("create dep dir");
+    fs::write(&main_path, main_src).expect("write main.fuse");
+    fs::write(&core_path, core_src).expect("write core.fuse");
+    fs::write(&dep_path, dep_src).expect("write dep lib.fuse");
+
+    let root_uri = path_to_uri(&dir);
+    let main_uri = path_to_uri(&main_path);
+    let core_uri = path_to_uri(&core_path);
+    let dep_uri = path_to_uri(&dep_path);
+
+    let (mut child, mut stdin, mut stdout) = spawn_lsp();
+
+    let mut init_params = BTreeMap::new();
+    init_params.insert("rootUri".to_string(), JsonValue::String(root_uri));
+    send_request(&mut stdin, 1, "initialize", JsonValue::Object(init_params));
+    let _ = wait_response(&mut stdout, 1);
+    send_notification(
+        &mut stdin,
+        "initialized",
+        JsonValue::Object(BTreeMap::new()),
+    );
+
+    let mut core_doc = BTreeMap::new();
+    core_doc.insert("uri".to_string(), JsonValue::String(core_uri.clone()));
+    core_doc.insert(
+        "languageId".to_string(),
+        JsonValue::String("fuse".to_string()),
+    );
+    core_doc.insert("version".to_string(), JsonValue::Number(1.0));
+    core_doc.insert("text".to_string(), JsonValue::String(core_src.to_string()));
+    let mut core_open_params = BTreeMap::new();
+    core_open_params.insert("textDocument".to_string(), JsonValue::Object(core_doc));
+    send_notification(
+        &mut stdin,
+        "textDocument/didOpen",
+        JsonValue::Object(core_open_params),
+    );
+
+    let mut dep_doc = BTreeMap::new();
+    dep_doc.insert("uri".to_string(), JsonValue::String(dep_uri.clone()));
+    dep_doc.insert(
+        "languageId".to_string(),
+        JsonValue::String("fuse".to_string()),
+    );
+    dep_doc.insert("version".to_string(), JsonValue::Number(1.0));
+    dep_doc.insert("text".to_string(), JsonValue::String(dep_src.to_string()));
+    let mut dep_open_params = BTreeMap::new();
+    dep_open_params.insert("textDocument".to_string(), JsonValue::Object(dep_doc));
+    send_notification(
+        &mut stdin,
+        "textDocument/didOpen",
+        JsonValue::Object(dep_open_params),
+    );
+
+    let mut main_doc = BTreeMap::new();
+    main_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    main_doc.insert(
+        "languageId".to_string(),
+        JsonValue::String("fuse".to_string()),
+    );
+    main_doc.insert("version".to_string(), JsonValue::Number(1.0));
+    main_doc.insert("text".to_string(), JsonValue::String(main_src.to_string()));
+    let mut main_open_params = BTreeMap::new();
+    main_open_params.insert("textDocument".to_string(), JsonValue::Object(main_doc));
+    send_notification(
+        &mut stdin,
+        "textDocument/didOpen",
+        JsonValue::Object(main_open_params),
+    );
+
+    let core_diags = wait_diagnostics(&mut stdout, &core_uri);
+    assert!(
+        core_diags.is_empty(),
+        "expected no core diagnostics, got {}",
+        json::encode(&JsonValue::Array(core_diags))
+    );
+    let dep_diags = wait_diagnostics(&mut stdout, &dep_uri);
+    assert!(
+        dep_diags.is_empty(),
+        "expected no dep diagnostics, got {}",
+        json::encode(&JsonValue::Array(dep_diags))
+    );
+    let main_diags = wait_diagnostics(&mut stdout, &main_uri);
+    assert!(
+        main_diags.is_empty(),
+        "expected no main diagnostics, got {}",
+        json::encode(&JsonValue::Array(main_diags))
+    );
+
+    let (core_call_line, core_call_col) = line_col_of(main_src, "Core.plus_one(1)");
+    let mut def_doc = BTreeMap::new();
+    def_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    let mut def_pos = BTreeMap::new();
+    def_pos.insert("line".to_string(), JsonValue::Number(core_call_line as f64));
+    def_pos.insert(
+        "character".to_string(),
+        JsonValue::Number((core_call_col + "Core.".len() + 1) as f64),
+    );
+    let mut def_params = BTreeMap::new();
+    def_params.insert("textDocument".to_string(), JsonValue::Object(def_doc));
+    def_params.insert("position".to_string(), JsonValue::Object(def_pos));
+    send_request(
+        &mut stdin,
+        2,
+        "textDocument/definition",
+        JsonValue::Object(def_params),
+    );
+    let definition = wait_response(&mut stdout, 2);
+    let definition_text = json::encode(&definition);
+    assert!(
+        definition_text.contains(&core_uri),
+        "definition should resolve to root module target: {definition_text}"
+    );
+
+    let (dep_call_line, dep_call_col) = line_col_of(main_src, "Auth.plus_one(a)");
+    let mut refs_doc = BTreeMap::new();
+    refs_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    let mut refs_pos = BTreeMap::new();
+    refs_pos.insert("line".to_string(), JsonValue::Number(dep_call_line as f64));
+    refs_pos.insert(
+        "character".to_string(),
+        JsonValue::Number((dep_call_col + "Auth.".len() + 1) as f64),
+    );
+    let mut refs_ctx = BTreeMap::new();
+    refs_ctx.insert("includeDeclaration".to_string(), JsonValue::Bool(true));
+    let mut refs_params = BTreeMap::new();
+    refs_params.insert("textDocument".to_string(), JsonValue::Object(refs_doc));
+    refs_params.insert("position".to_string(), JsonValue::Object(refs_pos));
+    refs_params.insert("context".to_string(), JsonValue::Object(refs_ctx));
+    send_request(
+        &mut stdin,
+        3,
+        "textDocument/references",
+        JsonValue::Object(refs_params),
+    );
+    let refs = wait_response(&mut stdout, 3);
+    let refs_text = json::encode(&refs);
+    assert!(
+        refs_text.contains(&main_uri) && refs_text.contains(&dep_uri),
+        "references should include caller and dependency declaration: {refs_text}"
+    );
+
+    send_request(
+        &mut stdin,
+        4,
+        "shutdown",
+        JsonValue::Object(BTreeMap::new()),
+    );
+    let _ = wait_response(&mut stdout, 4);
     send_notification(&mut stdin, "exit", JsonValue::Object(BTreeMap::new()));
     let status = child.wait().expect("wait lsp");
     assert!(status.success(), "fuse-lsp exited with {status}");

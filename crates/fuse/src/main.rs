@@ -36,6 +36,9 @@ options:
 "#;
 
 const FUSE_ASSET_MAP_ENV: &str = "FUSE_ASSET_MAP";
+const BUILD_TARGET_FINGERPRINT: &str = env!("FUSE_BUILD_TARGET");
+const BUILD_RUSTC_FINGERPRINT: &str = env!("FUSE_BUILD_RUSTC_VERSION");
+const BUILD_CLI_VERSION_FINGERPRINT: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Deserialize)]
 struct Manifest {
@@ -143,6 +146,12 @@ struct IrMeta {
     manifest_hash: Option<String>,
     #[serde(default)]
     lock_hash: Option<String>,
+    #[serde(default)]
+    build_target: String,
+    #[serde(default)]
+    rustc_version: String,
+    #[serde(default)]
+    cli_version: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2192,15 +2201,18 @@ fn link_native_binary(runner: &Path, object: &Path, out_path: &Path) -> Result<(
             .ok_or_else(|| "runner path missing parent".to_string())?,
     )?;
     let script = repo_root.join("scripts").join("cargo_env.sh");
-    let status = ProcessCommand::new(&script)
+    let build_output = ProcessCommand::new(&script)
         .arg("cargo")
         .arg("build")
         .arg("-p")
         .arg("fusec")
-        .status()
+        .output()
         .map_err(|err| format!("failed to run {}: {err}", script.display()))?;
-    if !status.success() {
-        return Err("native link: failed to build fusec".to_string());
+    if !build_output.status.success() {
+        return Err(format!(
+            "native link: failed to build fusec\n{}",
+            summarize_command_failure(&build_output)
+        ));
     }
     let target_dir = match env::var("CARGO_TARGET_DIR") {
         Ok(value) if !value.is_empty() => PathBuf::from(value),
@@ -2209,7 +2221,7 @@ fn link_native_binary(runner: &Path, object: &Path, out_path: &Path) -> Result<(
     let deps_dir = target_dir.join("debug").join("deps");
     let fusec_rlib = find_latest_rlib(&deps_dir, "libfusec")?;
     let bincode_rlib = find_latest_rlib(&deps_dir, "libbincode")?;
-    let status = ProcessCommand::new(&script)
+    let rustc_output = ProcessCommand::new(&script)
         .arg("rustc")
         .arg("--edition=2024")
         .arg(runner)
@@ -2223,12 +2235,27 @@ fn link_native_binary(runner: &Path, object: &Path, out_path: &Path) -> Result<(
         .arg(format!("bincode={}", bincode_rlib.display()))
         .arg("-C")
         .arg(format!("link-arg={}", object.display()))
-        .status()
+        .output()
         .map_err(|err| format!("failed to run rustc via {}: {err}", script.display()))?;
-    if !status.success() {
-        return Err("native link: rustc failed".to_string());
+    if !rustc_output.status.success() {
+        return Err(format!(
+            "native link: rustc failed\n{}",
+            summarize_command_failure(&rustc_output)
+        ));
     }
     Ok(())
+}
+
+fn summarize_command_failure(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stdout.is_empty() {
+        return stdout;
+    }
+    "command failed without output".to_string()
 }
 
 fn find_repo_root(start: &Path) -> Result<PathBuf, String> {
@@ -2652,7 +2679,10 @@ fn clean_build_dir(manifest_dir: Option<&Path>) -> Result<(), String> {
     Ok(())
 }
 
-fn build_ir_meta(registry: &fusec::ModuleRegistry, manifest_dir: Option<&Path>) -> Result<IrMeta, String> {
+fn build_ir_meta(
+    registry: &fusec::ModuleRegistry,
+    manifest_dir: Option<&Path>,
+) -> Result<IrMeta, String> {
     let mut files = Vec::new();
     for unit in registry.modules.values() {
         files.push(IrFileMeta {
@@ -2675,6 +2705,9 @@ fn build_ir_meta(registry: &fusec::ModuleRegistry, manifest_dir: Option<&Path>) 
         files,
         manifest_hash,
         lock_hash,
+        build_target: BUILD_TARGET_FINGERPRINT.to_string(),
+        rustc_version: BUILD_RUSTC_FINGERPRINT.to_string(),
+        cli_version: BUILD_CLI_VERSION_FINGERPRINT.to_string(),
     })
 }
 
@@ -2715,6 +2748,15 @@ fn ir_meta_is_valid(meta: &IrMeta, manifest_dir: Option<&Path>) -> bool {
         .ok()
         .flatten();
     if meta.lock_hash != current_lock_hash {
+        return false;
+    }
+    if meta.build_target != BUILD_TARGET_FINGERPRINT {
+        return false;
+    }
+    if meta.rustc_version != BUILD_RUSTC_FINGERPRINT {
+        return false;
+    }
+    if meta.cli_version != BUILD_CLI_VERSION_FINGERPRINT {
         return false;
     }
     true
@@ -2849,6 +2891,22 @@ fn line_info(src: &str, offset: usize) -> (usize, usize, &str) {
     (line, col, line_text)
 }
 
+fn dep_error(code: &str, message: impl Into<String>) -> String {
+    format!("[{code}] {}", message.into())
+}
+
+fn dep_error_with_hint(code: &str, message: impl Into<String>, hint: &str) -> String {
+    format!("[{code}] {}. Hint: {hint}", message.into())
+}
+
+fn lockfile_remediation_hint() -> &'static str {
+    "delete fuse.lock and rerun 'fuse build' (or run 'fuse build --clean')"
+}
+
+fn lock_error(code: &str, message: impl Into<String>) -> String {
+    dep_error_with_hint(code, message, lockfile_remediation_hint())
+}
+
 fn resolve_dependencies(
     manifest: Option<&Manifest>,
     manifest_dir: Option<&Path>,
@@ -2860,33 +2918,47 @@ fn resolve_dependencies(
         return Ok(HashMap::new());
     }
     let Some(root_dir) = manifest_dir else {
-        return Err("dependencies require a manifest directory".to_string());
+        return Err(dep_error(
+            "FUSE_DEP_MANIFEST_DIR_REQUIRED",
+            "dependencies require a manifest directory",
+        ));
     };
     let lock_path = root_dir.join("fuse.lock");
     let mut lock = load_lockfile(&lock_path)?;
     let deps_dir = root_dir.join(".fuse").join("deps");
     if !deps_dir.exists() {
-        fs::create_dir_all(&deps_dir)
-            .map_err(|err| format!("failed to create {}: {err}", deps_dir.display()))?;
+        fs::create_dir_all(&deps_dir).map_err(|err| {
+            dep_error(
+                "FUSE_DEP_CACHE_DIR_CREATE_FAILED",
+                format!("failed to create {}: {err}", deps_dir.display()),
+            )
+        })?;
     }
 
     let mut resolved = HashMap::new();
-    let mut requests: HashMap<String, String> = HashMap::new();
+    let mut requests: HashMap<String, (String, PathBuf)> = HashMap::new();
     let mut queue: VecDeque<(String, DependencySpec, PathBuf)> = VecDeque::new();
     for (name, spec) in &manifest.dependencies {
         queue.push_back((name.clone(), spec.clone(), root_dir.to_path_buf()));
     }
 
     while let Some((name, spec, base_dir)) = queue.pop_front() {
-        let requested = dependency_request_key(&spec, &base_dir)?;
-        if let Some(prev) = requests.get(&name) {
+        let requested = dependency_request_key(&name, &spec, &base_dir)?;
+        if let Some((prev, prev_base_dir)) = requests.get(&name) {
             if prev != &requested {
-                return Err(format!(
-                    "dependency {name} requested with conflicting specs: {prev} vs {requested}"
+                let prev_from = prev_base_dir.join("fuse.toml");
+                let next_from = base_dir.join("fuse.toml");
+                return Err(dep_error(
+                    "FUSE_DEP_CONFLICTING_SPECS",
+                    format!(
+                        "dependency {name} requested with conflicting specs:\n  - {prev} (from {})\n  - {requested} (from {})",
+                        prev_from.display(),
+                        next_from.display()
+                    ),
                 ));
             }
         } else {
-            requests.insert(name.clone(), requested);
+            requests.insert(name.clone(), (requested.clone(), base_dir.clone()));
         }
         if resolved.contains_key(&name) {
             continue;
@@ -2894,7 +2966,15 @@ fn resolve_dependencies(
         let root = resolve_dependency(&name, &spec, &base_dir, root_dir, &deps_dir, &mut lock)?;
         resolved.insert(name.clone(), root.clone());
 
-        if let Some(dep_manifest) = load_manifest_from_dir(&root)? {
+        if let Some(dep_manifest) = load_manifest_from_dir(&root).map_err(|err| {
+            dep_error(
+                "FUSE_DEP_MANIFEST_LOAD_FAILED",
+                format!(
+                    "failed to load dependency manifest from {}: {err}",
+                    root.display()
+                ),
+            )
+        })? {
             for (dep_name, dep_spec) in dep_manifest.dependencies {
                 queue.push_back((dep_name, dep_spec, root.clone()));
             }
@@ -2906,8 +2986,12 @@ fn resolve_dependencies(
     Ok(resolved)
 }
 
-fn dependency_request_key(spec: &DependencySpec, base_dir: &Path) -> Result<String, String> {
-    let normalized = normalize_dependency_spec(spec, base_dir)?;
+fn dependency_request_key(
+    name: &str,
+    spec: &DependencySpec,
+    base_dir: &Path,
+) -> Result<String, String> {
+    let normalized = normalize_dependency_spec(name, spec, base_dir)?;
     Ok(normalized.requested)
 }
 
@@ -2919,7 +3003,7 @@ fn resolve_dependency(
     deps_dir: &Path,
     lock: &mut Lockfile,
 ) -> Result<PathBuf, String> {
-    let normalized = normalize_dependency_spec(spec, base_dir)?;
+    let normalized = normalize_dependency_spec(name, spec, base_dir)?;
     if let Some(entry) = lock.dependencies.get(name) {
         if entry.requested.as_deref() == Some(normalized.requested.as_str()) {
             return root_from_lock(name, entry, root_dir, deps_dir);
@@ -2929,9 +3013,10 @@ fn resolve_dependency(
     let (root, entry) = match normalized.kind {
         NormalizedKind::Path { path } => {
             if !path.exists() {
-                return Err(format!(
-                    "dependency {name} path does not exist: {}",
-                    path.display()
+                return Err(dep_error_with_hint(
+                    "FUSE_DEP_PATH_NOT_FOUND",
+                    format!("dependency {name} path does not exist: {}", path.display()),
+                    "fix the dependency path in fuse.toml",
                 ));
             }
             let stored_path = store_path(root_dir, &path);
@@ -2957,9 +3042,13 @@ fn resolve_dependency(
                 checkout
             };
             if !root.exists() {
-                return Err(format!(
-                    "dependency {name} subdir does not exist: {}",
-                    root.display()
+                return Err(dep_error_with_hint(
+                    "FUSE_DEP_SUBDIR_NOT_FOUND",
+                    format!(
+                        "dependency {name} subdir does not exist: {}",
+                        root.display()
+                    ),
+                    "fix the dependency subdir in fuse.toml",
                 ));
             }
             (
@@ -2989,21 +3078,40 @@ fn root_from_lock(
     match entry.source.as_str() {
         "path" => {
             let Some(path) = &entry.path else {
-                return Err(format!("lock entry for {name} missing path"));
+                return Err(lock_error(
+                    "FUSE_LOCK_ENTRY_MISSING_PATH",
+                    format!("lock entry for {name} missing path"),
+                ));
             };
             let path = PathBuf::from(path);
-            if path.is_absolute() {
-                Ok(path)
+            let resolved = if path.is_absolute() {
+                path
             } else {
-                Ok(root_dir.join(path))
+                root_dir.join(path)
+            };
+            if !resolved.exists() {
+                return Err(lock_error(
+                    "FUSE_LOCK_ENTRY_PATH_NOT_FOUND",
+                    format!(
+                        "lock entry for {name} points to missing path: {}",
+                        resolved.display()
+                    ),
+                ));
             }
+            Ok(resolved)
         }
         "git" => {
             let Some(rev) = &entry.rev else {
-                return Err(format!("lock entry for {name} missing rev"));
+                return Err(lock_error(
+                    "FUSE_LOCK_ENTRY_MISSING_REV",
+                    format!("lock entry for {name} missing rev"),
+                ));
             };
             let Some(git) = &entry.git else {
-                return Err(format!("lock entry for {name} missing git url"));
+                return Err(lock_error(
+                    "FUSE_LOCK_ENTRY_MISSING_GIT",
+                    format!("lock entry for {name} missing git url"),
+                ));
             };
             let base = deps_dir.join(name).join(rev);
             if !base.exists() {
@@ -3013,9 +3121,21 @@ fn root_from_lock(
             if let Some(subdir) = &entry.subdir {
                 root = root.join(subdir);
             }
+            if !root.exists() {
+                return Err(lock_error(
+                    "FUSE_LOCK_ENTRY_SUBDIR_NOT_FOUND",
+                    format!(
+                        "lock entry for {name} points to missing git path: {}",
+                        root.display()
+                    ),
+                ));
+            }
             Ok(root)
         }
-        other => Err(format!("unknown lock source {other} for {name}")),
+        other => Err(lock_error(
+            "FUSE_LOCK_ENTRY_UNKNOWN_SOURCE",
+            format!("unknown lock source {other} for {name}"),
+        )),
     }
 }
 
@@ -3060,6 +3180,7 @@ impl GitReference {
 }
 
 fn normalize_dependency_spec(
+    name: &str,
     spec: &DependencySpec,
     base_dir: &Path,
 ) -> Result<NormalizedDependency, String> {
@@ -3076,8 +3197,11 @@ fn normalize_dependency_spec(
                     ..DependencyDetail::default()
                 }
             } else {
-                return Err(format!(
-                    "dependency {value} must use {{ git = \"...\" }} or {{ path = \"...\" }}"
+                return Err(dep_error(
+                    "FUSE_DEP_INVALID_SOURCE",
+                    format!(
+                        "dependency {name} has invalid source {value:?}; use a relative/absolute path or {{ git = \"...\" }}"
+                    ),
                 ));
             }
         }
@@ -3085,6 +3209,12 @@ fn normalize_dependency_spec(
     };
 
     if let Some(path) = detail.path {
+        if path.trim().is_empty() {
+            return Err(dep_error(
+                "FUSE_DEP_PATH_EMPTY",
+                format!("dependency {name} path cannot be empty"),
+            ));
+        }
         if detail.git.is_some()
             || detail.version.is_some()
             || detail.rev.is_some()
@@ -3092,9 +3222,14 @@ fn normalize_dependency_spec(
             || detail.branch.is_some()
             || detail.subdir.is_some()
         {
-            return Err("path dependencies cannot include git/version fields".to_string());
+            return Err(dep_error(
+                "FUSE_DEP_PATH_FIELDS_INVALID",
+                format!(
+                    "dependency {name} path dependencies cannot include git/rev/tag/branch/version/subdir fields"
+                ),
+            ));
         }
-        let path = resolve_path(base_dir, &path);
+        let path = resolve_path(base_dir, &normalize_dependency_path_input(&path));
         let requested = format!("path:{}", path.display());
         return Ok(NormalizedDependency {
             requested,
@@ -3102,11 +3237,63 @@ fn normalize_dependency_spec(
         });
     }
 
+    let has_ref = detail.rev.is_some()
+        || detail.tag.is_some()
+        || detail.branch.is_some()
+        || detail.version.is_some();
     let Some(git) = detail.git else {
-        return Err("dependency must specify git or path".to_string());
+        if has_ref || detail.subdir.is_some() {
+            return Err(dep_error(
+                "FUSE_DEP_GIT_REQUIRED_FOR_REFS",
+                format!(
+                    "dependency {name} must specify git when using rev/tag/branch/version/subdir"
+                ),
+            ));
+        }
+        return Err(dep_error(
+            "FUSE_DEP_SOURCE_REQUIRED",
+            format!("dependency {name} must specify either path or git"),
+        ));
     };
+    if git.trim().is_empty() {
+        return Err(dep_error(
+            "FUSE_DEP_GIT_EMPTY",
+            format!("dependency {name} git url cannot be empty"),
+        ));
+    }
     if detail.path.is_some() {
-        return Err("dependency cannot specify both git and path".to_string());
+        return Err(dep_error(
+            "FUSE_DEP_GIT_PATH_CONFLICT",
+            format!("dependency {name} cannot specify both git and path"),
+        ));
+    }
+    if let Some(subdir) = detail.subdir.as_ref() {
+        if subdir.trim().is_empty() {
+            return Err(dep_error(
+                "FUSE_DEP_SUBDIR_EMPTY",
+                format!("dependency {name} subdir cannot be empty"),
+            ));
+        }
+    }
+
+    let mut selected_refs = 0usize;
+    if detail.rev.is_some() {
+        selected_refs += 1;
+    }
+    if detail.tag.is_some() {
+        selected_refs += 1;
+    }
+    if detail.branch.is_some() {
+        selected_refs += 1;
+    }
+    if detail.version.is_some() {
+        selected_refs += 1;
+    }
+    if selected_refs > 1 {
+        return Err(dep_error(
+            "FUSE_DEP_GIT_REF_CONFLICT",
+            format!("dependency {name} must specify at most one of rev, tag, branch, version"),
+        ));
     }
 
     let requested_ref = if let Some(rev) = detail.rev {
@@ -3174,15 +3361,19 @@ fn git_ls_remote(url: &str, reference: &str) -> Result<String, String> {
             return Ok(hash.to_string());
         }
     }
-    Err(format!("failed to resolve {reference} for {url}"))
+    Err(dep_error(
+        "FUSE_DEP_GIT_REF_RESOLVE_FAILED",
+        format!("failed to resolve {reference} for {url}"),
+    ))
 }
 
 fn ensure_checkout(url: &str, rev: &str, dest: &Path) -> Result<(), String> {
     if dest.exists() {
         if !dest.join(".git").exists() {
-            return Err(format!(
-                "dependency checkout is not a git repo: {}",
-                dest.display()
+            return Err(dep_error_with_hint(
+                "FUSE_DEP_CHECKOUT_NOT_GIT",
+                format!("dependency checkout is not a git repo: {}", dest.display()),
+                "remove .fuse/deps for this package and rerun the command",
             ));
         }
         let dest_str = dest.to_string_lossy();
@@ -3191,8 +3382,12 @@ fn ensure_checkout(url: &str, rev: &str, dest: &Path) -> Result<(), String> {
         return Ok(());
     }
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|err| {
+            dep_error(
+                "FUSE_DEP_CHECKOUT_DIR_CREATE_FAILED",
+                format!("failed to create {}: {err}", parent.display()),
+            )
+        })?;
     }
     let dest_str = dest.to_string_lossy();
     run_git(&["clone", url, dest_str.as_ref()], None)?;
@@ -3206,12 +3401,18 @@ fn run_git(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-    let output = cmd
-        .output()
-        .map_err(|err| format!("failed to run git {:?}: {err}", args))?;
+    let output = cmd.output().map_err(|err| {
+        dep_error(
+            "FUSE_DEP_GIT_COMMAND_START_FAILED",
+            format!("failed to run git {:?}: {err}", args),
+        )
+    })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("git {:?} failed: {stderr}", args));
+        return Err(dep_error(
+            "FUSE_DEP_GIT_COMMAND_FAILED",
+            format!("git {:?} failed: {stderr}", args),
+        ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
@@ -3221,7 +3422,7 @@ fn looks_like_git_url(value: &str) -> bool {
 }
 
 fn looks_like_path(value: &str) -> bool {
-    value.starts_with('.') || value.starts_with('/') || value.contains('/')
+    value.starts_with('.') || value.starts_with('/') || value.contains('/') || value.contains('\\')
 }
 
 fn resolve_path(base_dir: &Path, raw: &str) -> PathBuf {
@@ -3233,24 +3434,59 @@ fn resolve_path(base_dir: &Path, raw: &str) -> PathBuf {
     }
 }
 
+fn normalize_dependency_path_input(raw: &str) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        raw.to_string()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        raw.replace('\\', "/")
+    }
+}
+
 fn load_lockfile(path: &Path) -> Result<Lockfile, String> {
     if !path.exists() {
         return Ok(Lockfile::default());
     }
-    let content = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-    let lock: Lockfile =
-        toml::from_str(&content).map_err(|err| format!("invalid lockfile: {err}"))?;
+    let content = fs::read_to_string(path).map_err(|err| {
+        lock_error(
+            "FUSE_LOCK_READ_FAILED",
+            format!("failed to read {}: {err}", path.display()),
+        )
+    })?;
+    let lock: Lockfile = toml::from_str(&content).map_err(|err| {
+        lock_error(
+            "FUSE_LOCK_PARSE_FAILED",
+            format!("invalid lockfile {}: {err}", path.display()),
+        )
+    })?;
     if lock.version != 0 && lock.version != 1 {
-        return Err(format!("unsupported lockfile version {}", lock.version));
+        return Err(lock_error(
+            "FUSE_LOCK_UNSUPPORTED_VERSION",
+            format!(
+                "unsupported lockfile version {} in {} (supported: 0, 1)",
+                lock.version,
+                path.display()
+            ),
+        ));
     }
     Ok(lock)
 }
 
 fn write_lockfile(path: &Path, lock: &Lockfile) -> Result<(), String> {
-    let content =
-        toml::to_string_pretty(lock).map_err(|err| format!("lockfile encode failed: {err}"))?;
-    fs::write(path, content).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    let content = toml::to_string_pretty(lock).map_err(|err| {
+        lock_error(
+            "FUSE_LOCK_ENCODE_FAILED",
+            format!("lockfile encode failed: {err}"),
+        )
+    })?;
+    fs::write(path, content).map_err(|err| {
+        lock_error(
+            "FUSE_LOCK_WRITE_FAILED",
+            format!("failed to write {}: {err}", path.display()),
+        )
+    })?;
     Ok(())
 }
 

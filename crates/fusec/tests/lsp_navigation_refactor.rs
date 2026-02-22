@@ -217,3 +217,147 @@ fn main():
     lsp.shutdown();
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn lsp_rename_is_stable_across_root_and_dep_imports() {
+    let dir = temp_project_dir("fuse_lsp_rename_root_dep");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n\n[dependencies]\nAuth = { path = \"./deps/auth\" }\n",
+    );
+
+    let main_src = r#"import Core from "root:lib/core"
+import Auth from "dep:Auth/lib"
+
+fn main():
+  let a = Core.plus_one(1)
+  let b = Auth.plus_one(2)
+  print(a + b)
+"#;
+    let core_src = r#"fn plus_one(value: Int) -> Int:
+  return value + 1
+"#;
+    let dep_src = r#"fn plus_one(value: Int) -> Int:
+  return value + 1
+"#;
+
+    let main_path = dir.join("main.fuse");
+    let core_path = dir.join("lib").join("core.fuse");
+    let dep_path = dir.join("deps").join("auth").join("lib.fuse");
+    write_project_file(&main_path, main_src);
+    write_project_file(&core_path, core_src);
+    write_project_file(&dep_path, dep_src);
+
+    let root_uri = path_to_uri(&dir);
+    let main_uri = path_to_uri(&main_path);
+    let core_uri = path_to_uri(&core_path);
+    let dep_uri = path_to_uri(&dep_path);
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&core_uri, core_src, 1);
+    lsp.open_document(&dep_uri, dep_src, 1);
+    lsp.open_document(&main_uri, main_src, 1);
+    assert!(lsp.wait_diagnostics(&core_uri).is_empty());
+    assert!(lsp.wait_diagnostics(&dep_uri).is_empty());
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+
+    let (root_call_line, root_call_col) = line_col_of(main_src, "Core.plus_one(1)");
+    let root_definition = lsp.request(
+        "textDocument/definition",
+        position_params(&main_uri, root_call_line, root_call_col + "Core.".len() + 1),
+    );
+    let root_definition_text = json::encode(&root_definition);
+    assert!(
+        root_definition_text.contains(&core_uri),
+        "root import definition should resolve to root module: {root_definition_text}"
+    );
+
+    let (core_def_line, core_def_col) = line_col_of(core_src, "fn plus_one");
+    let root_prepare = lsp.request(
+        "textDocument/prepareRename",
+        position_params(&core_uri, core_def_line, core_def_col + 3),
+    );
+    let root_prepare_text = json::encode(&root_prepare);
+    assert!(
+        root_prepare_text.contains("\"placeholder\":\"plus_one\"")
+            && root_prepare_text.contains("\"range\""),
+        "prepareRename should allow root: export target: {root_prepare_text}"
+    );
+
+    let mut root_rename_params =
+        match position_params(&main_uri, root_call_line, root_call_col + "Core.".len() + 1) {
+            JsonValue::Object(params) => params,
+            _ => unreachable!(),
+        };
+    root_rename_params.insert(
+        "newName".to_string(),
+        JsonValue::String("plus_root".to_string()),
+    );
+    let root_rename = lsp.request("textDocument/rename", JsonValue::Object(root_rename_params));
+    let root_rename_text = json::encode(&root_rename);
+    assert!(
+        root_rename_text.contains(&main_uri) && root_rename_text.contains(&core_uri),
+        "rename from root import call should edit caller + root module: {root_rename_text}"
+    );
+    assert!(
+        !root_rename_text.contains(&dep_uri),
+        "rename from root import call must not edit dep module: {root_rename_text}"
+    );
+
+    let (dep_call_line, dep_call_col) = line_col_of(main_src, "Auth.plus_one(2)");
+    let dep_definition = lsp.request(
+        "textDocument/definition",
+        position_params(&main_uri, dep_call_line, dep_call_col + "Auth.".len() + 1),
+    );
+    let dep_definition_text = json::encode(&dep_definition);
+    assert!(
+        dep_definition_text.contains(&dep_uri),
+        "dep import definition should resolve to dependency module: {dep_definition_text}"
+    );
+
+    let (dep_def_line, dep_def_col) = line_col_of(dep_src, "fn plus_one");
+    let dep_prepare = lsp.request(
+        "textDocument/prepareRename",
+        position_params(&dep_uri, dep_def_line, dep_def_col + 3),
+    );
+    let dep_prepare_text = json::encode(&dep_prepare);
+    assert!(
+        dep_prepare_text.contains("\"placeholder\":\"plus_one\"")
+            && dep_prepare_text.contains("\"range\""),
+        "prepareRename should allow dep: export target: {dep_prepare_text}"
+    );
+
+    let mut dep_rename_params =
+        match position_params(&main_uri, dep_call_line, dep_call_col + "Auth.".len() + 1) {
+            JsonValue::Object(params) => params,
+            _ => unreachable!(),
+        };
+    dep_rename_params.insert(
+        "newName".to_string(),
+        JsonValue::String("plus_dep".to_string()),
+    );
+    let dep_rename = lsp.request("textDocument/rename", JsonValue::Object(dep_rename_params));
+    let dep_rename_text = json::encode(&dep_rename);
+    assert!(
+        dep_rename_text.contains(&main_uri) && dep_rename_text.contains(&dep_uri),
+        "rename from dep import call should edit caller + dep module: {dep_rename_text}"
+    );
+    assert!(
+        !dep_rename_text.contains(&core_uri),
+        "rename from dep import call must not edit unrelated root module: {dep_rename_text}"
+    );
+
+    let (root_import_line, root_import_col) = line_col_of(main_src, "\"root:lib/core\"");
+    let prepare_import_path = lsp.request(
+        "textDocument/prepareRename",
+        position_params(&main_uri, root_import_line, root_import_col + 2),
+    );
+    assert_eq!(
+        prepare_import_path,
+        JsonValue::Null,
+        "prepareRename should reject import path strings"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}

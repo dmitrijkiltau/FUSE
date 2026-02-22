@@ -15,6 +15,7 @@ See:
 - `IDENTITY_CHARTER.md`
 - `EXTENSIBILITY_BOUNDARIES.md`
 - `VERSIONING_POLICY.md`
+- `FLAKE_TRIAGE.md`
 - `GOVERNANCE.md`
 - `CODE_OF_CONDUCT.md`
 
@@ -33,6 +34,8 @@ Recommended baseline before opening a PR:
 2. `scripts/authority_parity.sh`
 3. `scripts/release_smoke.sh`
 4. `scripts/fuse check --manifest-path docs` (if docs site changed)
+5. `scripts/reliability_repeat.sh --iterations 1` (recommended for CI-sensitive changes)
+6. `scripts/packaging_verifier_regression.sh` (recommended when touching release/package scripts)
 
 ## Change types and required updates
 

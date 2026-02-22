@@ -2,6 +2,55 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.0] - 2026-02-22
+
+### Added
+
+- Native parity/reliability coverage additions:
+  - spawn error propagation parity checks
+  - DB query-builder parity checks across AST/VM/native
+  - runtime `log(...)` parity checks (text and JSON forms)
+  - hardened first-run HTTP parity retry behavior for `parity_http_users_post_ok`
+- Multi-file LSP quality coverage additions:
+  - mixed `root:`/`dep:` rename/prepare-rename/definition/references coverage
+  - incremental dependency rewire/import-shape coverage
+  - larger-workspace diagnostics/navigation/references performance budget checks
+- Dependency workflow contract hardening:
+  - transitive conflict diagnostics include both conflicting specs and origin manifests
+  - explicit invalid source/spec diagnostics for dependency entries
+  - machine-readable dependency/lockfile diagnostics (`[FUSE_DEP_*]`, `[FUSE_LOCK_*]`)
+  - lockfile remediation diagnostics (`unsupported version`, stale lock path guidance)
+  - CLI regression coverage for lockfile stability, manifest syntax variants, and cache invalidation
+  - CLI regression coverage for Windows-style dependency path separators and diagnostic code assertions
+- Release artifact/distribution tooling:
+  - CLI bundle packaging script: `scripts/package_cli_artifacts.sh`
+  - CLI bundle integrity checker: `scripts/verify_cli_artifact.sh`
+  - packaging verifier regression harness: `scripts/packaging_verifier_regression.sh`
+  - release checksum/metadata generator: `scripts/generate_release_checksums.sh`
+  - cross-platform release artifact workflow: `.github/workflows/release-artifacts.yml`
+
+### Changed
+
+- `scripts/build_dist.sh` now handles Windows `.exe` output names.
+- `scripts/verify_vscode_vsix.sh` now ensures `tmp/` exists before temp-file creation.
+- `scripts/release_smoke.sh` now includes:
+  - host CLI artifact packaging + verification
+  - packaging verifier regression checks
+  - release checksum metadata generation
+  - one retry for benchmark regression check to filter transient host jitter.
+- Dependency path resolution now normalizes Windows-style `\` separators for path dependencies on non-Windows hosts.
+- Lockfile mismatch diagnostics now include explicit remediation hints (`delete fuse.lock` or `fuse build --clean`).
+- Distribution docs now define canonical artifact names:
+  - `dist/fuse-cli-<platform>.tar.gz|.zip`
+  - `dist/fuse-vscode-<platform>.vsix`
+  - `dist/SHA256SUMS`
+  - `dist/release-artifacts.json`
+- VS Code packaging/release docs now include `.exe` handling and checksum publication guidance.
+
+### Migration
+
+- No source-breaking migration is required from `0.2.x` to `0.3.0`.
+
 ## [0.2.0] - 2026-02-22
 
 ### Breaking

@@ -1,0 +1,8 @@
+fn fail_in_task() -> Int:
+  let task = spawn:
+    assert(false, "boom")
+    1
+  return await task
+
+app "SpawnError":
+  fail_in_task()

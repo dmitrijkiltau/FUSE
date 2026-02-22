@@ -33,6 +33,15 @@ BIN_DIR="$TARGET_DIR/$PROFILE"
 DIST_DIR="$ROOT/dist"
 mkdir -p "$DIST_DIR"
 
+EXE_SUFFIX=""
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*|Windows_NT)
+    EXE_SUFFIX=".exe"
+    ;;
+esac
+FUSE_BIN="fuse${EXE_SUFFIX}"
+FUSE_LSP_BIN="fuse-lsp${EXE_SUFFIX}"
+
 install_binary() {
   local src="$1"
   local dest="$2"
@@ -43,16 +52,16 @@ install_binary() {
   mv -f "$tmp" "$dest"
 }
 
-if [[ ! -x "$BIN_DIR/fuse" ]]; then
-  echo "missing binary: $BIN_DIR/fuse"
+if [[ ! -x "$BIN_DIR/$FUSE_BIN" ]]; then
+  echo "missing binary: $BIN_DIR/$FUSE_BIN"
   exit 1
 fi
-if [[ ! -x "$BIN_DIR/fuse-lsp" ]]; then
-  echo "missing binary: $BIN_DIR/fuse-lsp"
+if [[ ! -x "$BIN_DIR/$FUSE_LSP_BIN" ]]; then
+  echo "missing binary: $BIN_DIR/$FUSE_LSP_BIN"
   exit 1
 fi
 
-install_binary "$BIN_DIR/fuse" "$DIST_DIR/fuse"
-install_binary "$BIN_DIR/fuse-lsp" "$DIST_DIR/fuse-lsp"
+install_binary "$BIN_DIR/$FUSE_BIN" "$DIST_DIR/$FUSE_BIN"
+install_binary "$BIN_DIR/$FUSE_LSP_BIN" "$DIST_DIR/$FUSE_LSP_BIN"
 
 echo "dist ready: $DIST_DIR"

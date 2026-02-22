@@ -428,6 +428,29 @@ Compiler/runtime CLI operations include:
 - `[vite]`
 - `[dependencies]`
 
+Dependency contract summary:
+
+- local dependency forms:
+  - `Name = { path = "./deps/name" }`
+  - `Name = "./deps/name"`
+- git dependency forms:
+  - `Name = { git = "...", rev = "..." }`
+  - `Name = { git = "...", tag = "..." }`
+  - `Name = { git = "...", branch = "..." }`
+  - `Name = { git = "...", version = "..." }`
+  - optional `subdir = "..."` for git checkouts
+- rules:
+  - exactly one source (`path` or `git`)
+  - at most one git selector (`rev`/`tag`/`branch`/`version`)
+  - `subdir` only for git dependencies
+  - transitive conflicting specs by dependency name are rejected
+
+Lockfile (`fuse.lock`) summary:
+
+- lockfile version is `1`
+- entries store source + resolved revision/path + requested spec fingerprint
+- unchanged dependency specs keep stable lockfile content
+
 ---
 
 ## Run Docs with Docker

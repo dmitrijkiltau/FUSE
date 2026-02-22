@@ -1,0 +1,3 @@
+app "LogParity":
+  log("info", "text parity")
+  log("info", "json parity", 7)

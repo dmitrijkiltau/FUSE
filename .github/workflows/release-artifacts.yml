@@ -1,0 +1,244 @@
+name: Release Artifacts
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-artifacts-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux-x64
+          - runner: macos-13
+            platform: macos-x64
+          - runner: macos-14
+            platform: macos-arm64
+          - runner: windows-2022
+            platform: windows-x64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install VS Code extension dependencies
+        shell: bash
+        run: |
+          cd tools/vscode
+          npm ci
+
+      - name: Build and package CLI artifact
+        shell: bash
+        run: |
+          ./scripts/package_cli_artifacts.sh --platform "${{ matrix.platform }}" --release
+
+      - name: Build and package VSIX artifact
+        shell: bash
+        run: |
+          ./scripts/package_vscode_extension.sh --platform "${{ matrix.platform }}" --release --skip-build
+
+      - name: Generate checksums and metadata
+        shell: bash
+        run: |
+          ./scripts/generate_release_checksums.sh
+
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: |
+            dist/fuse-cli-${{ matrix.platform }}.*
+            dist/fuse-vscode-${{ matrix.platform }}.vsix
+            dist/SHA256SUMS
+            dist/release-artifacts.json
+          if-no-files-found: error
+
+  aggregate:
+    name: Aggregate Checksums
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: package
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: tmp/release-artifacts
+
+      - name: Build merged checksum metadata
+        shell: bash
+        run: |
+          mkdir -p dist
+          find tmp/release-artifacts -type f \( -name 'fuse-cli-*' -o -name 'fuse-vscode-*.vsix' \) -exec cp {} dist/ \;
+          ./scripts/generate_release_checksums.sh --dist dist --output dist/SHA256SUMS --metadata dist/release-artifacts.json
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            ./scripts/generate_release_notes.sh --version "${GITHUB_REF_NAME#v}" --tag "${GITHUB_REF_NAME}" --output dist/RELEASE_NOTES.md
+          else
+            ./scripts/generate_release_notes.sh --output dist/RELEASE_NOTES.md
+          fi
+          {
+            echo "## Release Artifact Checksums"
+            echo
+            echo '```txt'
+            cat dist/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle
+          path: |
+            dist/fuse-cli-*
+            dist/fuse-vscode-*.vsix
+            dist/SHA256SUMS
+            dist/release-artifacts.json
+            dist/RELEASE_NOTES.md
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: aggregate
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: release-bundle
+          path: tmp/release-bundle
+
+      - name: Publish release from generated assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: tmp/release-bundle/RELEASE_NOTES.md
+          files: |
+            tmp/release-bundle/fuse-cli-*
+            tmp/release-bundle/fuse-vscode-*.vsix
+            tmp/release-bundle/SHA256SUMS
+            tmp/release-bundle/release-artifacts.json
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+          draft: false
+          prerelease: false
+
+  verify-published:
+    name: Verify Published Release Assets
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: publish
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download published assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p tmp/published-assets
+          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --dir tmp/published-assets --clobber
+          ls -la tmp/published-assets
+
+      - name: Validate SHA256 checksums
+        shell: bash
+        run: |
+          cd tmp/published-assets
+          sha256sum -c SHA256SUMS
+
+      - name: Validate metadata manifest coverage
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const dir = path.resolve("tmp/published-assets");
+          const metaPath = path.join(dir, "release-artifacts.json");
+          const raw = fs.readFileSync(metaPath, "utf8");
+          const data = JSON.parse(raw);
+          if (!Array.isArray(data.artifacts) || data.artifacts.length === 0) {
+            throw new Error("release-artifacts.json has no artifacts array entries");
+          }
+          for (const artifact of data.artifacts) {
+            if (!artifact || typeof artifact.name !== "string" || artifact.name.length === 0) {
+              throw new Error("invalid artifact entry in release-artifacts.json");
+            }
+            const filePath = path.join(dir, artifact.name);
+            if (!fs.existsSync(filePath)) {
+              throw new Error(`missing published artifact listed in metadata: ${artifact.name}`);
+            }
+          }
+          console.log("release metadata manifest coverage checks passed");
+          NODE
+
+      - name: Validate VSIX and CLI package integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          cli_archives=(tmp/published-assets/fuse-cli-*.tar.gz tmp/published-assets/fuse-cli-*.zip)
+          vsix_archives=(tmp/published-assets/fuse-vscode-*.vsix)
+          shopt -u nullglob
+
+          if [[ "${#cli_archives[@]}" -eq 0 ]]; then
+            echo "no CLI archives found in published release"
+            exit 1
+          fi
+          if [[ "${#vsix_archives[@]}" -eq 0 ]]; then
+            echo "no VSIX archives found in published release"
+            exit 1
+          fi
+
+          for archive in "${cli_archives[@]}"; do
+            name="$(basename "$archive")"
+            platform="${name#fuse-cli-}"
+            platform="${platform%.tar.gz}"
+            platform="${platform%.zip}"
+            ./scripts/verify_cli_artifact.sh --platform "$platform" --archive "$archive"
+          done
+
+          for archive in "${vsix_archives[@]}"; do
+            name="$(basename "$archive")"
+            platform="${name#fuse-vscode-}"
+            platform="${platform%.vsix}"
+            ./scripts/verify_vscode_vsix.sh --platform "$platform" --vsix "$archive"
+          done

@@ -29,11 +29,13 @@ APP_PORT=4000 ./scripts/fuse run examples/http_users.fuse
 | `cli_hello.fuse` | CLI hello with config defaults |
 | `cli_args.fuse` | CLI args binding (flags and values) |
 | `cli_input.fuse` | CLI stdin input with prompt |
+| `log_parity.fuse` | Runtime log text/JSON output behavior |
 | `http_users.fuse` | HTTP service with routes and `?!` error handling |
 | `types_patterns.fuse` | Enums, structs, and pattern matching (Option/Result) |
 | `project_demo.fuse` | Config env overrides, refined types, enums, and match |
 | `interp_demo.fuse` | String interpolation |
 | `spawn_await_box.fuse` | Spawn/await parity demo |
+| `spawn_error.fuse` | Spawn/await task failure propagation |
 | `box_shared.fuse` | Shared `box` state mutation |
 | `assign_field.fuse` | Struct field assignment |
 | `assign_index.fuse` | List/map index assignment |
@@ -41,6 +43,7 @@ APP_PORT=4000 ./scripts/fuse run examples/http_users.fuse
 | `enum_match.fuse` | Enum declarations and match expressions |
 | `float_compare.fuse` | Float comparison semantics |
 | `task_api.fuse` | Spawn/await task workflow |
+| `db_query_builder.fuse` | DB query-builder workflow (`db.from`) |
 
 ## Native backend examples
 

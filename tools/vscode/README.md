@@ -40,7 +40,7 @@ Supported capabilities:
 The extension searches for `fuse-lsp` in order:
 
 1. `tools/vscode/bin/<platform>/fuse-lsp` (if you bundle it)
-2. `dist/fuse-lsp` in the current workspace folder (and parent folders)
+2. `dist/fuse-lsp` (or `dist/fuse-lsp.exe` on Windows) in the current workspace folder (and parent folders)
 3. `fuse-lsp` on `PATH`
 
 Override with the `fuse.lspPath` setting. The **Fuse LSP** output channel logs
@@ -74,9 +74,12 @@ Release-mode build + package:
 ./scripts/package_vscode_extension.sh --platform linux-x64 --release
 ```
 
+Supported platform values: `linux-x64`, `macos-x64`, `macos-arm64`, `windows-x64`.
+For Windows packages, bundled binary name is `fuse-lsp.exe`.
+
 This script:
 
-1. builds `dist/fuse-lsp` (unless `--skip-build`),
+1. builds `dist/fuse-lsp[.exe]` (unless `--skip-build`),
 2. copies it to `tools/vscode/bin/<platform>/fuse-lsp` (or `.exe` on Windows),
 3. verifies path resolution priority (`bundled > workspace dist > PATH`),
 4. emits `dist/fuse-vscode-<platform>.vsix`,
@@ -88,4 +91,5 @@ This script:
 2. Run `./scripts/package_vscode_extension.sh --platform <platform> --release`.
 3. Verify `tools/vscode/bin/<platform>/fuse-lsp` exists and is executable.
 4. Verify `dist/fuse-vscode-<platform>.vsix` exists.
-5. Install/test the packaged extension in a clean VS Code profile.
+5. Run `./scripts/generate_release_checksums.sh` and publish `dist/SHA256SUMS`.
+6. Install/test the packaged extension in a clean VS Code profile.

@@ -21,13 +21,14 @@ app "users":
 
 ## Status
 
-FUSE v0.1.0 is released. This branch is the v0.2.0 line and includes intentional breaking
-changes for concurrency (`spawn`/`await` contract reset), build cache metadata, and VS Code
-distribution packaging.
+FUSE v0.3.0 is released. This branch tracks the v0.3.x quality/stability line with
+native/backend parity hardening, multi-file tooling reliability, dependency workflow
+contract coverage, and release artifact matrix automation.
 
 Compatibility is defined by documented behavior in `fls.md`, `runtime.md`, `scope.md`, and
 `VERSIONING_POLICY.md`.
-Upgrade guidance for this breaking minor is in `docs/migrations/0.1-to-0.2.md`.
+Historical upgrade guidance for the `0.1.x -> 0.2.0` breaking minor is in
+`docs/migrations/0.1-to-0.2.md`.
 
 ## Requirements
 
@@ -88,10 +89,52 @@ backend = "native"
 - `[vite]` — `dev_url` for dev proxy fallback, `dist_dir` for production statics
 - `[dependencies]` — package dependencies
 
+### Dependency contract
+
+Accepted `[dependencies]` forms:
+
+```toml
+[dependencies]
+# local path (inline table)
+LocalA = { path = "./deps/local-a" }
+
+# local path (string shorthand)
+LocalB = "./deps/local-b"
+
+# git source pinned by revision/tag/branch/version
+AuthRev = { git = "https://example.com/auth.git", rev = "a1b2c3d4" }
+AuthTag = { git = "https://example.com/auth.git", tag = "v1.2.0" }
+AuthBranch = { git = "https://example.com/auth.git", branch = "main" }
+AuthVersion = { git = "https://example.com/auth.git", version = "1.2.0" }
+
+# optional subdir inside git checkout
+AuthSubdir = { git = "https://example.com/mono.git", tag = "v1.2.0", subdir = "packages/auth" }
+```
+
+Rules:
+
+- Exactly one source must be set: `path` or `git`.
+- For git dependencies, at most one selector may be set: `rev`, `tag`, `branch`, or `version`.
+- `subdir` is valid only for git dependencies.
+- Path dependencies accept `/` and `\` separators in manifest values for cross-platform repos.
+- Bare version strings are not a supported source form (`Dep = "1.2.3"` is invalid).
+- Transitive conflicts are rejected by dependency name when specs differ.
+- Dependency and lockfile diagnostics include machine-readable codes
+  (`[FUSE_DEP_*]`, `[FUSE_LOCK_*]`) for CI/tooling parsing.
+
+Lockfile semantics (`fuse.lock`):
+
+- Resolver writes lockfile `version = 1`.
+- Entries store resolved source (`path` or `git+rev`) and requested spec fingerprint.
+- If requested fingerprint matches, lock entry is reused; if it differs, entry is refreshed.
+- Unchanged dependency graphs keep stable lockfile content.
+- Lockfile format/load errors include remediation guidance to regenerate `fuse.lock`.
+
 ### Build artifacts
 
 Build outputs are stored in `.fuse/build/` (`program.ir`, `program.native`).
 Cache validity uses content hashes (module graph + `fuse.toml` + `fuse.lock`) in `program.meta` v3.
+Native/IR cache reuse also requires matching build fingerprints (target triple, Rust toolchain, CLI version).
 Use `fuse build --clean` to clear the cache.
 
 ## Config loading
@@ -127,21 +170,42 @@ Always run Cargo through `scripts/cargo_env.sh` to avoid cross-device link error
 | LSP suite | `./scripts/lsp_suite.sh` | LSP contracts, navigation, completions, code actions |
 | LSP performance | `./scripts/lsp_perf_reliability.sh` | Cancellation handling and responsiveness budgets |
 | LSP incremental | `./scripts/lsp_workspace_incremental.sh` | Workspace cache correctness |
-| Benchmarks | `./scripts/use_case_bench.sh` | Real-world workload metrics |
+| Benchmarks | `./scripts/use_case_bench.sh` | Real-world workload metrics (`--median-of-3` available for reliability runs) |
+| Reliability repeat | `./scripts/reliability_repeat.sh --iterations 2` | Repeat-run stability checks for parity/LSP/benchmark-sensitive paths |
+| Packaging verifier regression | `./scripts/packaging_verifier_regression.sh` | Cross-platform archive/VSIX verifier coverage (including Windows `.exe` naming) |
 | Release smoke | `./scripts/release_smoke.sh` | Full pre-release gate (includes all above) |
 
 CI enforces the release smoke gate via `.github/workflows/pre-release-gate.yml`.
 
 ### Distribution
 
+Canonical artifact names:
+
+| Artifact | Output name |
+|---|---|
+| CLI bundle (Linux/macOS) | `dist/fuse-cli-<platform>.tar.gz` |
+| CLI bundle (Windows) | `dist/fuse-cli-<platform>.zip` |
+| VS Code extension | `dist/fuse-vscode-<platform>.vsix` |
+| Release checksums | `dist/SHA256SUMS` |
+| Release metadata | `dist/release-artifacts.json` |
+
+Supported release matrix platforms:
+`linux-x64`, `macos-x64`, `macos-arm64`, `windows-x64`.
+
 ```bash
 # Build release binaries
 ./scripts/build_dist.sh --release
 
-# Package VS Code extension with bundled LSP (.vsix)
-./scripts/package_vscode_extension.sh --platform linux-x64
+# Package host CLI bundle (archive + integrity check)
+./scripts/package_cli_artifacts.sh --release
 
-# Install the packaged extension
+# Package VS Code extension with bundled LSP (.vsix + integrity check)
+./scripts/package_vscode_extension.sh --release
+
+# Generate checksums and JSON metadata for release publication
+./scripts/generate_release_checksums.sh
+
+# Install a packaged VSIX example
 code --install-extension dist/fuse-vscode-linux-x64.vsix
 
 # Regenerate docs site guides
@@ -177,6 +241,7 @@ code --install-extension dist/fuse-vscode-linux-x64.vsix
 | `IDENTITY_CHARTER.md` | Language identity boundaries and "will not do" list |
 | `EXTENSIBILITY_BOUNDARIES.md` | Allowed extension surfaces and stability tiers |
 | `VERSIONING_POLICY.md` | Compatibility guarantees and deprecation rules |
+| `FLAKE_TRIAGE.md` | Checklist for diagnosing and closing intermittent CI/test failures |
 | `BENCHMARKS.md` | Workload matrix and benchmark definitions |
 | `LSP_ROADMAP.md` | Editor capability baseline and planned improvements |
 
