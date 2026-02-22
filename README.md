@@ -88,6 +88,43 @@ backend = "native"
 - `[vite]` — `dev_url` for dev proxy fallback, `dist_dir` for production statics
 - `[dependencies]` — package dependencies
 
+### Dependency contract
+
+Accepted `[dependencies]` forms:
+
+```toml
+[dependencies]
+# local path (inline table)
+LocalA = { path = "./deps/local-a" }
+
+# local path (string shorthand)
+LocalB = "./deps/local-b"
+
+# git source pinned by revision/tag/branch/version
+AuthRev = { git = "https://example.com/auth.git", rev = "a1b2c3d4" }
+AuthTag = { git = "https://example.com/auth.git", tag = "v1.2.0" }
+AuthBranch = { git = "https://example.com/auth.git", branch = "main" }
+AuthVersion = { git = "https://example.com/auth.git", version = "1.2.0" }
+
+# optional subdir inside git checkout
+AuthSubdir = { git = "https://example.com/mono.git", tag = "v1.2.0", subdir = "packages/auth" }
+```
+
+Rules:
+
+- Exactly one source must be set: `path` or `git`.
+- For git dependencies, at most one selector may be set: `rev`, `tag`, `branch`, or `version`.
+- `subdir` is valid only for git dependencies.
+- Bare version strings are not a supported source form (`Dep = "1.2.3"` is invalid).
+- Transitive conflicts are rejected by dependency name when specs differ.
+
+Lockfile semantics (`fuse.lock`):
+
+- Resolver writes lockfile `version = 1`.
+- Entries store resolved source (`path` or `git+rev`) and requested spec fingerprint.
+- If requested fingerprint matches, lock entry is reused; if it differs, entry is refreshed.
+- Unchanged dependency graphs keep stable lockfile content.
+
 ### Build artifacts
 
 Build outputs are stored in `.fuse/build/` (`program.ir`, `program.native`).

@@ -47,7 +47,12 @@ fn position_params(uri: &str, line: usize, character: usize) -> JsonValue {
     JsonValue::Object(params)
 }
 
-fn references_params(uri: &str, line: usize, character: usize, include_declaration: bool) -> JsonValue {
+fn references_params(
+    uri: &str,
+    line: usize,
+    character: usize,
+    include_declaration: bool,
+) -> JsonValue {
     let mut params = match position_params(uri, line, character) {
         JsonValue::Object(map) => map,
         _ => unreachable!(),

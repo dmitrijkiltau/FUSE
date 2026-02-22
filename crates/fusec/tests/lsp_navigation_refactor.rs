@@ -264,11 +264,7 @@ fn main():
     let (root_call_line, root_call_col) = line_col_of(main_src, "Core.plus_one(1)");
     let root_definition = lsp.request(
         "textDocument/definition",
-        position_params(
-            &main_uri,
-            root_call_line,
-            root_call_col + "Core.".len() + 1,
-        ),
+        position_params(&main_uri, root_call_line, root_call_col + "Core.".len() + 1),
     );
     let root_definition_text = json::encode(&root_definition);
     assert!(
@@ -288,14 +284,11 @@ fn main():
         "prepareRename should allow root: export target: {root_prepare_text}"
     );
 
-    let mut root_rename_params = match position_params(
-        &main_uri,
-        root_call_line,
-        root_call_col + "Core.".len() + 1,
-    ) {
-        JsonValue::Object(params) => params,
-        _ => unreachable!(),
-    };
+    let mut root_rename_params =
+        match position_params(&main_uri, root_call_line, root_call_col + "Core.".len() + 1) {
+            JsonValue::Object(params) => params,
+            _ => unreachable!(),
+        };
     root_rename_params.insert(
         "newName".to_string(),
         JsonValue::String("plus_root".to_string()),

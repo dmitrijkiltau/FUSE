@@ -2913,22 +2913,26 @@ fn resolve_dependencies(
     }
 
     let mut resolved = HashMap::new();
-    let mut requests: HashMap<String, String> = HashMap::new();
+    let mut requests: HashMap<String, (String, PathBuf)> = HashMap::new();
     let mut queue: VecDeque<(String, DependencySpec, PathBuf)> = VecDeque::new();
     for (name, spec) in &manifest.dependencies {
         queue.push_back((name.clone(), spec.clone(), root_dir.to_path_buf()));
     }
 
     while let Some((name, spec, base_dir)) = queue.pop_front() {
-        let requested = dependency_request_key(&spec, &base_dir)?;
-        if let Some(prev) = requests.get(&name) {
+        let requested = dependency_request_key(&name, &spec, &base_dir)?;
+        if let Some((prev, prev_base_dir)) = requests.get(&name) {
             if prev != &requested {
+                let prev_from = prev_base_dir.join("fuse.toml");
+                let next_from = base_dir.join("fuse.toml");
                 return Err(format!(
-                    "dependency {name} requested with conflicting specs: {prev} vs {requested}"
+                    "dependency {name} requested with conflicting specs:\n  - {prev} (from {})\n  - {requested} (from {})",
+                    prev_from.display(),
+                    next_from.display()
                 ));
             }
         } else {
-            requests.insert(name.clone(), requested);
+            requests.insert(name.clone(), (requested.clone(), base_dir.clone()));
         }
         if resolved.contains_key(&name) {
             continue;
@@ -2948,8 +2952,12 @@ fn resolve_dependencies(
     Ok(resolved)
 }
 
-fn dependency_request_key(spec: &DependencySpec, base_dir: &Path) -> Result<String, String> {
-    let normalized = normalize_dependency_spec(spec, base_dir)?;
+fn dependency_request_key(
+    name: &str,
+    spec: &DependencySpec,
+    base_dir: &Path,
+) -> Result<String, String> {
+    let normalized = normalize_dependency_spec(name, spec, base_dir)?;
     Ok(normalized.requested)
 }
 
@@ -2961,7 +2969,7 @@ fn resolve_dependency(
     deps_dir: &Path,
     lock: &mut Lockfile,
 ) -> Result<PathBuf, String> {
-    let normalized = normalize_dependency_spec(spec, base_dir)?;
+    let normalized = normalize_dependency_spec(name, spec, base_dir)?;
     if let Some(entry) = lock.dependencies.get(name) {
         if entry.requested.as_deref() == Some(normalized.requested.as_str()) {
             return root_from_lock(name, entry, root_dir, deps_dir);
@@ -3102,6 +3110,7 @@ impl GitReference {
 }
 
 fn normalize_dependency_spec(
+    name: &str,
     spec: &DependencySpec,
     base_dir: &Path,
 ) -> Result<NormalizedDependency, String> {
@@ -3119,7 +3128,7 @@ fn normalize_dependency_spec(
                 }
             } else {
                 return Err(format!(
-                    "dependency {value} must use {{ git = \"...\" }} or {{ path = \"...\" }}"
+                    "dependency {name} has invalid source {value:?}; use a relative/absolute path or {{ git = \"...\" }}"
                 ));
             }
         }
@@ -3127,6 +3136,9 @@ fn normalize_dependency_spec(
     };
 
     if let Some(path) = detail.path {
+        if path.trim().is_empty() {
+            return Err(format!("dependency {name} path cannot be empty"));
+        }
         if detail.git.is_some()
             || detail.version.is_some()
             || detail.rev.is_some()
@@ -3134,7 +3146,9 @@ fn normalize_dependency_spec(
             || detail.branch.is_some()
             || detail.subdir.is_some()
         {
-            return Err("path dependencies cannot include git/version fields".to_string());
+            return Err(format!(
+                "dependency {name} path dependencies cannot include git/rev/tag/branch/version/subdir fields"
+            ));
         }
         let path = resolve_path(base_dir, &path);
         let requested = format!("path:{}", path.display());
@@ -3144,11 +3158,49 @@ fn normalize_dependency_spec(
         });
     }
 
+    let has_ref = detail.rev.is_some()
+        || detail.tag.is_some()
+        || detail.branch.is_some()
+        || detail.version.is_some();
     let Some(git) = detail.git else {
-        return Err("dependency must specify git or path".to_string());
+        if has_ref || detail.subdir.is_some() {
+            return Err(format!(
+                "dependency {name} must specify git when using rev/tag/branch/version/subdir"
+            ));
+        }
+        return Err(format!("dependency {name} must specify either path or git"));
     };
+    if git.trim().is_empty() {
+        return Err(format!("dependency {name} git url cannot be empty"));
+    }
     if detail.path.is_some() {
-        return Err("dependency cannot specify both git and path".to_string());
+        return Err(format!(
+            "dependency {name} cannot specify both git and path"
+        ));
+    }
+    if let Some(subdir) = detail.subdir.as_ref() {
+        if subdir.trim().is_empty() {
+            return Err(format!("dependency {name} subdir cannot be empty"));
+        }
+    }
+
+    let mut selected_refs = 0usize;
+    if detail.rev.is_some() {
+        selected_refs += 1;
+    }
+    if detail.tag.is_some() {
+        selected_refs += 1;
+    }
+    if detail.branch.is_some() {
+        selected_refs += 1;
+    }
+    if detail.version.is_some() {
+        selected_refs += 1;
+    }
+    if selected_refs > 1 {
+        return Err(format!(
+            "dependency {name} must specify at most one of rev, tag, branch, version"
+        ));
     }
 
     let requested_ref = if let Some(rev) = detail.rev {
@@ -3263,7 +3315,7 @@ fn looks_like_git_url(value: &str) -> bool {
 }
 
 fn looks_like_path(value: &str) -> bool {
-    value.starts_with('.') || value.starts_with('/') || value.contains('/')
+    value.starts_with('.') || value.starts_with('/') || value.contains('/') || value.contains('\\')
 }
 
 fn resolve_path(base_dir: &Path, raw: &str) -> PathBuf {
