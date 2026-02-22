@@ -74,6 +74,9 @@ Release-mode build + package:
 ./scripts/package_vscode_extension.sh --platform linux-x64 --release
 ```
 
+Supported platform values: `linux-x64`, `macos-x64`, `macos-arm64`, `windows-x64`.
+For Windows packages, bundled binary name is `fuse-lsp.exe`.
+
 This script:
 
 1. builds `dist/fuse-lsp[.exe]` (unless `--skip-build`),

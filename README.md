@@ -116,8 +116,11 @@ Rules:
 - Exactly one source must be set: `path` or `git`.
 - For git dependencies, at most one selector may be set: `rev`, `tag`, `branch`, or `version`.
 - `subdir` is valid only for git dependencies.
+- Path dependencies accept `/` and `\` separators in manifest values for cross-platform repos.
 - Bare version strings are not a supported source form (`Dep = "1.2.3"` is invalid).
 - Transitive conflicts are rejected by dependency name when specs differ.
+- Dependency and lockfile diagnostics include machine-readable codes
+  (`[FUSE_DEP_*]`, `[FUSE_LOCK_*]`) for CI/tooling parsing.
 
 Lockfile semantics (`fuse.lock`):
 
@@ -125,6 +128,7 @@ Lockfile semantics (`fuse.lock`):
 - Entries store resolved source (`path` or `git+rev`) and requested spec fingerprint.
 - If requested fingerprint matches, lock entry is reused; if it differs, entry is refreshed.
 - Unchanged dependency graphs keep stable lockfile content.
+- Lockfile format/load errors include remediation guidance to regenerate `fuse.lock`.
 
 ### Build artifacts
 
@@ -168,6 +172,7 @@ Always run Cargo through `scripts/cargo_env.sh` to avoid cross-device link error
 | LSP incremental | `./scripts/lsp_workspace_incremental.sh` | Workspace cache correctness |
 | Benchmarks | `./scripts/use_case_bench.sh` | Real-world workload metrics (`--median-of-3` available for reliability runs) |
 | Reliability repeat | `./scripts/reliability_repeat.sh --iterations 2` | Repeat-run stability checks for parity/LSP/benchmark-sensitive paths |
+| Packaging verifier regression | `./scripts/packaging_verifier_regression.sh` | Cross-platform archive/VSIX verifier coverage (including Windows `.exe` naming) |
 | Release smoke | `./scripts/release_smoke.sh` | Full pre-release gate (includes all above) |
 
 CI enforces the release smoke gate via `.github/workflows/pre-release-gate.yml`.

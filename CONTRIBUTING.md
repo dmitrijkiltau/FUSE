@@ -35,6 +35,7 @@ Recommended baseline before opening a PR:
 3. `scripts/release_smoke.sh`
 4. `scripts/fuse check --manifest-path docs` (if docs site changed)
 5. `scripts/reliability_repeat.sh --iterations 1` (recommended for CI-sensitive changes)
+6. `scripts/packaging_verifier_regression.sh` (recommended when touching release/package scripts)
 
 ## Change types and required updates
 
