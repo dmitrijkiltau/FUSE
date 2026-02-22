@@ -2345,7 +2345,16 @@ fn link_native_binary(
     )?;
     let script = repo_root.join("scripts").join("cargo_env.sh");
     let mut build_cmd = ProcessCommand::new(&script);
-    build_cmd.arg("cargo").arg("build").arg("-p").arg("fusec");
+    build_cmd
+        .arg("cargo")
+        .arg("build")
+        .arg("-p")
+        .arg("fusec")
+        // The generated AOT runner also links against bincode.
+        // Build `fuse` in the same profile to ensure `libbincode*.rlib`
+        // is present in `<target>/<profile>/deps` on clean CI runners.
+        .arg("-p")
+        .arg("fuse");
     if release {
         build_cmd.arg("--release");
     }
@@ -2354,7 +2363,7 @@ fn link_native_binary(
         .map_err(|err| format!("failed to run {}: {err}", script.display()))?;
     if !build_output.status.success() {
         return Err(format!(
-            "native link: failed to build fusec\n{}",
+            "native link: failed to build link dependencies\n{}",
             summarize_command_failure(&build_output)
         ));
     }
