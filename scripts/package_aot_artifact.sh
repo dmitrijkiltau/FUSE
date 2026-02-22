@@ -196,7 +196,7 @@ if ! BUILD_INFO="$(FUSE_AOT_BUILD_INFO=1 "$SRC_BIN" 2>/dev/null)"; then
   echo "failed to read AOT build metadata from $SRC_BIN" >&2
   exit 1
 fi
-if [[ "$BUILD_INFO" != *"target="* || "$BUILD_INFO" != *"contract="* ]]; then
+if [[ "$BUILD_INFO" != *"mode="* || "$BUILD_INFO" != *"profile="* || "$BUILD_INFO" != *"target="* || "$BUILD_INFO" != *"contract="* ]]; then
   echo "unexpected AOT build metadata output from $SRC_BIN" >&2
   echo "output: $BUILD_INFO" >&2
   exit 1

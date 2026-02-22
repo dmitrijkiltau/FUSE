@@ -206,6 +206,8 @@ Implementation artifacts:
 
 Objective: prove operational value and production safety.
 
+Status: Implemented (2026-02-22)
+
 Deliverables:
 
 - benchmark suite extension:
@@ -224,6 +226,29 @@ Exit criteria:
 
 - startup improvement is measurable and documented
 - no unresolved severity-1 parity/reliability issues
+
+Implementation artifacts:
+
+- AOT cold-start + throughput benchmark harness:
+  - `scripts/aot_perf_bench.sh`
+  - `scripts/check_aot_perf_slo.sh`
+  - `BENCHMARKS.md`
+- Observability hooks in AOT binaries:
+  - `FUSE_AOT_STARTUP_TRACE=1`
+  - build metadata now includes `mode` + `profile`
+  - fatal envelopes include `pid`
+  - `crates/fuse/src/main.rs`
+  - `crates/fuse/tests/project_cli.rs`
+- Reliability/release gate integration:
+  - `scripts/reliability_repeat.sh`
+  - `scripts/release_smoke.sh`
+  - `.github/workflows/reliability-repeat.yml`
+  - `.github/workflows/pre-release-gate.yml`
+- Rollback-ready operator guidance:
+  - `AOT_ROLLBACK_PLAYBOOK.md`
+  - `README.md`
+  - `RELEASE.md`
+  - `runtime.md`
 
 ### Milestone 5: Complete v0.4.0 Release
 

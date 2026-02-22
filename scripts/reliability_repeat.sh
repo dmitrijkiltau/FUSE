@@ -14,6 +14,7 @@ Options:
 
 Notes:
   Benchmark collection uses scripts/use_case_bench.sh --median-of-3.
+  AOT startup/throughput coverage uses scripts/aot_perf_bench.sh.
 USAGE
 }
 
@@ -69,6 +70,28 @@ run_benchmark_gate_with_retry() {
   fi
 }
 
+run_aot_perf_gate_with_retry() {
+  local iteration="$1"
+  set +e
+  "$ROOT/scripts/aot_perf_bench.sh" --samples 5 --burst-runs 10
+  local bench_status=$?
+  set -e
+  if [[ "$bench_status" -ne 0 ]]; then
+    echo "AOT performance benchmark collection failed on iteration $iteration; retrying once"
+    "$ROOT/scripts/aot_perf_bench.sh" --samples 5 --burst-runs 10
+  fi
+
+  set +e
+  "$ROOT/scripts/check_aot_perf_slo.sh"
+  local gate_status=$?
+  set -e
+  if [[ "$gate_status" -ne 0 ]]; then
+    echo "AOT performance SLO gate failed on iteration $iteration; retrying once"
+    "$ROOT/scripts/aot_perf_bench.sh" --samples 5 --burst-runs 10
+    "$ROOT/scripts/check_aot_perf_slo.sh"
+  fi
+}
+
 for ((i = 1; i <= ITERATIONS; i++)); do
   step "$i" "authority parity"
   "$ROOT/scripts/authority_parity.sh"
@@ -78,6 +101,9 @@ for ((i = 1; i <= ITERATIONS; i++)); do
 
   step "$i" "benchmark gate path"
   run_benchmark_gate_with_retry "$i"
+
+  step "$i" "AOT performance gate path"
+  run_aot_perf_gate_with_retry "$i"
 done
 
 printf "\nreliability repeat checks passed (%s iteration(s))\n" "$ITERATIONS"

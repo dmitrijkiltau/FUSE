@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   repeat-gates:
-    name: Repeat Parity/LSP/Bench Gates
+    name: Repeat Parity/LSP/Bench/AOT Perf Gates
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
@@ -41,3 +41,14 @@ jobs:
 
       - name: Run reliability repeat gate
         run: ./scripts/reliability_repeat.sh --iterations 2
+
+      - name: Upload benchmark trend artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-trend-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .fuse/bench/use_case_metrics.json
+            .fuse/bench/use_case_metrics.md
+            .fuse/bench/aot_perf_metrics.json
+            .fuse/bench/aot_perf_metrics.md
+          if-no-files-found: error

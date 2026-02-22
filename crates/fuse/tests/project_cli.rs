@@ -2114,6 +2114,8 @@ app "Demo":
         String::from_utf8_lossy(&info.stderr)
     );
     let stdout = String::from_utf8_lossy(&info.stdout);
+    assert!(stdout.contains("mode=aot"), "stdout: {stdout}");
+    assert!(stdout.contains("profile=release"), "stdout: {stdout}");
     assert!(stdout.contains("target="), "stdout: {stdout}");
     assert!(stdout.contains("rustc="), "stdout: {stdout}");
     assert!(stdout.contains("cli="), "stdout: {stdout}");
@@ -2158,8 +2160,57 @@ app "Demo":
         stderr.contains("fatal: class=runtime_fatal"),
         "stderr: {stderr}"
     );
+    assert!(stderr.contains("pid="), "stderr: {stderr}");
     assert!(stderr.contains("assert failed: boom"), "stderr: {stderr}");
+    assert!(stderr.contains("mode=aot"), "stderr: {stderr}");
+    assert!(stderr.contains("profile=release"), "stderr: {stderr}");
     assert!(stderr.contains("target="), "stderr: {stderr}");
+    assert!(stderr.contains("contract="), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_startup_trace_env_emits_operability_header() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let aot = default_aot_binary_path(&dir);
+    let run = Command::new(&aot)
+        .env("FUSE_AOT_STARTUP_TRACE", "1")
+        .output()
+        .expect("run aot binary with startup trace env");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(stderr.contains("startup: pid="), "stderr: {stderr}");
+    assert!(stderr.contains("mode=aot"), "stderr: {stderr}");
+    assert!(stderr.contains("profile=release"), "stderr: {stderr}");
     assert!(stderr.contains("contract="), "stderr: {stderr}");
 
     let _ = fs::remove_dir_all(&dir);

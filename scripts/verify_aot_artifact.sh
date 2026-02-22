@@ -115,6 +115,8 @@ assert_info_field() {
 assert_info_field "target"
 assert_info_field "rustc"
 assert_info_field "cli"
+assert_info_field "mode"
+assert_info_field "profile"
 assert_info_field "runtime_cache"
 assert_info_field "contract"
 

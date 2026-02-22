@@ -11,6 +11,7 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
   - `runtime.md`
 - For AOT production rollout (`v0.4.0` line), enforce the contract and SLO targets in `AOT_CONTRACT.md`.
 - Enforce AOT artifact reproducibility/static-profile policy from `AOT_REPRODUCIBILITY.md`.
+- Enforce rollback preparedness from `AOT_ROLLBACK_PLAYBOOK.md`.
 - Enforce version bump and compatibility rules from `VERSIONING_POLICY.md`.
 - Features marked planned/unsupported stay out of release criteria.
 
@@ -34,6 +35,7 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
    - `./scripts/authority_parity.sh` (explicit semantic-authority gate)
    - `./scripts/release_smoke.sh`
    - Verify `AOT_CONTRACT.md` thresholds for release scope that includes AOT production artifacts.
+   - Verify latest `.fuse/bench/aot_perf_metrics.json` passes `./scripts/check_aot_perf_slo.sh`.
    - Ensure GitHub Actions `Pre-release Gate` passed on the release PR (`.github/workflows/pre-release-gate.yml`).
    - Covers authority/parity gates, `fusec` + `fuse` test suites, release-mode compile checks,
      package build cache checks, AST/VM/native backend smoke runs, benchmark regression checks,
@@ -48,14 +50,17 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
    - `./scripts/package_aot_artifact.sh --release --manifest-path .` (emits `dist/fuse-aot-<platform>.tar.gz|.zip`)
    - `./scripts/package_vscode_extension.sh --platform <platform> --release`
    - `SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" ./scripts/generate_release_checksums.sh` (emits `dist/SHA256SUMS` and `dist/release-artifacts.json`)
-7. Run the release artifact matrix workflow (`.github/workflows/release-artifacts.yml`):
+7. Validate rollback posture:
+   - confirm `AOT_ROLLBACK_PLAYBOOK.md` steps were reviewed for this release
+   - confirm fallback `fuse-cli-<platform>.*` artifacts are published alongside `fuse-aot-<platform>.*`
+8. Run the release artifact matrix workflow (`.github/workflows/release-artifacts.yml`):
    - Trigger on tag push (`v*`) or run manually via `workflow_dispatch`.
    - Produces verified per-platform CLI, AOT, and VSIX artifacts for `linux-x64`, `macos-arm64`, `windows-x64`.
    - On tag refs, publishes GitHub release assets automatically and runs post-publish checksum/package verification.
-8. Commit release metadata:
+9. Commit release metadata:
    - `git add CHANGELOG.md RELEASE.md VERSIONING_POLICY.md README.md crates/*/Cargo.toml Cargo.lock tools/vscode/package*.json tools/vscode/CHANGELOG.md`
    - `git commit -m "release: vX.Y.Z"`
-9. Tag release:
+10. Tag release:
    - `git tag vX.Y.Z`
    - `git push origin main --tags`
 

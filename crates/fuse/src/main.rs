@@ -2077,6 +2077,7 @@ fn write_native_binary(
         &config_bytes,
         &type_bytes,
         &artifact.config_defaults,
+        release,
     )?;
     let out_path = resolve_output_path(manifest_dir, out_path)?;
     if let Some(parent) = out_path.parent() {
@@ -2108,6 +2109,7 @@ fn write_native_runner(
     config_bytes: &[u8],
     type_bytes: &[u8],
     config_defaults: &[fusec::native::ConfigDefaultSymbol],
+    release: bool,
 ) -> Result<(), String> {
     let interned = if interned_strings.is_empty() {
         "&[]".to_string()
@@ -2152,6 +2154,8 @@ fn write_native_runner(
     let rustc_literal = format!("{BUILD_RUSTC_FINGERPRINT:?}");
     let cli_literal = format!("{BUILD_CLI_VERSION_FINGERPRINT:?}");
     let contract_literal = format!("{AOT_SEMANTIC_CONTRACT_VERSION:?}");
+    let mode_literal = "\"aot\"";
+    let profile_literal = if release { "\"release\"" } else { "\"debug\"" };
     let runtime_cache_version = fusec::native::CACHE_VERSION;
     let source = format!(
         r#"use fusec::interp::format_error_value;
@@ -2174,6 +2178,8 @@ unsafe extern "C" {{
 const INTERNED_STRINGS: &[&str] = {interned};
 const CONFIG_BYTES: &[u8] = {config_blob};
 const TYPE_BYTES: &[u8] = {type_blob};
+const AOT_STARTUP_MODE: &str = {mode_literal};
+const AOT_BUILD_PROFILE: &str = {profile_literal};
 const AOT_BUILD_TARGET: &str = {target_literal};
 const AOT_BUILD_RUSTC: &str = {rustc_literal};
 const AOT_BUILD_CLI: &str = {cli_literal};
@@ -2182,7 +2188,9 @@ const AOT_SEMANTIC_CONTRACT: &str = {contract_literal};
 
 fn build_info_line() -> String {{
     format!(
-        "target={{}} rustc={{}} cli={{}} runtime_cache={{}} contract={{}}",
+        "mode={{}} profile={{}} target={{}} rustc={{}} cli={{}} runtime_cache={{}} contract={{}}",
+        AOT_STARTUP_MODE,
+        AOT_BUILD_PROFILE,
         AOT_BUILD_TARGET,
         AOT_BUILD_RUSTC,
         AOT_BUILD_CLI,
@@ -2197,11 +2205,18 @@ fn sanitize_message(raw: &str) -> String {{
 
 fn emit_fatal(class: &str, message: &str) {{
     eprintln!(
-        "fatal: class={{}} message={{}} {{}}",
+        "fatal: class={{}} pid={{}} message={{}} {{}}",
         class,
+        std::process::id(),
         sanitize_message(message),
         build_info_line()
     );
+}}
+
+fn emit_startup_trace() {{
+    if std::env::var("FUSE_AOT_STARTUP_TRACE").ok().as_deref() == Some("1") {{
+        eprintln!("startup: pid={{}} {{}}", std::process::id(), build_info_line());
+    }}
 }}
 
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {{
@@ -2278,6 +2293,7 @@ fn main() {{
         println!("{{}}", build_info_line());
         return;
     }}
+    emit_startup_trace();
     let status = match std::panic::catch_unwind(run_program) {{
         Ok(Ok(())) => 0,
         Ok(Err(err)) => {{

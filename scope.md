@@ -78,11 +78,12 @@ See also: [Formal language specification](fls.md), [Runtime semantics](runtime.m
 
 Near-term priorities:
 
-1. Native backend maturity and predictability
-2. Concurrency throughput and observability improvements on the existing worker-pool + deterministic `spawn` model
-3. Faster run/build iteration with hash-validated cache artifacts
-4. Tooling quality for multi-file projects (diagnostics, refactors, discoverability)
-5. Publishable VS Code distribution artifacts (`.vsix`)
+1. AOT production performance/operability hardening (startup SLOs, observability hooks, rollback readiness)
+2. Native backend maturity and predictability
+3. Concurrency throughput and observability improvements on the existing worker-pool + deterministic `spawn` model
+4. Faster run/build iteration with hash-validated cache artifacts
+5. Tooling quality for multi-file projects (diagnostics, refactors, discoverability)
+6. Publishable VS Code distribution artifacts (`.vsix`)
 
 Likely future candidates (not committed MVP scope):
 

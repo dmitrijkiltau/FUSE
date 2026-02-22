@@ -19,8 +19,10 @@ Scope: production AOT backend contract for the `v0.4.0` release line.
    - `linux-x64`
    - `macos-arm64`
    - `windows-x64`
-5. AOT binaries must embed build metadata (`target`, `rustc`, `cli`, `runtime_cache`, `contract`)
-   and emit stable fatal envelopes (`runtime_fatal` / `panic`) including build metadata.
+5. AOT binaries must embed build metadata (`mode`, `profile`, `target`, `rustc`, `cli`, `runtime_cache`, `contract`),
+   expose build metadata (`FUSE_AOT_BUILD_INFO=1`), support startup trace diagnostics
+   (`FUSE_AOT_STARTUP_TRACE=1`), and emit stable fatal envelopes (`runtime_fatal` / `panic`)
+   including `pid` and build metadata.
 
 ## SLO targets for v0.4.0
 

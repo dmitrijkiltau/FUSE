@@ -149,12 +149,13 @@ Deployable AOT output:
 - `fuse build --aot` emits `.fuse/build/program.aot` (`.exe` on Windows) by default.
 - `[build].native_bin` overrides the AOT output path and remains supported.
 - AOT binaries embed build metadata:
-  `target`, `rustc`, `cli`, `runtime_cache`, and `contract`.
+  `mode`, `profile`, `target`, `rustc`, `cli`, `runtime_cache`, and `contract`.
   Use `FUSE_AOT_BUILD_INFO=1 <aot-binary>` to print this metadata and exit.
+- `FUSE_AOT_STARTUP_TRACE=1 <aot-binary>` emits a startup diagnostic line with PID + build metadata.
 - AOT build/link failures are deterministic command failures with `error:` diagnostics and
   `[build] failed` step footer.
 - Runtime failures in AOT binaries emit a stable fatal envelope:
-  `fatal: class=<runtime_fatal|panic> message=<...> <build-info>`.
+  `fatal: class=<runtime_fatal|panic> pid=<...> message=<...> <build-info>`.
 
 Use `fuse build --clean` to clear the cache.
 
@@ -193,6 +194,8 @@ Always run Cargo through `scripts/cargo_env.sh` to avoid cross-device link error
 | LSP incremental | `./scripts/lsp_workspace_incremental.sh` | Workspace cache correctness |
 | Benchmarks | `./scripts/use_case_bench.sh` | Real-world workload metrics (`--median-of-3` available for reliability runs) |
 | Reliability repeat | `./scripts/reliability_repeat.sh --iterations 2` | Repeat-run stability checks for parity/LSP/benchmark-sensitive paths |
+| AOT startup/throughput benchmark | `./scripts/aot_perf_bench.sh` | Cold-start distribution + steady-state throughput comparison (JIT-native vs AOT) |
+| AOT startup SLO gate | `./scripts/check_aot_perf_slo.sh` | Enforces `AOT_CONTRACT.md` cold-start improvement thresholds (`p50`/`p95`) |
 | Packaging verifier regression | `./scripts/packaging_verifier_regression.sh` | Cross-platform CLI+AOT archive and VSIX verifier coverage (including Windows `.exe` naming) |
 | Release smoke | `./scripts/release_smoke.sh` | Full pre-release gate (includes all above) |
 
@@ -273,6 +276,7 @@ code --install-extension dist/fuse-vscode-linux-x64.vsix
 | `EXTENSIBILITY_BOUNDARIES.md` | Allowed extension surfaces and stability tiers |
 | `VERSIONING_POLICY.md` | Compatibility guarantees and deprecation rules |
 | `AOT_REPRODUCIBILITY.md` | AOT release reproducibility and static-profile constraints |
+| `AOT_ROLLBACK_PLAYBOOK.md` | Incident rollback plan (AOT primary, JIT-native fallback) |
 | `FLAKE_TRIAGE.md` | Checklist for diagnosing and closing intermittent CI/test failures |
 | `BENCHMARKS.md` | Workload matrix and benchmark definitions |
 | `LSP_ROADMAP.md` | Editor capability baseline and planned improvements |
