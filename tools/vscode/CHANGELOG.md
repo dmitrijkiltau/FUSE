@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 — 2026-02-22
+
+### Changed
+
+- Release metadata updated to `0.3.0`.
+- Release packaging/docs now align with platform artifact matrix and checksum publication flow.
+- Packaging guidance now explicitly covers Windows bundled-binary (`.exe`) handling.
+
 ## 0.2.0 — 2026-02-22
 
 ### Changed

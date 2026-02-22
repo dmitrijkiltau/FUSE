@@ -44,21 +44,21 @@ Internal surfaces may change between releases without compatibility guarantees.
 
 FUSE uses SemVer tags (`MAJOR.MINOR.PATCH`) with explicit pre-1.0 policy:
 
-- `PATCH` (`0.1.x`): no breaking changes to language or tooling contracts.
-- `MINOR` (pre-1.0, e.g. `0.2.0`): breaking changes allowed only with migration notes.
+- `PATCH` (for the active `0.x` line, e.g. `0.3.x`): no breaking changes to language or tooling contracts.
+- `MINOR` (pre-1.0, e.g. `0.3.0`): breaking changes allowed only with migration notes.
 - `MAJOR` (1.0+): required for breaking changes.
 
-For current `0.1.x` series:
+Recent release-line notes:
 
-- language/runtime/tooling behavior documented for `0.1.x` must remain backward compatible
-- semantic regressions across AST/VM/native are treated as release blockers
+- `0.2.0` is an explicitly breaking minor that reset parts of the pre-1.0 contract:
+  - task helper API removal (`task.id/done/cancel`)
+  - `spawn` execution and restriction semantics
+  - build cache metadata schema bump (`program.meta` v3)
+  - VS Code packaging artifact change (`.tgz` -> `.vsix`)
+- `0.3.0` is a quality/stability minor that keeps `0.2.x` source compatibility while expanding
+  parity/tooling/release artifact reliability coverage.
 
-`0.2.0` is an explicitly breaking minor that resets parts of the pre-1.0 contract:
-
-- task helper API removal (`task.id/done/cancel`)
-- `spawn` execution and restriction semantics
-- build cache metadata schema bump (`program.meta` v3)
-- VS Code packaging artifact change (`.tgz` -> `.vsix`)
+- semantic regressions across AST/VM/native are release blockers on all active release lines.
 
 ## Compatibility guarantees
 
@@ -66,6 +66,7 @@ For current `0.1.x` series:
 
 - Programs valid on `0.1.0` must remain valid and equivalent on `0.1.x`.
 - Programs valid on `0.2.0` must remain valid and equivalent on `0.2.x`.
+- Programs valid on `0.3.0` must remain valid and equivalent on `0.3.x`.
 - If behavior must change incompatibly, release must bump at least `MINOR` and include migration guidance.
 
 ### Runtime behavior compatibility
@@ -78,6 +79,7 @@ For current `0.1.x` series:
 - `.fuse/build/program.ir` and `.fuse/build/program.native` are cache artifacts, not portability contracts.
 - Cross-version cache compatibility is not guaranteed; rebuild on version changes is expected.
 - `0.2.0` intentionally invalidates `0.1.x` build cache metadata.
+- `0.3.0` continues the `program.meta` v3 cache contract.
 
 ## Deprecation policy
 

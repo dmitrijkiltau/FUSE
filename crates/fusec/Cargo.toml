@@ -1,6 +1,6 @@
 [package]
 name = "fusec"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 default-run = "fusec"
 description = "Compiler, runtime, and language tooling for FUSE."

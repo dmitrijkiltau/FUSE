@@ -4,7 +4,7 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
 
 ## Scope policy
 
-- Treat `0.1.x` as MVP-stable for currently documented behavior in:
+- Treat the active `0.x` release line as stable for currently documented behavior in:
   - `fuse.md`
   - `fls.md`
   - `scope.md`
@@ -24,6 +24,8 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
    - `crates/fuse/Cargo.toml`
    - `crates/fusec/Cargo.toml`
    - `crates/fuse-rt/Cargo.toml` (if changed API/runtime)
+   - `tools/vscode/package.json`
+   - `tools/vscode/package-lock.json`
 2. Update `CHANGELOG.md`:
    - Move relevant items from `Unreleased` into the new version section.
 3. Run smoke checks:
@@ -46,7 +48,7 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
    - Trigger on tag push (`v*`) or run manually via `workflow_dispatch`.
    - Produces verified per-platform artifacts for `linux-x64`, `macos-x64`, `macos-arm64`, `windows-x64`.
 8. Commit release metadata:
-   - `git add CHANGELOG.md RELEASE.md crates/*/Cargo.toml Cargo.lock`
+   - `git add CHANGELOG.md RELEASE.md VERSIONING_POLICY.md README.md crates/*/Cargo.toml Cargo.lock tools/vscode/package*.json tools/vscode/CHANGELOG.md`
    - `git commit -m "release: vX.Y.Z"`
 9. Tag release:
    - `git tag vX.Y.Z`

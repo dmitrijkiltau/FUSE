@@ -21,13 +21,14 @@ app "users":
 
 ## Status
 
-FUSE v0.1.0 is released. This branch is the v0.2.0 line and includes intentional breaking
-changes for concurrency (`spawn`/`await` contract reset), build cache metadata, and VS Code
-distribution packaging.
+FUSE v0.3.0 is released. This branch tracks the v0.3.x quality/stability line with
+native/backend parity hardening, multi-file tooling reliability, dependency workflow
+contract coverage, and release artifact matrix automation.
 
 Compatibility is defined by documented behavior in `fls.md`, `runtime.md`, `scope.md`, and
 `VERSIONING_POLICY.md`.
-Upgrade guidance for this breaking minor is in `docs/migrations/0.1-to-0.2.md`.
+Historical upgrade guidance for the `0.1.x -> 0.2.0` breaking minor is in
+`docs/migrations/0.1-to-0.2.md`.
 
 ## Requirements
 
