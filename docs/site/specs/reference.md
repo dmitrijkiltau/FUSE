@@ -251,7 +251,9 @@ Rules:
 ### Errors and HTTP status mapping
 
 The runtime recognizes a small set of error struct names for standardized HTTP status mapping
-and error JSON formatting. These live under a reserved namespace:
+and error JSON formatting.
+
+Preferred canonical names (from `std.Error`):
 
 - `std.Error.Validation`
 - `std.Error`
@@ -261,17 +263,19 @@ and error JSON formatting. These live under a reserved namespace:
 - `std.Error.NotFound`
 - `std.Error.Conflict`
 
-Names outside `std.Error.*` do not participate in this standardized mapping/formatting behavior.
+Compatibility short names are also recognized (`Validation`, `Error`, `BadRequest`,
+`Unauthorized`, `Forbidden`, `NotFound`, `Conflict`), which commonly occur after named imports.
+Other names do not participate in standardized mapping/formatting behavior.
 
 Status mapping uses the error name first, then `std.Error.status` if present:
 
-- `std.Error.Validation` -> 400
-- `std.Error.BadRequest` -> 400
-- `std.Error.Unauthorized` -> 401
-- `std.Error.Forbidden` -> 403
-- `std.Error.NotFound` -> 404
-- `std.Error.Conflict` -> 409
-- `std.Error` with `status: Int` -> that status
+- `std.Error.Validation` / `Validation` -> 400
+- `std.Error.BadRequest` / `BadRequest` -> 400
+- `std.Error.Unauthorized` / `Unauthorized` -> 401
+- `std.Error.Forbidden` / `Forbidden` -> 403
+- `std.Error.NotFound` / `NotFound` -> 404
+- `std.Error.Conflict` / `Conflict` -> 409
+- `std.Error` / `Error` with `status: Int` -> that status
 - anything else -> 500
 
 `expr ?! err` behavior:
@@ -427,29 +431,6 @@ Compiler/runtime CLI operations include:
 - `[assets]`, `[assets.hooks]`
 - `[vite]`
 - `[dependencies]`
-
-Dependency contract summary:
-
-- local dependency forms:
-  - `Name = { path = "./deps/name" }`
-  - `Name = "./deps/name"`
-- git dependency forms:
-  - `Name = { git = "...", rev = "..." }`
-  - `Name = { git = "...", tag = "..." }`
-  - `Name = { git = "...", branch = "..." }`
-  - `Name = { git = "...", version = "..." }`
-  - optional `subdir = "..."` for git checkouts
-- rules:
-  - exactly one source (`path` or `git`)
-  - at most one git selector (`rev`/`tag`/`branch`/`version`)
-  - `subdir` only for git dependencies
-  - transitive conflicting specs by dependency name are rejected
-
-Lockfile (`fuse.lock`) summary:
-
-- lockfile version is `1`
-- entries store source + resolved revision/path + requested spec fingerprint
-- unchanged dependency specs keep stable lockfile content
 
 ---
 

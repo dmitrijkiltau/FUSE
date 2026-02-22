@@ -3,6 +3,9 @@
 This document defines project boundaries: what FUSE targets, what it intentionally does not target,
 and where near-term effort is going.
 
+It is a planning/boundary document, not a semantic specification. Behavioral correctness remains
+owned by `fls.md` (syntax/static semantics) and `runtime.md` (runtime semantics).
+
 Companion references for implementation work:
 
 - `fuse.md` gives the product-level overview
@@ -59,10 +62,9 @@ See also: [Runtime semantics](runtime.md), [FUSE overview](fuse.md).
 FUSE is currently scoped as a strict, typed language with integrated boundary/runtime tooling for:
 
 - language authoring (`fn`, `type`, `enum`, modules/imports, services/config/apps)
-- module-scoped function symbol resolution (local module + explicit imports)
-- backend execution across AST/VM/native path with aligned semantics
-- runtime boundary handling (validation, JSON/config/CLI/HTTP binding, error mapping)
-- pooled SQLite DB execution with configurable pool sizing and migration transaction safety
+- backend execution across AST/VM/native with semantic parity gates
+- integrated runtime boundary handling (validation, JSON/config/CLI/HTTP binding, error mapping)
+- SQLite-backed DB runtime and migration workflow
 - service-oriented package workflow (`fuse check/run/dev/test/build`)
 
 Detailed behavior is intentionally kept out of this doc and lives in `fls.md` and `runtime.md`.
@@ -77,7 +79,7 @@ See also: [Formal language specification](fls.md), [Runtime semantics](runtime.m
 Near-term priorities:
 
 1. Native backend maturity and predictability
-2. Real worker-pool concurrency with deterministic `spawn` restrictions
+2. Concurrency throughput and observability improvements on the existing worker-pool + deterministic `spawn` model
 3. Faster run/build iteration with hash-validated cache artifacts
 4. Tooling quality for multi-file projects (diagnostics, refactors, discoverability)
 5. Publishable VS Code distribution artifacts (`.vsix`)
