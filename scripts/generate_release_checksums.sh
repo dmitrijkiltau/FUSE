@@ -124,7 +124,10 @@ if [[ "${#names[@]}" -eq 0 ]]; then
   exit 1
 fi
 
-mapfile -t sorted_names < <(printf '%s\n' "${names[@]}" | LC_ALL=C sort -u)
+sorted_names=()
+while IFS= read -r name; do
+  sorted_names+=("$name")
+done < <(printf '%s\n' "${names[@]}" | LC_ALL=C sort -u)
 
 declare -a hashes
 declare -a sizes

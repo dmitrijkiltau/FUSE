@@ -19,8 +19,19 @@ function assert(condition, message) {
 const ext = "/ext";
 const ws = ["/ws/project"];
 const exe = "fuse-lsp";
-const bundled = "/ext/bin/linux-x64/fuse-lsp";
-const dist = "/ws/project/dist/fuse-lsp";
+const bundled = path.join(ext, "bin", "linux-x64", "fuse-lsp");
+const dist = path.join(ws[0], "dist", "fuse-lsp");
+const bundledWin = path.join(ext, "bin", "windows-x64", "fuse-lsp.exe");
+const distWin = path.join(ws[0], "dist", "fuse-lsp.exe");
+
+function normalizePath(raw) {
+  return raw.replace(/\\/g, "/");
+}
+
+function makePathExists(paths) {
+  const normalized = new Set(paths.map((p) => normalizePath(p)));
+  return (candidate) => normalized.has(normalizePath(candidate));
+}
 
 assert(
   platformDirName("linux", "x64") === "linux-x64",
@@ -36,12 +47,23 @@ assert(
 );
 
 {
-  const exists = new Set([bundled, dist]);
   const result = resolveLspCommandForHost({
     override: "",
     extensionPath: ext,
     workspaceFolders: ws,
-    pathExists: (p) => exists.has(p),
+    pathExists: makePathExists([bundledWin, distWin]),
+    platform: "win32",
+    arch: "x64",
+  });
+  assert(result.command === bundledWin, "windows bundled binary should win over workspace dist");
+}
+
+{
+  const result = resolveLspCommandForHost({
+    override: "",
+    extensionPath: ext,
+    workspaceFolders: ws,
+    pathExists: makePathExists([bundled, dist]),
     platform: "linux",
     arch: "x64",
   });
@@ -49,12 +71,11 @@ assert(
 }
 
 {
-  const exists = new Set([dist]);
   const result = resolveLspCommandForHost({
     override: "",
     extensionPath: ext,
     workspaceFolders: ws,
-    pathExists: (p) => exists.has(p),
+    pathExists: makePathExists([dist]),
     platform: "linux",
     arch: "x64",
   });
