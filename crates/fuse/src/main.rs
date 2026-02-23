@@ -2373,6 +2373,7 @@ fn link_native_binary(
     let deps_dir = target_dir.join(profile).join("deps");
     let fusec_rlib = find_latest_rlib(&deps_dir, "libfusec")?;
     let bincode_rlib = find_latest_rlib(&deps_dir, "libbincode")?;
+    let native_link_searches = collect_rustc_link_search_paths(&target_dir, profile)?;
     let mut rustc_cmd = ProcessCommand::new("rustc");
     apply_toolchain_env(
         &mut rustc_cmd,
@@ -2393,6 +2394,9 @@ fn link_native_binary(
         .arg(format!("bincode={}", bincode_rlib.display()))
         .arg("-C")
         .arg(format!("link-arg={}", object.display()));
+    for search in native_link_searches {
+        rustc_cmd.arg("-L").arg(search);
+    }
     if release {
         rustc_cmd.arg("-C").arg("opt-level=3");
     }
@@ -2464,6 +2468,40 @@ fn apply_toolchain_env(
     cmd.env("TMP", rustc_tmpdir);
     cmd.env("TEMP", rustc_tmpdir);
     cmd.env("CARGO_INCREMENTAL", cargo_incremental);
+}
+
+fn collect_rustc_link_search_paths(
+    target_dir: &Path,
+    profile: &str,
+) -> Result<Vec<String>, String> {
+    let build_dir = target_dir.join(profile).join("build");
+    if !build_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let entries = fs::read_dir(&build_dir)
+        .map_err(|err| format!("failed to read {}: {err}", build_dir.display()))?;
+    let mut searches = BTreeSet::new();
+    for entry in entries {
+        let entry =
+            entry.map_err(|err| format!("failed to read {}: {err}", build_dir.display()))?;
+        let output_path = entry.path().join("output");
+        if !output_path.exists() {
+            continue;
+        }
+        let contents = fs::read_to_string(&output_path)
+            .map_err(|err| format!("failed to read {}: {err}", output_path.display()))?;
+        for line in contents.lines() {
+            let Some(search) = line.strip_prefix("cargo:rustc-link-search=") else {
+                continue;
+            };
+            let search = search.trim();
+            if search.is_empty() {
+                continue;
+            }
+            searches.insert(search.to_string());
+        }
+    }
+    Ok(searches.into_iter().collect())
 }
 
 fn find_repo_root(start: &Path) -> Result<PathBuf, String> {
