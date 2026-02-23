@@ -34,7 +34,6 @@ APP_PORT=4000 ./scripts/fuse run examples/http_users.fuse
 | `types_patterns.fuse` | Enums, structs, and pattern matching (Option/Result) |
 | `project_demo.fuse` | Config env overrides, refined types, enums, and match |
 | `interp_demo.fuse` | String interpolation |
-| `spawn_await_box.fuse` | Spawn/await parity demo |
 | `spawn_error.fuse` | Spawn/await task failure propagation |
 | `box_shared.fuse` | Shared `box` state mutation |
 | `assign_field.fuse` | Struct field assignment |

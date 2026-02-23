@@ -237,28 +237,6 @@ fn parity_vm_native_interp_demo() {
 }
 
 #[test]
-fn parity_spawn_await_box() {
-    let ast = run_example("ast", "spawn_await_box.fuse", &[]);
-    let vm = run_example("vm", "spawn_await_box.fuse", &[]);
-
-    assert!(
-        ast.status.success(),
-        "ast stderr: {}",
-        String::from_utf8_lossy(&ast.stderr)
-    );
-    assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
-    );
-
-    assert_eq!(
-        String::from_utf8_lossy(&ast.stdout),
-        String::from_utf8_lossy(&vm.stdout)
-    );
-}
-
-#[test]
 fn parity_task_api() {
     let ast = run_example("ast", "task_api.fuse", &[]);
     let vm = run_example("vm", "task_api.fuse", &[]);
