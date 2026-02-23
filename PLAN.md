@@ -59,7 +59,7 @@ Deliverables:
 3. Produce deployable AOT artifact for the reference service.
 4. Migrate all package-level example workflows from legacy canonical examples to
    `examples/reference-service/`.
-5. Remove replaced canonical examples (including `examples/notes-api/`) after migration.
+5. Remove replaced canonical package examples after migration.
 6. Remove redundant examples that duplicate covered behavior without adding unique contract value.
 
 Exit criteria:

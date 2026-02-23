@@ -5,8 +5,14 @@ import { require_auth, require_scope } from "./auth"
 service Notes at "/api":
   # List all notes 
   get "/notes" -> List<Map<String, String>>!Unauthorized!Forbidden:
-    let auth = require_auth() ?!
-    require_scope(auth, "notes:read") ?!
+    let auth_task = spawn:
+      require_auth()
+    let auth_result = await auth_task
+    let auth = auth_result ?!
+    let scope_task = spawn:
+      require_scope(auth, "notes:read")
+    let scope_result = await scope_task
+    scope_result ?!
 
     return db
       .from("notes")
@@ -15,16 +21,28 @@ service Notes at "/api":
 
   # Get a single note by id
   get "/notes/{id: String}" -> Map<String, String>!NotFound!Unauthorized!Forbidden:
-    let auth = require_auth() ?!
-    require_scope(auth, "notes:read") ?!
+    let auth_task = spawn:
+      require_auth()
+    let auth_result = await auth_task
+    let auth = auth_result ?!
+    let scope_task = spawn:
+      require_scope(auth, "notes:read")
+    let scope_result = await scope_task
+    scope_result ?!
 
     return db.from("notes").select(["id", "title", "content"]).where("id", "=", id).one()
       ?! NotFound(message="not found")
 
   # Update a note by id
   put "/notes/{id: String}" body NoteCreate -> Note!NotFound!Unauthorized!Forbidden!BadRequest:
-    let auth = require_auth() ?!
-    require_scope(auth, "notes:write") ?!
+    let auth_task = spawn:
+      require_auth()
+    let auth_result = await auth_task
+    let auth = auth_result ?!
+    let scope_task = spawn:
+      require_scope(auth, "notes:write")
+    let scope_result = await scope_task
+    scope_result ?!
 
     db.from("notes").select(["id"]).where("id", "=", id).one()
       ?! NotFound(message="not found")
@@ -37,8 +55,14 @@ service Notes at "/api":
 
   # Create a new note
   post "/notes" body NoteCreate -> Note!Unauthorized!Forbidden!BadRequest:
-    let auth = require_auth() ?!
-    require_scope(auth, "notes:write") ?!
+    let auth_task = spawn:
+      require_auth()
+    let auth_result = await auth_task
+    let auth = auth_result ?!
+    let scope_task = spawn:
+      require_scope(auth, "notes:write")
+    let scope_result = await scope_task
+    scope_result ?!
 
     let id = NoteId(value="note-${body.title}")
     db.exec(
@@ -50,7 +74,13 @@ service Notes at "/api":
 
   # Delete a note by id
   delete "/notes/{id: String}" -> Unit!Unauthorized!Forbidden:
-    let auth = require_auth() ?!
-    require_scope(auth, "notes:write") ?!
+    let auth_task = spawn:
+      require_auth()
+    let auth_result = await auth_task
+    let auth = auth_result ?!
+    let scope_task = spawn:
+      require_scope(auth, "notes:write")
+    let scope_result = await scope_task
+    scope_result ?!
 
     db.exec("delete from notes where id = ?", [id])

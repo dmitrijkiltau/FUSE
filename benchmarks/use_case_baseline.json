@@ -19,42 +19,42 @@
       "max_regression_pct": 0.5,
       "max_regression_ms": 40.0
     },
-    "notes_api.check_cold_ms": {
+    "reference_service.check_cold_ms": {
       "baseline_ms": 92.264,
       "max_regression_pct": 0.5,
       "max_regression_ms": 50.0
     },
-    "notes_api.check_warm_ms": {
+    "reference_service.check_warm_ms": {
       "baseline_ms": 98.046,
       "max_regression_pct": 0.5,
       "max_regression_ms": 50.0
     },
-    "notes_api.migrate_ms": {
+    "reference_service.migrate_ms": {
       "baseline_ms": 115.0,
       "max_regression_pct": 0.5,
       "max_regression_ms": 60.0
     },
-    "notes_api.request_get_notes_ms": {
+    "reference_service.request_get_notes_ms": {
       "baseline_ms": 2.85,
       "max_regression_pct": 2.5,
       "max_regression_ms": 8.0
     },
-    "notes_api.request_post_valid_ms": {
+    "reference_service.request_post_valid_ms": {
       "baseline_ms": 20.53,
       "max_regression_pct": 1.0,
       "max_regression_ms": 25.0
     },
-    "notes_api.request_post_invalid_ms": {
+    "reference_service.request_post_invalid_ms": {
       "baseline_ms": 0.851,
       "max_regression_pct": 5.0,
       "max_regression_ms": 10.0
     },
-    "notes_api.request_frontend_root_ms": {
+    "reference_service.request_frontend_root_ms": {
       "baseline_ms": 0.946,
       "max_regression_pct": 5.0,
       "max_regression_ms": 10.0
     },
-    "notes_api.request_validation_error_overhead_abs_ms": {
+    "reference_service.request_validation_error_overhead_abs_ms": {
       "baseline_ms": 19.679,
       "max_regression_pct": 1.0,
       "max_regression_ms": 20.0

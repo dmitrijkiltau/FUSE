@@ -61,5 +61,6 @@ These exercise the Cranelift JIT backend specifically (`--backend native`):
 
 ## Package example
 
-The `notes-api/` directory is a full package with `fuse.toml`, HTML templates,
-static assets, and SCSS compilation. See [notes-api/README.md](notes-api/README.md).
+The `reference-service/` directory is the canonical package-level service example.
+It includes `fuse.toml`, HTML templates, static assets, and SCSS compilation.
+See [reference-service/README.md](reference-service/README.md).

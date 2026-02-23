@@ -51,10 +51,10 @@ Historical upgrade guidance for the `0.1.x -> 0.2.0` breaking minor is in
 ./scripts/fuse run examples/project_demo.fuse
 
 # Run a package
-./scripts/fuse run examples/notes-api
+./scripts/fuse run examples/reference-service
 
 # Watch mode with live reload
-./scripts/fuse dev examples/notes-api
+./scripts/fuse dev examples/reference-service
 
 # Start the language server
 ./scripts/fuse lsp
