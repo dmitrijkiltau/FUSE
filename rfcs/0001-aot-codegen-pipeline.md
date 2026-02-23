@@ -53,9 +53,9 @@ This violates the semantic authority model and raises divergence risk.
 
 ## Documentation updates
 
-- `AOT_CONTRACT.md`
+- `ops/AOT_RELEASE_CONTRACT.md`
 - `README.md` (when CLI surface ships)
-- `runtime.md` (when runtime backend surface is updated)
+- `spec/runtime.md` (when runtime backend surface is updated)
 
 ## Risks
 

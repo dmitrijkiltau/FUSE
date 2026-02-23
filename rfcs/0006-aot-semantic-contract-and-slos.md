@@ -23,10 +23,10 @@ Without numeric thresholds, rollout criteria are subjective and drift-prone.
 
 ## Detailed design
 
-1. Semantic authority remains `fls.md` + `runtime.md`.
+1. Semantic authority remains `spec/fls.md` + `spec/runtime.md`.
 2. AOT is an execution strategy and must preserve canonical semantics.
 3. Contract-facing backend divergence is release-blocking.
-4. SLO targets are versioned in `AOT_CONTRACT.md` and tied to release gates.
+4. SLO targets are versioned in `ops/AOT_RELEASE_CONTRACT.md` and tied to release gates.
 
 Initial `v0.4.0` targets:
 
@@ -61,8 +61,8 @@ Rejected because it is not enforceable in CI/release gates.
 
 ## Documentation updates
 
-- `AOT_CONTRACT.md`
-- `RELEASE.md`
+- `ops/AOT_RELEASE_CONTRACT.md`
+- `ops/RELEASE.md`
 
 ## Risks
 

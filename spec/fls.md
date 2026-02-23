@@ -6,6 +6,14 @@ It is the canonical source for lexical rules, grammar, AST structure, and static
 Runtime behavior (validation timing, HTTP status mapping, config/CLI parsing, DB/concurrency execution)
 is intentionally documented in `runtime.md`.
 
+## Document contract
+
+- `Normative`: Yes.
+- `Front door`: No. Start onboarding from `../README.md`.
+- `Owned concerns`: lexical rules, grammar acceptance, AST shape, static typing, and import/module
+  semantic-analysis behavior.
+- `Conflict policy`: runtime behavior defers to `runtime.md`; roadmap/planning defers to `../governance/scope.md`.
+
 Normative terms in this document:
 
 - `must` / `must not` indicate required behavior for parser + semantic analysis
@@ -412,7 +420,7 @@ Inside a `spawn` block, semantic analysis rejects:
 
 These restrictions are part of the language contract for deterministic cross-backend concurrency.
 
-See also: [Imports and modules (current)](#imports-and-modules-current), [Runtime semantics](runtime.md), [Scope + constraints](scope.md).
+See also: [Imports and modules (current)](#imports-and-modules-current), [Runtime semantics](runtime.md), [Scope + constraints](../governance/scope.md).
 
 ---
 
@@ -443,7 +451,7 @@ Notes:
 - dependency modules use `dep:` import paths (for example, `dep:Auth/lib`)
 - root-qualified modules use `root:` import paths (for example, `root:lib/auth`)
 
-See also: [Services and declaration syntax](#services-and-declaration-syntax), [FUSE overview](fuse.md).
+See also: [Services and declaration syntax](#services-and-declaration-syntax), [README](../README.md), [FUSE overview companion](../guides/fuse.md).
 
 ---
 

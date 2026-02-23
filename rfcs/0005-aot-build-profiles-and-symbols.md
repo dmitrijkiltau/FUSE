@@ -58,9 +58,9 @@ Rejected due to startup/size/perf unpredictability.
 
 ## Documentation updates
 
-- `AOT_CONTRACT.md`
+- `ops/AOT_RELEASE_CONTRACT.md`
 - `README.md` build/distribution section
-- `RELEASE.md` release checklist
+- `ops/RELEASE.md` release checklist
 
 ## Risks
 

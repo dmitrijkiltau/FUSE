@@ -1,10 +1,18 @@
 # FUSE
 
 FUSE is a small, strict language for building CLI apps and HTTP services.
-This document is the product overview and documentation index.
+This document is the product overview companion.
 
-It is intentionally non-normative: use it to orient quickly, then defer to `fls.md` and
-`runtime.md` for behavioral guarantees.
+Start at `../README.md` for onboarding, installation, and command workflows.
+This file is intentionally non-normative context.
+
+## Document contract
+
+- `Normative`: No.
+- `Front door`: No. The single onboarding front door is `../README.md`.
+- `Owned concerns`: high-level product framing, design intent, and quick contextual examples.
+- `Conflict policy`: if this file conflicts with `../spec/fls.md`, `../spec/runtime.md`,
+  `../governance/scope.md`, or `../governance/VERSIONING_POLICY.md`, defer to those documents.
 
 ---
 
@@ -24,18 +32,20 @@ Do not use this file as the final authority for parser/runtime edge cases.
 
 Primary references while working in this codebase:
 
-- `IDENTITY_CHARTER.md` defines language identity, hard boundaries, and "will not do" constraints.
-- `fls.md` is the source of truth for language syntax and static semantics (lexer, grammar, AST shape, type system, module rules).
-- `runtime.md` is the source of truth for runtime semantics (validation, JSON/config/CLI/HTTP binding, errors, builtins, DB, and `spawn`/`await` concurrency model).
-- `scope.md` defines constraints, roadmap priorities, and explicit non-goals.
-- `EXTENSIBILITY_BOUNDARIES.md` defines allowed extension surfaces and stability boundaries.
-- `BENCHMARKS.md` defines real-world workload benchmarks and metric collection.
-- `VERSIONING_POLICY.md` defines language/runtime/tooling versioning and compatibility guarantees.
+- `../README.md` is the front door for setup, build/test/release commands, and doc routing.
+- `../governance/IDENTITY_CHARTER.md` defines language identity, hard boundaries, and "will not do" constraints.
+- `../spec/fls.md` is the source of truth for language syntax and static semantics (lexer, grammar, AST shape, type system, module rules).
+- `../spec/runtime.md` is the source of truth for runtime semantics (validation, JSON/config/CLI/HTTP binding, errors, builtins, DB, and `spawn`/`await` concurrency model).
+- `../governance/scope.md` defines constraints, roadmap priorities, and explicit non-goals.
+- `../governance/EXTENSIBILITY_BOUNDARIES.md` defines allowed extension surfaces and stability boundaries.
+- `../ops/BENCHMARKS.md` defines real-world workload benchmarks and metric collection.
+- `../governance/VERSIONING_POLICY.md` defines language/runtime/tooling versioning and compatibility guarantees.
 
-If a detail appears in multiple docs, treat `IDENTITY_CHARTER.md` as authoritative for identity
-boundaries, `fls.md` for syntax/static rules, and `runtime.md` for runtime behavior.
+If a detail appears in multiple docs, treat `../governance/IDENTITY_CHARTER.md` as authoritative
+for identity boundaries, `../spec/fls.md` for syntax/static rules, and `../spec/runtime.md` for
+runtime behavior.
 
-See also: [What FUSE optimizes for](#what-fuse-optimizes-for), [Guiding idea](#guiding-idea), [FUSE identity charter](IDENTITY_CHARTER.md).
+See also: [What FUSE optimizes for](#what-fuse-optimizes-for), [Guiding idea](#guiding-idea), [FUSE identity charter](../governance/IDENTITY_CHARTER.md).
 
 ---
 
@@ -62,7 +72,7 @@ Runtime surfaces are built in and consistent across backends:
 
 You describe contracts in FUSE types and route signatures. The runtime applies those contracts at boundaries instead of requiring repeated glue code.
 
-See also: [Quick examples](#quick-examples), [Formal language specification](fls.md), [Runtime semantics](runtime.md).
+See also: [Quick examples](#quick-examples), [Formal language specification](../spec/fls.md), [Runtime semantics](../spec/runtime.md).
 
 ---
 
@@ -96,9 +106,9 @@ app "users":
   serve(App.port)
 ```
 
-For detailed route binding and error/status behavior, see `runtime.md`.
+For detailed route binding and error/status behavior, see `../spec/runtime.md`.
 
-See also: [Runtime semantics](runtime.md), [Formal language specification](fls.md), [Package workflow (summary)](#package-workflow-summary).
+See also: [Runtime semantics](../spec/runtime.md), [Formal language specification](../spec/fls.md), [Package workflow (summary)](#package-workflow-summary).
 
 ---
 
@@ -116,10 +126,10 @@ FUSE currently ships with:
 
 Detailed capability matrices and caveats live in:
 
-- `runtime.md` for execution behavior
-- `scope.md` for current scope vs planned work
+- `../spec/runtime.md` for execution behavior
+- `../governance/scope.md` for current scope vs planned work
 
-See also: [Package workflow (summary)](#package-workflow-summary), [Runtime semantics](runtime.md), [Scope + constraints](scope.md).
+See also: [Package workflow (summary)](#package-workflow-summary), [Runtime semantics](../spec/runtime.md), [Scope + constraints](../governance/scope.md).
 
 ---
 
@@ -145,7 +155,7 @@ Authority/parity release gates:
 - `./scripts/authority_parity.sh` (explicit semantic-authority suite)
 - `./scripts/release_smoke.sh` (includes authority parity + full smoke checks)
 
-See also: [Backends](runtime.md#backends), [Runtime surface and ownership](runtime.md#runtime-surface-and-ownership).
+See also: [Backends](../spec/runtime.md#backends), [Runtime surface and ownership](../spec/runtime.md#runtime-surface-and-ownership).
 
 ---
 
@@ -170,7 +180,7 @@ app = "Api"
 backend = "native"
 ```
 
-`fuse.toml` supports additional build/serve/assets/dependency settings. See `README.md` for command details and examples.
+`fuse.toml` supports additional build/serve/assets/dependency settings. See `../README.md` for command details and examples.
 
 Dependency contract highlights:
 
@@ -178,7 +188,7 @@ Dependency contract highlights:
 - `fuse.lock` records resolved dependency sources for reproducible resolution.
 - conflicting transitive dependency specs by name are rejected deterministically.
 
-See also: [Implementation snapshot](#implementation-snapshot), [Runtime semantics](runtime.md), [Scope + constraints](scope.md).
+See also: [Implementation snapshot](#implementation-snapshot), [Runtime semantics](../spec/runtime.md), [Scope + constraints](../governance/scope.md).
 
 ---
 
@@ -186,6 +196,6 @@ See also: [Implementation snapshot](#implementation-snapshot), [Runtime semantic
 
 FUSE is not trying to invent new syntax. The differentiator is a consistent contract at boundaries: types, validation, and transport behavior are aligned by default.
 
-For the formal spec, start at `fls.md`. For concrete runtime behavior, start at `runtime.md`.
+For the formal spec, start at `../spec/fls.md`. For concrete runtime behavior, start at `../spec/runtime.md`.
 
-See also: [Formal language specification](fls.md), [Runtime semantics](runtime.md), [Scope + constraints](scope.md).
+See also: [Formal language specification](../spec/fls.md), [Runtime semantics](../spec/runtime.md), [Scope + constraints](../governance/scope.md).

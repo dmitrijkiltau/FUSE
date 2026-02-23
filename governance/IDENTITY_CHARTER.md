@@ -62,7 +62,7 @@ A proposal should be rejected if any answer is "no":
 
 1. Does it strengthen CLI/HTTP boundary-centric development?
 2. Does it preserve deterministic cross-backend semantics?
-3. Can it be specified clearly in `fls.md` and `runtime.md` without hidden behavior?
+3. Can it be specified clearly in `../spec/fls.md` and `../spec/runtime.md` without hidden behavior?
 4. Does it keep the language smaller or equally simple relative to its value?
 5. Is it compatible with this charter's "Will Not Do" list?
 
@@ -74,6 +74,6 @@ For identity/scope disputes:
 
 1. `IDENTITY_CHARTER.md` (this document)
 2. `scope.md`
-3. `fuse.md`
+3. `../guides/fuse.md`
 
-For semantic/runtime details, `fls.md` and `runtime.md` remain authoritative.
+For semantic/runtime details, `../spec/fls.md` and `../spec/runtime.md` remain authoritative.

@@ -25,8 +25,8 @@ Paste key command results:
 
 ## Specs/docs updated
 
-- [ ] `fls.md` (if syntax/static semantics changed)
-- [ ] `runtime.md` (if runtime behavior changed)
+- [ ] `spec/fls.md` (if syntax/static semantics changed)
+- [ ] `spec/runtime.md` (if runtime behavior changed)
 - [ ] `README.md` (if user workflow changed)
 - [ ] Other docs/spec files updated as needed
 

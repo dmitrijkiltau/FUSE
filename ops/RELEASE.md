@@ -5,14 +5,14 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
 ## Scope policy
 
 - Treat the active `0.x` release line as stable for currently documented behavior in:
-  - `fuse.md`
-  - `fls.md`
-  - `scope.md`
-  - `runtime.md`
-- For AOT production rollout (`v0.4.0` line), enforce the contract and SLO targets in `AOT_CONTRACT.md`.
-- Enforce AOT artifact reproducibility/static-profile policy from `AOT_REPRODUCIBILITY.md`.
+  - `README.md`
+  - `spec/fls.md`
+  - `governance/scope.md`
+  - `spec/runtime.md`
+  - `guides/fuse.md` (overview companion context)
+- For AOT production rollout (`v0.4.0` line), enforce the contract and SLO targets in `AOT_RELEASE_CONTRACT.md`.
 - Enforce rollback preparedness from `AOT_ROLLBACK_PLAYBOOK.md`.
-- Enforce version bump and compatibility rules from `VERSIONING_POLICY.md`.
+- Enforce version bump and compatibility rules from `governance/VERSIONING_POLICY.md`.
 - Features marked planned/unsupported stay out of release criteria.
 
 ## Prerequisites
@@ -34,7 +34,7 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
 3. Run smoke checks:
    - `./scripts/authority_parity.sh` (explicit semantic-authority gate)
    - `./scripts/release_smoke.sh`
-   - Verify `AOT_CONTRACT.md` thresholds for release scope that includes AOT production artifacts.
+   - Verify `AOT_RELEASE_CONTRACT.md` thresholds for release scope that includes AOT production artifacts.
    - Verify latest `.fuse/bench/aot_perf_metrics.json` passes `./scripts/check_aot_perf_slo.sh`.
    - Ensure GitHub Actions `Pre-release Gate` passed on the release PR (`.github/workflows/pre-release-gate.yml`).
    - Covers authority/parity gates, `fusec` + `fuse` test suites, release-mode compile checks,
@@ -58,7 +58,7 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
    - Produces verified per-platform CLI, AOT, and VSIX artifacts for `linux-x64`, `macos-arm64`, `windows-x64`.
    - On tag refs, publishes GitHub release assets automatically and runs post-publish checksum/package verification.
 9. Commit release metadata:
-   - `git add CHANGELOG.md RELEASE.md VERSIONING_POLICY.md README.md crates/*/Cargo.toml Cargo.lock tools/vscode/package*.json tools/vscode/CHANGELOG.md`
+   - `git add CHANGELOG.md ops/RELEASE.md governance/VERSIONING_POLICY.md README.md crates/*/Cargo.toml Cargo.lock tools/vscode/package*.json tools/vscode/CHANGELOG.md`
    - `git commit -m "release: vX.Y.Z"`
 10. Tag release:
    - `git tag vX.Y.Z`

@@ -5,8 +5,8 @@ This document defines how FUSE can be extended without breaking deterministic la
 Companion references:
 
 - `IDENTITY_CHARTER.md` for non-negotiable product boundaries
-- `fls.md` for syntax/static semantics
-- `runtime.md` for runtime/boundary semantics
+- `../spec/fls.md` for syntax/static semantics
+- `../spec/runtime.md` for runtime/boundary semantics
 - `LSP_ROADMAP.md` for editor capability planning
 
 ## Core rule
@@ -40,7 +40,7 @@ Required for adding/changing a backend:
 1. No backend-local sugar lowering.
 2. No backend-specific semantic behavior.
 3. AST/VM/native parity tests and release gates stay green.
-4. `fuse.md`, `runtime.md`, and tests are updated in the same change.
+4. `../guides/fuse.md`, `../spec/runtime.md`, and tests are updated in the same change.
 
 ### 3) Type-system extensions
 

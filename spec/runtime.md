@@ -6,7 +6,17 @@ It describes the AST interpreter, VM, and native backend path semantics.
 Companion references:
 
 - `fls.md` defines syntax and static-semantics guarantees.
-- `scope.md` captures roadmap direction and non-goals.
+- `../governance/scope.md` captures roadmap direction and non-goals.
+
+## Document contract
+
+- `Normative`: Yes.
+- `Front door`: No. Start onboarding from `../README.md`.
+- `Owned concerns`: backend runtime behavior, boundary binding (validation/JSON/config/CLI/HTTP),
+  runtime error model, builtins, DB/migrations/tests execution, and concurrency semantics.
+- `Conflict policy`: syntax/static semantics defer to `fls.md`; roadmap/planning defers to
+  `../governance/scope.md`; release-operations policy defers to `../ops/AOT_RELEASE_CONTRACT.md`
+  and `../ops/RELEASE.md`.
 
 Normative terms in this document:
 
@@ -30,7 +40,7 @@ This document does not re-specify:
 - AST shape details
 - project planning/roadmap
 
-See also: [Formal language specification](fls.md), [Scope + constraints](scope.md).
+See also: [Formal language specification](fls.md), [Scope + constraints](../governance/scope.md).
 
 ---
 
@@ -68,7 +78,7 @@ Native backend note:
   and emits fatal envelopes as:
   `fatal: class=<runtime_fatal|panic> pid=<...> message=<...> <build-info>`.
 - AOT fallback is an operational decision (not automatic); incident fallback guidance is tracked in
-  `AOT_ROLLBACK_PLAYBOOK.md`.
+  `../ops/AOT_ROLLBACK_PLAYBOOK.md`.
 
 ### Function symbol resolution
 
@@ -77,7 +87,7 @@ Native backend note:
 - Qualified calls (`Foo.bar()`) resolve to the exported function in module alias `Foo`.
 - Duplicate function names across different modules are valid.
 
-See also: [Scope + constraints](scope.md), [Priority roadmap](scope.md#priority-roadmap).
+See also: [Scope + constraints](../governance/scope.md), [Priority roadmap](../governance/scope.md#priority-roadmap).
 
 ---
 
@@ -559,4 +569,4 @@ Structured logging:
   `{"level":"info","message":"message","data":<json>}`
 - if multiple data values are provided, `data` is a JSON array
 
-See also: [Boundary model](#boundary-model), [Scope + constraints](scope.md), [FUSE overview](fuse.md).
+See also: [Boundary model](#boundary-model), [Scope + constraints](../governance/scope.md), [README](../README.md), [FUSE overview companion](../guides/fuse.md).

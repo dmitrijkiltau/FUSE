@@ -20,7 +20,7 @@ All notable changes to this project are documented in this file.
   - SLO gate: `scripts/check_aot_perf_slo.sh`
   - reliability/release pipelines now include AOT perf gate coverage and artifact uploads
 - Rollback/operability release guidance:
-  - production rollback playbook: `AOT_ROLLBACK_PLAYBOOK.md`
+  - production rollback playbook: `ops/AOT_ROLLBACK_PLAYBOOK.md`
   - updated release/runtime docs for AOT production posture
 
 ### Changed
@@ -32,14 +32,14 @@ All notable changes to this project are documented in this file.
 - `scripts/release_smoke.sh` now enforces AOT startup/throughput perf collection and SLO checks.
 - `scripts/reliability_repeat.sh` now includes repeated AOT perf SLO validation.
 - Packaging/verification now validates AOT `mode` and `profile` metadata fields.
-- `README.md`, `runtime.md`, `scope.md`, and `RELEASE.md` now reflect AOT-as-production and rollback expectations.
+- `README.md`, `spec/runtime.md`, `governance/scope.md`, and `ops/RELEASE.md` now reflect AOT-as-production and rollback expectations.
 
 ### Migration
 
 - No language source migration is required from `0.3.x` to `0.4.0`.
 - Deployment posture changes:
   - use AOT artifacts as primary production binaries
-  - keep CLI artifacts available as rollback fallback per `AOT_ROLLBACK_PLAYBOOK.md`
+  - keep CLI artifacts available as rollback fallback per `ops/AOT_ROLLBACK_PLAYBOOK.md`
 
 ## [0.3.2] - 2026-02-22
 
@@ -167,4 +167,4 @@ All notable changes to this project are documented in this file.
 
 ### Notes
 
-- Planned and partial items remain tracked in `scope.md` and `runtime.md`.
+- Planned and partial items remain tracked in `governance/scope.md` and `spec/runtime.md`.

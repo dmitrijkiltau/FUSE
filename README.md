@@ -19,14 +19,23 @@ app "users":
   serve(App.port)
 ```
 
+## Document contract
+
+- `Normative`: No.
+- `Front door`: Yes. This is the single onboarding entry point for the repository.
+- `Owned concerns`: installation prerequisites, day-1 commands, build/test/release workflows,
+  artifact matrix, and documentation routing.
+- `Conflict policy`: if this file conflicts with `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, or
+  `governance/VERSIONING_POLICY.md`, defer to the document that owns that concern.
+
 ## Status
 
 FUSE v0.4.0 is released. This branch tracks the v0.4.x quality/stability line with
 native/backend parity hardening, multi-file tooling reliability, dependency workflow
 contract coverage, and release artifact matrix automation.
 
-Compatibility is defined by documented behavior in `fls.md`, `runtime.md`, `scope.md`, and
-`VERSIONING_POLICY.md`.
+Compatibility is defined by documented behavior in `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, and
+`governance/VERSIONING_POLICY.md`.
 Historical upgrade guidance for the `0.1.x -> 0.2.0` breaking minor is in
 `docs/migrations/0.1-to-0.2.md`.
 
@@ -195,7 +204,7 @@ Always run Cargo through `scripts/cargo_env.sh` to avoid cross-device link error
 | Benchmarks | `./scripts/use_case_bench.sh` | Real-world workload metrics (`--median-of-3` available for reliability runs) |
 | Reliability repeat | `./scripts/reliability_repeat.sh --iterations 2` | Repeat-run stability checks for parity/LSP/benchmark-sensitive paths |
 | AOT startup/throughput benchmark | `./scripts/aot_perf_bench.sh` | Cold-start distribution + steady-state throughput comparison (JIT-native vs AOT) |
-| AOT startup SLO gate | `./scripts/check_aot_perf_slo.sh` | Enforces `AOT_CONTRACT.md` cold-start improvement thresholds (`p50`/`p95`) |
+| AOT startup SLO gate | `./scripts/check_aot_perf_slo.sh` | Enforces `ops/AOT_RELEASE_CONTRACT.md` cold-start improvement thresholds (`p50`/`p95`) |
 | Packaging verifier regression | `./scripts/packaging_verifier_regression.sh` | Cross-platform CLI+AOT archive and VSIX verifier coverage (including Windows `.exe` naming) |
 | Release smoke | `./scripts/release_smoke.sh` | Full pre-release gate (includes all above) |
 
@@ -218,7 +227,7 @@ Canonical artifact names:
 Supported release matrix platforms:
 `linux-x64`, `macos-arm64`, `windows-x64`.
 
-Reproducibility + static profile policy: `AOT_REPRODUCIBILITY.md`.
+Reproducibility + static profile policy: `ops/AOT_RELEASE_CONTRACT.md`.
 
 ```bash
 # Build release binaries
@@ -256,32 +265,52 @@ code --install-extension dist/fuse-vscode-linux-x64.vsix
 | `examples/` | Sample programs and packages |
 | `docs/` | Documentation site (source, assets, generated specs) |
 | `tools/vscode/` | VS Code extension (syntax highlighting + LSP client) |
+| `spec/` | Spec-tier navigation index (normative language/runtime contracts) |
+| `ops/` | Operations-tier navigation index (release/incident contracts) |
+| `governance/` | Governance-tier navigation index (identity/policy/process) |
+| `guides/` | Guide-tier navigation index (onboarding/migrations/how-tos) |
 
-## Documentation
+## Documentation map
 
-### Language and runtime specs
+README is the single onboarding front door. Start here, then follow concern ownership below.
+If two documents disagree, defer to the owning document listed for that tier.
 
-| Document | Scope |
-|---|---|
-| `fuse.md` | Product overview and doc navigation |
-| `fls.md` | Formal language specification (syntax, grammar, AST, type system) |
-| `runtime.md` | Runtime semantics (validation, JSON, config, HTTP, builtins, DB) |
-| `scope.md` | Project constraints, roadmap, and non-goals |
-
-### Project governance
+### Spec contracts (normative)
 
 | Document | Scope |
 |---|---|
-| `IDENTITY_CHARTER.md` | Language identity boundaries and "will not do" list |
-| `EXTENSIBILITY_BOUNDARIES.md` | Allowed extension surfaces and stability tiers |
-| `VERSIONING_POLICY.md` | Compatibility guarantees and deprecation rules |
-| `AOT_REPRODUCIBILITY.md` | AOT release reproducibility and static-profile constraints |
-| `AOT_ROLLBACK_PLAYBOOK.md` | Incident rollback plan (AOT primary, JIT-native fallback) |
-| `FLAKE_TRIAGE.md` | Checklist for diagnosing and closing intermittent CI/test failures |
-| `BENCHMARKS.md` | Workload matrix and benchmark definitions |
-| `LSP_ROADMAP.md` | Editor capability baseline and planned improvements |
+| `spec/fls.md` | Formal language specification (syntax, grammar, AST, type system) |
+| `spec/runtime.md` | Runtime semantics (validation, JSON, config, HTTP, builtins, DB) |
 
-### Contributing
+### Product and guides (non-normative)
+
+| Document | Scope |
+|---|---|
+| `guides/fuse.md` | Product overview narrative (companion context, not start-here) |
+| `docs/site/specs/onboarding.md` | Documentation-site onboarding walkthrough |
+| `docs/migrations/0.1-to-0.2.md` | Migration guide for `0.1.x -> 0.2.0` |
+
+### Operations contracts
+
+| Document | Scope |
+|---|---|
+| `ops/AOT_RELEASE_CONTRACT.md` | AOT production release contract, SLO thresholds, and reproducibility policy |
+| `ops/AOT_ROLLBACK_PLAYBOOK.md` | Incident rollback plan (AOT primary, JIT-native fallback) |
+| `ops/RELEASE.md` | Release checklist and publication workflow |
+| `ops/FLAKE_TRIAGE.md` | Checklist for diagnosing and closing intermittent CI/test failures |
+| `ops/BENCHMARKS.md` | Workload matrix and benchmark definitions |
+
+### Governance and policy
+
+| Document | Scope |
+|---|---|
+| `governance/scope.md` | Project constraints, roadmap priorities, and explicit non-goals |
+| `governance/IDENTITY_CHARTER.md` | Language identity boundaries and "will not do" list |
+| `governance/EXTENSIBILITY_BOUNDARIES.md` | Allowed extension surfaces and stability tiers |
+| `governance/VERSIONING_POLICY.md` | Compatibility guarantees and deprecation rules |
+| `governance/LSP_ROADMAP.md` | Editor capability baseline and planned improvements |
+
+### Contribution process
 
 | Document | Scope |
 |---|---|

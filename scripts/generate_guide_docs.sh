@@ -58,20 +58,20 @@ extract_section() {
 # ---------------------------------------------------------------------------
 # generate_reference
 #
-# Assembles docs/site/specs/reference.md from fls.md, runtime.md, and scope.md.
+# Assembles docs/site/specs/reference.md from spec/fls.md, spec/runtime.md, and governance/scope.md.
 # This replaces the previously hand-maintained reference.md.
 # ---------------------------------------------------------------------------
 generate_reference() {
   local dst="$OUT_DIR/reference.md"
-  local fls="$ROOT/fls.md"
-  local rtm="$ROOT/runtime.md"
-  local scope="$ROOT/scope.md"
+  local fls="$ROOT/spec/fls.md"
+  local rtm="$ROOT/spec/runtime.md"
+  local scope="$ROOT/governance/scope.md"
 
   {
     cat <<'HEADER'
 # FUSE Developer Reference
 
-_Auto-generated from `fls.md`, `runtime.md`, and `scope.md` by `scripts/generate_guide_docs.sh`._
+_Auto-generated from `spec/fls.md`, `spec/runtime.md`, and `governance/scope.md` by `scripts/generate_guide_docs.sh`._
 
 This document is the reference for building applications with FUSE.
 If you are new to FUSE, start with [Onboarding Guide](onboarding.md) and [Boundary Contracts](boundary-contracts.md) before this reference.
@@ -121,7 +121,7 @@ Core expression features:
 ---
 HEADER
 
-    # --- Types (from fls.md) ---
+    # --- Types (from spec/fls.md) ---
     echo "## Types"
     echo
     extract_section "$fls" "### Base types"
@@ -145,7 +145,7 @@ HEADER
     echo "---"
     echo
 
-    # --- Imports and Modules (from fls.md) ---
+    # --- Imports and Modules (from spec/fls.md) ---
     echo "## Imports and Modules"
     echo
     extract_section "$fls" "## Imports and modules (current)"
@@ -153,7 +153,7 @@ HEADER
     echo "---"
     echo
 
-    # --- Services (from fls.md) ---
+    # --- Services (from spec/fls.md) ---
     echo "## Services and HTTP Contracts"
     echo
     extract_section "$fls" "## Services and declaration syntax"
@@ -161,7 +161,7 @@ HEADER
     echo "---"
     echo
 
-    # --- Runtime Behavior (from runtime.md) ---
+    # --- Runtime Behavior (from spec/runtime.md) ---
     echo "## Runtime Behavior"
     echo
     echo "### Validation and boundary enforcement"
@@ -193,7 +193,7 @@ HEADER
     echo "---"
     echo
 
-    # --- Builtins (from runtime.md) ---
+    # --- Builtins (from spec/runtime.md) ---
     echo "## Builtins"
     echo
     extract_section "$rtm" "### Builtins (current)" "### Database (SQLite only)"
@@ -272,7 +272,7 @@ docker compose -f docs/docker-compose.yml up --build
 ---
 DOCKER
 
-    # --- Environment Variables (from runtime.md) ---
+    # --- Environment Variables (from spec/runtime.md) ---
     echo
     echo "## Runtime Environment Variables"
     echo
@@ -281,7 +281,7 @@ DOCKER
     echo "---"
     echo
 
-    # --- Constraints (from scope.md) ---
+    # --- Constraints (from governance/scope.md) ---
     echo "## Constraints"
     echo
     echo "Current practical constraints:"

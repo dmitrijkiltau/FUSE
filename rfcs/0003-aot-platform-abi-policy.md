@@ -56,8 +56,8 @@ Rejected due to unowned reliability burden.
 
 ## Documentation updates
 
-- `AOT_CONTRACT.md`
-- `RELEASE.md`
+- `ops/AOT_RELEASE_CONTRACT.md`
+- `ops/RELEASE.md`
 - `README.md` distribution section (when AOT artifacts ship)
 
 ## Risks

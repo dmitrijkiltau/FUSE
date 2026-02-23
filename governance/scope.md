@@ -4,17 +4,27 @@ This document defines project boundaries: what FUSE targets, what it intentional
 and where near-term effort is going.
 
 It is a planning/boundary document, not a semantic specification. Behavioral correctness remains
-owned by `fls.md` (syntax/static semantics) and `runtime.md` (runtime semantics).
+owned by `../spec/fls.md` (syntax/static semantics) and `../spec/runtime.md` (runtime semantics).
+
+## Document contract
+
+- `Normative`: No for language/runtime semantics.
+- `Front door`: No. Start onboarding from `../README.md`.
+- `Owned concerns`: project constraints, delivery boundaries, near-term priorities, and explicit
+  non-goals.
+- `Conflict policy`: syntax/static/runtime behavior defers to `../spec/fls.md` and `../spec/runtime.md`; identity
+  constraints defer to `IDENTITY_CHARTER.md`.
 
 Companion references for implementation work:
 
-- `fuse.md` gives the product-level overview
+- `../README.md` is the repository front door for setup/workflow/document routing
+- `../guides/fuse.md` gives product-level narrative context
 - `IDENTITY_CHARTER.md` defines non-negotiable language identity boundaries
 - `EXTENSIBILITY_BOUNDARIES.md` defines allowed extension surfaces and stability boundaries
-- `BENCHMARKS.md` defines real-world workload benchmarks and metric collection
+- `../ops/BENCHMARKS.md` defines real-world workload benchmarks and metric collection
 - `VERSIONING_POLICY.md` defines language/runtime/tooling compatibility and deprecation rules
-- `fls.md` specifies language and static-semantics details
-- `runtime.md` specifies execution/runtime behavior
+- `../spec/fls.md` specifies language and static-semantics details
+- `../spec/runtime.md` specifies execution/runtime behavior
 
 ---
 
@@ -53,7 +63,7 @@ Rationale:
 - strong ecosystem for compiler + tooling infrastructure
 - distributable single-binary tooling path
 
-See also: [Runtime semantics](runtime.md), [FUSE overview](fuse.md).
+See also: [Runtime semantics](../spec/runtime.md), [README](../README.md), [FUSE overview companion](../guides/fuse.md).
 
 ---
 
@@ -67,10 +77,10 @@ FUSE is currently scoped as a strict, typed language with integrated boundary/ru
 - SQLite-backed DB runtime and migration workflow
 - service-oriented package workflow (`fuse check/run/dev/test/build`)
 
-Detailed behavior is intentionally kept out of this doc and lives in `fls.md` and `runtime.md`.
+Detailed behavior is intentionally kept out of this doc and lives in `../spec/fls.md` and `../spec/runtime.md`.
 Identity guardrails are defined in `IDENTITY_CHARTER.md`.
 
-See also: [Formal language specification](fls.md), [Runtime semantics](runtime.md#runtime-surface-and-ownership).
+See also: [Formal language specification](../spec/fls.md), [Runtime semantics](../spec/runtime.md#runtime-surface-and-ownership).
 
 ---
 
@@ -91,7 +101,7 @@ Likely future candidates (not committed MVP scope):
 - expanded database/runtime ergonomics
 - stronger packaging/dependency workflows
 
-See also: [Backends](runtime.md#backends), [Builtins and runtime subsystems](runtime.md#builtins-and-runtime-subsystems).
+See also: [Backends](../spec/runtime.md#backends), [Builtins and runtime subsystems](../spec/runtime.md#builtins-and-runtime-subsystems).
 
 ---
 
@@ -105,4 +115,4 @@ See also: [Backends](runtime.md#backends), [Builtins and runtime subsystems](run
 - backend-specific semantic dialects
 - "everything async by default"
 
-See also: [FUSE identity charter](IDENTITY_CHARTER.md), [Guiding idea](fuse.md#guiding-idea), [FUSE overview](fuse.md).
+See also: [FUSE identity charter](IDENTITY_CHARTER.md), [Guiding idea](../guides/fuse.md#guiding-idea), [README](../README.md).

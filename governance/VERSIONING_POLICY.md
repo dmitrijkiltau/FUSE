@@ -5,11 +5,11 @@ runtime, and tooling evolution.
 
 Companion references:
 
-- `fls.md` for syntax and static semantics
-- `runtime.md` for runtime/boundary semantics
-- `README.md` for release-facing stability contract
-- `RELEASE.md` for release execution steps
-- `AOT_CONTRACT.md` for AOT production contract and SLO targets (`v0.4.0` rollout)
+- `../spec/fls.md` for syntax and static semantics
+- `../spec/runtime.md` for runtime/boundary semantics
+- `../README.md` for release-facing stability contract
+- `../ops/RELEASE.md` for release execution steps
+- `../ops/AOT_RELEASE_CONTRACT.md` for AOT production contract and SLO targets (`v0.4.0` rollout)
 
 ## Versioned surfaces
 
@@ -17,8 +17,8 @@ Companion references:
 
 Owned by:
 
-- `fls.md`
-- `runtime.md`
+- `../spec/fls.md`
+- `../spec/runtime.md`
 
 This is what users write and rely on (syntax, type behavior, boundary semantics, error mapping).
 
@@ -28,7 +28,7 @@ Owned by:
 
 - `fuse` CLI behavior and flags
 - `fuse.toml` user-facing manifest fields
-- documented release scripts in `README.md` / `RELEASE.md`
+- documented release scripts in `../README.md` / `../ops/RELEASE.md`
 
 ### 3) Compiler/runtime internals (`INTERNAL`)
 
@@ -72,7 +72,7 @@ Recent release-line notes:
 
 ### Runtime behavior compatibility
 
-- Error/status/JSON/boundary behavior documented in `runtime.md` is part of the stable contract.
+- Error/status/JSON/boundary behavior documented in `../spec/runtime.md` is part of the stable contract.
 - Backend divergence (AST vs VM vs native) is a correctness bug.
 
 ### Cache/binary compatibility
@@ -87,7 +87,7 @@ Recent release-line notes:
 A contract-facing change must follow all steps:
 
 1. Introduce deprecation:
-   - document in `CHANGELOG.md` and the relevant spec doc (`fls.md` or `runtime.md`)
+   - document in `CHANGELOG.md` and the relevant spec doc (`../spec/fls.md` or `../spec/runtime.md`)
    - provide replacement path
 2. Deprecation window:
    - keep old behavior for at least one `MAJOR` cycle (1.0+)
@@ -107,7 +107,7 @@ No silent removals of user-facing language/runtime/tooling behavior are allowed,
 Any release that changes contract-facing behavior must include:
 
 1. Spec updates:
-   - `fls.md` and/or `runtime.md`
+   - `../spec/fls.md` and/or `../spec/runtime.md`
    - `README.md` stability notes if scope changed
 2. Changelog entries:
    - explicit `Added`, `Changed`, and `Breaking` (when applicable)

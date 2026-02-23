@@ -53,8 +53,8 @@ Rejected because it harms diagnosability.
 
 ## Documentation updates
 
-- `AOT_CONTRACT.md`
-- `RELEASE.md`
+- `ops/AOT_RELEASE_CONTRACT.md`
+- `ops/RELEASE.md`
 - operator-facing release notes
 
 ## Risks

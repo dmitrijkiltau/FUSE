@@ -1,6 +1,6 @@
 # FUSE Developer Reference
 
-_Auto-generated from `fls.md`, `runtime.md`, and `scope.md` by `scripts/generate_guide_docs.sh`._
+_Auto-generated from `spec/fls.md`, `spec/runtime.md`, and `governance/scope.md` by `scripts/generate_guide_docs.sh`._
 
 This document is the reference for building applications with FUSE.
 If you are new to FUSE, start with [Onboarding Guide](onboarding.md) and [Boundary Contracts](boundary-contracts.md) before this reference.

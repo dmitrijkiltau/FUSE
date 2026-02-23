@@ -3,6 +3,14 @@
 Status: Active  
 Scope: production incidents on the `v0.4.0` AOT rollout line.
 
+## Document contract
+
+- `Normative`: Yes for incident-response handling during the active AOT rollout line.
+- `Front door`: No. Start onboarding from `../README.md`.
+- `Owned concerns`: rollback triggers, rollback sequence, and recovery criteria for AOT incidents.
+- `Conflict policy`: release contract thresholds defer to `AOT_RELEASE_CONTRACT.md`;
+  language/runtime semantics defer to `../spec/fls.md` and `../spec/runtime.md`.
+
 ## Intent
 
 Keep AOT as the default production backend while preserving a documented, tested rollback path

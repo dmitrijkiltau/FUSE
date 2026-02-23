@@ -31,7 +31,7 @@ If breaking or deprecating, include migration notes.
 
 ## Tests and docs impact
 
-List expected updates (for example: `fls.md`, `runtime.md`, semantic/parity tests).
+List expected updates (for example: `spec/fls.md`, `spec/runtime.md`, semantic/parity tests).
 
 ## RFC linkage
 

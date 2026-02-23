@@ -51,8 +51,8 @@ Rejected because it is not uniformly feasible across supported targets.
 
 ## Documentation updates
 
-- `AOT_CONTRACT.md`
-- `RELEASE.md` (release artifact expectations)
+- `ops/AOT_RELEASE_CONTRACT.md`
+- `ops/RELEASE.md` (release artifact expectations)
 
 ## Risks
 

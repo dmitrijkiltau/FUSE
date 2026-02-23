@@ -39,7 +39,7 @@ List semantic/parity/runtime/docs tests that will be added or updated.
 
 ## Documentation updates
 
-List docs/spec files that must be updated (`fls.md`, `runtime.md`, `README.md`, etc.).
+List docs/spec files that must be updated (`spec/fls.md`, `spec/runtime.md`, `README.md`, etc.).
 
 ## Risks
 

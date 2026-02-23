@@ -12,10 +12,10 @@ Contributions must preserve:
 
 See:
 
-- `IDENTITY_CHARTER.md`
-- `EXTENSIBILITY_BOUNDARIES.md`
-- `VERSIONING_POLICY.md`
-- `FLAKE_TRIAGE.md`
+- `governance/IDENTITY_CHARTER.md`
+- `governance/EXTENSIBILITY_BOUNDARIES.md`
+- `governance/VERSIONING_POLICY.md`
+- `ops/FLAKE_TRIAGE.md`
 - `GOVERNANCE.md`
 - `CODE_OF_CONDUCT.md`
 
@@ -41,12 +41,12 @@ Recommended baseline before opening a PR:
 
 | Change type | Required updates |
 | --- | --- |
-| Syntax, type rules, canonicalization, parser/sema behavior | update `fls.md`; add/adjust semantic tests |
-| Runtime behavior, boundary mapping, builtins, status/error semantics | update `runtime.md`; add/adjust runtime/parity tests |
-| Scope or non-goal boundaries | update `scope.md` and/or `IDENTITY_CHARTER.md` |
-| Versioning/deprecation behavior | update `VERSIONING_POLICY.md` and `CHANGELOG.md` |
+| Syntax, type rules, canonicalization, parser/sema behavior | update `spec/fls.md`; add/adjust semantic tests |
+| Runtime behavior, boundary mapping, builtins, status/error semantics | update `spec/runtime.md`; add/adjust runtime/parity tests |
+| Scope or non-goal boundaries | update `governance/scope.md` and/or `governance/IDENTITY_CHARTER.md` |
+| Versioning/deprecation behavior | update `governance/VERSIONING_POLICY.md` and `CHANGELOG.md` |
 | Docs site behavior/content pipeline | update docs source + generated outputs under `docs/site/` |
-| Language/runtime behavior visible in reference docs | run `scripts/generate_guide_docs.sh` to regenerate `docs/site/specs/reference.md` from `fls.md`, `runtime.md`, and `scope.md` |
+| Language/runtime behavior visible in reference docs | run `scripts/generate_guide_docs.sh` to regenerate `docs/site/specs/reference.md` from `spec/fls.md`, `spec/runtime.md`, and `governance/scope.md` |
 
 If semantics change and docs are not updated in the same PR, the PR is incomplete.
 
