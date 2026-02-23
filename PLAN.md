@@ -1,6 +1,6 @@
 # FUSE 1.0.0 Stability Plan
 
-Status: Draft  
+Status: Active (`M2` complete, `M3` next)  
 Source contract: `spec/1.0.0_STABILITY_CONTRACT.md`
 
 This plan defines milestones to satisfy all `v1.0.0` entry criteria and keep docs clean during
@@ -11,6 +11,27 @@ execution and at release cut.
 1. Contract-facing code changes and doc updates ship in the same PR.
 2. Each milestone must leave the repo in a green gate state for affected suites.
 3. Non-goals in the stability contract remain enforced unless maintainers explicitly revise scope.
+
+## Milestone status (as of 2026-02-23)
+
+| Milestone | Status | Notes |
+|---|---|---|
+| `M0` | Pending | Tracking artifacts still need to be formalized as deliverables. |
+| `M1` | Pending | Full contract-test expansion not started. |
+| `M2` | Completed | Canonical reference service migration complete and gate bundle validated. |
+| `M3` | In progress (next) | Start with runtime/spec contract for request IDs, structured logs, panic classes, metrics hook. |
+| `M4` | Pending | Depends on `M3` contract clarity for operational defaults rollout. |
+| `M5` | Ongoing | Continuous sync has been applied during `M2`; final sweep still pending. |
+| `M6` | Pending | Release-candidate gate run and acceptance update are pending. |
+
+`M2` gate evidence captured on 2026-02-23:
+
+1. `./scripts/semantic_suite.sh` (`PASS`)
+2. `./scripts/authority_parity.sh` (`PASS`)
+3. `./scripts/lsp_suite.sh` (`PASS`)
+4. `./scripts/reliability_repeat.sh --iterations 2` (`PASS`; local sandbox run failed only due host bind restrictions, rerun outside sandbox passed)
+5. `./scripts/check_aot_perf_slo.sh` (`PASS`)
+6. `./scripts/packaging_verifier_regression.sh` (`PASS`)
 
 ## Milestones
 
@@ -70,6 +91,17 @@ Exit criteria:
 4. Remaining examples each have a unique scope statement in `examples/README.md`.
 
 ### M3: Observability baseline
+
+Kickoff sequence (next step):
+
+1. Define observability contract in `spec/runtime.md`:
+   - request ID propagation source/precedence and response emission rules
+   - structured request logging mode and stable field set
+   - deterministic panic classification taxonomy for fatal envelopes
+   - metrics hook shape, guarantees, and non-goals
+2. Add runtime tests for all contract clauses before implementation broadening.
+3. Implement minimal runtime plumbing to satisfy contract and tests.
+4. Update docs in the same PR (`README.md`, `guides/fuse.md`, `spec/runtime.md`).
 
 Deliverables:
 

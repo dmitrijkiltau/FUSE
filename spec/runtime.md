@@ -357,6 +357,19 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 - `FUSE_VITE_PROXY_URL` enables fallback proxying of unknown routes to Vite dev server
 - `FUSE_SVG_DIR` overrides SVG base directory for `svg.inline`
 
+#### Observability baseline (current implementation)
+
+- request ID propagation is not currently implemented:
+  - inbound HTTP headers are not surfaced to route handlers
+  - responses do not include a runtime-generated request ID header
+- there is no dedicated structured request logging mode yet:
+  - request-level access logs are not emitted automatically
+  - runtime `log(...)` remains the explicit logging mechanism
+- panic classification is currently binary in fatal envelopes:
+  - `runtime_fatal` for handled runtime failures
+  - `panic` for process-level panic paths
+- no metrics hook extension point is currently exposed by the runtime
+
 See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [Services and declaration syntax](fls.md#services-and-declaration-syntax).
 
 ---
