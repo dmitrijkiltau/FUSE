@@ -22,6 +22,10 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+.hidden {
+  display: none !important;
+}
+
 .separator {
   height: 1px;
   background: var(--c-border);
@@ -79,6 +83,46 @@ body {
   justify-content: flex-end;
 }
 
+.auth-panel {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: var(--sp-5);
+}
+
+.auth-panel:has(.auth-grid.hidden) {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.auth-panel:has(.auth-grid.hidden) :is(.state, .auth-actions) {
+  padding: 0;
+  margin: 0;
+}
+
+.auth-grid {
+  display: grid;
+  gap: var(--sp-4);
+  grid-template-columns: 1fr;
+}
+
+.auth-form {
+  padding: var(--sp-4);
+}
+
+.auth-actions {
+  margin-top: var(--sp-4);
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (min-width: 760px) {
+  .auth-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
 .notes-list {
   background: var(--c-surface);
   border: 1px solid var(--c-border);
@@ -91,6 +135,11 @@ body {
   padding: var(--sp-12) var(--sp-6);
   color: var(--c-text-3);
   font-size: var(--fs-sm);
+}
+
+.state--compact {
+  text-align: left;
+  padding: 0 0 var(--sp-4) 0;
 }
 
 .state--error {

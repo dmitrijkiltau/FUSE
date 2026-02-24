@@ -7,3 +7,22 @@ type Note:
   content: String(1..5000)
 
 type NoteCreate = Note without id
+
+type UserId:
+  value: String
+
+type SessionToken:
+  value: String
+
+type AuthSession:
+  userId: UserId
+  token: SessionToken
+  scopes: List<String>
+
+type RegisterInput:
+  email: String(3..120)
+  password: String(8..128)
+
+type LoginInput:
+  email: String(3..120)
+  password: String(8..128)

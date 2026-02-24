@@ -1,12 +1,24 @@
 import { NotFound, Unauthorized, BadRequest, Forbidden } from "./errors"
-import { Note, NoteId, NoteCreate } from "./domain"
-import { require_auth, require_scope } from "./auth"
+import { Note, NoteId, NoteCreate, AuthSession, RegisterInput, LoginInput } from "./domain"
+import { register_user, login_user, logout_session, require_auth, require_scope } from "./auth"
 
-service Notes at "/api":
-  # List all notes 
-  get "/notes" -> List<Map<String, String>>!Unauthorized!Forbidden:
+service ReferenceApi at "/api":
+  # Register a new user account and issue a session token.
+  post "/auth/register" body RegisterInput -> AuthSession!Unauthorized!BadRequest:
+    return register_user(body)
+
+  # Login and issue/refresh a session token.
+  post "/auth/login" body LoginInput -> AuthSession!Unauthorized!BadRequest:
+    return login_user(body)
+
+  # Logout by invalidating the active session token.
+  delete "/auth/sessions/{token: String}" -> Unit!Unauthorized:
+    return logout_session(token)
+
+  # List all notes for an authenticated session.
+  get "/sessions/{token: String}/notes" -> List<Map<String, String>>!Unauthorized!Forbidden:
     let auth_task = spawn:
-      require_auth()
+      require_auth(token)
     let auth_result = await auth_task
     let auth = auth_result ?!
     let scope_task = spawn:
@@ -19,10 +31,10 @@ service Notes at "/api":
       .select(["id", "title", "content"])
       .all()
 
-  # Get a single note by id
-  get "/notes/{id: String}" -> Map<String, String>!NotFound!Unauthorized!Forbidden:
+  # Get a single note by id for an authenticated session.
+  get "/sessions/{token: String}/notes/{id: String}" -> Map<String, String>!NotFound!Unauthorized!Forbidden:
     let auth_task = spawn:
-      require_auth()
+      require_auth(token)
     let auth_result = await auth_task
     let auth = auth_result ?!
     let scope_task = spawn:
@@ -33,10 +45,10 @@ service Notes at "/api":
     return db.from("notes").select(["id", "title", "content"]).where("id", "=", id).one()
       ?! NotFound(message="not found")
 
-  # Update a note by id
-  put "/notes/{id: String}" body NoteCreate -> Note!NotFound!Unauthorized!Forbidden!BadRequest:
+  # Update a note by id for an authenticated session.
+  put "/sessions/{token: String}/notes/{id: String}" body NoteCreate -> Note!NotFound!Unauthorized!Forbidden!BadRequest:
     let auth_task = spawn:
-      require_auth()
+      require_auth(token)
     let auth_result = await auth_task
     let auth = auth_result ?!
     let scope_task = spawn:
@@ -53,10 +65,10 @@ service Notes at "/api":
 
     return Note(id=NoteId(value=id), title=body.title, content=body.content)
 
-  # Create a new note
-  post "/notes" body NoteCreate -> Note!Unauthorized!Forbidden!BadRequest:
+  # Create a new note for an authenticated session.
+  post "/sessions/{token: String}/notes" body NoteCreate -> Note!Unauthorized!Forbidden!BadRequest:
     let auth_task = spawn:
-      require_auth()
+      require_auth(token)
     let auth_result = await auth_task
     let auth = auth_result ?!
     let scope_task = spawn:
@@ -72,10 +84,10 @@ service Notes at "/api":
 
     return Note(id=id, title=body.title, content=body.content)
 
-  # Delete a note by id
-  delete "/notes/{id: String}" -> Unit!Unauthorized!Forbidden:
+  # Delete a note by id for an authenticated session.
+  delete "/sessions/{token: String}/notes/{id: String}" -> Unit!Unauthorized!Forbidden:
     let auth_task = spawn:
-      require_auth()
+      require_auth(token)
     let auth_result = await auth_task
     let auth = auth_result ?!
     let scope_task = spawn:

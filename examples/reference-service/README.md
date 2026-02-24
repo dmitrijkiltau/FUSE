@@ -1,7 +1,8 @@
 # Reference service example
 
 This is the canonical Fuse reference service package.
-It includes auth + CRUD routes, DB migration, OpenAPI generation, and SCSS asset compilation.
+It includes registration/login auth, session-scoped CRUD routes, DB migrations, OpenAPI generation,
+and SCSS asset compilation.
 
 ## Requirements
 
@@ -56,10 +57,13 @@ SCSS pipeline:
 
 ## API
 
-- `GET /api/notes`
-- `GET /api/notes/{id}`
-- `POST /api/notes`
-- `PUT /api/notes/{id}`
-- `DELETE /api/notes/{id}` (idempotent)
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `DELETE /api/auth/sessions/{token}`
+- `GET /api/sessions/{token}/notes`
+- `GET /api/sessions/{token}/notes/{id}`
+- `POST /api/sessions/{token}/notes`
+- `PUT /api/sessions/{token}/notes/{id}`
+- `DELETE /api/sessions/{token}/notes/{id}` (idempotent)
 
-The UI uses JSON requests; the service expects JSON bodies.
+The UI uses JSON requests and stores the returned opaque session token in browser localStorage.

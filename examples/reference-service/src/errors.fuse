@@ -9,3 +9,6 @@ type NotFound:
 
 type BadRequest:
   message: String
+
+type Conflict:
+  message: String

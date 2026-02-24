@@ -18,7 +18,7 @@ execution and at release cut.
 |---|---|---|
 | `M0` | Pending | Tracking artifacts still need to be formalized as deliverables. |
 | `M1` | Pending | Full contract-test expansion not started. |
-| `M2` | In progress | Canonical reference service migration is mostly complete; remaining replacement/operational parity items still open. |
+| `M2` | In progress | Canonical reference service migration is mostly complete; registration/login + session-auth notes flow is now implemented, with remaining replacement/operational parity items still open. |
 | `M3` | Next | Start with runtime/spec contract for request IDs, structured logs, panic classes, metrics hook after `M2` closure. |
 | `M4` | Pending | Depends on `M3` contract clarity for operational defaults rollout. |
 | `M5` | Ongoing | Continuous sync has been applied during `M2`; final sweep still pending. |

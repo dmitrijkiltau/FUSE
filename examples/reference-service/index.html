@@ -12,14 +12,56 @@
   <main class="page">
     <header class="page__header">
       <h1 class="page__title">Notes</h1>
-      <p class="page__subtitle">A simple place for your thoughts.</p>
+      <p class="page__subtitle">Register or login to get a session, then manage notes.</p>
     </header>
 
-    <!-- Create -->
+    <!-- Session -->
     <section class="section">
+      <h2 class="section__title">Session</h2>
+      <div class="auth-panel">
+        <p id="session-status" class="state state--compact">Not signed in.</p>
+
+        <div id="auth-forms" class="auth-grid">
+          <form id="register-form" class="create-form auth-form">
+            <div class="form-group">
+              <label class="form-label" for="register-email">Email</label>
+              <input class="form-input" type="email" id="register-email" name="email" placeholder="you@example.com" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="register-password">Password</label>
+              <input class="form-input" type="password" id="register-password" name="password" minlength="8" required>
+            </div>
+            <div class="create-form__footer">
+              <button type="submit" class="btn btn--primary">Register</button>
+            </div>
+          </form>
+
+          <form id="login-form" class="create-form auth-form">
+            <div class="form-group">
+              <label class="form-label" for="login-email">Email</label>
+              <input class="form-input" type="email" id="login-email" name="email" placeholder="you@example.com" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="login-password">Password</label>
+              <input class="form-input" type="password" id="login-password" name="password" minlength="8" required>
+            </div>
+            <div class="create-form__footer">
+              <button type="submit" class="btn btn--ghost">Login</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="auth-actions">
+          <button type="button" id="logout-btn" class="btn btn--ghost btn--sm hidden">Logout</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Create -->
+    <section id="create-note-section" class="section hidden">
       <h2 class="section__title">New note</h2>
-      <form class="create-form"
-            hx-post="/api/notes"
+      <form id="create-note-form"
+            class="create-form"
             hx-ext="json-enc"
             hx-target="#notes-list"
             hx-swap="none"
@@ -41,15 +83,13 @@
     <hr class="separator">
 
     <!-- List -->
-    <section class="section">
+    <section id="notes-section" class="section hidden">
       <h2 class="section__title">All notes</h2>
       <div class="notes-list"
            id="notes-list"
-           hx-get="/api/notes"
-           hx-trigger="load, notesRefresh, every 5s"
            hx-sync="this:replace"
            hx-swap="innerHTML">
-        <div class="state">Loading…</div>
+        <div class="state">Sign in to load notes.</div>
       </div>
     </section>
   </main>

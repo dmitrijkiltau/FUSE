@@ -1,11 +1,65 @@
 import { Unauthorized, Forbidden } from "./errors"
+import { AuthSession, LoginInput, RegisterInput, SessionToken, UserId } from "./domain"
 
 type Auth:
   subject: String
   scopes: List<String>
 
-fn require_auth() -> Auth!Unauthorized:
-  return Auth(subject="system", scopes=["notes:read", "notes:write"])
+fn auth_scopes() -> List<String>:
+  return ["notes:read", "notes:write"]
+
+fn user_id(email: String) -> String:
+  return "user-${email}"
+
+fn new_session_token() -> String!Unauthorized:
+  let row = db.one("select lower(hex(randomblob(16))) as token")
+    ?! Unauthorized(message="failed to allocate session token")
+  return row["token"]
+
+fn to_auth_session(email: String, token: String) -> AuthSession:
+  let uid = user_id(email)
+  return AuthSession(
+    userId=UserId(value=uid),
+    token=SessionToken(value=token),
+    scopes=auth_scopes()
+  )
+
+fn register_user(input: RegisterInput) -> AuthSession!Unauthorized:
+  let uid = user_id(input.email)
+  let token = new_session_token() ?!
+  db.exec(
+    "insert or replace into users (id, email, password) values (?, ?, ?)",
+    [uid, input.email, input.password]
+  )
+  db.exec(
+    "insert or replace into sessions (token, user_id, scopes) values (?, ?, ?)",
+    [token, uid, "notes:read notes:write"]
+  )
+  return to_auth_session(input.email, token)
+
+fn login_user(input: LoginInput) -> AuthSession!Unauthorized:
+  db.one(
+    "select email from users where email = ? and password = ?",
+    [input.email, input.password]
+  ) ?! Unauthorized(message="invalid email or password")
+
+  let uid = user_id(input.email)
+  let token = new_session_token() ?!
+  db.exec(
+    "insert or replace into sessions (token, user_id, scopes) values (?, ?, ?)",
+    [token, uid, "notes:read notes:write"]
+  )
+  return to_auth_session(input.email, token)
+
+fn logout_session(token: String) -> Unit!Unauthorized:
+  db.one("select token from sessions where token = ?", [token])
+    ?! Unauthorized(message="invalid or expired session")
+  db.exec("delete from sessions where token = ?", [token])
+
+fn require_auth(token: String) -> Auth!Unauthorized:
+  db.one("select token from sessions where token = ?", [token])
+    ?! Unauthorized(message="invalid or expired session")
+  return Auth(subject=token, scopes=auth_scopes())
 
 fn require_scope(auth: Auth, scope: String) -> Auth!Forbidden:
   match scope:

@@ -7,5 +7,5 @@ config App:
 
 app "Api":
   log("info", "starting reference service on port ${App.port} with db ${App.dbUrl}")
-  log("info", "get http://localhost:${App.port}/api/notes to list notes")
+  log("info", "register/login via http://localhost:${App.port}/api/auth/* then use /api/sessions/{token}/notes")
   serve(App.port)
