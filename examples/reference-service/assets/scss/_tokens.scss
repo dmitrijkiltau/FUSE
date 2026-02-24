@@ -1,5 +1,5 @@
 :root {
-  /* — Palette — */
+  /* Palette */
   --c-bg:        #f5f5f4;
   --c-surface:   #ffffff;
   --c-border:    #e2e2e0;
@@ -14,7 +14,7 @@
   --c-danger-hv: #ffffff;
   --c-overlay:   rgba(0, 0, 0, 0.2);
 
-  /* — Typography — */
+  /* Typography */
   --font-sans:  "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
                 Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
   --font-mono:  "SF Mono", "Cascadia Code", "Fira Code", "JetBrains Mono",
@@ -26,7 +26,7 @@
   --fs-lg:      1.25rem;
   --lh:         1.6;
 
-  /* — Spacing — */
+  /* Spacing */
   --sp-1:  0.25rem;
   --sp-2:  0.5rem;
   --sp-3:  0.75rem;
@@ -37,16 +37,16 @@
   --sp-10: 2.5rem;
   --sp-12: 3rem;
 
-  /* — Radii — */
+  /* Radii */
   --r-sm:  3px;
   --r-md:  5px;
   --r-lg:  8px;
 
-  /* — Shadows — */
+  /* Shadows */
   --shadow-sm:  0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-md:  0 2px 8px rgba(0, 0, 0, 0.08);
   --shadow-lg:  0 4px 16px rgba(0, 0, 0, 0.1);
 
-  /* — Transitions — */
+  /* Transitions */
   --ease:       0.15s ease;
 }

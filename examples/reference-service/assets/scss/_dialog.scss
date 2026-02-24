@@ -1,5 +1,3 @@
-/* — Dialog — */
-
 .dialog {
   top: 50%;
   transform: translateY(calc(-50% + 4rem));
@@ -11,14 +9,14 @@
   width: calc(100% - 2rem);
   box-shadow: var(--shadow-lg);
   font-family: var(--font-sans);
+}
 
-  &::backdrop {
-    background: var(--c-overlay);
-  }
+.dialog::backdrop {
+  background: var(--c-overlay);
+}
 
-  &[open] {
-    animation: dialog-in 0.15s ease forwards;
-  }
+.dialog[open] {
+  animation: dialog-in 0.15s ease forwards;
 }
 
 .dialog__title {

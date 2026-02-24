@@ -1,6 +1,6 @@
 # FUSE 1.0.0 Stability Plan
 
-Status: Active (`M2` complete, `M3` next)  
+Status: Active (`M2` in progress, `M3` next)  
 Source contract: `spec/1.0.0_STABILITY_CONTRACT.md`
 
 This plan defines milestones to satisfy all `v1.0.0` entry criteria and keep docs clean during
@@ -18,8 +18,8 @@ execution and at release cut.
 |---|---|---|
 | `M0` | Pending | Tracking artifacts still need to be formalized as deliverables. |
 | `M1` | Pending | Full contract-test expansion not started. |
-| `M2` | Completed | Canonical reference service migration complete and gate bundle validated. |
-| `M3` | In progress (next) | Start with runtime/spec contract for request IDs, structured logs, panic classes, metrics hook. |
+| `M2` | In progress | Canonical reference service migration is mostly complete; remaining replacement/operational parity items still open. |
+| `M3` | Next | Start with runtime/spec contract for request IDs, structured logs, panic classes, metrics hook after `M2` closure. |
 | `M4` | Pending | Depends on `M3` contract clarity for operational defaults rollout. |
 | `M5` | Ongoing | Continuous sync has been applied during `M2`; final sweep still pending. |
 | `M6` | Pending | Release-candidate gate run and acceptance update are pending. |
@@ -32,6 +32,12 @@ execution and at release cut.
 4. `./scripts/reliability_repeat.sh --iterations 2` (`PASS`; local sandbox run failed only due host bind restrictions, rerun outside sandbox passed)
 5. `./scripts/check_aot_perf_slo.sh` (`PASS`)
 6. `./scripts/packaging_verifier_regression.sh` (`PASS`)
+
+Remaining `M2` closure items:
+
+1. Complete full package replacement parity in docs/workflows (including explicit run/test/build/AOT usage docs for `examples/reference-service`).
+2. Ensure build/AOT validation path is runnable in release environments with SCSS tooling (`sass`) available and documented.
+3. Finalize and verify replacement cleanup details against all `M2` deliverables and exit criteria before marking `M2` complete.
 
 ## Milestones
 

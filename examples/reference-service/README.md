@@ -1,6 +1,12 @@
 # Reference service example
 
-This is a small Fuse example service with a static HTML UI.
+This is the canonical Fuse reference service package.
+It includes auth + CRUD routes, DB migration, OpenAPI generation, and SCSS asset compilation.
+
+## Requirements
+
+- Optional: `sass` (Dart Sass) on `PATH` for full SCSS compatibility.
+- `./scripts/fuse` includes a local fallback SCSS compiler for this package's import-based styles.
 
 ## Run
 
@@ -25,6 +31,27 @@ FUSE_DB_URL=sqlite://reference-service.db
 
 ```bash
 ./scripts/fuse migrate examples/reference-service
+```
+
+## Build
+
+```bash
+# Compile Fuse package and SCSS assets
+./scripts/fuse build --manifest-path examples/reference-service
+
+# Build deployable AOT artifact
+./scripts/fuse build --manifest-path examples/reference-service --aot
+```
+
+SCSS pipeline:
+
+- source: `assets/scss/style.scss` (+ partials in `assets/scss/`)
+- output: `assets/css/style.css`
+
+## OpenAPI
+
+```bash
+./scripts/fuse openapi --manifest-path examples/reference-service > /tmp/reference-service.openapi.json
 ```
 
 ## API

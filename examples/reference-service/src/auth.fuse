@@ -1,4 +1,4 @@
-import { Unauthorized, Forbidden } from std.Error
+import { Unauthorized, Forbidden } from "./errors"
 
 type Auth:
   subject: String

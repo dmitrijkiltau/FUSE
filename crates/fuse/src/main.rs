@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
-use std::io::{IsTerminal, Read, Write};
+use std::io::{ErrorKind, IsTerminal, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command as ProcessCommand};
+use std::process::{Child, Command as ProcessCommand, Output as ProcessOutput};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -980,11 +980,7 @@ fn run_asset_pipeline(
         fs::create_dir_all(parent)
             .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
     }
-    let output = ProcessCommand::new("sass")
-        .arg("--no-source-map")
-        .arg(&mapping.arg)
-        .output()
-        .map_err(|err| format!("failed to run sass (install dart-sass): {err}"))?;
+    let output = run_sass_pipeline_command(&base, &mapping.arg)?;
     if !output.status.success() {
         let mut msg = String::new();
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1013,6 +1009,56 @@ fn run_asset_pipeline(
         hashed_map.insert(key, value);
     }
     write_asset_manifest_for_base(&base, &hashed_map)
+}
+
+fn run_sass_pipeline_command(base: &Path, mapping_arg: &str) -> Result<ProcessOutput, String> {
+    let mut cmd = ProcessCommand::new("sass");
+    cmd.arg("--no-source-map").arg(mapping_arg);
+    match cmd.output() {
+        Ok(output) => Ok(output),
+        Err(err) => match err.kind() {
+            ErrorKind::NotFound | ErrorKind::PermissionDenied => {
+                if let Some(local_sass) = find_local_sass_fallback(base) {
+                    let mut local_cmd = ProcessCommand::new(&local_sass);
+                    local_cmd.arg("--no-source-map").arg(mapping_arg);
+                    return local_cmd.output().map_err(|local_err| {
+                        format!(
+                            "failed to run sass (install dart-sass): {err}; fallback {} failed: {local_err}",
+                            local_sass.display()
+                        )
+                    });
+                }
+                Err(format!("failed to run sass (install dart-sass): {err}"))
+            }
+            _ => Err(format!("failed to run sass (install dart-sass): {err}")),
+        },
+    }
+}
+
+fn find_local_sass_fallback(base: &Path) -> Option<PathBuf> {
+    let mut current = Some(base);
+    while let Some(dir) = current {
+        for candidate in sass_fallback_candidates(dir) {
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+fn sass_fallback_candidates(dir: &Path) -> Vec<PathBuf> {
+    let scripts = dir.join("scripts");
+    let candidates = vec![scripts.join("sass")];
+    #[cfg(target_os = "windows")]
+    {
+        let mut candidates = candidates;
+        candidates.push(scripts.join("sass.cmd"));
+        candidates.push(scripts.join("sass.bat"));
+        return candidates;
+    }
+    candidates
 }
 
 struct SassMapping {

@@ -376,6 +376,109 @@ fi
 }
 
 #[test]
+fn build_uses_local_scripts_sass_when_path_sass_is_not_executable() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let manifest = r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[assets]
+scss = "assets/scss"
+css = "public/css"
+watch = true
+"#;
+    fs::write(dir.join("fuse.toml"), manifest).expect("write fuse.toml");
+
+    let main_src = r#"
+app "Demo":
+  print("ok")
+"#;
+    fs::write(dir.join("main.fuse"), main_src).expect("write main.fuse");
+
+    let scss_dir = dir.join("assets").join("scss");
+    fs::create_dir_all(&scss_dir).expect("create scss dir");
+    fs::write(
+        scss_dir.join("app.scss"),
+        "body { color: #fff; }\n",
+    )
+    .expect("write scss");
+
+    let local_scripts = dir.join("scripts");
+    fs::create_dir_all(&local_scripts).expect("create local scripts dir");
+    let local_sass = local_scripts.join("sass");
+    let local_sass_script = r#"#!/bin/bash
+set -euo pipefail
+mapping=""
+for arg in "$@"; do
+  case "$arg" in
+    --*) ;;
+    *) mapping="$arg" ;;
+  esac
+done
+src="${mapping%%:*}"
+dst="${mapping#*:}"
+if [[ -d "$src" ]]; then
+  mkdir -p "$dst"
+  for file in "$src"/*.scss; do
+    [[ -e "$file" ]] || continue
+    base="$(basename "$file" .scss)"
+    printf '/* local scripts/sass fallback */\nbody{color:#fff}\n' > "$dst/$base.css"
+  done
+else
+  mkdir -p "$(dirname "$dst")"
+  printf '/* local scripts/sass fallback */\nbody{color:#fff}\n' > "$dst"
+fi
+"#;
+    fs::write(&local_sass, local_sass_script).expect("write local scripts sass");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&local_sass)
+            .expect("metadata local scripts sass")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&local_sass, perms).expect("chmod local scripts sass");
+    }
+
+    let broken_bin = dir.join("broken-bin");
+    fs::create_dir_all(&broken_bin).expect("create broken bin");
+    let broken_sass = broken_bin.join("sass");
+    fs::write(&broken_sass, "not executable").expect("write broken sass");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&broken_sass)
+            .expect("metadata broken sass")
+            .permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&broken_sass, perms).expect("chmod broken sass");
+    }
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let mut cmd = Command::new(exe);
+    cmd.arg("build").arg("--manifest-path").arg(&dir);
+    let path = std::env::var("PATH").unwrap_or_default();
+    cmd.env("PATH", format!("{}:{}", broken_bin.display(), path));
+    let output = cmd.output().expect("run fuse build");
+    if !output.status.success() {
+        panic!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    let built_css = dir.join("public").join("css").join("app.css");
+    assert!(built_css.exists(), "expected {}", built_css.display());
+    let css = fs::read_to_string(&built_css).expect("read built css");
+    assert!(
+        css.contains("local scripts/sass fallback"),
+        "expected local fallback output in css: {css}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn build_hashes_css_outputs_and_writes_asset_manifest() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");
