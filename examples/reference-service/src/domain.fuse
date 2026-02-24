@@ -5,8 +5,14 @@ type Note:
   id: NoteId
   title: String(1..100)
   content: String(1..5000)
+  published: Bool
 
-type NoteCreate = Note without id
+type NoteCreate:
+  title: String(1..100)
+  content: String(1..5000)
+
+type NoteVisibilityUpdate:
+  published: String(1..1)
 
 type UserId:
   value: String

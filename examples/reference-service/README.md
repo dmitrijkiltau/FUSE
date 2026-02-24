@@ -65,6 +65,11 @@ CSS pipeline:
 - `GET /api/sessions/{token}/notes/{id}`
 - `POST /api/sessions/{token}/notes`
 - `PUT /api/sessions/{token}/notes/{id}`
+- `PUT /api/sessions/{token}/notes/{id}/visibility`
 - `DELETE /api/sessions/{token}/notes/{id}` (idempotent)
+- `GET /api/public/notes`
+- `GET /api/public/notes/{id}`
 
+Private session routes are owner-scoped: users only see and mutate their own notes.
+Published notes are readable without authentication via the public routes.
 The UI uses JSON requests and stores the returned opaque session token in browser localStorage.

@@ -24,7 +24,11 @@ function closeDialog(dialog) {
 function parseErrorDetails(text) {
   if (!text) return null;
   let data;
-  try { data = JSON.parse(text); } catch { return null; }
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return null;
+  }
   if (!data?.error) return null;
 
   const err = data.error;
@@ -88,40 +92,49 @@ function persistSession(session) {
 }
 
 function notesEndpoint(token, noteId) {
-  // Fuse route params are matched on raw path segments (no URL decode).
   const base = `/api/sessions/${token}/notes`;
   return noteId ? `${base}/${noteId}` : base;
+}
+
+function noteVisibilityEndpoint(token, noteId) {
+  return `/api/sessions/${token}/notes/${noteId}/visibility`;
 }
 
 function logoutEndpoint(token) {
   return `/api/auth/sessions/${token}`;
 }
 
-const registerForm  = document.getElementById("register-form");
-const loginForm     = document.getElementById("login-form");
-const logoutButton  = document.getElementById("logout-btn");
+function publicNotesEndpoint(noteId) {
+  const base = "/api/public/notes";
+  return noteId ? `${base}/${noteId}` : base;
+}
+
+const registerForm = document.getElementById("register-form");
+const loginForm = document.getElementById("login-form");
+const logoutButton = document.getElementById("logout-btn");
 const sessionStatus = document.getElementById("session-status");
-const authForms     = document.getElementById("auth-forms");
+const authForms = document.getElementById("auth-forms");
 
 const createNoteForm = document.getElementById("create-note-form");
-const notesList      = document.getElementById("notes-list");
+const notesList = document.getElementById("notes-list");
+const publicNotesList = document.getElementById("public-notes-list");
 const createNoteSection = document.getElementById("create-note-section");
-const notesSection      = document.getElementById("notes-section");
+const notesSection = document.getElementById("notes-section");
 
-const editDialog    = document.getElementById("edit-dialog");
-const editForm      = document.getElementById("edit-form");
-const editTitle     = document.getElementById("edit-title");
-const editContent   = document.getElementById("edit-content");
-const editCancel    = document.getElementById("edit-cancel");
+const editDialog = document.getElementById("edit-dialog");
+const editForm = document.getElementById("edit-form");
+const editTitle = document.getElementById("edit-title");
+const editContent = document.getElementById("edit-content");
+const editCancel = document.getElementById("edit-cancel");
 
 const confirmDialog = document.getElementById("confirm-dialog");
 const confirmCancel = document.getElementById("confirm-cancel");
-const confirmOk     = document.getElementById("confirm-ok");
+const confirmOk = document.getElementById("confirm-ok");
 
-const errorDialog   = document.getElementById("error-dialog");
-const errorTitleEl  = document.getElementById("error-title");
-const errorMessage  = document.getElementById("error-message");
-const errorOk       = document.getElementById("error-ok");
+const errorDialog = document.getElementById("error-dialog");
+const errorTitleEl = document.getElementById("error-title");
+const errorMessage = document.getElementById("error-message");
+const errorOk = document.getElementById("error-ok");
 
 let currentSession = loadSession();
 let pendingEditId = null;
@@ -133,16 +146,39 @@ function showError(message, title) {
   showDialog(errorDialog);
 }
 
-function renderNoteCard(note) {
+function isPublished(note) {
+  const raw = note?.is_public ?? note?.published ?? "0";
+  return raw === true || raw === 1 || raw === "1" || raw === "true";
+}
+
+function renderPrivateNoteCard(note) {
+  const published = isPublished(note);
+  const visibility = published ? "Public" : "Private";
+  const publishLabel = published ? "Unpublish" : "Publish";
+  const nextPublished = published ? "0" : "1";
+
   return `
-    <div class="note-card" data-id="${escapeAttr(note.id)}" data-title="${escapeAttr(note.title)}" data-content="${escapeAttr(note.content)}">
+    <div class="note-card" data-id="${escapeAttr(note.id)}" data-title="${escapeAttr(note.title)}" data-content="${escapeAttr(note.content)}" data-published="${published ? "1" : "0"}">
       <h3 class="note-card__title">${escapeHtml(note.title)}</h3>
       <p class="note-card__body">${escapeHtml(note.content)}</p>
-      <div class="note-card__meta">${escapeHtml(note.id)}</div>
+      <div class="note-card__meta-line">
+        <div class="note-card__meta">${escapeHtml(note.id)}</div>
+        <span class="note-card__pill">${visibility}</span>
+      </div>
       <div class="note-card__actions">
         <button type="button" class="btn btn--ghost btn--sm edit-btn">Edit</button>
+        <button type="button" class="btn btn--ghost btn--sm publish-btn" data-next-published="${nextPublished}">${publishLabel}</button>
         <button type="button" class="btn btn--danger btn--sm delete-btn">Delete</button>
       </div>
+    </div>`;
+}
+
+function renderPublicNoteCard(note) {
+  return `
+    <div class="note-card note-card--public" data-id="${escapeAttr(note.id)}">
+      <h3 class="note-card__title">${escapeHtml(note.title)}</h3>
+      <p class="note-card__body">${escapeHtml(note.content)}</p>
+      <div class="note-card__meta">${escapeHtml(note.id)} by ${escapeHtml(note.owner_id || "unknown")}</div>
     </div>`;
 }
 
@@ -152,31 +188,46 @@ function setCreateFormEnabled(enabled) {
   });
 }
 
+function initPublicNotesFeed() {
+  publicNotesList.setAttribute("hx-get", publicNotesEndpoint());
+  publicNotesList.setAttribute("hx-trigger", "load, publicNotesRefresh, every 5s");
+  if (window.htmx?.process) window.htmx.process(publicNotesList);
+}
+
+function refreshPrivateNotes() {
+  if (window.htmx?.trigger) window.htmx.trigger("#notes-list", "notesRefresh");
+}
+
+function refreshPublicNotes() {
+  if (window.htmx?.trigger) window.htmx.trigger("#public-notes-list", "publicNotesRefresh");
+}
+
 function setSession(session) {
   currentSession = session;
   persistSession(session);
 
   if (!currentSession) {
     sessionStatus.textContent = "Not signed in.";
-    authForms.classList.remove("hidden")
-    logoutButton.classList.add("hidden")
+    authForms.classList.remove("hidden");
+    logoutButton.classList.add("hidden");
     logoutButton.disabled = true;
-    createNoteSection.classList.add("hidden")
-    notesSection.classList.add("hidden")
+    createNoteSection.classList.add("hidden");
+    notesSection.classList.add("hidden");
     setCreateFormEnabled(false);
     createNoteForm.removeAttribute("hx-post");
     notesList.removeAttribute("hx-get");
     notesList.removeAttribute("hx-trigger");
-    notesList.innerHTML = '<div class="state">Sign in to load notes.</div>';
+    notesList.innerHTML = '<div class="state">Sign in to load your private notes.</div>';
+    refreshPublicNotes();
     return;
   }
 
   sessionStatus.textContent = `Signed in as ${currentSession.userId}.`;
-  authForms.classList.add("hidden")
-  logoutButton.classList.remove("hidden")
+  authForms.classList.add("hidden");
+  logoutButton.classList.remove("hidden");
   logoutButton.disabled = false;
-  createNoteSection.classList.remove("hidden")
-  notesSection.classList.remove("hidden")
+  createNoteSection.classList.remove("hidden");
+  notesSection.classList.remove("hidden");
   setCreateFormEnabled(true);
 
   const endpoint = notesEndpoint(currentSession.token);
@@ -187,9 +238,8 @@ function setSession(session) {
     window.htmx.process(createNoteForm);
     window.htmx.process(notesList);
   }
-  if (window.htmx?.trigger) {
-    window.htmx.trigger("#notes-list", "notesRefresh");
-  }
+  refreshPrivateNotes();
+  refreshPublicNotes();
 }
 
 async function submitAuth(endpoint, form) {
@@ -228,6 +278,23 @@ async function submitAuth(endpoint, form) {
   form.reset();
 }
 
+async function togglePublish(noteId, published) {
+  if (!currentSession) return;
+  const resp = await fetch(noteVisibilityEndpoint(currentSession.token, noteId), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ published })
+  });
+
+  if (!resp.ok) {
+    showError(await safeErrorMessage(resp));
+    return;
+  }
+
+  refreshPrivateNotes();
+  refreshPublicNotes();
+}
+
 registerForm.addEventListener("submit", async evt => {
   evt.preventDefault();
   await submitAuth("/api/auth/register", registerForm);
@@ -253,27 +320,53 @@ logoutButton.addEventListener("click", async () => {
 });
 
 document.body.addEventListener("htmx:beforeSwap", evt => {
-  if (evt.detail.target.id !== "notes-list") return;
-  if (!currentSession) return;
-  if (evt.detail.requestConfig?.verb !== "get") return;
+  const target = evt.detail.target;
+  if (!target || evt.detail.requestConfig?.verb !== "get") return;
 
-  try {
-    const notes = JSON.parse(evt.detail.xhr.response);
-    if (!Array.isArray(notes)) {
-      const message = notes?.error?.message || "Unexpected response from server";
-      evt.detail.target.innerHTML = `<div class="state state--error">${escapeHtml(message)}</div>`;
+  if (target.id === "notes-list") {
+    if (!currentSession) return;
+    try {
+      const notes = JSON.parse(evt.detail.xhr.response);
+      if (!Array.isArray(notes)) {
+        const message = notes?.error?.message || "Unexpected response from server";
+        target.innerHTML = `<div class="state state--error">${escapeHtml(message)}</div>`;
+        evt.detail.shouldSwap = false;
+        return;
+      }
+      if (notes.length === 0) {
+        target.innerHTML = '<div class="state">No private notes yet - create one above.</div>';
+        evt.detail.shouldSwap = false;
+        return;
+      }
+      target.innerHTML = notes.map(renderPrivateNoteCard).join("");
       evt.detail.shouldSwap = false;
       return;
-    }
-    if (notes.length === 0) {
-      evt.detail.target.innerHTML = '<div class="state">No notes yet — create one above.</div>';
-      evt.detail.shouldSwap = false;
+    } catch (err) {
+      console.error("Failed to parse private notes response", err);
       return;
     }
-    evt.detail.target.innerHTML = notes.map(renderNoteCard).join("");
-    evt.detail.shouldSwap = false;
-  } catch (err) {
-    console.error("Failed to parse notes response", err);
+  }
+
+  if (target.id === "public-notes-list") {
+    try {
+      const notes = JSON.parse(evt.detail.xhr.response);
+      if (!Array.isArray(notes)) {
+        const message = notes?.error?.message || "Unexpected response from server";
+        target.innerHTML = `<div class="state state--error">${escapeHtml(message)}</div>`;
+        evt.detail.shouldSwap = false;
+        return;
+      }
+      if (notes.length === 0) {
+        target.innerHTML = '<div class="state">No public notes yet.</div>';
+        evt.detail.shouldSwap = false;
+        return;
+      }
+      target.innerHTML = notes.map(renderPublicNoteCard).join("");
+      evt.detail.shouldSwap = false;
+      return;
+    } catch (err) {
+      console.error("Failed to parse public notes response", err);
+    }
   }
 });
 
@@ -329,7 +422,8 @@ editForm.addEventListener("submit", async evt => {
 
   closeDialog(editDialog);
   pendingEditId = null;
-  if (window.htmx?.trigger) window.htmx.trigger("#notes-list", "notesRefresh");
+  refreshPrivateNotes();
+  refreshPublicNotes();
 });
 
 confirmOk.addEventListener("click", async () => {
@@ -352,9 +446,11 @@ confirmOk.addEventListener("click", async () => {
 
   closeDialog(confirmDialog);
   pendingDeleteId = null;
+  refreshPrivateNotes();
+  refreshPublicNotes();
 });
 
-document.body.addEventListener("click", evt => {
+document.body.addEventListener("click", async evt => {
   const button = evt.target.closest("button");
   if (!button) return;
   const card = button.closest(".note-card");
@@ -370,10 +466,17 @@ document.body.addEventListener("click", evt => {
     return;
   }
 
+  if (button.classList.contains("publish-btn")) {
+    const nextPublished = button.dataset.nextPublished === "1" ? "1" : "0";
+    await togglePublish(id, nextPublished);
+    return;
+  }
+
   if (button.classList.contains("delete-btn")) {
     pendingDeleteId = id;
     showDialog(confirmDialog);
   }
 });
 
+initPublicNotesFeed();
 setSession(currentSession);

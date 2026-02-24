@@ -4,3 +4,9 @@ migration 001:
 migration 002:
   db.exec("create table if not exists users (id text primary key, email text not null unique, password text not null)")
   db.exec("create table if not exists sessions (token text primary key, user_id text not null, scopes text not null)")
+
+migration 003:
+  db.exec("alter table notes add column owner_id text not null default ''")
+  db.exec("alter table notes add column is_public text not null default '0'")
+  db.exec("create index if not exists idx_notes_owner_id on notes(owner_id)")
+  db.exec("create index if not exists idx_notes_public on notes(is_public)")

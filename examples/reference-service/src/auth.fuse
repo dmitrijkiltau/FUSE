@@ -2,7 +2,7 @@ import { Unauthorized, Forbidden } from "./errors"
 import { AuthSession, LoginInput, RegisterInput, SessionToken, UserId } from "./domain"
 
 type Auth:
-  subject: String
+  userId: String
   scopes: List<String>
 
 fn auth_scopes() -> List<String>:
@@ -57,9 +57,9 @@ fn logout_session(token: String) -> Unit!Unauthorized:
   db.exec("delete from sessions where token = ?", [token])
 
 fn require_auth(token: String) -> Auth!Unauthorized:
-  db.one("select token from sessions where token = ?", [token])
+  let session = db.one("select user_id from sessions where token = ?", [token])
     ?! Unauthorized(message="invalid or expired session")
-  return Auth(subject=token, scopes=auth_scopes())
+  return Auth(userId=session["user_id"], scopes=auth_scopes())
 
 fn require_scope(auth: Auth, scope: String) -> Auth!Forbidden:
   match scope:

@@ -36,7 +36,7 @@ execution and at release cut.
 Remaining `M2` closure items:
 
 1. Complete full package replacement parity in docs/workflows (including explicit run/test/build/AOT usage docs for `examples/reference-service`).
-2. Ensure build/AOT validation path is runnable in release environments without external CSS preprocessing tooling.
+2. Ensure build/AOT validation path is runnable in release environments.
 3. Finalize and verify replacement cleanup details against all `M2` deliverables and exit criteria before marking `M2` complete.
 
 ## Milestones

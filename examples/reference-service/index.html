@@ -84,12 +84,22 @@
 
     <!-- List -->
     <section id="notes-section" class="section hidden">
-      <h2 class="section__title">All notes</h2>
+      <h2 class="section__title">Your notes</h2>
       <div class="notes-list"
            id="notes-list"
            hx-sync="this:replace"
            hx-swap="innerHTML">
         <div class="state">Sign in to load notes.</div>
+      </div>
+    </section>
+
+    <section id="public-notes-section" class="section">
+      <h2 class="section__title">Public notes</h2>
+      <div class="notes-list"
+           id="public-notes-list"
+           hx-sync="this:replace"
+           hx-swap="innerHTML">
+        <div class="state">Loading public notes…</div>
       </div>
     </section>
   </main>
