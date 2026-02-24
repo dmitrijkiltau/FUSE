@@ -10,3 +10,7 @@ migration 003:
   db.exec("alter table notes add column is_public text not null default '0'")
   db.exec("create index if not exists idx_notes_owner_id on notes(owner_id)")
   db.exec("create index if not exists idx_notes_public on notes(is_public)")
+
+migration 004:
+  db.exec("create table if not exists note_likes (note_id text not null, user_id text not null, primary key (note_id, user_id))")
+  db.exec("create index if not exists idx_note_likes_note_id on note_likes(note_id)")

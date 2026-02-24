@@ -109,6 +109,10 @@ function publicNotesEndpoint(noteId) {
   return noteId ? `${base}/${noteId}` : base;
 }
 
+function likePublicNoteEndpoint(token, noteId) {
+  return `/api/sessions/${token}/public/notes/${noteId}/likes`;
+}
+
 const registerForm = document.getElementById("register-form");
 const loginForm = document.getElementById("login-form");
 const logoutButton = document.getElementById("logout-btn");
@@ -174,11 +178,32 @@ function renderPrivateNoteCard(note) {
 }
 
 function renderPublicNoteCard(note) {
+  const rawLikes = Number.parseInt(note.likes || "0", 10);
+  const likes = Number.isNaN(rawLikes) ? 0 : rawLikes;
+  const likesLabel = likes === 1 ? "1 like" : `${likes} likes`;
+
+  let likeAction = "";
+  if (currentSession) {
+    if (note.owner_id === currentSession.userId) {
+      likeAction = '<button type="button" class="btn btn--ghost btn--sm" disabled>Your note</button>';
+    } else {
+      likeAction = '<button type="button" class="btn btn--ghost btn--sm public-like-btn">Like</button>';
+    }
+  }
+
+  const actions = likeAction
+    ? `<div class="note-card__actions note-card__actions--public">${likeAction}</div>`
+    : "";
+
   return `
     <div class="note-card note-card--public" data-id="${escapeAttr(note.id)}">
       <h3 class="note-card__title">${escapeHtml(note.title)}</h3>
       <p class="note-card__body">${escapeHtml(note.content)}</p>
-      <div class="note-card__meta">${escapeHtml(note.id)} by ${escapeHtml(note.owner_id || "unknown")}</div>
+      <div class="note-card__meta-line">
+        <div class="note-card__meta">${escapeHtml(note.id)} by ${escapeHtml(note.owner_id || "unknown")}</div>
+        <span class="note-card__pill">${escapeHtml(likesLabel)}</span>
+      </div>
+      ${actions}
     </div>`;
 }
 
@@ -292,6 +317,23 @@ async function togglePublish(noteId, published) {
   }
 
   refreshPrivateNotes();
+  refreshPublicNotes();
+}
+
+async function likePublicNote(noteId) {
+  if (!currentSession) {
+    showError("Sign in to leave a like.", "Unauthorized");
+    return;
+  }
+  const resp = await fetch(likePublicNoteEndpoint(currentSession.token, noteId), {
+    method: "POST"
+  });
+
+  if (!resp.ok) {
+    showError(await safeErrorMessage(resp));
+    return;
+  }
+
   refreshPublicNotes();
 }
 
@@ -469,6 +511,11 @@ document.body.addEventListener("click", async evt => {
   if (button.classList.contains("publish-btn")) {
     const nextPublished = button.dataset.nextPublished === "1" ? "1" : "0";
     await togglePublish(id, nextPublished);
+    return;
+  }
+
+  if (button.classList.contains("public-like-btn")) {
+    await likePublicNote(id);
     return;
   }
 

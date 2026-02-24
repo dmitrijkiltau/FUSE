@@ -163,21 +163,44 @@ service ReferenceApi at "/api":
     let user_id = scoped.userId
     db.exec("delete from notes where id = ? and owner_id = ?", [id, user_id])
 
-  # List notes that are published and readable without authentication.
-  get "/public/notes" -> List<Map<String, String>>:
-    return db
-      .from("notes")
-      .select(["id", "title", "content", "owner_id"])
-      .where("is_public", "=", "1")
-      .order_by("id", "desc")
-      .all()
+  # Leave an idempotent like on a published note (must not be own note).
+  post "/sessions/{token: String}/public/notes/{id: String}/likes" -> Unit!NotFound!Unauthorized!Forbidden:
+    let auth_task = spawn:
+      require_auth(token)
+    let auth_result = await auth_task
+    let auth = auth_result ?!
+    let scope_task = spawn:
+      require_scope(auth, "notes:read")
+    let scope_result = await scope_task
+    let scoped = scope_result ?!
+    let user_id = scoped.userId
 
-  # Read a single published note without authentication.
-  get "/public/notes/{id: String}" -> Map<String, String>!NotFound:
-    return db
+    let note = db
       .from("notes")
-      .select(["id", "title", "content", "owner_id"])
+      .select(["owner_id"])
       .where("is_public", "=", "1")
       .where("id", "=", id)
       .one()
+      ?! NotFound(message="not found")
+
+    if note["owner_id"] == user_id:
+      null ?! Forbidden(message="cannot like your own note")
+
+    db.exec(
+      "insert or ignore into note_likes (note_id, user_id) values (?, ?)",
+      [id, user_id]
+    )
+
+  # List notes that are published and readable without authentication.
+  get "/public/notes" -> List<Map<String, String>>:
+    return db.query(
+      "select n.id, n.title, n.content, n.owner_id, cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes from notes n where n.is_public = '1' order by n.id desc"
+    )
+
+  # Read a single published note without authentication.
+  get "/public/notes/{id: String}" -> Map<String, String>!NotFound:
+    return db.one(
+      "select n.id, n.title, n.content, n.owner_id, cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes from notes n where n.is_public = '1' and n.id = ?",
+      [id]
+    )
       ?! NotFound(message="not found")
