@@ -11,6 +11,5 @@ static_dir = "."
 static_index = "index.html"
 
 [assets]
-scss = "assets/scss/style.scss"
 css = "assets/css/style.css"
 watch = true

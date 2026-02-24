@@ -62,5 +62,5 @@ These exercise the Cranelift JIT backend specifically (`--backend native`):
 
 The `reference-service/` directory is the canonical package-level service example.
 It includes `fuse.toml`, HTML templates, registration/login + session-auth notes API flow,
-SCSS source + compiled CSS output, and a client-side JS flow.
+native CSS modules (imports/custom properties/nesting), and a client-side JS flow.
 See [reference-service/README.md](reference-service/README.md).

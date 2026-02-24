@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
-use std::io::{ErrorKind, IsTerminal, Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command as ProcessCommand, Output as ProcessOutput};
+use std::process::{Child, Command as ProcessCommand};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -82,7 +82,6 @@ struct ServeConfig {
 
 #[derive(Debug, Deserialize)]
 struct AssetsConfig {
-    scss: Option<String>,
     css: Option<String>,
     watch: Option<bool>,
     hash: Option<bool>,
@@ -821,12 +820,15 @@ fn collect_dev_watch_files(
     if let Some(base) = manifest_dir.or_else(|| entry.parent()) {
         if let Some(assets) = manifest.and_then(|m| m.assets.as_ref()) {
             if assets.watch != Some(false) {
-                if let Some(scss) = assets.scss.as_ref() {
-                    let path = resolve_manifest_relative_path(base, scss);
+                if let Some(css) = assets.css.as_ref() {
+                    let path = resolve_manifest_relative_path(base, css);
                     if path.is_dir() {
-                        collect_files_by_extension(&path, &["scss", "sass"], &mut out);
+                        collect_files_by_extension(&path, &["css"], &mut out);
                     } else if path.is_file() {
-                        out.insert(path);
+                        out.insert(path.clone());
+                        if let Some(parent) = path.parent() {
+                            collect_files_by_extension(parent, &["css"], &mut out);
+                        }
                     }
                 }
             }
@@ -961,46 +963,25 @@ fn run_asset_pipeline(
         clear_asset_manifest_for_base(&base)?;
         return Ok(());
     };
-    let Some(scss) = assets.scss.as_ref() else {
+    let Some(css) = assets.css.as_ref() else {
         clear_asset_manifest_for_base(&base)?;
         return Ok(());
     };
-    let hash_requested = assets.hash.unwrap_or(false);
-    let source = resolve_manifest_relative_path(&base, scss);
+    let source = resolve_manifest_relative_path(&base, css);
     if !source.exists() {
         return Err(format!(
-            "assets.scss path does not exist: {}",
+            "assets.css path does not exist: {}",
             source.display()
         ));
     }
-    let css = assets.css.as_deref().unwrap_or("public/css");
-    let destination = resolve_manifest_relative_path(&base, css);
-    let mapping = resolve_sass_mapping(&source, &destination)?;
-    if let Some(parent) = mapping.output.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
-    }
-    let output = run_sass_pipeline_command(&base, &mapping.arg)?;
-    if !output.status.success() {
-        let mut msg = String::new();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if !stderr.trim().is_empty() {
-            msg.push_str(stderr.trim());
-        } else if !stdout.trim().is_empty() {
-            msg.push_str(stdout.trim());
-        } else {
-            msg.push_str("sass failed");
-        }
-        return Err(format!("asset pipeline error: {msg}"));
-    }
+    let hash_requested = assets.hash.unwrap_or(false);
     if !hash_requested {
         clear_asset_manifest_for_base(&base)?;
         return Ok(());
     }
 
     let static_root = resolve_static_root(manifest, &base);
-    let css_outputs = collect_css_outputs(&mapping.output);
+    let css_outputs = collect_css_outputs(&source);
     let mut hashed_map = BTreeMap::new();
     for output in css_outputs {
         let hashed = hash_css_file(&output)?;
@@ -1009,97 +990,6 @@ fn run_asset_pipeline(
         hashed_map.insert(key, value);
     }
     write_asset_manifest_for_base(&base, &hashed_map)
-}
-
-fn run_sass_pipeline_command(base: &Path, mapping_arg: &str) -> Result<ProcessOutput, String> {
-    let mut cmd = ProcessCommand::new("sass");
-    cmd.arg("--no-source-map").arg(mapping_arg);
-    match cmd.output() {
-        Ok(output) => Ok(output),
-        Err(err) => match err.kind() {
-            ErrorKind::NotFound | ErrorKind::PermissionDenied => {
-                if let Some(local_sass) = find_local_sass_fallback(base) {
-                    let mut local_cmd = ProcessCommand::new(&local_sass);
-                    local_cmd.arg("--no-source-map").arg(mapping_arg);
-                    return local_cmd.output().map_err(|local_err| {
-                        format!(
-                            "failed to run sass (install dart-sass): {err}; fallback {} failed: {local_err}",
-                            local_sass.display()
-                        )
-                    });
-                }
-                Err(format!("failed to run sass (install dart-sass): {err}"))
-            }
-            _ => Err(format!("failed to run sass (install dart-sass): {err}")),
-        },
-    }
-}
-
-fn find_local_sass_fallback(base: &Path) -> Option<PathBuf> {
-    let mut current = Some(base);
-    while let Some(dir) = current {
-        for candidate in sass_fallback_candidates(dir) {
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-        current = dir.parent();
-    }
-    None
-}
-
-fn sass_fallback_candidates(dir: &Path) -> Vec<PathBuf> {
-    let scripts = dir.join("scripts");
-    let candidates = vec![scripts.join("sass")];
-    #[cfg(target_os = "windows")]
-    {
-        let mut candidates = candidates;
-        candidates.push(scripts.join("sass.cmd"));
-        candidates.push(scripts.join("sass.bat"));
-        return candidates;
-    }
-    candidates
-}
-
-struct SassMapping {
-    arg: String,
-    output: PathBuf,
-}
-
-fn resolve_sass_mapping(source: &Path, destination: &Path) -> Result<SassMapping, String> {
-    if source.is_dir() {
-        fs::create_dir_all(destination)
-            .map_err(|err| format!("failed to create {}: {err}", destination.display()))?;
-        return Ok(SassMapping {
-            arg: format!("{}:{}", source.display(), destination.display()),
-            output: destination.to_path_buf(),
-        });
-    }
-    if !source.is_file() {
-        return Err(format!(
-            "assets.scss path must be a file or directory: {}",
-            source.display()
-        ));
-    }
-    let output = if destination.exists() && destination.is_dir() {
-        destination.join(scss_output_name(source))
-    } else if destination.extension().is_none() {
-        destination.join(scss_output_name(source))
-    } else {
-        destination.to_path_buf()
-    };
-    Ok(SassMapping {
-        arg: format!("{}:{}", source.display(), output.display()),
-        output,
-    })
-}
-
-fn scss_output_name(source: &Path) -> String {
-    let stem = source
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .unwrap_or("app");
-    format!("{stem}.css")
 }
 
 fn asset_manifest_path(base: &Path) -> PathBuf {

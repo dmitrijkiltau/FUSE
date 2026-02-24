@@ -1,9 +1,3 @@
-@import "tokens";
-@import "buttons";
-@import "forms";
-@import "dialog";
-@import "card";
-
 *,
 *::before,
 *::after {
@@ -88,17 +82,17 @@ body {
   border: 1px solid var(--c-border);
   border-radius: var(--r-md);
   padding: var(--sp-5);
-}
 
-.auth-panel:has(.auth-grid.hidden) {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
+  &:has(.auth-grid.hidden) {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
 
-.auth-panel:has(.auth-grid.hidden) :is(.state, .auth-actions) {
-  padding: 0;
-  margin: 0;
+    & .state, & .auth-actions {
+      padding: 0;
+      margin: 0;
+    }
+  }
 }
 
 .auth-grid {

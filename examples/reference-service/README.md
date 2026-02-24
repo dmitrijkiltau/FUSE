@@ -2,12 +2,11 @@
 
 This is the canonical Fuse reference service package.
 It includes registration/login auth, session-scoped CRUD routes, DB migrations, OpenAPI generation,
-and SCSS asset compilation.
+and native CSS assets.
 
 ## Requirements
 
-- Optional: `sass` (Dart Sass) on `PATH` for full SCSS compatibility.
-- `./scripts/fuse` includes a local fallback SCSS compiler for this package's import-based styles.
+- No external frontend build tools are required.
 
 ## Run
 
@@ -37,17 +36,19 @@ FUSE_DB_URL=sqlite://reference-service.db
 ## Build
 
 ```bash
-# Compile Fuse package and SCSS assets
+# Compile Fuse package and static assets
 ./scripts/fuse build --manifest-path examples/reference-service
 
 # Build deployable AOT artifact
 ./scripts/fuse build --manifest-path examples/reference-service --aot
 ```
 
-SCSS pipeline:
+CSS pipeline:
 
-- source: `assets/scss/style.scss` (+ partials in `assets/scss/`)
-- output: `assets/css/style.css`
+- entry: `assets/css/style.css`
+- modules: `assets/css/tokens.css`, `assets/css/buttons.css`, `assets/css/forms.css`,
+  `assets/css/dialog.css`, `assets/css/card.css`, `assets/css/layout.css`
+- features: `@import`, custom properties (`--*`), and native CSS nesting
 
 ## OpenAPI
 

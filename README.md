@@ -101,7 +101,7 @@ backend = "native"
 
 - `[package]` — entry point, app name, backend selection
 - `[serve]` — `openapi_ui`, `openapi_path` for built-in OpenAPI UI
-- `[assets]` — SCSS/CSS compilation, file watching, content hashing
+- `[assets]` — CSS asset paths, file watching, content hashing
 - `[assets.hooks]` — `before_build` for external pre-build hooks
 - `[vite]` — `dev_url` for dev proxy fallback, `dist_dir` for production statics
 - `[dependencies]` — package dependencies

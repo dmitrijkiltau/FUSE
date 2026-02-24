@@ -23,17 +23,15 @@
   color: var(--c-text);
   background: var(--c-surface);
   transition: border-color var(--ease);
-}
 
-.form-input::placeholder,
-.form-textarea::placeholder {
-  color: var(--c-text-3);
-}
+  &::placeholder {
+    color: var(--c-text-3);
+  }
 
-.form-input:focus,
-.form-textarea:focus {
-  outline: none;
-  border-color: var(--c-text-2);
+  &:focus {
+    outline: none;
+    border-color: var(--c-text-2);
+  }
 }
 
 .form-textarea {

@@ -9,14 +9,14 @@
   width: calc(100% - 2rem);
   box-shadow: var(--shadow-lg);
   font-family: var(--font-sans);
-}
 
-.dialog::backdrop {
-  background: var(--c-overlay);
-}
+  &::backdrop {
+    background: var(--c-overlay);
+  }
 
-.dialog[open] {
-  animation: dialog-in 0.15s ease forwards;
+  &[open] {
+    animation: dialog-in 0.15s ease forwards;
+  }
 }
 
 .dialog__title {
@@ -43,6 +43,7 @@
     opacity: 0;
     transform: translateY(calc(-50% + 4rem));
   }
+
   to {
     opacity: 1;
     transform: translateY(-50%);

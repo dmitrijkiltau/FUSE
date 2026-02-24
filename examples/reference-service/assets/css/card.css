@@ -2,14 +2,18 @@
   padding: var(--sp-5);
   border-bottom: 1px solid var(--c-border);
   transition: background var(--ease);
-}
 
-.note-card:last-child {
-  border-bottom: none;
-}
+  &:last-child {
+    border-bottom: none;
+  }
 
-.note-card:hover {
-  background: var(--c-bg);
+  &:hover {
+    background: var(--c-bg);
+
+    .note-card__actions {
+      opacity: 1;
+    }
+  }
 }
 
 .note-card__title {
@@ -39,8 +43,4 @@
   margin-top: var(--sp-3);
   opacity: 0;
   transition: opacity var(--ease);
-}
-
-.note-card:hover .note-card__actions {
-  opacity: 1;
 }
