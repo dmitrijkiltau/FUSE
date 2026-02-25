@@ -1614,6 +1614,7 @@ fn call_function_native_only_with(
                 }
             }
             Err(JitCallError::Runtime(message)) => Err(message),
+            Err(JitCallError::Compile(message)) => Err(message),
         };
         heap.collect_garbage();
         return out;

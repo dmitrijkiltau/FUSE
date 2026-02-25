@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use cranelift_codegen::ir::{
@@ -34,6 +34,7 @@ type NativeVmPtr = *mut NativeVm<'static>;
 
 thread_local! {
     static CURRENT_VM: Cell<NativeVmPtr> = Cell::new(std::ptr::null_mut());
+    static LAST_JIT_COMPILE_ERROR: RefCell<Option<String>> = RefCell::new(None);
 }
 
 pub(crate) struct VmGuard {
@@ -69,16 +70,34 @@ pub(crate) fn current_vm() -> Option<&'static mut NativeVm<'static>> {
     })
 }
 
+fn set_last_jit_compile_error(message: String) {
+    LAST_JIT_COMPILE_ERROR.with(|slot| {
+        *slot.borrow_mut() = Some(message);
+    });
+}
+
+fn take_last_jit_compile_error() -> Option<String> {
+    LAST_JIT_COMPILE_ERROR.with(|slot| slot.borrow_mut().take())
+}
+
+fn clear_last_jit_compile_error() {
+    LAST_JIT_COMPILE_ERROR.with(|slot| {
+        *slot.borrow_mut() = None;
+    });
+}
+
 macro_rules! jit_fail {
     ($func:expr, $ip:expr, $instr:expr, $reason:expr) => {{
+        let detail = match ($ip, $instr) {
+            (Some(ip), Some(instr)) => format!(
+                "native compile failed in {} at {ip}: {instr:?} ({})",
+                $func.name, $reason
+            ),
+            _ => format!("native compile failed in {} ({})", $func.name, $reason),
+        };
+        set_last_jit_compile_error(detail.clone());
         if std::env::var("FUSE_NATIVE_DEBUG").is_ok() {
-            match ($ip, $instr) {
-                (Some(ip), Some(instr)) => eprintln!(
-                    "native compile failed in {} at {ip}: {instr:?} ({})",
-                    $func.name, $reason
-                ),
-                _ => eprintln!("native compile failed in {} ({})", $func.name, $reason),
-            }
+            eprintln!("{detail}");
         }
         return None;
     }};
@@ -160,23 +179,28 @@ impl CompileState {
         name: &str,
         param_types: &[JitType],
         linkage: Linkage,
-    ) -> Option<(FuncKey, FuncId)> {
+    ) -> Result<(FuncKey, FuncId), String> {
         if let Some(existing) = self.name_param_types.get(name) {
             if existing.as_slice() != param_types {
-                return None;
+                return Err(format!(
+                    "signature mismatch: existing {:?}, incoming {:?}",
+                    existing, param_types
+                ));
             }
         }
         let key = (name.to_string(), param_types.to_vec());
         if let Some(id) = self.func_ids.get(&key) {
-            return Some((key, *id));
+            return Ok((key, *id));
         }
         let signature = entry_signature(module);
         let symbol = jit_symbol(name);
-        let id = module.declare_function(&symbol, linkage, &signature).ok()?;
+        let id = module
+            .declare_function(&symbol, linkage, &signature)
+            .map_err(|err| format!("signature declaration failed: {err}"))?;
         self.func_ids.insert(key.clone(), id);
         self.name_param_types
             .insert(name.to_string(), param_types.to_vec());
-        Some((key, id))
+        Ok((key, id))
     }
 }
 
@@ -242,6 +266,7 @@ pub(crate) struct JitRuntime {
 pub(crate) enum JitCallError {
     Error(Value),
     Runtime(String),
+    Compile(String),
 }
 
 pub(crate) struct ObjectArtifact {
@@ -399,9 +424,10 @@ impl JitRuntime {
         args: &[Value],
         heap: &mut NativeHeap,
     ) -> Option<Result<Value, JitCallError>> {
+        clear_last_jit_compile_error();
         let mut param_types = Vec::with_capacity(args.len());
         for arg in args {
-            param_types.push(value_kind(arg)?);
+            param_types.push(canonical_param_kind(value_kind(arg)?));
         }
         let key = (name.to_string(), param_types.clone());
         if !self.functions.contains_key(&key) {
@@ -428,7 +454,10 @@ impl JitRuntime {
             {
                 if !pending.is_empty() {
                     if self._module.finalize_definitions().is_err() {
-                        return None;
+                        let message = format!(
+                            "native backend could not compile function {name} (jit finalize failed)"
+                        );
+                        return Some(Err(JitCallError::Compile(message)));
                     }
                     for compiled in pending {
                         if self.functions.contains_key(&compiled.key) {
@@ -447,9 +476,19 @@ impl JitRuntime {
                         );
                     }
                 }
+            } else {
+                let message = take_last_jit_compile_error()
+                    .unwrap_or_else(|| format!("native backend could not compile function {name}"));
+                return Some(Err(JitCallError::Compile(message)));
             }
         }
-        let compiled = self.functions.get(&key)?;
+        let compiled = match self.functions.get(&key) {
+            Some(compiled) => compiled,
+            None => {
+                let message = format!("native backend could not compile function {name}");
+                return Some(Err(JitCallError::Compile(message)));
+            }
+        };
         if args.len() != compiled.arity {
             return None;
         }
@@ -470,7 +509,9 @@ impl JitRuntime {
                 let message = value.to_string_value();
                 Some(Err(JitCallError::Runtime(message)))
             }
-            _ => None,
+            _ => Some(Err(JitCallError::Runtime(format!(
+                "native hostcall returned invalid status {status}"
+            )))),
         }
     }
 
@@ -3930,8 +3971,8 @@ fn compile_function<M: Module>(
     }
 
     let (key, id) = match state.ensure_declared(module, name, param_types, linkage) {
-        Some(result) => result,
-        None => jit_fail!(func, None::<usize>, None::<&Instr>, "signature mismatch"),
+        Ok(result) => result,
+        Err(reason) => jit_fail!(func, None::<usize>, None::<&Instr>, reason),
     };
     if state.compiled.contains(&key) {
         return Some(id);
@@ -5108,7 +5149,7 @@ fn compile_function<M: Module>(
                     let call_out_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
                     let mut param_kinds = Vec::with_capacity(args.len());
                     for arg in &args {
-                        param_kinds.push(arg.kind);
+                        param_kinds.push(canonical_param_kind(arg.kind));
                     }
                     let callee = match program
                         .functions
@@ -5144,12 +5185,16 @@ fn compile_function<M: Module>(
                         pending,
                     ) {
                         Some(id) => id,
-                        None => jit_fail!(
-                            func,
-                            Some(ip),
-                            Some(&func.code[ip]),
-                            "callee compile failed"
-                        ),
+                        None => {
+                            let nested = take_last_jit_compile_error()
+                                .unwrap_or_else(|| "callee compile failed".to_string());
+                            jit_fail!(
+                                func,
+                                Some(ip),
+                                Some(&func.code[ip]),
+                                format!("callee compile failed: {nested}")
+                            )
+                        }
                     };
                     let func_ref = module.declare_func_in_func(callee_id, builder.func);
                     let call = builder
@@ -5259,7 +5304,7 @@ fn compile_function<M: Module>(
                         CallKind::Function => {
                             let mut param_kinds = Vec::with_capacity(args.len());
                             for arg in &args {
-                                param_kinds.push(arg.kind);
+                                param_kinds.push(canonical_param_kind(arg.kind));
                             }
                             let callee = match program
                                 .functions
@@ -5309,12 +5354,16 @@ fn compile_function<M: Module>(
                                 pending,
                             ) {
                                 Some(id) => id,
-                                None => jit_fail!(
-                                    func,
-                                    Some(ip),
-                                    Some(&func.code[ip]),
-                                    "callee compile failed"
-                                ),
+                                None => {
+                                    let nested = take_last_jit_compile_error()
+                                        .unwrap_or_else(|| "callee compile failed".to_string());
+                                    jit_fail!(
+                                        func,
+                                        Some(ip),
+                                        Some(&func.code[ip]),
+                                        format!("callee compile failed: {nested}")
+                                    )
+                                }
                             };
                             let func_ref = module.declare_func_in_func(callee_id, builder.func);
                             let call = builder
@@ -6917,6 +6966,13 @@ fn ensure_value_ptr(
     let ptr = builder.ins().stack_addr(pointer_ty, slot, 0);
     store_native_value(builder, ptr, 0, value)?;
     Some(ptr)
+}
+
+fn canonical_param_kind(kind: JitType) -> JitType {
+    match kind {
+        JitType::Int | JitType::Bool | JitType::Float | JitType::Unit => kind,
+        _ => JitType::Value,
+    }
 }
 
 fn copy_native_value(builder: &mut FunctionBuilder<'_>, src: ClifValue, dst: ClifValue) {
