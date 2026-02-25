@@ -5376,6 +5376,7 @@ fn compile_function<M: Module>(
                     let base = stack.pop()?;
                     let base_handle = match base.kind {
                         JitType::Struct => base.value,
+                        JitType::Heap => base.value,
                         JitType::Value => builder.ins().load(
                             types::I64,
                             MemFlags::new(),
@@ -6771,7 +6772,9 @@ fn analyze_types(
                 Instr::GetField { .. } => {
                     let base = stack.pop()?;
                     match base {
-                        JitType::Struct | JitType::Value => stack.push(JitType::Heap),
+                        JitType::Struct | JitType::Heap | JitType::Value => {
+                            stack.push(JitType::Heap)
+                        }
                         _ => return None,
                     }
                 }

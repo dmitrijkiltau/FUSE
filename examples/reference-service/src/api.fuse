@@ -1,6 +1,8 @@
 import { NotFound, Unauthorized, BadRequest, Forbidden } from "./errors"
 import { Note, NoteId, NoteCreate, NoteVisibilityUpdate, AuthSession, RegisterInput, LoginInput } from "./domain"
-import { Auth, register_user, login_user, logout_session, require_auth, require_scope } from "./auth"
+import { register_user, login_user, logout_session, require_auth, require_scope, auth_user_id, session_user_id, session_token } from "./auth"
+import Home from "./ui/pages/home"
+import NotesUi from "./ui/components/notes"
 
 fn new_note_id() -> NoteId!BadRequest:
   let row = db.one("select lower(hex(randomblob(12))) as id")
@@ -8,21 +10,21 @@ fn new_note_id() -> NoteId!BadRequest:
   let seed = row["id"]
   return NoteId(value="note-${seed}")
 
-service ReferenceApi at "/api":
+service ReferenceService at "/":
   # Register a new user account and issue a session token.
-  post "/auth/register" body RegisterInput -> AuthSession!Unauthorized!BadRequest:
+  post "/api/auth/register" body RegisterInput -> AuthSession!Unauthorized!BadRequest:
     return register_user(body)
 
   # Login and issue/refresh a session token.
-  post "/auth/login" body LoginInput -> AuthSession!Unauthorized!BadRequest:
+  post "/api/auth/login" body LoginInput -> AuthSession!Unauthorized!BadRequest:
     return login_user(body)
 
   # Logout by invalidating the active session token.
-  delete "/auth/sessions/{token: String}" -> Unit!Unauthorized:
+  delete "/api/auth/sessions/{token: String}" -> Unit!Unauthorized:
     return logout_session(token)
 
   # List notes for the authenticated session owner only.
-  get "/sessions/{token: String}/notes" -> List<Map<String, String>>!Unauthorized!Forbidden:
+  get "/api/sessions/{token: String}/notes" -> List<Map<String, String>>!Unauthorized!Forbidden:
     let auth_task = spawn:
       require_auth(token)
     let auth_result = await auth_task
@@ -31,7 +33,7 @@ service ReferenceApi at "/api":
       require_scope(auth, "notes:read")
     let scope_result = await scope_task
     let scoped = scope_result ?!
-    let user_id = scoped.userId
+    let user_id = auth_user_id(scoped)
     return db
       .from("notes")
       .select(["id", "title", "content", "is_public"])
@@ -40,7 +42,7 @@ service ReferenceApi at "/api":
       .all()
 
   # Get a single note by id for the authenticated session owner only.
-  get "/sessions/{token: String}/notes/{id: String}" -> Map<String, String>!NotFound!Unauthorized!Forbidden:
+  get "/api/sessions/{token: String}/notes/{id: String}" -> Map<String, String>!NotFound!Unauthorized!Forbidden:
     let auth_task = spawn:
       require_auth(token)
     let auth_result = await auth_task
@@ -49,7 +51,7 @@ service ReferenceApi at "/api":
       require_scope(auth, "notes:read")
     let scope_result = await scope_task
     let scoped = scope_result ?!
-    let user_id = scoped.userId
+    let user_id = auth_user_id(scoped)
     return db
       .from("notes")
       .select(["id", "title", "content", "is_public"])
@@ -59,7 +61,7 @@ service ReferenceApi at "/api":
       ?! NotFound(message="not found")
 
   # Update a note by id for the authenticated session owner only.
-  put "/sessions/{token: String}/notes/{id: String}" body NoteCreate -> Note!NotFound!Unauthorized!Forbidden!BadRequest:
+  put "/api/sessions/{token: String}/notes/{id: String}" body NoteCreate -> Note!NotFound!Unauthorized!Forbidden!BadRequest:
     let auth_task = spawn:
       require_auth(token)
     let auth_result = await auth_task
@@ -68,7 +70,7 @@ service ReferenceApi at "/api":
       require_scope(auth, "notes:write")
     let scope_result = await scope_task
     let scoped = scope_result ?!
-    let user_id = scoped.userId
+    let user_id = auth_user_id(scoped)
     db
       .from("notes")
       .select(["id"])
@@ -96,7 +98,7 @@ service ReferenceApi at "/api":
     )
 
   # Create a new note for the authenticated session owner.
-  post "/sessions/{token: String}/notes" body NoteCreate -> Note!Unauthorized!Forbidden!BadRequest:
+  post "/api/sessions/{token: String}/notes" body NoteCreate -> Note!Unauthorized!Forbidden!BadRequest:
     let auth_task = spawn:
       require_auth(token)
     let auth_result = await auth_task
@@ -105,7 +107,7 @@ service ReferenceApi at "/api":
       require_scope(auth, "notes:write")
     let scope_result = await scope_task
     let scoped = scope_result ?!
-    let user_id = scoped.userId
+    let user_id = auth_user_id(scoped)
     let id = new_note_id() ?!
     db.exec(
       "insert into notes (id, owner_id, title, content, is_public) values (?, ?, ?, ?, '0')",
@@ -114,7 +116,7 @@ service ReferenceApi at "/api":
     return Note(id=id, title=body.title, content=body.content, published=false)
 
   # Set note visibility for the authenticated session owner.
-  put "/sessions/{token: String}/notes/{id: String}/visibility" body NoteVisibilityUpdate -> Note!NotFound!Unauthorized!Forbidden!BadRequest:
+  put "/api/sessions/{token: String}/notes/{id: String}/visibility" body NoteVisibilityUpdate -> Note!NotFound!Unauthorized!Forbidden!BadRequest:
     let auth_task = spawn:
       require_auth(token)
     let auth_result = await auth_task
@@ -123,7 +125,7 @@ service ReferenceApi at "/api":
       require_scope(auth, "notes:write")
     let scope_result = await scope_task
     let scoped = scope_result ?!
-    let user_id = scoped.userId
+    let user_id = auth_user_id(scoped)
     let row = db
       .from("notes")
       .select(["id", "title", "content"])
@@ -136,7 +138,7 @@ service ReferenceApi at "/api":
     if body.published == "1":
       is_public = "1"
       published = true
-    else:
+    else: 
       if body.published != "0":
         null ?! BadRequest(message="published must be '1' or '0'")
     db.exec(
@@ -151,7 +153,7 @@ service ReferenceApi at "/api":
     )
 
   # Delete a note by id for the authenticated session owner.
-  delete "/sessions/{token: String}/notes/{id: String}" -> Unit!Unauthorized!Forbidden:
+  delete "/api/sessions/{token: String}/notes/{id: String}" -> Unit!Unauthorized!Forbidden:
     let auth_task = spawn:
       require_auth(token)
     let auth_result = await auth_task
@@ -160,11 +162,11 @@ service ReferenceApi at "/api":
       require_scope(auth, "notes:write")
     let scope_result = await scope_task
     let scoped = scope_result ?!
-    let user_id = scoped.userId
+    let user_id = auth_user_id(scoped)
     db.exec("delete from notes where id = ? and owner_id = ?", [id, user_id])
 
   # Leave an idempotent like on a published note (must not be own note).
-  post "/sessions/{token: String}/public/notes/{id: String}/likes" -> Unit!NotFound!Unauthorized!Forbidden:
+  post "/api/sessions/{token: String}/public/notes/{id: String}/likes" -> Unit!NotFound!Unauthorized!Forbidden:
     let auth_task = spawn:
       require_auth(token)
     let auth_result = await auth_task
@@ -173,7 +175,7 @@ service ReferenceApi at "/api":
       require_scope(auth, "notes:read")
     let scope_result = await scope_task
     let scoped = scope_result ?!
-    let user_id = scoped.userId
+    let user_id = auth_user_id(scoped)
 
     let note = db
       .from("notes")
@@ -192,15 +194,129 @@ service ReferenceApi at "/api":
     )
 
   # List notes that are published and readable without authentication.
-  get "/public/notes" -> List<Map<String, String>>:
+  get "/api/public/notes" -> List<Map<String, String>>:
     return db.query(
       "select n.id, n.title, n.content, n.owner_id, cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes from notes n where n.is_public = '1' order by n.id desc"
     )
 
   # Read a single published note without authentication.
-  get "/public/notes/{id: String}" -> Map<String, String>!NotFound:
+  get "/api/public/notes/{id: String}" -> Map<String, String>!NotFound:
     return db.one(
       "select n.id, n.title, n.content, n.owner_id, cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes from notes n where n.is_public = '1' and n.id = ?",
       [id]
     )
       ?! NotFound(message="not found")
+
+  # Server-rendered UI entry point.
+  get "/" -> Html:
+    return Home.render_page(null, null)
+
+  # Server-rendered shell for an existing session token.
+  get "/sessions/{token: String}" -> Html!Unauthorized:
+    let auth = require_auth(token) ?!
+    return Home.render_page(token, auth_user_id(auth))
+
+  post "/ui/auth/register" body RegisterInput -> Html!Unauthorized:
+    let session = register_user(body) ?!
+    let token = session_token(session)
+    let uid = session_user_id(session)
+    return Home.render_shell(token, uid)
+
+  post "/ui/auth/login" body LoginInput -> Html!Unauthorized:
+    let session = login_user(body) ?!
+    let token = session_token(session)
+    let uid = session_user_id(session)
+    return Home.render_shell(token, uid)
+
+  delete "/ui/sessions/{token: String}/logout" -> Html:
+    db.exec("delete from sessions where token = ?", [token])
+    return Home.render_shell(null, null)
+
+  get "/ui/public/notes" -> Html:
+    return NotesUi.render_public_notes_inner(null, null)
+
+  get "/ui/sessions/{token: String}/public/notes" -> Html!Unauthorized:
+    let auth = require_auth(token) ?!
+    return NotesUi.render_public_notes_inner(token, auth_user_id(auth))
+
+  post "/ui/sessions/{token: String}/notes" body NoteCreate -> Html!Unauthorized!Forbidden!BadRequest:
+    let auth = require_auth(token) ?!
+    let scoped = require_scope(auth, "notes:write") ?!
+    let scoped_user_id = auth_user_id(scoped)
+    let id = new_note_id() ?!
+    db.exec(
+      "insert into notes (id, owner_id, title, content, is_public) values (?, ?, ?, ?, '0')",
+      [id.value, scoped_user_id, body.title, body.content]
+    )
+    return Home.render_shell(token, scoped_user_id)
+
+  put "/ui/sessions/{token: String}/notes/{id: String}" body NoteCreate -> Html!NotFound!Unauthorized!Forbidden!BadRequest:
+    let auth = require_auth(token) ?!
+    let scoped = require_scope(auth, "notes:write") ?!
+    let scoped_user_id = auth_user_id(scoped)
+    db
+      .from("notes")
+      .select(["id"])
+      .where("owner_id", "=", scoped_user_id)
+      .where("id", "=", id)
+      .one()
+      ?! NotFound(message="not found")
+    db.exec(
+      "update notes set title = ?, content = ? where id = ? and owner_id = ?",
+      [body.title, body.content, id, scoped_user_id]
+    )
+    return Home.render_shell(token, scoped_user_id)
+
+  put "/ui/sessions/{token: String}/notes/{id: String}/visibility" body NoteVisibilityUpdate -> Html!NotFound!Unauthorized!Forbidden!BadRequest:
+    let auth = require_auth(token) ?!
+    let scoped = require_scope(auth, "notes:write") ?!
+    let scoped_user_id = auth_user_id(scoped)
+    db
+      .from("notes")
+      .select(["id"])
+      .where("owner_id", "=", scoped_user_id)
+      .where("id", "=", id)
+      .one()
+      ?! NotFound(message="not found")
+
+    var is_public = "0"
+    if body.published == "1":
+      is_public = "1"
+    else: 
+      if body.published != "0":
+        null ?! BadRequest(message="published must be '1' or '0'")
+
+    db.exec(
+      "update notes set is_public = ? where id = ? and owner_id = ?",
+      [is_public, id, scoped_user_id]
+    )
+    return Home.render_shell(token, scoped_user_id)
+
+  delete "/ui/sessions/{token: String}/notes/{id: String}" -> Html!Unauthorized!Forbidden:
+    let auth = require_auth(token) ?!
+    let scoped = require_scope(auth, "notes:write") ?!
+    let scoped_user_id = auth_user_id(scoped)
+    db.exec("delete from notes where id = ? and owner_id = ?", [id, scoped_user_id])
+    return Home.render_shell(token, scoped_user_id)
+
+  post "/ui/sessions/{token: String}/public/notes/{id: String}/likes" -> Html!NotFound!Unauthorized!Forbidden:
+    let auth = require_auth(token) ?!
+    let scoped = require_scope(auth, "notes:read") ?!
+    let scoped_user_id = auth_user_id(scoped)
+
+    let note = db
+      .from("notes")
+      .select(["owner_id"])
+      .where("is_public", "=", "1")
+      .where("id", "=", id)
+      .one()
+      ?! NotFound(message="not found")
+
+    if note["owner_id"] == scoped_user_id:
+      null ?! Forbidden(message="cannot like your own note")
+
+    db.exec(
+      "insert or ignore into note_likes (note_id, user_id) values (?, ?)",
+      [id, scoped_user_id]
+    )
+    return Home.render_shell(token, scoped_user_id)

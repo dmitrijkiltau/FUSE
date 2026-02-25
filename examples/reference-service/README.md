@@ -2,7 +2,7 @@
 
 This is the canonical Fuse reference service package.
 It includes registration/login auth, session-scoped CRUD routes, DB migrations, OpenAPI generation,
-and native CSS assets.
+native CSS assets, and a server-rendered HTMX UI implemented in Fuse HTML DSL.
 
 ## Requirements
 
@@ -74,4 +74,29 @@ CSS pipeline:
 Private session routes are owner-scoped: users only see and mutate their own notes.
 Published notes are readable without authentication via the public routes.
 Authenticated non-owners can leave likes on published notes.
-The UI uses JSON requests and stores the returned opaque session token in browser localStorage.
+
+## UI routes (HTMX + Html DSL)
+
+- `GET /` (server-rendered app shell)
+- `GET /sessions/{token}` (server-rendered shell for an existing token)
+- `POST /ui/auth/register`
+- `POST /ui/auth/login`
+- `DELETE /ui/sessions/{token}/logout`
+- `POST /ui/sessions/{token}/notes`
+- `PUT /ui/sessions/{token}/notes/{id}`
+- `PUT /ui/sessions/{token}/notes/{id}/visibility`
+- `DELETE /ui/sessions/{token}/notes/{id}`
+- `POST /ui/sessions/{token}/public/notes/{id}/likes`
+- `GET /ui/public/notes` (public feed fragment)
+- `GET /ui/sessions/{token}/public/notes` (public feed fragment with viewer context)
+
+The browser UI no longer depends on client-side note rendering or localStorage session state.
+The package now declares a single HTTP service, so `fuse run` does not require `FUSE_SERVICE`.
+
+UI module layout:
+
+- `src/ui/pages/home.fuse`
+- `src/ui/components/base.fuse`
+- `src/ui/components/auth.fuse`
+- `src/ui/components/create.fuse`
+- `src/ui/components/notes.fuse`

@@ -91,6 +91,16 @@ See also: [Scope + constraints](../governance/scope.md), [Priority roadmap](../g
 
 ---
 
+## Expression operator behavior
+
+Comparison behavior is shared across AST/VM/native backends:
+
+- `==` / `!=` support same-typed pairs for `Int`, `Float`, `Bool`, `String`, and `Bytes`.
+- `<`, `<=`, `>`, `>=` support numeric pairs (`Int`, `Float`) only.
+- unsupported comparison operand pairs produce runtime errors.
+
+---
+
 ## Error model
 
 ### Recognized error names

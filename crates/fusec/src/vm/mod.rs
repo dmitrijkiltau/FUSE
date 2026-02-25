@@ -2727,6 +2727,15 @@ impl<'a> Vm<'a> {
                 Instr::NotEq => a != b,
                 _ => return Err(VmError::Runtime("unsupported bytes comparison".to_string())),
             },
+            (Value::Bool(a), Value::Bool(b)) => match op {
+                Instr::Eq => a == b,
+                Instr::NotEq => a != b,
+                _ => {
+                    return Err(VmError::Runtime(
+                        "unsupported bool comparison".to_string(),
+                    ));
+                }
+            },
             _ => {
                 return Err(VmError::Runtime(
                     "unsupported comparison operands".to_string(),

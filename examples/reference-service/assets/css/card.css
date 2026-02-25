@@ -9,10 +9,6 @@
 
   &:hover {
     background: var(--c-bg);
-
-    .note-card__actions {
-      opacity: 1;
-    }
   }
 }
 
@@ -57,10 +53,34 @@
   display: flex;
   gap: var(--sp-2);
   margin-top: var(--sp-3);
-  opacity: 0;
+  opacity: 1;
   transition: opacity var(--ease);
+  align-items: center;
 }
 
 .note-card__actions--public {
   opacity: 1;
+}
+
+.note-stack {
+  display: contents;
+}
+
+.inline-form {
+  display: inline-flex;
+  margin: 0;
+}
+
+.note-card__edit-form {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px dashed var(--c-border);
+
+  & .form-group {
+    margin-bottom: var(--sp-3);
+  }
+
+  & .create-form__footer {
+    justify-content: flex-start;
+  }
 }

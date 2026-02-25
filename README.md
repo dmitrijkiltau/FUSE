@@ -32,7 +32,7 @@ app "users":
 
 FUSE v0.4.0 is released. This branch tracks the v0.4.x quality/stability line with
 native/backend parity hardening, multi-file tooling reliability, dependency workflow
-contract coverage, and release artifact matrix automation.
+contract coverage, comparison-operator parity (`Bool` equality/inequality included), and release artifact matrix automation.
 
 Compatibility is defined by documented behavior in `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, and
 `governance/VERSIONING_POLICY.md`.

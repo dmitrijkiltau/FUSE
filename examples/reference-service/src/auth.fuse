@@ -66,3 +66,12 @@ fn require_scope(auth: Auth, scope: String) -> Auth!Forbidden:
     "notes:read" -> auth
     "notes:write" -> auth
     _ -> null ?! Forbidden(message="missing scope: ${scope}")
+
+fn auth_user_id(auth: Auth) -> String:
+  return auth.userId
+
+fn session_user_id(session: AuthSession) -> String:
+  return session.userId.value
+
+fn session_token(session: AuthSession) -> String:
+  return session.token.value

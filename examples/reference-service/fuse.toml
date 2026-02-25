@@ -1,14 +1,13 @@
 [package]
 entry = "src/main.fuse"
 app = "Api"
-backend = "native"
+backend = "vm"
 
 [build]
 openapi = "build/openapi.json"
 
 [serve]
 static_dir = "."
-static_index = "index.html"
 
 [assets]
 css = "assets/css/style.css"
