@@ -209,7 +209,7 @@ service ReferenceService at "/":
 
   # Server-rendered UI entry point.
   get "/" -> Html:
-    return Home.render_page(null, null)
+    return Home.render_page("", "")
 
   # Server-rendered shell for an existing session token.
   get "/sessions/{token: String}" -> Html!Unauthorized:
@@ -230,10 +230,10 @@ service ReferenceService at "/":
 
   delete "/ui/sessions/{token: String}/logout" -> Html:
     db.exec("delete from sessions where token = ?", [token])
-    return Home.render_shell(null, null)
+    return Home.render_shell("", "")
 
   get "/ui/public/notes" -> Html:
-    return NotesUi.render_public_notes_inner(null, null)
+    return NotesUi.render_public_notes_inner("", "")
 
   get "/ui/sessions/{token: String}/public/notes" -> Html!Unauthorized:
     let auth = require_auth(token) ?!
