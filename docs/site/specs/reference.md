@@ -445,7 +445,7 @@ Then open <http://localhost:4080>.
 You can also use Compose:
 
 ```bash
-docker compose -f docs/docker-compose.yml up --build
+docker compose --project-directory . -f docs/docker-compose.yml up --build
 ```
 
 ---

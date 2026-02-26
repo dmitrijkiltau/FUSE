@@ -41,14 +41,14 @@ Run:
 docker run --rm -p 4080:4080 -e PORT=4080 -e FUSE_HOST=0.0.0.0 fuse-docs:0.5.0
 ```
 
-Or run with Compose:
+Or run with Compose (from the repository root):
 
 ```bash
-docker compose -f docs/docker-compose.yml up --build
+docker compose --project-directory . -f docs/docker-compose.yml up --build
 ```
 
 After the image is built once, start faster without rebuilding:
 
 ```bash
-docker compose -f docs/docker-compose.yml up
+docker compose --project-directory . -f docs/docker-compose.yml up
 ```
