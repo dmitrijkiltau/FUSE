@@ -465,7 +465,16 @@ fn run(args: Vec<String>) -> i32 {
     if matches!(command, Command::Run) {
         match backend {
             Some(RunBackend::Ast) => {}
-            Some(RunBackend::Native) => {
+            Some(RunBackend::Vm) => {
+                if let Some(ir) = try_load_ir(manifest_dir.as_deref()) {
+                    apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
+                    return finalize_command(
+                        command,
+                        run_vm_ir(ir, app.as_deref(), &entry, &deps, &common.program_args),
+                    );
+                }
+            }
+            _ => {
                 if let Some(native) = try_load_native(manifest_dir.as_deref()) {
                     apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
                     return finalize_command(
@@ -477,15 +486,6 @@ fn run(args: Vec<String>) -> i32 {
                             &deps,
                             &common.program_args,
                         ),
-                    );
-                }
-            }
-            _ => {
-                if let Some(ir) = try_load_ir(manifest_dir.as_deref()) {
-                    apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
-                    return finalize_command(
-                        command,
-                        run_vm_ir(ir, app.as_deref(), &entry, &deps, &common.program_args),
                     );
                 }
             }

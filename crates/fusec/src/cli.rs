@@ -239,7 +239,7 @@ where
             backend = if !program_args.is_empty() {
                 Backend::Ast
             } else {
-                Backend::Vm
+                Backend::Native
             };
         }
         let app = app_name.as_deref();
