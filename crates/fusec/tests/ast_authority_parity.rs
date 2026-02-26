@@ -7,7 +7,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use fusec::interp::{Interpreter, Value};
 use fusec::native::{NativeVm, compile_registry};
-use fusec::vm::Vm;
 
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -83,7 +82,7 @@ app "demo":
         ("APP_PROFILE", r#"{"name":"Bea","age":33}"#),
     ];
 
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, program, &envs);
         assert!(
             output.status.success(),
@@ -106,7 +105,7 @@ app "demo":
   print(div())
 "#;
 
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, program, &[]);
         assert!(
             output.status.success(),
@@ -142,7 +141,7 @@ app "demo":
 "#,
     );
 
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program_path(backend, &main_path, &[]);
         assert!(
             output.status.success(),
@@ -170,7 +169,7 @@ app "demo":
   print(div())
 "#;
 
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, program, &[]);
         assert!(
             !output.status.success(),
@@ -181,7 +180,7 @@ app "demo":
         assert!(
             stderr.contains("call target is not callable")
                 || stderr.contains("unknown function div")
-                || stderr.contains("native backend could not compile function"),
+                || stderr.contains("unknown callee"),
             "{backend} stderr: {stderr}"
         );
         assert!(!stderr.contains("<div"), "{backend} stderr: {stderr}");
@@ -215,22 +214,6 @@ fn main(name: String) -> String:
         "unexpected ast error: {ast_err}"
     );
 
-    let ir = fusec::ir::lower::lower_registry(&registry).expect("vm lowering failed");
-    let mut vm = Vm::new(&ir);
-    let vm_err = vm
-        .call_function(
-            "main",
-            vec![
-                Value::String("Ada".to_string()),
-                Value::String("unused".to_string()),
-            ],
-        )
-        .expect_err("vm should reject extra positional arguments");
-    assert!(
-        vm_err.contains("invalid call to"),
-        "unexpected vm error: {vm_err}"
-    );
-
     let native = compile_registry(&registry).expect("native lowering failed");
     let mut native_vm = NativeVm::new(&native);
     let native_err = native_vm
@@ -260,7 +243,7 @@ app "demo":
   print(greet("Yo", "Cid", "done"))
 "#;
 
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, program, &[]);
         assert!(
             output.status.success(),
@@ -300,7 +283,7 @@ app "demo":
 "#,
     );
 
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program_path(backend, &main_path, &[]);
         assert!(
             output.status.success(),
@@ -330,7 +313,7 @@ app "demo":
   print(html.render(page("Ada")))
 "#;
 
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, program, &[]);
         assert!(
             !output.status.success(),
@@ -355,7 +338,7 @@ app "demo":
   print(html.render(page()))
 "#;
 
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, program, &[]);
         assert!(
             !output.status.success(),

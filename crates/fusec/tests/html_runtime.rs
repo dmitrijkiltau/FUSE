@@ -220,7 +220,7 @@ app "html":
 "#;
 
     let expected = r#"<div class="card" id="x"><h1>Hello</h1><p>raw</p></div>"#;
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, program);
         assert!(
             output.status.success(),
@@ -243,7 +243,7 @@ app "html":
 "#;
 
     let expected = r#"<div><h1>Hello</h1></div>"#;
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, program);
         assert!(
             output.status.success(),
@@ -265,7 +265,7 @@ app "html":
 "#;
 
     let expected = r#"<div class="card">Hello</div>"#;
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, program);
         assert!(
             output.status.success(),
@@ -292,7 +292,7 @@ app "html":
 
     let expected =
         r#"<button aria-label="Close navigation" data-view="openapi" type="button">Open</button>"#;
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, program);
         assert!(
             output.status.success(),
@@ -316,7 +316,7 @@ app "asset":
         "FUSE_ASSET_MAP".to_string(),
         r#"{"css/app.css":"/css/app.3f92ac1f7d.css"}"#.to_string(),
     )];
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program_with_env(backend, program, &env);
         assert!(
             output.status.success(),
@@ -345,7 +345,7 @@ app "api":
   serve(App.port)
 "#;
 
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let (upstream_port, upstream_thread) = spawn_one_shot_http_server(
             "GET /vite/app.js?x=1 HTTP/1.1",
             "HTTP/1.1 200 OK\r\nContent-Type: application/javascript; charset=utf-8\r\nContent-Length: 19\r\n\r\nconsole.log('vite')\n",
@@ -391,7 +391,7 @@ app "svg":
         svg_root.to_string_lossy().to_string(),
     )];
 
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program_with_env(backend, program, &env);
         assert!(
             output.status.success(),
@@ -411,7 +411,7 @@ fn svg_inline_rejects_path_traversal() {
 app "svg":
   print(html.render(svg.inline("../secret")))
 "#;
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, program);
         assert!(
             !output.status.success(),
@@ -440,7 +440,7 @@ app "docs":
   serve(App.port)
 "#;
 
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let port = find_free_port();
         let response = run_http_program(backend, program, port);
         assert_eq!(
@@ -477,7 +477,7 @@ app "docs":
 
     let ws_url = "ws://127.0.0.1:35555/__reload".to_string();
     let extra_env = vec![("FUSE_DEV_RELOAD_WS_URL".to_string(), ws_url.clone())];
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let port = find_free_port();
         let response = run_http_program_with_env(backend, program, port, &extra_env);
         assert!(
@@ -527,7 +527,7 @@ app "docs":
         "GET /docs/openapi.json HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     ];
 
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let port = find_free_port();
         let responses = run_http_program_with_env_requests(backend, program, port, &env, &requests);
         assert_eq!(responses[0].status, 200, "{backend} docs status");
@@ -570,7 +570,7 @@ app "notes":
         payload
     );
 
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let port = find_free_port();
         let responses =
             run_http_program_with_env_requests(backend, program, port, &[], &[&request]);

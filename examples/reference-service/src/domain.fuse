@@ -1,0 +1,34 @@
+type NoteId:
+  value: String
+
+type Note:
+  id: NoteId
+  title: String(1..100)
+  content: String(1..5000)
+  published: Bool
+
+type NoteCreate:
+  title: String(1..100)
+  content: String(1..5000)
+
+type NoteVisibilityUpdate:
+  published: String(1..1)
+
+type UserId:
+  value: String
+
+type SessionToken:
+  value: String
+
+type AuthSession:
+  userId: UserId
+  token: SessionToken
+  scopes: List<String>
+
+type RegisterInput:
+  email: String(3..120)
+  password: String(8..128)
+
+type LoginInput:
+  email: String(3..120)
+  password: String(8..128)

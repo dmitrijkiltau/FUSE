@@ -1,0 +1,215 @@
+import Base from "./base"
+
+fn private_note_rows(user_id: String) -> List<Map<String, String>>:
+  return db
+    .from("notes")
+    .select(["id", "title", "content", "is_public"])
+    .where("owner_id", "=", user_id)
+    .order_by("id", "desc")
+    .all()
+
+fn public_note_rows() -> List<Map<String, String>>:
+  return db.query(
+    "select n.id, n.title, n.content, n.owner_id, cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes from notes n where n.is_public = '1' order by n.id desc"
+  )
+
+fn render_private_note_card(token: String, note: Map<String, String>) -> Html:
+  let id = note["id"]
+  let title = note["title"]
+  let content = note["content"]
+  let published = note["is_public"] == "1"
+
+  var visibility = "Private"
+  var publish_label = "Publish"
+  var next_published = "1"
+  if published:
+    visibility = "Public"
+    publish_label = "Unpublish"
+    next_published = "0"
+
+  let edit_url = "/ui/sessions/${token}/notes/${id}"
+  let visibility_url = "/ui/sessions/${token}/notes/${id}/visibility"
+  let delete_url = "/ui/sessions/${token}/notes/${id}"
+  let title_id = "edit-title-${id}"
+  let content_id = "edit-content-${id}"
+
+  return div(class="note-card"):
+    h3(class="note-card__title"):
+      html.text(title)
+    p(class="note-card__body"):
+      html.text(content)
+    form({
+      "class": "note-card__edit-form",
+      "hx-put": edit_url,
+      "hx-ext": "json-enc",
+      "hx-target": "#app-shell",
+      "hx-swap": "outerHTML"
+    }):
+      div(class="form-group"):
+        label({"class": "form-label", "for": title_id}):
+          "Edit title"
+        input({
+          "class": "form-input",
+          "type": "text",
+          "id": title_id,
+          "name": "title",
+          "required": "required",
+          "value": title
+        })
+      div(class="form-group"):
+        label({"class": "form-label", "for": content_id}):
+          "Edit content"
+        textarea({
+          "class": "form-textarea",
+          "id": content_id,
+          "name": "content",
+          "required": "required"
+        }):
+          html.text(content)
+      div(class="create-form__footer"):
+        button(type="submit", class="btn btn--ghost btn--sm"):
+          "Save"
+    div(class="note-card__meta-line"):
+      div(class="note-card__meta"):
+        html.text(id)
+      span(class="note-card__pill"):
+        html.text(visibility)
+    div(class="note-card__actions"):
+      form({
+        "class": "inline-form note-card__publish-btn",
+        "hx-put": visibility_url,
+        "hx-ext": "json-enc",
+        "hx-target": "#app-shell",
+        "hx-swap": "outerHTML"
+      }):
+        input({"type": "hidden", "name": "published", "value": next_published})
+        button(type="submit", class="btn btn--ghost btn--sm"):
+          html.text(publish_label)
+      label():
+        span(class="btn btn--ghost btn--sm btn--checkbox"):
+          "Edit"
+        input(type="checkbox", class="btn btn--sm btn--checkbox", hidden="hidden")
+      button({
+        "type": "button",
+        "class": "btn btn--danger btn--sm",
+        "hx-delete": delete_url,
+        "hx-confirm": "Delete note?",
+        "hx-target": "#app-shell",
+        "hx-swap": "outerHTML"
+      }):
+        "Delete"
+
+fn render_private_notes_section(token: String?, user_id: String?) -> Html:
+  let session_token = token ?? ""
+  let owner_id = user_id ?? ""
+  if session_token == "" or owner_id == "":
+    return section(class="section"):
+      h2(class="section__title"):
+        "Your notes"
+      div(class="notes-list", id="private-notes-list"):
+        Base.state_block("Sign in to load your private notes.", false, false)
+
+  let rows = private_note_rows(owner_id)
+  var has_rows = false
+  var cards = html.raw("")
+  for row in rows:
+    has_rows = true
+    let prev = cards
+    cards = div(class="note-stack"):
+      prev
+      render_private_note_card(session_token, row)
+
+  if has_rows == false:
+    return section(class="section"):
+      h2(class="section__title"):
+        "Your notes"
+      div(class="notes-list", id="private-notes-list"):
+        Base.state_block("No private notes yet - create one above.", false, false)
+
+  return section(class="section"):
+    h2(class="section__title"):
+      "Your notes"
+    div(class="notes-list", id="private-notes-list"):
+      cards
+
+fn render_public_note_actions(token: String?, user_id: String?, note: Map<String, String>) -> Html:
+  let session_token = token ?? ""
+  if session_token == "":
+    return html.raw("")
+
+  let viewer_id = user_id ?? ""
+  let owner_id = note["owner_id"]
+
+  if viewer_id == "" or owner_id == viewer_id:
+    return div(class="note-card__actions note-card__actions--public"):
+      button(type="button", class="btn btn--ghost btn--sm", disabled="disabled"):
+        "Your note"
+
+  let id = note["id"]
+  let like_url = "/ui/sessions/${session_token}/public/notes/${id}/likes"
+
+  return div(class="note-card__actions note-card__actions--public"):
+    button({
+      "type": "button",
+      "class": "btn btn--ghost btn--sm",
+      "hx-post": like_url,
+      "hx-target": "#app-shell",
+      "hx-swap": "outerHTML"
+    }):
+      "Like"
+
+fn render_public_note_card(token: String?, user_id: String?, note: Map<String, String>) -> Html:
+  let id = note["id"]
+  let title = note["title"]
+  let content = note["content"]
+  let owner_id = note["owner_id"]
+  let likes = note["likes"]
+
+  var likes_label = "${likes} likes"
+  if likes == "1":
+    likes_label = "1 like"
+
+  return div(class="note-card note-card--public"):
+    h3(class="note-card__title"):
+      html.text(title)
+    p(class="note-card__body"):
+      html.text(content)
+    div(class="note-card__meta-line"):
+      div(class="note-card__meta"):
+        html.text("${id} by ${owner_id}")
+      span(class="note-card__pill"):
+        html.text(likes_label)
+    render_public_note_actions(token, user_id, note)
+
+fn render_public_notes_inner(token: String?, user_id: String?) -> Html:
+  let rows = public_note_rows()
+  var has_rows = false
+  var cards = html.raw("")
+  for row in rows:
+    has_rows = true
+    let prev = cards
+    cards = div(class="note-stack"):
+      prev
+      render_public_note_card(token, user_id, row)
+  if has_rows == false:
+    return Base.state_block("No public notes yet.", false, false)
+  return cards
+
+fn render_public_section(token: String?, user_id: String?) -> Html:
+  let session_token = token ?? ""
+  var feed_url = "/ui/public/notes"
+  if session_token != "":
+    feed_url = "/ui/sessions/${session_token}/public/notes"
+
+  return section(class="section", id="public-notes-section"):
+    h2(class="section__title"):
+      "Public notes"
+    div({
+      "class": "notes-list",
+      "id": "public-notes-list",
+      "hx-get": feed_url,
+      "hx-trigger": "load, every 5s",
+      "hx-swap": "innerHTML",
+      "hx-sync": "this:replace"
+    }):
+      render_public_notes_inner(token, user_id)

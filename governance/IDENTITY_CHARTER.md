@@ -11,7 +11,7 @@ contract-first boundaries:
 - typed inputs/outputs
 - built-in validation
 - predictable JSON/config/CLI/HTTP binding
-- consistent backend semantics (AST/VM/native)
+- consistent backend semantics (AST/native; VM removed per RFC 0007)
 
 ## Product Identity
 
@@ -31,7 +31,7 @@ FUSE is not:
 
 1. Semantic authority:
    - AST + frontend canonicalization define semantics.
-   - VM/native are execution strategies, not semantic authorities.
+   - native is an execution strategy, not a semantic authority.
 2. Determinism:
    - Equivalent programs must behave the same across backends.
    - Backend-specific semantic behavior is a bug.

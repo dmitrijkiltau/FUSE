@@ -1,0 +1,14 @@
+type Unauthorized:
+  message: String
+
+type Forbidden:
+  message: String
+
+type NotFound:
+  message: String
+
+type BadRequest:
+  message: String
+
+type Conflict:
+  message: String

@@ -398,6 +398,13 @@ Constraint forms:
 - function parameter types are required
 - function return type is optional
 
+### Comparison operators
+
+- Equality operators (`==`, `!=`) are defined for same-typed scalar pairs:
+  `Int`, `Float`, `Bool`, `String`, and `Bytes`.
+- Relational operators (`<`, `<=`, `>`, `>=`) are defined for numeric pairs (`Int`, `Float`).
+- Comparisons outside supported operand pairs are invalid.
+
 ### Structural vs nominal
 
 - user-defined `type` and `enum` are nominal

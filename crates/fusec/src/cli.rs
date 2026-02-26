@@ -10,12 +10,11 @@ use crate::diag::{Diag, Level};
 use crate::interp::{Interpreter, MigrationJob, TestJob, TestOutcome};
 use crate::{load_program_with_modules, load_program_with_modules_and_deps};
 
-const USAGE: &str = "usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--backend ast|vm|native] [--app NAME] <file>";
+const USAGE: &str = "usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--backend ast|native] [--app NAME] <file>";
 
 #[derive(Copy, Clone)]
 enum Backend {
     Ast,
-    Vm,
     Native,
 }
 
@@ -82,7 +81,6 @@ where
                 backend_forced = true;
                 backend = match name.as_str() {
                     "ast" => Backend::Ast,
-                    "vm" => Backend::Vm,
                     "native" => Backend::Native,
                     _ => {
                         eprintln!("unknown backend: {name}");
@@ -180,6 +178,12 @@ where
     }
 
     if migrate {
+        // Migrations always use the AST interpreter: migration bodies are AST
+        // blocks not lowered to IR, and migrations are one-shot operations where
+        // native performance provides no benefit.
+        if backend_forced && !matches!(backend, Backend::Ast) {
+            eprintln!("note: --backend is ignored for --migrate (always uses AST interpreter)");
+        }
         let (_analysis, diags) = crate::sema::analyze_registry(&registry);
         if !diags.is_empty() {
             emit_diags(&diags, Some(&src));
@@ -205,6 +209,14 @@ where
     }
 
     if test {
+        // Tests always use the AST interpreter: test bodies are AST blocks not
+        // lowered to IR, and test execution is a one-shot validation pass where
+        // native performance provides no benefit. Since all backends must produce
+        // identical semantics (governance/IDENTITY_CHARTER.md), testing via AST
+        // is sufficient.
+        if backend_forced && !matches!(backend, Backend::Ast) {
+            eprintln!("note: --backend is ignored for --test (always uses AST interpreter)");
+        }
         let (_analysis, diags) = crate::sema::analyze_registry(&registry);
         if !diags.is_empty() {
             emit_diags(&diags, Some(&src));
@@ -239,7 +251,7 @@ where
             backend = if !program_args.is_empty() {
                 Backend::Ast
             } else {
-                Backend::Vm
+                Backend::Native
             };
         }
         let app = app_name.as_deref();
@@ -345,7 +357,7 @@ where
                         return 2;
                     }
                 },
-                Backend::Vm | Backend::Native => {
+                Backend::Native => {
                     let args = match interp.prepare_call_with_named_args("main", &args_map) {
                         Ok(args) => args,
                         Err(err) => {
@@ -355,46 +367,22 @@ where
                     };
                     let entry_name =
                         crate::ir::lower::canonical_function_name(registry.root, "main");
-                    match backend {
-                        Backend::Vm => {
-                            let ir = match crate::ir::lower::lower_registry(&registry) {
-                                Ok(ir) => ir,
-                                Err(errors) => {
-                                    for error in errors {
-                                        eprintln!("lowering error: {error}");
-                                    }
-                                    return 1;
-                                }
-                            };
-                            let mut vm = crate::vm::Vm::new(&ir);
-                            match vm.call_function(&entry_name, args) {
-                                Ok(_) => {}
-                                Err(err) => {
-                                    emit_error_json(&err);
-                                    return 2;
-                                }
+                    let native = match crate::native::compile_registry(&registry) {
+                        Ok(native) => native,
+                        Err(errors) => {
+                            for error in errors {
+                                eprintln!("lowering error: {error}");
                             }
+                            return 1;
                         }
-                        Backend::Native => {
-                            let native = match crate::native::compile_registry(&registry) {
-                                Ok(native) => native,
-                                Err(errors) => {
-                                    for error in errors {
-                                        eprintln!("lowering error: {error}");
-                                    }
-                                    return 1;
-                                }
-                            };
-                            let mut vm = crate::native::NativeVm::new(&native);
-                            match vm.call_function(&entry_name, args) {
-                                Ok(_) => {}
-                                Err(err) => {
-                                    emit_error_json(&err);
-                                    return 2;
-                                }
-                            }
+                    };
+                    let mut vm = crate::native::NativeVm::new(&native);
+                    match vm.call_function(&entry_name, args) {
+                        Ok(_) => {}
+                        Err(err) => {
+                            emit_error_json(&err);
+                            return 2;
                         }
-                        Backend::Ast => unreachable!(),
                     }
                 }
             }
@@ -403,22 +391,6 @@ where
                 Backend::Ast => {
                     let mut interp = Interpreter::with_registry(&registry);
                     if let Err(err) = interp.run_app(app) {
-                        eprintln!("run error: {err}");
-                        return 1;
-                    }
-                }
-                Backend::Vm => {
-                    let ir = match crate::ir::lower::lower_registry(&registry) {
-                        Ok(ir) => ir,
-                        Err(errors) => {
-                            for error in errors {
-                                eprintln!("lowering error: {error}");
-                            }
-                            return 1;
-                        }
-                    };
-                    let mut vm = crate::vm::Vm::new(&ir);
-                    if let Err(err) = vm.run_app(app) {
                         eprintln!("run error: {err}");
                         return 1;
                     }

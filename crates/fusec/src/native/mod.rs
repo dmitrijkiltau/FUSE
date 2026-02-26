@@ -687,10 +687,10 @@ impl<'a> NativeVm<'a> {
                     }
                     args.reverse();
                     let task_name = name.clone();
-                    let program = self.program.ir.clone();
+                    let program = NativeProgram::from_ir(self.program.ir.clone());
                     let configs = self.heap.clone_configs();
                     let task = Task::spawn_async(move || {
-                        crate::vm::run_vm_spawn_task(program, configs, task_name, args)
+                        run_native_spawn_task(program, configs, task_name, args)
                     });
                     stack.push(Value::Task(task));
                 }
@@ -1614,6 +1614,7 @@ fn call_function_native_only_with(
                 }
             }
             Err(JitCallError::Runtime(message)) => Err(message),
+            Err(JitCallError::Compile(message)) => Err(message),
         };
         heap.collect_garbage();
         return out;
@@ -1623,6 +1624,21 @@ fn call_function_native_only_with(
         "native backend could not compile function {}",
         func.name
     ))
+}
+
+fn run_native_spawn_task(
+    program: NativeProgram,
+    configs: HashMap<String, HashMap<String, Value>>,
+    name: String,
+    args: Vec<Value>,
+) -> TaskResult {
+    let mut vm = NativeVm::new(&program);
+    vm.heap.set_configs(configs);
+    vm.configs_loaded = true;
+    match vm.call_function(&name, args) {
+        Ok(value) => TaskResult::Ok(value),
+        Err(msg) => TaskResult::Runtime(msg),
+    }
 }
 
 fn wrap_function_result(func: &Function, value: Value) -> Value {

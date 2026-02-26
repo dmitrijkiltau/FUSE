@@ -7,7 +7,7 @@ This document defines contribution standards for language, runtime, tooling, and
 Contributions must preserve:
 
 - semantic authority: parser/frontend canonicalization define behavior
-- backend parity: AST/VM/native must stay equivalent for observable semantics
+- backend parity: AST/native must stay equivalent for observable semantics
 - boundary determinism: typed contracts and runtime mapping remain explicit
 
 See:

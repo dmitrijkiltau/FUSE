@@ -118,8 +118,8 @@ FUSE currently ships with:
 
 - parser + semantic analysis + formatter
 - AST interpreter backend
-- VM backend
-- native backend path targeting VM-compatible semantics
+- native backend path targeting IR-compatible semantics
+- parity-backed comparison semantics across backends (`Bool` equality/inequality included)
 - module imports (relative paths, package-root paths via `root:`, and dependency paths via `dep:`)
 - module-scoped function symbols (local-first, then named-import resolution)
 - package tooling via `fuse.toml` and `fuse` commands
@@ -139,7 +139,7 @@ FUSE follows a single semantic authority model:
 
 - parser + frontend canonicalization define language semantics
 - canonical AST is the semantic program
-- VM and native are execution strategies over canonical forms
+- native is an execution strategy over canonical forms
 - backend-specific reinterpretation of source syntax is a correctness bug
 
 Pipeline:
@@ -147,7 +147,7 @@ Pipeline:
 1. source parses into AST
 2. frontend canonicalization lowers syntax sugar on AST forms (for example HTML block children and string-child lowering)
 3. semantic checks run on canonical AST
-4. VM/native lower or execute canonical forms with equivalent behavior
+4. native lowers or executes canonical forms with equivalent behavior
 
 Authority/parity release gates:
 

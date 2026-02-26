@@ -1,6 +1,5 @@
 fn encode_demo() -> String:
-  let data = {"a": 1, "b": true}
-  return json.encode(data)
+  return json.encode(json.decode("{\"a\":1,\"b\":true}"))
 
 fn decode_demo() -> Map<String, Int>:
   return json.decode("{\"a\":1,\"b\":2}")

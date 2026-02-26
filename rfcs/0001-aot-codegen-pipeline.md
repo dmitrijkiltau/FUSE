@@ -20,12 +20,12 @@ current semantic authority and backend parity constraints.
 ## Non-goals
 
 - introducing new language semantics
-- removing VM/native-JIT development workflows
+- removing native-JIT development workflows
 - exposing internal IR/object formats as public contracts
 
 ## Detailed design
 
-1. AOT consumes canonical frontend outputs already used by VM/native paths.
+1. AOT consumes canonical frontend outputs already used by native paths.
 2. AOT lowers through the existing internal IR/lowering model and emits object code.
 3. Object emission must be deterministic for identical source + toolchain + target inputs.
 4. Final executable generation is a build-time step; no runtime JIT path is required in deployed binaries.

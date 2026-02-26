@@ -34,7 +34,6 @@ APP_PORT=4000 ./scripts/fuse run examples/http_users.fuse
 | `types_patterns.fuse` | Enums, structs, and pattern matching (Option/Result) |
 | `project_demo.fuse` | Config env overrides, refined types, enums, and match |
 | `interp_demo.fuse` | String interpolation |
-| `spawn_await_box.fuse` | Spawn/await parity demo |
 | `spawn_error.fuse` | Spawn/await task failure propagation |
 | `box_shared.fuse` | Shared `box` state mutation |
 | `assign_field.fuse` | Struct field assignment |
@@ -61,5 +60,7 @@ These exercise the Cranelift JIT backend specifically (`--backend native`):
 
 ## Package example
 
-The `notes-api/` directory is a full package with `fuse.toml`, HTML templates,
-static assets, and SCSS compilation. See [notes-api/README.md](notes-api/README.md).
+The `reference-service/` directory is the canonical package-level service example.
+It includes `fuse.toml`, HTML templates, registration/login + session-auth notes API flow,
+native CSS modules (imports/custom properties/nesting), and a client-side JS flow.
+See [reference-service/README.md](reference-service/README.md).

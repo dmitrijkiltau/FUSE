@@ -107,7 +107,7 @@ fn tagged_result_json_decode_supports_ok_all_backends() {
         return;
     }
     let payload = r#"{"type":"Ok","data":{"name":"Ada"}}"#;
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let (status, body) = run_decode_request(backend, payload);
         assert_eq!(status, 200, "backend={backend} body={body}");
         assert_eq!(body, r#""ok:Ada""#, "backend={backend}");
@@ -120,7 +120,7 @@ fn tagged_result_json_decode_supports_err_all_backends() {
         return;
     }
     let payload = r#"{"type":"Err","data":"boom"}"#;
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let (status, body) = run_decode_request(backend, payload);
         assert_eq!(status, 200, "backend={backend} body={body}");
         assert_eq!(body, r#""err:boom""#, "backend={backend}");
@@ -146,7 +146,7 @@ fn tagged_result_json_decode_rejects_missing_or_invalid_tag_all_backends() {
             "unknown Result variant",
         ),
     ] {
-        for backend in ["ast", "vm", "native"] {
+        for backend in ["ast", "native"] {
             let (status, body) = run_decode_request(backend, payload);
             assert_eq!(status, 400, "case={name} backend={backend} body={body}");
             assert!(

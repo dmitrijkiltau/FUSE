@@ -30,9 +30,9 @@ app "users":
 
 ## Status
 
-FUSE v0.4.0 is released. This branch tracks the v0.4.x quality/stability line with
-native/backend parity hardening, multi-file tooling reliability, dependency workflow
-contract coverage, and release artifact matrix automation.
+FUSE v0.5.0 is released. This is a breaking minor that removes the VM bytecode backend
+(RFC 0007) and consolidates execution on AST + Native only. Includes reference service,
+v1.0.0 stability contract, and native spawn task improvements.
 
 Compatibility is defined by documented behavior in `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, and
 `governance/VERSIONING_POLICY.md`.
@@ -51,10 +51,10 @@ Historical upgrade guidance for the `0.1.x -> 0.2.0` breaking minor is in
 ./scripts/fuse run examples/project_demo.fuse
 
 # Run a package
-./scripts/fuse run examples/notes-api
+./scripts/fuse run examples/reference-service
 
 # Watch mode with live reload
-./scripts/fuse dev examples/notes-api
+./scripts/fuse dev examples/reference-service
 
 # Start the language server
 ./scripts/fuse lsp
@@ -101,7 +101,7 @@ backend = "native"
 
 - `[package]` — entry point, app name, backend selection
 - `[serve]` — `openapi_ui`, `openapi_path` for built-in OpenAPI UI
-- `[assets]` — SCSS/CSS compilation, file watching, content hashing
+- `[assets]` — CSS asset paths, file watching, content hashing
 - `[assets.hooks]` — `before_build` for external pre-build hooks
 - `[vite]` — `dev_url` for dev proxy fallback, `dist_dir` for production statics
 - `[dependencies]` — package dependencies
@@ -197,7 +197,7 @@ Always run Cargo through `scripts/cargo_env.sh` to avoid cross-device link error
 | Gate | Command | Purpose |
 |---|---|---|
 | Semantic suite | `./scripts/semantic_suite.sh` | Parser, type system, and boundary contract tests |
-| Authority parity | `./scripts/authority_parity.sh` | AST/VM/native semantic equivalence |
+| Authority parity | `./scripts/authority_parity.sh` | AST/native semantic equivalence |
 | LSP suite | `./scripts/lsp_suite.sh` | LSP contracts, navigation, completions, code actions |
 | LSP performance | `./scripts/lsp_perf_reliability.sh` | Cancellation handling and responsiveness budgets |
 | LSP incremental | `./scripts/lsp_workspace_incremental.sh` | Workspace cache correctness |
@@ -259,7 +259,7 @@ code --install-extension dist/fuse-vscode-linux-x64.vsix
 
 | Path | Contents |
 |---|---|
-| `crates/fusec` | Compiler: parser, semantic analysis, VM, native runtime/JIT, LSP |
+| `crates/fusec` | Compiler: parser, semantic analysis, native runtime/JIT, LSP |
 | `crates/fuse` | Package-oriented CLI wrapper |
 | `crates/fuse-rt` | Shared runtime library |
 | `examples/` | Sample programs and packages |

@@ -1,0 +1,13 @@
+import Api from "./api"
+import Db from "./db"
+
+config App:
+  port: Int = env("PORT") ?? 3000
+  dbUrl: String = env("FUSE_DB_URL") ?? "sqlite://reference-service.db"
+
+app "Api":
+  log("info", "starting reference service on port ${App.port} with db ${App.dbUrl}")
+  log("info", "open http://localhost:${App.port}/ for the HTMX + Html DSL UI")
+  log("info", "JSON API auth is available at /api/auth/* and private notes at /api/sessions/{token}/notes")
+  log("info", "published notes are readable without auth at /api/public/notes")
+  serve(App.port)

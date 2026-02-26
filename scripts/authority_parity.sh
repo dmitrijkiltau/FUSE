@@ -13,8 +13,8 @@ step "1/5" "Canonicalization gate"
 step "2/5" "AST authority parity gate"
 "$ROOT/scripts/cargo_env.sh" cargo test -p fusec --test ast_authority_parity
 
-step "3/5" "AST/VM/native parity gate"
-"$ROOT/scripts/cargo_env.sh" cargo test -p fusec --test parity_vm_ast
+step "3/5" "AST/native parity gate"
+"$ROOT/scripts/cargo_env.sh" cargo test -p fusec --test parity_ast_native
 
 step "4/5" "Module scope parity gate"
 "$ROOT/scripts/cargo_env.sh" cargo test -p fusec --test module_function_scope

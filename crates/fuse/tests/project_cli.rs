@@ -159,12 +159,19 @@ fn contains_ansi(raw: &str) -> bool {
 fn overwrite_cached_ir_from_source(dir: &Path, source: &str) {
     let source_path = dir.join("__cache_override__.fuse");
     fs::write(&source_path, source).expect("write cache override source");
-    let (registry, diags) = fusec::load_program_with_modules(&source_path, source);
-    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
-    let ir = fusec::ir::lower::lower_registry(&registry).expect("lower cache override source");
-    let ir_bytes = bincode::serialize(&ir).expect("encode cache override ir");
-    fs::write(dir.join(".fuse").join("build").join("program.ir"), ir_bytes)
-        .expect("write cache override ir");
+    let native =
+        fusec::native::compile_registry(&{
+            let (registry, diags) = fusec::load_program_with_modules(&source_path, source);
+            assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+            registry
+        })
+        .expect("compile cache override native");
+    let native_bytes = bincode::serialize(&native).expect("encode cache override native");
+    fs::write(
+        dir.join(".fuse").join("build").join("program.native"),
+        native_bytes,
+    )
+    .expect("write cache override native");
     let _ = fs::remove_file(source_path);
 }
 
@@ -292,7 +299,7 @@ fn broken():
 }
 
 #[test]
-fn build_runs_external_sass_pipeline_when_assets_configured() {
+fn build_runs_css_asset_pipeline_without_external_tooling() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");
 
@@ -302,8 +309,7 @@ entry = "main.fuse"
 app = "Demo"
 
 [assets]
-scss = "assets/scss"
-css = "public/css"
+css = "public/css/app.css"
 watch = true
 "#;
     fs::write(dir.join("fuse.toml"), manifest).expect("write fuse.toml");
@@ -314,55 +320,21 @@ app "Demo":
 "#;
     fs::write(dir.join("main.fuse"), main_src).expect("write main.fuse");
 
-    let scss_dir = dir.join("assets").join("scss");
-    fs::create_dir_all(&scss_dir).expect("create scss dir");
+    let css_dir = dir.join("public").join("css");
+    fs::create_dir_all(&css_dir).expect("create css dir");
     fs::write(
-        scss_dir.join("app.scss"),
-        "$c: #fff;\nbody { color: $c; }\n",
+        css_dir.join("app.css"),
+        ":root{--fg:#111}body{color:var(--fg)}\n",
     )
-    .expect("write scss");
-
-    let bin_dir = dir.join("bin");
-    fs::create_dir_all(&bin_dir).expect("create bin dir");
-    let sass_path = bin_dir.join("sass");
-    let sass_script = r#"#!/usr/bin/env bash
-set -euo pipefail
-mapping=""
-for arg in "$@"; do
-  case "$arg" in
-    --*) ;;
-    *) mapping="$arg" ;;
-  esac
-done
-src="${mapping%%:*}"
-dst="${mapping#*:}"
-if [[ -d "$src" ]]; then
-  mkdir -p "$dst"
-  for file in "$src"/*.scss; do
-    [[ -e "$file" ]] || continue
-    base="$(basename "$file" .scss)"
-    printf '/* compiled by fake sass */\nbody{color:#fff}\n' > "$dst/$base.css"
-  done
-else
-  mkdir -p "$(dirname "$dst")"
-  printf '/* compiled by fake sass */\nbody{color:#fff}\n' > "$dst"
-fi
-"#;
-    fs::write(&sass_path, sass_script).expect("write fake sass");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&sass_path).expect("metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&sass_path, perms).expect("chmod fake sass");
-    }
+    .expect("write css");
 
     let exe = env!("CARGO_BIN_EXE_fuse");
-    let mut cmd = Command::new(exe);
-    cmd.arg("build").arg("--manifest-path").arg(&dir);
-    let path = std::env::var("PATH").unwrap_or_default();
-    cmd.env("PATH", format!("{}:{}", bin_dir.display(), path));
-    let output = cmd.output().expect("run fuse build");
+    let output = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse build");
     if !output.status.success() {
         panic!("stderr: {}", String::from_utf8_lossy(&output.stderr));
     }
@@ -370,7 +342,7 @@ fi
     let built_css = dir.join("public").join("css").join("app.css");
     assert!(built_css.exists(), "expected {}", built_css.display());
     let css = fs::read_to_string(&built_css).expect("read built css");
-    assert!(css.contains("compiled by fake sass"), "css: {css}");
+    assert!(css.contains("color:var(--fg)"), "css: {css}");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -386,8 +358,7 @@ entry = "main.fuse"
 app = "Demo"
 
 [assets]
-scss = "assets/scss"
-css = "public/css"
+css = "public/css/app.css"
 watch = true
 hash = true
 "#;
@@ -399,55 +370,21 @@ app "Demo":
 "#;
     fs::write(dir.join("main.fuse"), main_src).expect("write main.fuse");
 
-    let scss_dir = dir.join("assets").join("scss");
-    fs::create_dir_all(&scss_dir).expect("create scss dir");
+    let css_dir = dir.join("public").join("css");
+    fs::create_dir_all(&css_dir).expect("create css dir");
     fs::write(
-        scss_dir.join("app.scss"),
-        "$c: #fff;\nbody { color: $c; }\n",
+        css_dir.join("app.css"),
+        "body{color:#fff}\n",
     )
-    .expect("write scss");
-
-    let bin_dir = dir.join("bin");
-    fs::create_dir_all(&bin_dir).expect("create bin dir");
-    let sass_path = bin_dir.join("sass");
-    let sass_script = r#"#!/usr/bin/env bash
-set -euo pipefail
-mapping=""
-for arg in "$@"; do
-  case "$arg" in
-    --*) ;;
-    *) mapping="$arg" ;;
-  esac
-done
-src="${mapping%%:*}"
-dst="${mapping#*:}"
-if [[ -d "$src" ]]; then
-  mkdir -p "$dst"
-  for file in "$src"/*.scss; do
-    [[ -e "$file" ]] || continue
-    base="$(basename "$file" .scss)"
-    printf '/* compiled by fake sass */\nbody{color:#fff}\n' > "$dst/$base.css"
-  done
-else
-  mkdir -p "$(dirname "$dst")"
-  printf '/* compiled by fake sass */\nbody{color:#fff}\n' > "$dst"
-fi
-"#;
-    fs::write(&sass_path, sass_script).expect("write fake sass");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&sass_path).expect("metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&sass_path, perms).expect("chmod fake sass");
-    }
+    .expect("write css");
 
     let exe = env!("CARGO_BIN_EXE_fuse");
-    let mut cmd = Command::new(exe);
-    cmd.arg("build").arg("--manifest-path").arg(&dir);
-    let path = std::env::var("PATH").unwrap_or_default();
-    cmd.env("PATH", format!("{}:{}", bin_dir.display(), path));
-    let output = cmd.output().expect("run fuse build");
+    let output = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .output()
+        .expect("run fuse build");
     if !output.status.success() {
         panic!("stderr: {}", String::from_utf8_lossy(&output.stderr));
     }
@@ -2014,10 +1951,6 @@ app "Demo":
 
     let aot_path = default_aot_binary_path(&dir);
     assert!(aot_path.exists(), "expected {}", aot_path.display());
-    assert!(
-        dir.join(".fuse").join("build").join("program.ir").exists(),
-        "expected cached IR artifact"
-    );
     assert!(
         dir.join(".fuse")
             .join("build")

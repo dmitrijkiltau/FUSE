@@ -30,7 +30,7 @@ options:
   --manifest-path <path>  Path to fuse.toml (defaults to nearest parent)
   --file <path>           Entry file override
   --app <name>            App name override
-  --backend <ast|vm|native>  Backend override (run only)
+  --backend <ast|native>  Backend override (run only)
   --color <auto|always|never>  Colorized CLI output policy
   --clean                 Remove .fuse/build before building (build only)
   --aot                   Emit deployable AOT binary (build only)
@@ -82,7 +82,6 @@ struct ServeConfig {
 
 #[derive(Debug, Deserialize)]
 struct AssetsConfig {
-    scss: Option<String>,
     css: Option<String>,
     watch: Option<bool>,
     hash: Option<bool>,
@@ -165,7 +164,6 @@ struct IrFileMeta {
 }
 
 struct BuildArtifacts {
-    ir: fusec::ir::Program,
     native: fusec::native::NativeProgram,
     meta: IrMeta,
 }
@@ -204,7 +202,6 @@ enum Command {
 #[derive(Copy, Clone, Eq, PartialEq)]
 enum RunBackend {
     Ast,
-    Vm,
     Native,
 }
 
@@ -332,7 +329,6 @@ impl RunBackend {
     fn parse(name: &str) -> Option<Self> {
         match name {
             "ast" => Some(Self::Ast),
-            "vm" => Some(Self::Vm),
             "native" => Some(Self::Native),
             _ => None,
         }
@@ -341,7 +337,6 @@ impl RunBackend {
     fn as_str(self) -> &'static str {
         match self {
             Self::Ast => "ast",
-            Self::Vm => "vm",
             Self::Native => "native",
         }
     }
@@ -466,7 +461,7 @@ fn run(args: Vec<String>) -> i32 {
     if matches!(command, Command::Run) {
         match backend {
             Some(RunBackend::Ast) => {}
-            Some(RunBackend::Native) => {
+            _ => {
                 if let Some(native) = try_load_native(manifest_dir.as_deref()) {
                     apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
                     return finalize_command(
@@ -478,15 +473,6 @@ fn run(args: Vec<String>) -> i32 {
                             &deps,
                             &common.program_args,
                         ),
-                    );
-                }
-            }
-            _ => {
-                if let Some(ir) = try_load_ir(manifest_dir.as_deref()) {
-                    apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
-                    return finalize_command(
-                        command,
-                        run_vm_ir(ir, app.as_deref(), &entry, &deps, &common.program_args),
                     );
                 }
             }
@@ -821,12 +807,15 @@ fn collect_dev_watch_files(
     if let Some(base) = manifest_dir.or_else(|| entry.parent()) {
         if let Some(assets) = manifest.and_then(|m| m.assets.as_ref()) {
             if assets.watch != Some(false) {
-                if let Some(scss) = assets.scss.as_ref() {
-                    let path = resolve_manifest_relative_path(base, scss);
+                if let Some(css) = assets.css.as_ref() {
+                    let path = resolve_manifest_relative_path(base, css);
                     if path.is_dir() {
-                        collect_files_by_extension(&path, &["scss", "sass"], &mut out);
+                        collect_files_by_extension(&path, &["css"], &mut out);
                     } else if path.is_file() {
-                        out.insert(path);
+                        out.insert(path.clone());
+                        if let Some(parent) = path.parent() {
+                            collect_files_by_extension(parent, &["css"], &mut out);
+                        }
                     }
                 }
             }
@@ -961,50 +950,25 @@ fn run_asset_pipeline(
         clear_asset_manifest_for_base(&base)?;
         return Ok(());
     };
-    let Some(scss) = assets.scss.as_ref() else {
+    let Some(css) = assets.css.as_ref() else {
         clear_asset_manifest_for_base(&base)?;
         return Ok(());
     };
-    let hash_requested = assets.hash.unwrap_or(false);
-    let source = resolve_manifest_relative_path(&base, scss);
+    let source = resolve_manifest_relative_path(&base, css);
     if !source.exists() {
         return Err(format!(
-            "assets.scss path does not exist: {}",
+            "assets.css path does not exist: {}",
             source.display()
         ));
     }
-    let css = assets.css.as_deref().unwrap_or("public/css");
-    let destination = resolve_manifest_relative_path(&base, css);
-    let mapping = resolve_sass_mapping(&source, &destination)?;
-    if let Some(parent) = mapping.output.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
-    }
-    let output = ProcessCommand::new("sass")
-        .arg("--no-source-map")
-        .arg(&mapping.arg)
-        .output()
-        .map_err(|err| format!("failed to run sass (install dart-sass): {err}"))?;
-    if !output.status.success() {
-        let mut msg = String::new();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if !stderr.trim().is_empty() {
-            msg.push_str(stderr.trim());
-        } else if !stdout.trim().is_empty() {
-            msg.push_str(stdout.trim());
-        } else {
-            msg.push_str("sass failed");
-        }
-        return Err(format!("asset pipeline error: {msg}"));
-    }
+    let hash_requested = assets.hash.unwrap_or(false);
     if !hash_requested {
         clear_asset_manifest_for_base(&base)?;
         return Ok(());
     }
 
     let static_root = resolve_static_root(manifest, &base);
-    let css_outputs = collect_css_outputs(&mapping.output);
+    let css_outputs = collect_css_outputs(&source);
     let mut hashed_map = BTreeMap::new();
     for output in css_outputs {
         let hashed = hash_css_file(&output)?;
@@ -1013,47 +977,6 @@ fn run_asset_pipeline(
         hashed_map.insert(key, value);
     }
     write_asset_manifest_for_base(&base, &hashed_map)
-}
-
-struct SassMapping {
-    arg: String,
-    output: PathBuf,
-}
-
-fn resolve_sass_mapping(source: &Path, destination: &Path) -> Result<SassMapping, String> {
-    if source.is_dir() {
-        fs::create_dir_all(destination)
-            .map_err(|err| format!("failed to create {}: {err}", destination.display()))?;
-        return Ok(SassMapping {
-            arg: format!("{}:{}", source.display(), destination.display()),
-            output: destination.to_path_buf(),
-        });
-    }
-    if !source.is_file() {
-        return Err(format!(
-            "assets.scss path must be a file or directory: {}",
-            source.display()
-        ));
-    }
-    let output = if destination.exists() && destination.is_dir() {
-        destination.join(scss_output_name(source))
-    } else if destination.extension().is_none() {
-        destination.join(scss_output_name(source))
-    } else {
-        destination.to_path_buf()
-    };
-    Ok(SassMapping {
-        arg: format!("{}:{}", source.display(), output.display()),
-        output,
-    })
-}
-
-fn scss_output_name(source: &Path) -> String {
-    let stem = source
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .unwrap_or("app");
-    format!("{stem}.css")
 }
 
 fn asset_manifest_path(base: &Path) -> PathBuf {
@@ -2573,9 +2496,9 @@ fn compile_artifacts(
         }
         out
     })?;
-    let native = fusec::native::NativeProgram::from_ir(ir.clone());
+    let native = fusec::native::NativeProgram::from_ir(ir);
     let meta = build_ir_meta(&registry, manifest_dir)?;
-    Ok(BuildArtifacts { ir, native, meta })
+    Ok(BuildArtifacts { native, meta })
 }
 
 fn write_compiled_artifacts(
@@ -2587,12 +2510,6 @@ fn write_compiled_artifacts(
         fs::create_dir_all(&build_dir)
             .map_err(|err| format!("failed to create {}: {err}", build_dir.display()))?;
     }
-
-    let ir_path = build_dir.join("program.ir");
-    let ir_bytes =
-        bincode::serialize(&artifacts.ir).map_err(|err| format!("ir encode failed: {err}"))?;
-    fs::write(&ir_path, ir_bytes)
-        .map_err(|err| format!("failed to write {}: {err}", ir_path.display()))?;
 
     let native_path = build_dir.join("program.native");
     let native_bytes = bincode::serialize(&artifacts.native)
@@ -2606,18 +2523,6 @@ fn write_compiled_artifacts(
     fs::write(&meta_path, meta_bytes)
         .map_err(|err| format!("failed to write {}: {err}", meta_path.display()))?;
     Ok(())
-}
-
-fn try_load_ir(manifest_dir: Option<&Path>) -> Option<fusec::ir::Program> {
-    let build_dir = build_dir(manifest_dir).ok()?;
-    let path = build_dir.join("program.ir");
-    let meta_path = build_dir.join("program.meta");
-    let meta = load_ir_meta(&meta_path)?;
-    if !ir_meta_is_valid(&meta, manifest_dir) {
-        return None;
-    }
-    let bytes = fs::read(&path).ok()?;
-    bincode::deserialize(&bytes).ok()
 }
 
 fn try_load_native(manifest_dir: Option<&Path>) -> Option<fusec::native::NativeProgram> {
@@ -2634,36 +2539,6 @@ fn try_load_native(manifest_dir: Option<&Path>) -> Option<fusec::native::NativeP
         return None;
     }
     Some(native)
-}
-
-fn run_vm_ir(
-    ir: fusec::ir::Program,
-    app: Option<&str>,
-    entry: &Path,
-    deps: &HashMap<String, PathBuf>,
-    program_args: &[String],
-) -> i32 {
-    let mut vm = fusec::vm::Vm::new(&ir);
-    if program_args.is_empty() {
-        return match vm.run_app(app) {
-            Ok(_) => 0,
-            Err(err) => {
-                emit_cli_error(&format!("run error: {err}"));
-                1
-            }
-        };
-    }
-    let (entry_name, args) = match prepare_cached_cli_call(entry, deps, program_args) {
-        Ok(value) => value,
-        Err(code) => return code,
-    };
-    match vm.call_function(&entry_name, args) {
-        Ok(_) => 0,
-        Err(err) => {
-            emit_error_json_message(&err);
-            2
-        }
-    }
 }
 
 fn run_native_program(

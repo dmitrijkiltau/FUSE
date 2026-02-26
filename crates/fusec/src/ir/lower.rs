@@ -1454,16 +1454,16 @@ impl FuncBuilder {
                             });
                         } else {
                             self.errors
-                                .push("call target not supported in VM yet".to_string());
+                                .push("call target not supported in IR yet".to_string());
                         }
                     } else {
                         self.errors
-                            .push("call target not supported in VM yet".to_string());
+                            .push("call target not supported in IR yet".to_string());
                     }
                 }
                 _ => {
                     self.errors
-                        .push("call target not supported in VM yet".to_string());
+                        .push("call target not supported in IR yet".to_string());
                 }
             },
             ExprKind::Member { base, name } => {
@@ -1495,7 +1495,7 @@ impl FuncBuilder {
                 if let ExprKind::Ident(module_ident) = &base.kind {
                     if self.modules.contains(&module_ident.name) {
                         self.errors
-                            .push("module members are not values in the VM yet".to_string());
+                            .push("module members are not values in IR yet".to_string());
                         return;
                     }
                 }

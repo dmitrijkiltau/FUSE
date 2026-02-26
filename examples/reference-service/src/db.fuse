@@ -1,0 +1,16 @@
+migration 001:
+  db.exec("create table if not exists notes (id text primary key, title text not null, content text not null)")
+
+migration 002:
+  db.exec("create table if not exists users (id text primary key, email text not null unique, password text not null)")
+  db.exec("create table if not exists sessions (token text primary key, user_id text not null, scopes text not null)")
+
+migration 003:
+  db.exec("alter table notes add column owner_id text not null default ''")
+  db.exec("alter table notes add column is_public text not null default '0'")
+  db.exec("create index if not exists idx_notes_owner_id on notes(owner_id)")
+  db.exec("create index if not exists idx_notes_public on notes(is_public)")
+
+migration 004:
+  db.exec("create table if not exists note_likes (note_id text not null, user_id text not null, primary key (note_id, user_id))")
+  db.exec("create index if not exists idx_note_likes_note_id on note_likes(note_id)")

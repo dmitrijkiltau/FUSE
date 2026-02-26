@@ -60,7 +60,7 @@ app "demo":
   main()
 "#;
     let path = write_temp_program("fuse_db_pool_env_invalid", program);
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, &path, &temp_db_url(), Some("0"));
         assert!(
             !output.status.success(),
@@ -85,7 +85,7 @@ app "demo":
   main()
 "#;
     let path = write_temp_program("fuse_db_pool_default", program);
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, &path, &temp_db_url(), None);
         assert!(
             output.status.success(),
@@ -108,7 +108,7 @@ app "demo":
   main()
 "#;
     let path = write_temp_program("fuse_db_pool_config_invalid", program);
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, &path, &temp_db_url(), None);
         assert!(
             !output.status.success(),

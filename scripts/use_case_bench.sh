@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="$ROOT/.fuse/bench"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fuse_use_case_bench.XXXXXX")"
-NOTES_DIR="$ROOT/examples/notes-api"
+REFERENCE_SERVICE_DIR="$ROOT/examples/reference-service"
 METRICS_JSON="$OUT_DIR/use_case_metrics.json"
 METRICS_MD="$OUT_DIR/use_case_metrics.md"
 
@@ -157,7 +157,7 @@ wait_for_http() {
   return 1
 }
 
-start_notes_api_runtime() {
+start_reference_service_runtime() {
   local attempts="${1:-2}"
   local timeout_secs="${2:-12}"
   local probe_code
@@ -165,19 +165,19 @@ start_notes_api_runtime() {
 
   for ((attempt = 1; attempt <= attempts; attempt++)); do
     PORT="$((39000 + RANDOM % 1000))"
-    echo "Using notes-api benchmark port (attempt $attempt/$attempts): $PORT"
+    echo "Using reference-service benchmark port (attempt $attempt/$attempts): $PORT"
     : >"$LOG_FILE"
     env APP_PORT="$PORT" PORT="$PORT" FUSE_DB_URL="$DB_URL" \
-      "$ROOT/scripts/fuse" run --manifest-path "$NOTES_DIR" >"$LOG_FILE" 2>&1 &
+      "$ROOT/scripts/fuse" run --manifest-path "$REFERENCE_SERVICE_DIR" >"$LOG_FILE" 2>&1 &
     SERVER_PID="$!"
     probe_code=0
-    wait_for_http "http://127.0.0.1:${PORT}/api/notes" "$SERVER_PID" "$timeout_secs" || probe_code=$?
+    wait_for_http "http://127.0.0.1:${PORT}/api/public/notes" "$SERVER_PID" "$timeout_secs" || probe_code=$?
     LAST_PROBE_CODE="$probe_code"
     if [[ "$probe_code" -eq 0 ]]; then
       return 0
     fi
 
-    echo "notes-api readiness attempt ${attempt}/${attempts} failed (probe_code=${probe_code}); retrying..." >&2
+    echo "reference-service readiness attempt ${attempt}/${attempts} failed (probe_code=${probe_code}); retrying..." >&2
     kill "$SERVER_PID" >/dev/null 2>&1 || true
     wait "$SERVER_PID" >/dev/null 2>&1 || true
     SERVER_PID=""
@@ -238,71 +238,86 @@ run_single_iteration() {
 
   TMP_DIR="$TMP_ROOT/iter_${iteration}"
   mkdir -p "$TMP_DIR"
-  LOG_FILE="$TMP_DIR/notes-api.log"
+  LOG_FILE="$TMP_DIR/reference-service.log"
   SERVER_PID=""
 
   echo "Running CLI workload metrics..."
   measure_cmd_ms cli_check_ms "$ROOT/scripts/fuse" check "$ROOT/examples/project_demo.fuse"
   measure_cmd_ms cli_run_ok_ms env APP_GREETING="Hello" APP_WHO="Bench" \
-    "$ROOT/scripts/fuse" run --backend vm "$ROOT/examples/project_demo.fuse"
+    "$ROOT/scripts/fuse" run --backend native "$ROOT/examples/project_demo.fuse"
   measure_cmd_ms_with_status cli_run_invalid_ms cli_run_invalid_status \
     env APP_GREETING="Hello" APP_WHO="Bench" DEMO_FAIL="1" \
-    "$ROOT/scripts/fuse" run --backend vm "$ROOT/examples/project_demo.fuse"
+    "$ROOT/scripts/fuse" run --backend native "$ROOT/examples/project_demo.fuse"
   if [[ "$cli_run_invalid_status" -eq 0 ]]; then
     echo "Expected project_demo contract-failure run to fail (DEMO_FAIL=1)." >&2
     exit 1
   fi
 
-  echo "Running notes-api compile/check workload metrics..."
+  echo "Running reference-service compile/check workload metrics..."
   PORT="$((39000 + RANDOM % 1000))"
-  DB_URL="sqlite://$TMP_DIR/notes.db"
-  echo "Using notes-api benchmark DB: $DB_URL"
+  DB_URL="sqlite://$TMP_DIR/reference-service.db"
+  echo "Using reference-service benchmark DB: $DB_URL"
 
   measure_cmd_ms notes_check_cold_ms env APP_PORT="$PORT" PORT="$PORT" FUSE_DB_URL="$DB_URL" \
-    "$ROOT/scripts/fuse" check --manifest-path "$NOTES_DIR"
+    "$ROOT/scripts/fuse" check --manifest-path "$REFERENCE_SERVICE_DIR"
   measure_cmd_ms notes_check_warm_ms env APP_PORT="$PORT" PORT="$PORT" FUSE_DB_URL="$DB_URL" \
-    "$ROOT/scripts/fuse" check --manifest-path "$NOTES_DIR"
+    "$ROOT/scripts/fuse" check --manifest-path "$REFERENCE_SERVICE_DIR"
   measure_cmd_ms notes_migrate_ms env APP_PORT="$PORT" PORT="$PORT" FUSE_DB_URL="$DB_URL" \
-    "$ROOT/scripts/fuse" migrate --manifest-path "$NOTES_DIR"
+    "$ROOT/scripts/fuse" migrate --manifest-path "$REFERENCE_SERVICE_DIR"
 
-  echo "Running notes-api runtime/request metrics..."
-  echo "Waiting for notes-api HTTP readiness (timeout ~12s, with deterministic retry)..."
-  if ! start_notes_api_runtime 2 12; then
-    echo "notes-api did not become ready for benchmarking (probe_code=${LAST_PROBE_CODE})." >&2
+  echo "Running reference-service runtime/request metrics..."
+  echo "Waiting for reference-service HTTP readiness (timeout ~12s, with deterministic retry)..."
+  if ! start_reference_service_runtime 2 12; then
+    echo "reference-service did not become ready for benchmarking (probe_code=${LAST_PROBE_CODE})." >&2
     if [[ -f "$LOG_FILE" ]]; then
-      echo "notes-api log (tail):" >&2
+      echo "reference-service log (tail):" >&2
       tail -n 80 "$LOG_FILE" >&2 || cat "$LOG_FILE" >&2
     fi
     exit 1
   fi
 
+  # Register a benchmark user and extract the session token.
+  BENCH_REGISTER_RESP=$(curl -sS --max-time 3 \
+    -X POST \
+    -H 'content-type: application/json' \
+    --data '{"email":"bench@test.local","password":"benchpass1234"}' \
+    "http://127.0.0.1:${PORT}/api/auth/register")
+  BENCH_TOKEN=$(echo "$BENCH_REGISTER_RESP" | grep -oP '"token"\s*:\s*\{\s*"value"\s*:\s*"\K[^"]+')
+  if [[ -z "$BENCH_TOKEN" ]]; then
+    echo "Failed to register bench user or extract token from: $BENCH_REGISTER_RESP" >&2
+    exit 1
+  fi
+
   # Warm route and DB path before recording request metrics.
-  curl -sS -o /dev/null --max-time 3 "http://127.0.0.1:${PORT}/api/notes" || true
-  curl -sS -o /dev/null --max-time 3 \
+  # Each first request triggers native JIT compilation for that route's code
+  # path; warmup all measured routes so we capture steady-state latency.
+  curl -sS -o /dev/null --max-time 5 "http://127.0.0.1:${PORT}/api/sessions/${BENCH_TOKEN}/notes" || true
+  curl -sS -o /dev/null --max-time 5 \
     -X POST \
     -H 'content-type: application/json' \
     --data '{"title":"bench-warmup","content":"warm"}' \
-    "http://127.0.0.1:${PORT}/api/notes" || true
+    "http://127.0.0.1:${PORT}/api/sessions/${BENCH_TOKEN}/notes" || true
+  curl -sS -o /dev/null --max-time 5 "http://127.0.0.1:${PORT}/" || true
 
-  read -r status_list notes_get_list_ms <<<"$(http_request_status_ms GET "http://127.0.0.1:${PORT}/api/notes")"
+  read -r status_list notes_get_list_ms <<<"$(http_request_status_ms GET "http://127.0.0.1:${PORT}/api/sessions/${BENCH_TOKEN}/notes")"
   if [[ "$status_list" != "200" ]]; then
-    echo "GET /api/notes expected 200, got $status_list" >&2
+    echo "GET /api/sessions/.../notes expected 200, got $status_list" >&2
     exit 1
   fi
 
   read -r status_post_ok notes_post_ok_ms <<<"$(
-    http_request_status_ms POST "http://127.0.0.1:${PORT}/api/notes" '{"title":"bench-note","content":"hello"}'
+    http_request_status_ms POST "http://127.0.0.1:${PORT}/api/sessions/${BENCH_TOKEN}/notes" '{"title":"bench-note","content":"hello"}'
   )"
   if [[ "$status_post_ok" != "200" ]]; then
-    echo "POST /api/notes valid payload expected 200, got $status_post_ok" >&2
+    echo "POST /api/sessions/.../notes valid payload expected 200, got $status_post_ok" >&2
     exit 1
   fi
 
   read -r status_post_invalid notes_post_invalid_ms <<<"$(
-    http_request_status_ms POST "http://127.0.0.1:${PORT}/api/notes" '{"title":"","content":""}'
+    http_request_status_ms POST "http://127.0.0.1:${PORT}/api/sessions/${BENCH_TOKEN}/notes" '{"title":"","content":""}'
   )"
   if [[ "$status_post_invalid" != "400" ]]; then
-    echo "POST /api/notes invalid payload expected 400, got $status_post_invalid" >&2
+    echo "POST /api/sessions/.../notes invalid payload expected 400, got $status_post_invalid" >&2
     exit 1
   fi
 
@@ -406,7 +421,7 @@ cat >"$METRICS_JSON" <<EOF
     "run_ok_ms": $cli_run_ok_ms,
     "run_contract_failure_ms": $cli_run_invalid_ms
   },
-  "notes_api": {
+  "reference_service": {
     "check_cold_ms": $notes_check_cold_ms,
     "check_warm_ms": $notes_check_warm_ms,
     "migrate_ms": $notes_migrate_ms,
@@ -431,14 +446,14 @@ EOF
   print_row "CLI: project_demo" "check time" "${cli_check_ms} ms"
   print_row "CLI: project_demo" "run (valid)" "${cli_run_ok_ms} ms"
   print_row "CLI: project_demo" "run (contract failure)" "${cli_run_invalid_ms} ms"
-  print_row "Package: notes-api" "check (cold)" "${notes_check_cold_ms} ms"
-  print_row "Package: notes-api" "check (warm)" "${notes_check_warm_ms} ms"
-  print_row "Package: notes-api" "migrate" "${notes_migrate_ms} ms"
-  print_row "Runtime: notes-api" "GET /api/notes" "${notes_get_list_ms} ms"
-  print_row "Runtime: notes-api" "POST /api/notes (valid body)" "${notes_post_ok_ms} ms"
-  print_row "Runtime: notes-api" "POST /api/notes (invalid body, 400)" "${notes_post_invalid_ms} ms"
+  print_row "Package: reference-service" "check (cold)" "${notes_check_cold_ms} ms"
+  print_row "Package: reference-service" "check (warm)" "${notes_check_warm_ms} ms"
+  print_row "Package: reference-service" "migrate" "${notes_migrate_ms} ms"
+  print_row "Runtime: reference-service" "GET /api/notes" "${notes_get_list_ms} ms"
+  print_row "Runtime: reference-service" "POST /api/notes (valid body)" "${notes_post_ok_ms} ms"
+  print_row "Runtime: reference-service" "POST /api/notes (invalid body, 400)" "${notes_post_invalid_ms} ms"
   print_row "Frontend integration" "GET / (index)" "${notes_frontend_get_ms} ms"
-  print_row "Runtime: notes-api" "validation error overhead abs(POST invalid - POST valid)" "${notes_validation_error_overhead_ms} ms"
+  print_row "Runtime: reference-service" "validation error overhead abs(POST invalid - POST valid)" "${notes_validation_error_overhead_ms} ms"
   echo
   echo "Raw JSON metrics: \`$METRICS_JSON\`"
 } >"$METRICS_MD"

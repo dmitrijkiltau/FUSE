@@ -31,7 +31,8 @@ Reason: these extension classes break the small deterministic core and conflict 
 
 Status: `INTERNAL ONLY` (maintainer-owned, in-tree)
 
-- Public backend set is fixed to `ast | vm | native`.
+- Public backend set is fixed to `ast | native`.
+- `vm` has been **removed** per RFC 0007.
 - No dynamic backend plugin loading API is exposed.
 - Any new backend must consume canonical frontend outputs, not raw source re-interpretation.
 
@@ -39,7 +40,7 @@ Required for adding/changing a backend:
 
 1. No backend-local sugar lowering.
 2. No backend-specific semantic behavior.
-3. AST/VM/native parity tests and release gates stay green.
+3. AST/native parity tests and release gates stay green.
 4. `../guides/fuse.md`, `../spec/runtime.md`, and tests are updated in the same change.
 
 ### 3) Type-system extensions
@@ -95,7 +96,7 @@ Any new extension point must declare its tier explicitly before adoption.
 A proposal is eligible only if all answers are "yes":
 
 1. Does it preserve canonical AST semantic authority?
-2. Does it preserve AST/VM/native observable parity?
+2. Does it preserve AST/native observable parity?
 3. Does it keep boundary contracts explicit and deterministic?
 4. Is the extension surface and stability tier clearly documented?
 5. Are semantic tests and release gates added/updated with the change?

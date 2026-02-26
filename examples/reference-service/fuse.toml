@@ -8,4 +8,7 @@ openapi = "build/openapi.json"
 
 [serve]
 static_dir = "."
-static_index = "index.html"
+
+[assets]
+css = "assets/css/style.css"
+watch = true

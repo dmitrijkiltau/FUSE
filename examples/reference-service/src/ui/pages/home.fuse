@@ -1,0 +1,31 @@
+import Auth from "../components/auth"
+import Create from "../components/create"
+import Notes from "../components/notes"
+
+fn render_shell(token: String?, user_id: String?) -> Html:
+  return div({"id": "app-shell"}):
+    main({"class": "page"}):
+      header({"class": "page__header"}):
+        h1({"class": "page__title"}):
+          "Notes"
+        p({"class": "page__subtitle"}):
+          "HTMX and HTML DSL reference service."
+      Auth.render_session_section(token, user_id)
+      Create.render_create_section(token)
+      hr({"class": "separator"})
+      Notes.render_private_notes_section(token, user_id)
+      Notes.render_public_section(token, user_id)
+
+fn render_page(token: String?, user_id: String?) -> Html:
+  let css = asset("assets/css/style.css")
+  return html():
+    head():
+      meta({"charset": "UTF-8"})
+      meta({"name": "viewport", "content": "width=device-width, initial-scale=1.0"})
+      title():
+        "Reference Service"
+      script({"src": "/assets/lib/htmx_1.9.10.min.js"})
+      script({"src": "/assets/lib/htmx_1.9.10_json-enc.js"})
+      link({"rel": "stylesheet", "href": css})
+    body():
+      render_shell(token, user_id)

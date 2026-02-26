@@ -7,16 +7,20 @@ type User:
   age: Int(0..10)
 
 fn ok_user() -> User!std.Error:
-  return User(id="user-1", email="a@b.com", age=5)
+  let raw = json.decode("{\"id\":\"user-1\",\"email\":\"a@b.com\",\"age\":5}")
+  return User(id=raw["id"], email=raw["email"], age=raw["age"])
 
 fn bad_id() -> User!std.Error:
-  return User(id="", email="a@b.com", age=5)
+  let raw = json.decode("{\"id\":\"\",\"email\":\"a@b.com\",\"age\":5}")
+  return User(id=raw["id"], email=raw["email"], age=raw["age"])
 
 fn bad_email() -> User!std.Error:
-  return User(id="user-1", email="bad", age=5)
+  let raw = json.decode("{\"id\":\"user-1\",\"email\":\"bad\",\"age\":5}")
+  return User(id=raw["id"], email=raw["email"], age=raw["age"])
 
 fn bad_age() -> User!std.Error:
-  return User(id="user-1", email="a@b.com", age=20)
+  let raw = json.decode("{\"id\":\"user-1\",\"email\":\"a@b.com\",\"age\":20}")
+  return User(id=raw["id"], email=raw["email"], age=raw["age"])
 
 fn show(label: String, result: User!std.Error):
   match result:

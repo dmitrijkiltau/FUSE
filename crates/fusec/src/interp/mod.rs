@@ -3479,6 +3479,15 @@ impl Interpreter {
                     ));
                 }
             },
+            (Value::Bool(a), Value::Bool(b)) => match op {
+                BinaryOp::Eq => a == b,
+                BinaryOp::NotEq => a != b,
+                _ => {
+                    return Err(ExecError::Runtime(
+                        "unsupported bool comparison".to_string(),
+                    ));
+                }
+            },
             _ => {
                 return Err(ExecError::Runtime(
                     "unsupported comparison operands".to_string(),

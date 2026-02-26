@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PATH="$ROOT/scripts:$PATH"
 
 usage() {
   cat <<'EOF'
@@ -20,7 +21,7 @@ commands:
 
 examples:
   scripts/fuse run examples/cli_hello.fuse
-  scripts/fuse dev examples/notes-api
+  scripts/fuse dev examples/reference-service
   scripts/fuse test examples/project_demo.fuse
   scripts/fuse build
   scripts/fuse build --clean

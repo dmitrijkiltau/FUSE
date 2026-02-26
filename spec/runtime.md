@@ -1,7 +1,7 @@
 # Runtime semantics (current implementation)
 
 This document is the canonical source for runtime behavior in this repo.
-It describes the AST interpreter, VM, and native backend path semantics.
+It describes the AST interpreter and native backend path semantics.
 
 Companion references:
 
@@ -47,8 +47,7 @@ See also: [Formal language specification](fls.md), [Scope + constraints](../gove
 ## Backends
 
 - **AST interpreter**: executes parsed AST directly.
-- **VM**: lowers to bytecode and executes the VM.
-- **Native**: uses a compiled native image (`program.native`) and VM-compatible runtime semantics,
+- **Native**: uses a compiled native image (`program.native`) and IR-compatible runtime semantics,
   with a Cranelift JIT fast-path for direct function execution.
 
 Most runtime behavior is shared across backends.
@@ -57,15 +56,14 @@ Semantic authority contract:
 
 - parser + frontend canonicalization define language semantics
 - canonical AST/lowered forms are the semantic program seen by all backends
-- VM and native are execution strategies over that canonical program
+- native is an execution strategy over that canonical program
 - backend-specific reinterpretation of source syntax is considered a bug
-- shared runtime semantics (call binding, decode/validate/JSON conversion) are centralized and consumed by AST/VM/native paths
+- shared runtime semantics (call binding, decode/validate/JSON conversion) are centralized and consumed by AST/native paths
 
 Canonical relationship:
 
 ```text
 Source -> Parser -> AST -> Lowering passes -> Canonical program
-                                           -> VM execution
                                            -> Native execution
 ```
 
@@ -88,6 +86,16 @@ Native backend note:
 - Duplicate function names across different modules are valid.
 
 See also: [Scope + constraints](../governance/scope.md), [Priority roadmap](../governance/scope.md#priority-roadmap).
+
+---
+
+## Expression operator behavior
+
+Comparison behavior is shared across AST/native backends:
+
+- `==` / `!=` support same-typed pairs for `Int`, `Float`, `Bool`, `String`, and `Bytes`.
+- `<`, `<=`, `>`, `>=` support numeric pairs (`Int`, `Float`) only.
+- unsupported comparison operand pairs produce runtime errors.
 
 ---
 
@@ -356,6 +364,19 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 - `FUSE_ASSET_MAP` provides logical-path -> public-URL mappings for `asset(path)`
 - `FUSE_VITE_PROXY_URL` enables fallback proxying of unknown routes to Vite dev server
 - `FUSE_SVG_DIR` overrides SVG base directory for `svg.inline`
+
+#### Observability baseline (current implementation)
+
+- request ID propagation is not currently implemented:
+  - inbound HTTP headers are not surfaced to route handlers
+  - responses do not include a runtime-generated request ID header
+- there is no dedicated structured request logging mode yet:
+  - request-level access logs are not emitted automatically
+  - runtime `log(...)` remains the explicit logging mechanism
+- panic classification is currently binary in fatal envelopes:
+  - `runtime_fatal` for handled runtime failures
+  - `panic` for process-level panic paths
+- no metrics hook extension point is currently exposed by the runtime
 
 See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [Services and declaration syntax](fls.md#services-and-declaration-syntax).
 
