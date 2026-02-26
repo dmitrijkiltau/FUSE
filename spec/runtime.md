@@ -17,30 +17,13 @@ Companion references:
 - `Conflict policy`: syntax/static semantics defer to `fls.md`; roadmap/planning defers to
   `../governance/scope.md`; release-operations policy defers to `../ops/AOT_RELEASE_CONTRACT.md`
   and `../ops/RELEASE.md`.
+- `Exclusions`: grammar, AST shape, and parsing rules are owned by `fls.md`; project planning by
+  `../governance/scope.md`.
 
 Normative terms in this document:
 
 - `must` / `must not` indicate required runtime behavior
 - `may` indicates allowed implementation latitude that preserves observable behavior
-
----
-
-## Runtime surface and ownership
-
-This document owns:
-
-- backend execution behavior
-- runtime error/status/JSON rendering behavior
-- boundary behavior (validation, JSON, config, CLI, HTTP)
-- builtins, DB access, migrations/tests execution, concurrency model, logging
-
-This document does not re-specify:
-
-- grammar or parsing rules
-- AST shape details
-- project planning/roadmap
-
-See also: [Formal language specification](fls.md), [Scope + constraints](../governance/scope.md).
 
 ---
 
@@ -80,12 +63,8 @@ Native backend note:
 
 ### Function symbol resolution
 
-- Function symbols are module-scoped.
-- Unqualified calls resolve in the current module first, then named imports.
-- Qualified calls (`Foo.bar()`) resolve to the exported function in module alias `Foo`.
-- Duplicate function names across different modules are valid.
-
-See also: [Scope + constraints](../governance/scope.md), [Priority roadmap](../governance/scope.md#priority-roadmap).
+Function symbols are module-scoped. Resolution rules (unqualified, qualified, duplicate names)
+are defined in [Imports and modules](fls.md#imports-and-modules-current).
 
 ---
 
@@ -524,12 +503,8 @@ Task surface (v0.2.0):
 - task helper builtins were removed (`task.id`, `task.done`, `task.cancel`)
 - task values are consumed via `await` only
 
-Spawn determinism restrictions (enforced by semantic analysis):
-
-- no `box` capture/use in `spawn` blocks
-- no runtime side-effect builtins in `spawn` blocks:
-  `db.*`, `serve`, `print`, `input`, `log`, `env`, `asset`, `svg.inline`
-- no mutation of captured outer bindings
+Spawn determinism restrictions are enforced at compile time by semantic analysis.
+See [Spawn static restrictions](fls.md#spawn-static-restrictions-v020) for the full list.
 
 `box expr` creates a shared mutable cell. Boxed values are transparently dereferenced in most
 expressions; assigning boxed bindings updates shared cell state. `spawn` blocks cannot capture or

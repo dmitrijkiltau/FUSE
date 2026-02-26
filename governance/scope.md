@@ -15,16 +15,8 @@ owned by `../spec/fls.md` (syntax/static semantics) and `../spec/runtime.md` (ru
 - `Conflict policy`: syntax/static/runtime behavior defers to `../spec/fls.md` and `../spec/runtime.md`; identity
   constraints defer to `IDENTITY_CHARTER.md`.
 
-Companion references for implementation work:
-
-- `../README.md` is the repository front door for setup/workflow/document routing
-- `../guides/fuse.md` gives product-level narrative context
-- `IDENTITY_CHARTER.md` defines non-negotiable language identity boundaries
-- `EXTENSIBILITY_BOUNDARIES.md` defines allowed extension surfaces and stability boundaries
-- `../ops/BENCHMARKS.md` defines real-world workload benchmarks and metric collection
-- `VERSIONING_POLICY.md` defines language/runtime/tooling compatibility and deprecation rules
-- `../spec/fls.md` specifies language and static-semantics details
-- `../spec/runtime.md` specifies execution/runtime behavior
+For a full cross-reference of project documents, see
+[Developer navigation](../guides/fuse.md#developer-navigation).
 
 ---
 

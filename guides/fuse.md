@@ -118,10 +118,9 @@ FUSE currently ships with:
 
 - parser + semantic analysis + formatter
 - AST interpreter backend
-- native backend path targeting IR-compatible semantics
-- parity-backed comparison semantics across backends (`Bool` equality/inequality included)
-- module imports (relative paths, package-root paths via `root:`, and dependency paths via `dep:`)
-- module-scoped function symbols (local-first, then named-import resolution)
+- native backend (Cranelift JIT)
+- semantic parity gates across AST/native backends
+- module imports (relative, `root:`, and `dep:` paths)
 - package tooling via `fuse.toml` and `fuse` commands
 
 Detailed capability matrices and caveats live in:
@@ -135,27 +134,14 @@ See also: [Package workflow (summary)](#package-workflow-summary), [Runtime sema
 
 ## Semantic authority contract
 
-FUSE follows a single semantic authority model:
+FUSE follows a single semantic authority model: parser + frontend canonicalization define language
+semantics; backends are execution strategies over canonical forms. Backend-specific reinterpretation
+of source syntax is a correctness bug.
 
-- parser + frontend canonicalization define language semantics
-- canonical AST is the semantic program
-- native is an execution strategy over canonical forms
-- backend-specific reinterpretation of source syntax is a correctness bug
+Full pipeline and parity release gates are documented in
+[Backends](../spec/runtime.md#backends).
 
-Pipeline:
-
-1. source parses into AST
-2. frontend canonicalization lowers syntax sugar on AST forms (for example HTML block children and string-child lowering)
-3. semantic checks run on canonical AST
-4. native lowers or executes canonical forms with equivalent behavior
-
-Authority/parity release gates:
-
-- `./scripts/semantic_suite.sh` (parser/sema/boundary semantic contract suite)
-- `./scripts/authority_parity.sh` (explicit semantic-authority suite)
-- `./scripts/release_smoke.sh` (includes authority parity + full smoke checks)
-
-See also: [Backends](../spec/runtime.md#backends), [Runtime surface and ownership](../spec/runtime.md#runtime-surface-and-ownership).
+See also: [Runtime surface and ownership](../spec/runtime.md).
 
 ---
 

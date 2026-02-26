@@ -13,30 +13,13 @@ is intentionally documented in `runtime.md`.
 - `Owned concerns`: lexical rules, grammar acceptance, AST shape, static typing, and import/module
   semantic-analysis behavior.
 - `Conflict policy`: runtime behavior defers to `runtime.md`; roadmap/planning defers to `../governance/scope.md`.
+- `Exclusions`: runtime value encoding/decoding, boundary binding rules, backend execution details
+  and builtins behavior are owned by `runtime.md`.
 
 Normative terms in this document:
 
 - `must` / `must not` indicate required behavior for parser + semantic analysis
 - `may` indicates optional syntax forms accepted by the current parser
-
----
-
-## Scope of this document
-
-Covered here:
-
-- lexing and indentation rules
-- grammar and parse-level sugar
-- AST model shape
-- static type model and module/import resolution
-
-Not covered here:
-
-- runtime value encoding/decoding behavior
-- runtime boundary binding rules
-- backend execution details and builtins behavior
-
-See also: [Lexing + indentation rules](#lexing--indentation-rules), [Runtime semantics](runtime.md).
 
 ---
 
@@ -404,6 +387,9 @@ Constraint forms:
   `Int`, `Float`, `Bool`, `String`, and `Bytes`.
 - Relational operators (`<`, `<=`, `>`, `>=`) are defined for numeric pairs (`Int`, `Float`).
 - Comparisons outside supported operand pairs are invalid.
+
+Runtime error behavior for unsupported pairs is defined in
+[Expression operator behavior](runtime.md#expression-operator-behavior).
 
 ### Structural vs nominal
 
