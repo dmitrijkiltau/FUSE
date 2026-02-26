@@ -11,7 +11,7 @@ contract-first boundaries:
 - typed inputs/outputs
 - built-in validation
 - predictable JSON/config/CLI/HTTP binding
-- consistent backend semantics (AST/VM/native)
+- consistent backend semantics (AST/native; VM deprecated per RFC 0007)
 
 ## Product Identity
 

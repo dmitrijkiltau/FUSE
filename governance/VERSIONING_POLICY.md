@@ -59,7 +59,7 @@ Recent release-line notes:
 - `0.3.0` is a quality/stability minor that keeps `0.2.x` source compatibility while expanding
   parity/tooling/release artifact reliability coverage.
 
-- semantic regressions across AST/VM/native are release blockers on all active release lines.
+- semantic regressions across AST/native are release blockers on all active release lines. (VM is deprecated per RFC 0007.)
 
 ## Compatibility guarantees
 
@@ -73,7 +73,7 @@ Recent release-line notes:
 ### Runtime behavior compatibility
 
 - Error/status/JSON/boundary behavior documented in `../spec/runtime.md` is part of the stable contract.
-- Backend divergence (AST vs VM vs native) is a correctness bug.
+- Backend divergence (AST vs native) is a correctness bug. (VM is deprecated per RFC 0007.)
 
 ### Cache/binary compatibility
 
