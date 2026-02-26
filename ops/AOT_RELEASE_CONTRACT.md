@@ -17,7 +17,7 @@ Scope: production AOT backend and release reproducibility contract for the activ
 1. `../spec/fls.md` and `../spec/runtime.md` remain the semantic authority.
 2. AOT is an execution strategy over canonical frontend artifacts.
 3. Backend-specific reinterpretation of source semantics is a correctness bug.
-4. VM/native/AOT semantic parity is a release gate for contract-facing behavior.
+4. Native/AOT semantic parity is a release gate for contract-facing behavior.
 
 ## Operational contract
 

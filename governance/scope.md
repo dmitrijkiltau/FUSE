@@ -72,7 +72,7 @@ See also: [Runtime semantics](../spec/runtime.md), [README](../README.md), [FUSE
 FUSE is currently scoped as a strict, typed language with integrated boundary/runtime tooling for:
 
 - language authoring (`fn`, `type`, `enum`, modules/imports, services/config/apps)
-- backend execution across AST/native with semantic parity gates (including operator semantics such as `Bool` equality/inequality); VM is deprecated per RFC 0007
+- backend execution across AST/native with semantic parity gates (including operator semantics such as `Bool` equality/inequality); VM removed per RFC 0007
 - integrated runtime boundary handling (validation, JSON/config/CLI/HTTP binding, error mapping)
 - SQLite-backed DB runtime and migration workflow
 - service-oriented package workflow (`fuse check/run/dev/test/build`)

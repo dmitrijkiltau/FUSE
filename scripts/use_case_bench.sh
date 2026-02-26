@@ -244,10 +244,10 @@ run_single_iteration() {
   echo "Running CLI workload metrics..."
   measure_cmd_ms cli_check_ms "$ROOT/scripts/fuse" check "$ROOT/examples/project_demo.fuse"
   measure_cmd_ms cli_run_ok_ms env APP_GREETING="Hello" APP_WHO="Bench" \
-    "$ROOT/scripts/fuse" run --backend vm "$ROOT/examples/project_demo.fuse"
+    "$ROOT/scripts/fuse" run --backend native "$ROOT/examples/project_demo.fuse"
   measure_cmd_ms_with_status cli_run_invalid_ms cli_run_invalid_status \
     env APP_GREETING="Hello" APP_WHO="Bench" DEMO_FAIL="1" \
-    "$ROOT/scripts/fuse" run --backend vm "$ROOT/examples/project_demo.fuse"
+    "$ROOT/scripts/fuse" run --backend native "$ROOT/examples/project_demo.fuse"
   if [[ "$cli_run_invalid_status" -eq 0 ]]; then
     echo "Expected project_demo contract-failure run to fail (DEMO_FAIL=1)." >&2
     exit 1

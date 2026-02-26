@@ -32,8 +32,7 @@ Reason: these extension classes break the small deterministic core and conflict 
 Status: `INTERNAL ONLY` (maintainer-owned, in-tree)
 
 - Public backend set is fixed to `ast | native`.
-- `vm` is **deprecated** (RFC 0007) and retained only during the deprecation window;
-  it will be removed in the next breaking minor release.
+- `vm` has been **removed** per RFC 0007.
 - No dynamic backend plugin loading API is exposed.
 - Any new backend must consume canonical frontend outputs, not raw source re-interpretation.
 

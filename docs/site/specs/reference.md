@@ -470,4 +470,4 @@ Current practical constraints:
 - SQLite-focused database runtime
 - no full ORM layer
 - task model is still evolving
-- native backend path targets VM-compatible semantics
+- native backend path targets IR-compatible semantics

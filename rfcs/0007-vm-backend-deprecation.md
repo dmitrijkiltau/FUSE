@@ -1,6 +1,6 @@
 # RFC 0007: VM Backend Deprecation
 
-- Status: Proposed
+- Status: Implemented
 - Authors: FUSE maintainers
 - Created: 2026-02-26
 - Updated: 2026-02-26

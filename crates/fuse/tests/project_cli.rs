@@ -159,14 +159,19 @@ fn contains_ansi(raw: &str) -> bool {
 fn overwrite_cached_ir_from_source(dir: &Path, source: &str) {
     let source_path = dir.join("__cache_override__.fuse");
     fs::write(&source_path, source).expect("write cache override source");
-    let (registry, diags) = fusec::load_program_with_modules(&source_path, source);
-    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
-    let ir = fusec::ir::lower::lower_registry(&registry).expect("lower cache override source");
-    let ir_bytes = bincode::serialize(&ir).expect("encode cache override ir");
-    fs::write(dir.join(".fuse").join("build").join("program.ir"), ir_bytes)
-        .expect("write cache override ir");
-    // Remove the native artifact so the runner falls back to the overwritten IR.
-    let _ = fs::remove_file(dir.join(".fuse").join("build").join("program.native"));
+    let native =
+        fusec::native::compile_registry(&{
+            let (registry, diags) = fusec::load_program_with_modules(&source_path, source);
+            assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+            registry
+        })
+        .expect("compile cache override native");
+    let native_bytes = bincode::serialize(&native).expect("encode cache override native");
+    fs::write(
+        dir.join(".fuse").join("build").join("program.native"),
+        native_bytes,
+    )
+    .expect("write cache override native");
     let _ = fs::remove_file(source_path);
 }
 
@@ -1946,10 +1951,6 @@ app "Demo":
 
     let aot_path = default_aot_binary_path(&dir);
     assert!(aot_path.exists(), "expected {}", aot_path.display());
-    assert!(
-        dir.join(".fuse").join("build").join("program.ir").exists(),
-        "expected cached IR artifact"
-    );
     assert!(
         dir.join(".fuse")
             .join("build")

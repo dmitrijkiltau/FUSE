@@ -29,12 +29,12 @@ Describe the observed behavior and why it is incorrect.
 - FUSE commit/tag:
 - OS:
 - Rust version (`rustc -V`):
-- Backend(s) affected: AST / VM / Native
+- Backend(s) affected: AST / Native
 
 ## Regression and parity
 
 - [ ] Reproducible on current `main`
-- [ ] VM/Native parity impacted (if known)
+- [ ] Native parity impacted (if known)
 - [ ] Related semantic/parity test exists (if known)
 
 ## Additional context

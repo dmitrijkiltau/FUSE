@@ -6,7 +6,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use fusec::interp::{Interpreter, Value};
 use fusec::native::{NativeVm, compile_registry};
-use fusec::vm::Vm;
 
 fn temp_project_dir(tag: &str) -> PathBuf {
     let mut dir = std::env::temp_dir();
@@ -77,10 +76,6 @@ fn main() -> String:
         .call_function_with_named_args("main", &HashMap::new())
         .expect("ast call failed");
 
-    let ir = fusec::ir::lower::lower_registry(&registry).expect("vm lowering failed");
-    let mut vm = Vm::new(&ir);
-    let vm_value = vm.call_function("main", vec![]).expect("vm call failed");
-
     let native = compile_registry(&registry).expect("native lowering failed");
     let mut native_vm = NativeVm::new(&native);
     let native_value = native_vm
@@ -88,7 +83,6 @@ fn main() -> String:
         .expect("native call failed");
 
     assert_eq!(as_string(ast), "a|b|a");
-    assert_eq!(as_string(vm_value), "a|b|a");
     assert_eq!(as_string(native_value), "a|b|a");
 
     let _ = fs::remove_dir_all(&dir);
@@ -235,10 +229,6 @@ fn main() -> String:
         .call_function_with_named_args("main", &HashMap::new())
         .expect("ast call failed");
 
-    let ir = fusec::ir::lower::lower_registry(&registry).expect("vm lowering failed");
-    let mut vm = Vm::new(&ir);
-    let vm_value = vm.call_function("main", vec![]).expect("vm call failed");
-
     let native = compile_registry(&registry).expect("native lowering failed");
     let mut native_vm = NativeVm::new(&native);
     let native_value = native_vm
@@ -246,7 +236,6 @@ fn main() -> String:
         .expect("native call failed");
 
     assert_eq!(as_string(ast), "root");
-    assert_eq!(as_string(vm_value), "root");
     assert_eq!(as_string(native_value), "root");
 
     let _ = fs::remove_dir_all(&dir);

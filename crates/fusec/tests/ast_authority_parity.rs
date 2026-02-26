@@ -7,7 +7,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use fusec::interp::{Interpreter, Value};
 use fusec::native::{NativeVm, compile_registry};
-use fusec::vm::Vm;
 
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -213,22 +212,6 @@ fn main(name: String) -> String:
     assert!(
         ast_err.contains("unknown argument"),
         "unexpected ast error: {ast_err}"
-    );
-
-    let ir = fusec::ir::lower::lower_registry(&registry).expect("vm lowering failed");
-    let mut vm = Vm::new(&ir);
-    let vm_err = vm
-        .call_function(
-            "main",
-            vec![
-                Value::String("Ada".to_string()),
-                Value::String("unused".to_string()),
-            ],
-        )
-        .expect_err("vm should reject extra positional arguments");
-    assert!(
-        vm_err.contains("invalid call to"),
-        "unexpected vm error: {vm_err}"
     );
 
     let native = compile_registry(&registry).expect("native lowering failed");

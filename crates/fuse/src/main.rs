@@ -30,7 +30,7 @@ options:
   --manifest-path <path>  Path to fuse.toml (defaults to nearest parent)
   --file <path>           Entry file override
   --app <name>            App name override
-  --backend <ast|vm|native>  Backend override (run only)
+  --backend <ast|native>  Backend override (run only)
   --color <auto|always|never>  Colorized CLI output policy
   --clean                 Remove .fuse/build before building (build only)
   --aot                   Emit deployable AOT binary (build only)
@@ -164,7 +164,6 @@ struct IrFileMeta {
 }
 
 struct BuildArtifacts {
-    ir: fusec::ir::Program,
     native: fusec::native::NativeProgram,
     meta: IrMeta,
 }
@@ -203,7 +202,6 @@ enum Command {
 #[derive(Copy, Clone, Eq, PartialEq)]
 enum RunBackend {
     Ast,
-    Vm,
     Native,
 }
 
@@ -331,7 +329,6 @@ impl RunBackend {
     fn parse(name: &str) -> Option<Self> {
         match name {
             "ast" => Some(Self::Ast),
-            "vm" => Some(Self::Vm),
             "native" => Some(Self::Native),
             _ => None,
         }
@@ -340,7 +337,6 @@ impl RunBackend {
     fn as_str(self) -> &'static str {
         match self {
             Self::Ast => "ast",
-            Self::Vm => "vm",
             Self::Native => "native",
         }
     }
@@ -465,15 +461,6 @@ fn run(args: Vec<String>) -> i32 {
     if matches!(command, Command::Run) {
         match backend {
             Some(RunBackend::Ast) => {}
-            Some(RunBackend::Vm) => {
-                if let Some(ir) = try_load_ir(manifest_dir.as_deref()) {
-                    apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
-                    return finalize_command(
-                        command,
-                        run_vm_ir(ir, app.as_deref(), &entry, &deps, &common.program_args),
-                    );
-                }
-            }
             _ => {
                 if let Some(native) = try_load_native(manifest_dir.as_deref()) {
                     apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
@@ -486,14 +473,6 @@ fn run(args: Vec<String>) -> i32 {
                             &deps,
                             &common.program_args,
                         ),
-                    );
-                }
-                // Fall back to cached IR (VM) when no native artifact exists.
-                if let Some(ir) = try_load_ir(manifest_dir.as_deref()) {
-                    apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
-                    return finalize_command(
-                        command,
-                        run_vm_ir(ir, app.as_deref(), &entry, &deps, &common.program_args),
                     );
                 }
             }
@@ -2517,9 +2496,9 @@ fn compile_artifacts(
         }
         out
     })?;
-    let native = fusec::native::NativeProgram::from_ir(ir.clone());
+    let native = fusec::native::NativeProgram::from_ir(ir);
     let meta = build_ir_meta(&registry, manifest_dir)?;
-    Ok(BuildArtifacts { ir, native, meta })
+    Ok(BuildArtifacts { native, meta })
 }
 
 fn write_compiled_artifacts(
@@ -2531,12 +2510,6 @@ fn write_compiled_artifacts(
         fs::create_dir_all(&build_dir)
             .map_err(|err| format!("failed to create {}: {err}", build_dir.display()))?;
     }
-
-    let ir_path = build_dir.join("program.ir");
-    let ir_bytes =
-        bincode::serialize(&artifacts.ir).map_err(|err| format!("ir encode failed: {err}"))?;
-    fs::write(&ir_path, ir_bytes)
-        .map_err(|err| format!("failed to write {}: {err}", ir_path.display()))?;
 
     let native_path = build_dir.join("program.native");
     let native_bytes = bincode::serialize(&artifacts.native)
@@ -2550,18 +2523,6 @@ fn write_compiled_artifacts(
     fs::write(&meta_path, meta_bytes)
         .map_err(|err| format!("failed to write {}: {err}", meta_path.display()))?;
     Ok(())
-}
-
-fn try_load_ir(manifest_dir: Option<&Path>) -> Option<fusec::ir::Program> {
-    let build_dir = build_dir(manifest_dir).ok()?;
-    let path = build_dir.join("program.ir");
-    let meta_path = build_dir.join("program.meta");
-    let meta = load_ir_meta(&meta_path)?;
-    if !ir_meta_is_valid(&meta, manifest_dir) {
-        return None;
-    }
-    let bytes = fs::read(&path).ok()?;
-    bincode::deserialize(&bytes).ok()
 }
 
 fn try_load_native(manifest_dir: Option<&Path>) -> Option<fusec::native::NativeProgram> {
@@ -2578,36 +2539,6 @@ fn try_load_native(manifest_dir: Option<&Path>) -> Option<fusec::native::NativeP
         return None;
     }
     Some(native)
-}
-
-fn run_vm_ir(
-    ir: fusec::ir::Program,
-    app: Option<&str>,
-    entry: &Path,
-    deps: &HashMap<String, PathBuf>,
-    program_args: &[String],
-) -> i32 {
-    let mut vm = fusec::vm::Vm::new(&ir);
-    if program_args.is_empty() {
-        return match vm.run_app(app) {
-            Ok(_) => 0,
-            Err(err) => {
-                emit_cli_error(&format!("run error: {err}"));
-                1
-            }
-        };
-    }
-    let (entry_name, args) = match prepare_cached_cli_call(entry, deps, program_args) {
-        Ok(value) => value,
-        Err(code) => return code,
-    };
-    match vm.call_function(&entry_name, args) {
-        Ok(_) => 0,
-        Err(err) => {
-            emit_error_json_message(&err);
-            2
-        }
-    }
 }
 
 fn run_native_program(

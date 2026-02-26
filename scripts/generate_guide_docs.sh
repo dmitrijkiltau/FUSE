@@ -289,7 +289,7 @@ DOCKER
     echo "- SQLite-focused database runtime"
     echo "- no full ORM layer"
     echo "- task model is still evolving"
-    echo "- native backend path targets VM-compatible semantics"
+    echo "- native backend path targets IR-compatible semantics"
 
   } >"$dst"
 

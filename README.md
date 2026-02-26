@@ -197,7 +197,7 @@ Always run Cargo through `scripts/cargo_env.sh` to avoid cross-device link error
 | Gate | Command | Purpose |
 |---|---|---|
 | Semantic suite | `./scripts/semantic_suite.sh` | Parser, type system, and boundary contract tests |
-| Authority parity | `./scripts/authority_parity.sh` | AST/VM/native semantic equivalence |
+| Authority parity | `./scripts/authority_parity.sh` | AST/native semantic equivalence |
 | LSP suite | `./scripts/lsp_suite.sh` | LSP contracts, navigation, completions, code actions |
 | LSP performance | `./scripts/lsp_perf_reliability.sh` | Cancellation handling and responsiveness budgets |
 | LSP incremental | `./scripts/lsp_workspace_incremental.sh` | Workspace cache correctness |
@@ -259,7 +259,7 @@ code --install-extension dist/fuse-vscode-linux-x64.vsix
 
 | Path | Contents |
 |---|---|
-| `crates/fusec` | Compiler: parser, semantic analysis, VM, native runtime/JIT, LSP |
+| `crates/fusec` | Compiler: parser, semantic analysis, native runtime/JIT, LSP |
 | `crates/fuse` | Package-oriented CLI wrapper |
 | `crates/fuse-rt` | Shared runtime library |
 | `examples/` | Sample programs and packages |

@@ -1,7 +1,7 @@
 [package]
 entry = "src/main.fuse"
 app = "Docs"
-backend = "vm"
+backend = "native"
 
 [build]
 openapi = "site/openapi.json"

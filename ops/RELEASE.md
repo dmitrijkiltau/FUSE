@@ -38,7 +38,7 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
    - Verify latest `.fuse/bench/aot_perf_metrics.json` passes `./scripts/check_aot_perf_slo.sh`.
    - Ensure GitHub Actions `Pre-release Gate` passed on the release PR (`.github/workflows/pre-release-gate.yml`).
    - Covers authority/parity gates, `fusec` + `fuse` test suites, release-mode compile checks,
-     package build cache checks, AST/VM/native backend smoke runs, benchmark regression checks,
+     package build cache checks, AST/native backend smoke runs, benchmark regression checks,
      VSIX package validation, packaging verifier regression checks, and host release artifact/checksum generation.
 4. Verify package UX manually (optional but recommended):
    - `./scripts/fuse build`

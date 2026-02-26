@@ -68,7 +68,7 @@ Exit criteria:
 
 1. `./scripts/semantic_suite.sh` passes.
 2. `./scripts/authority_parity.sh` passes.
-3. No known AST/VM/native/AOT contract-facing divergence remains open.
+3. No known AST/native/AOT contract-facing divergence remains open.
 
 ### M2: Canonical reference service
 
