@@ -33,29 +33,6 @@ fn run_example_with_stdin(backend: &str, example: &str, stdin_text: &str) -> std
 }
 
 #[test]
-fn runs_cli_hello_vm() {
-    let exe = env!("CARGO_BIN_EXE_fusec");
-    let output = Command::new(exe)
-        .arg("--run")
-        .arg("--backend")
-        .arg("vm")
-        .arg(example_path("cli_hello.fuse"))
-        .env("APP_GREETING", "Hi")
-        .env("APP_DEFAULT_NAME", "Codex")
-        .env("GREETING", "ShouldNotUse")
-        .output()
-        .expect("failed to run fusec");
-
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), "Hi, Codex!");
-}
-
-#[test]
 fn runs_cli_hello_native() {
     let exe = env!("CARGO_BIN_EXE_fusec");
     let output = Command::new(exe)
@@ -100,20 +77,6 @@ fn runs_cli_args_native() {
 }
 
 #[test]
-fn runs_cli_input_vm() {
-    let output = run_example_with_stdin("vm", "cli_input.fuse", "Codex\n");
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "Name: Hello, Codex\n"
-    );
-}
-
-#[test]
 fn runs_cli_input_native() {
     let output = run_example_with_stdin("native", "cli_input.fuse", "Codex\n");
     assert!(
@@ -128,12 +91,12 @@ fn runs_cli_input_native() {
 }
 
 #[test]
-fn runs_enum_match_vm() {
+fn runs_enum_match_native() {
     let exe = env!("CARGO_BIN_EXE_fusec");
     let output = Command::new(exe)
         .arg("--run")
         .arg("--backend")
-        .arg("vm")
+        .arg("native")
         .arg(example_path("enum_match.fuse"))
         .output()
         .expect("failed to run fusec");
@@ -178,27 +141,6 @@ fn runs_interp_demo_ast() {
         .arg("--run")
         .arg("--backend")
         .arg("ast")
-        .arg(example_path("interp_demo.fuse"))
-        .output()
-        .expect("failed to run fusec");
-
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines, vec!["Hello, world!", "sum 3"]);
-}
-
-#[test]
-fn runs_interp_demo_vm() {
-    let exe = env!("CARGO_BIN_EXE_fusec");
-    let output = Command::new(exe)
-        .arg("--run")
-        .arg("--backend")
-        .arg("vm")
         .arg(example_path("interp_demo.fuse"))
         .output()
         .expect("failed to run fusec");

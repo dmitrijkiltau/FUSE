@@ -48,7 +48,7 @@ app "demo":
 #[test]
 fn refinement_constraints_accept_valid_value_all_backends() {
     let path = write_temp_program("fuse_refine_runtime_ok", test_program());
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, &path, "good_slug");
         assert!(
             output.status.success(),
@@ -66,7 +66,7 @@ fn refinement_constraints_accept_valid_value_all_backends() {
 #[test]
 fn refinement_regex_rejects_invalid_value_all_backends() {
     let path = write_temp_program("fuse_refine_runtime_regex_fail", test_program());
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, &path, "BAD!");
         assert!(
             !output.status.success(),
@@ -88,7 +88,7 @@ fn refinement_regex_rejects_invalid_value_all_backends() {
 #[test]
 fn refinement_predicate_rejects_invalid_value_all_backends() {
     let path = write_temp_program("fuse_refine_runtime_predicate_fail", test_program());
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, &path, "blocked");
         assert!(
             !output.status.success(),

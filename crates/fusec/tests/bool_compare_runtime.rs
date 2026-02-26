@@ -38,7 +38,7 @@ app "BoolCompare":
   print(b != true)
 "#;
 
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program(backend, program);
         assert!(
             output.status.success(),

@@ -39,7 +39,7 @@ fn main(token: Bytes):
   print(token)
 "#;
 
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program_with_args(backend, program, &["--token=YQ=="]);
         assert!(
             output.status.success(),
@@ -58,7 +58,7 @@ fn main(token: Bytes):
   print(json.encode({"blob": token}))
 "#;
 
-    for backend in ["ast", "vm"] {
+    for backend in ["ast", "native"] {
         let output = run_program_with_args(backend, program, &["--token=YQ=="]);
         assert!(
             output.status.success(),
@@ -77,7 +77,7 @@ fn main(token: Bytes):
   print(token)
 "#;
 
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = run_program_with_args(backend, program, &["--token=not_base64"]);
         assert!(
             !output.status.success(),

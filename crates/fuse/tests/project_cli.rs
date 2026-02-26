@@ -165,6 +165,8 @@ fn overwrite_cached_ir_from_source(dir: &Path, source: &str) {
     let ir_bytes = bincode::serialize(&ir).expect("encode cache override ir");
     fs::write(dir.join(".fuse").join("build").join("program.ir"), ir_bytes)
         .expect("write cache override ir");
+    // Remove the native artifact so the runner falls back to the overwritten IR.
+    let _ = fs::remove_file(dir.join(".fuse").join("build").join("program.native"));
     let _ = fs::remove_file(source_path);
 }
 

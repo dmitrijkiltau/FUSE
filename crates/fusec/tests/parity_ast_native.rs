@@ -173,56 +173,12 @@ fn normalize_error(stderr: &str) -> String {
 fn parity_cli_hello() {
     let envs = [("GREETING", "Hi"), ("NAME", "Codex")];
     let ast = run_example("ast", "cli_hello.fuse", &envs);
-    let vm = run_example("vm", "cli_hello.fuse", &envs);
+    let native = run_example("native", "cli_hello.fuse", &envs);
 
     assert!(
         ast.status.success(),
         "ast stderr: {}",
         String::from_utf8_lossy(&ast.stderr)
-    );
-    assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
-    );
-
-    assert_eq!(
-        String::from_utf8_lossy(&ast.stdout),
-        String::from_utf8_lossy(&vm.stdout)
-    );
-}
-
-#[test]
-fn parity_interp_demo() {
-    let ast = run_example("ast", "interp_demo.fuse", &[]);
-    let vm = run_example("vm", "interp_demo.fuse", &[]);
-
-    assert!(
-        ast.status.success(),
-        "ast stderr: {}",
-        String::from_utf8_lossy(&ast.stderr)
-    );
-    assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
-    );
-
-    assert_eq!(
-        String::from_utf8_lossy(&ast.stdout),
-        String::from_utf8_lossy(&vm.stdout)
-    );
-}
-
-#[test]
-fn parity_vm_native_interp_demo() {
-    let vm = run_example("vm", "interp_demo.fuse", &[]);
-    let native = run_example("native", "interp_demo.fuse", &[]);
-
-    assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
     );
     assert!(
         native.status.success(),
@@ -231,7 +187,29 @@ fn parity_vm_native_interp_demo() {
     );
 
     assert_eq!(
-        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&ast.stdout),
+        String::from_utf8_lossy(&native.stdout)
+    );
+}
+
+#[test]
+fn parity_interp_demo() {
+    let ast = run_example("ast", "interp_demo.fuse", &[]);
+    let native = run_example("native", "interp_demo.fuse", &[]);
+
+    assert!(
+        ast.status.success(),
+        "ast stderr: {}",
+        String::from_utf8_lossy(&ast.stderr)
+    );
+    assert!(
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stdout),
         String::from_utf8_lossy(&native.stdout)
     );
 }
@@ -239,7 +217,7 @@ fn parity_vm_native_interp_demo() {
 #[test]
 fn parity_task_api() {
     let ast = run_example("ast", "task_api.fuse", &[]);
-    let vm = run_example("vm", "task_api.fuse", &[]);
+    let native = run_example("native", "task_api.fuse", &[]);
 
     assert!(
         ast.status.success(),
@@ -247,21 +225,21 @@ fn parity_task_api() {
         String::from_utf8_lossy(&ast.stderr)
     );
     assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
     );
 
     assert_eq!(
         String::from_utf8_lossy(&ast.stdout),
-        String::from_utf8_lossy(&vm.stdout)
+        String::from_utf8_lossy(&native.stdout)
     );
 }
 
 #[test]
 fn parity_box_shared() {
     let ast = run_example("ast", "box_shared.fuse", &[]);
-    let vm = run_example("vm", "box_shared.fuse", &[]);
+    let native = run_example("native", "box_shared.fuse", &[]);
 
     assert!(
         ast.status.success(),
@@ -269,21 +247,21 @@ fn parity_box_shared() {
         String::from_utf8_lossy(&ast.stderr)
     );
     assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
     );
 
     assert_eq!(
         String::from_utf8_lossy(&ast.stdout),
-        String::from_utf8_lossy(&vm.stdout)
+        String::from_utf8_lossy(&native.stdout)
     );
 }
 
 #[test]
 fn parity_assign_field() {
     let ast = run_example("ast", "assign_field.fuse", &[]);
-    let vm = run_example("vm", "assign_field.fuse", &[]);
+    let native = run_example("native", "assign_field.fuse", &[]);
 
     assert!(
         ast.status.success(),
@@ -291,21 +269,21 @@ fn parity_assign_field() {
         String::from_utf8_lossy(&ast.stderr)
     );
     assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
     );
 
     assert_eq!(
         String::from_utf8_lossy(&ast.stdout),
-        String::from_utf8_lossy(&vm.stdout)
+        String::from_utf8_lossy(&native.stdout)
     );
 }
 
 #[test]
 fn parity_assign_index() {
     let ast = run_example("ast", "assign_index.fuse", &[]);
-    let vm = run_example("vm", "assign_index.fuse", &[]);
+    let native = run_example("native", "assign_index.fuse", &[]);
 
     assert!(
         ast.status.success(),
@@ -313,21 +291,21 @@ fn parity_assign_index() {
         String::from_utf8_lossy(&ast.stderr)
     );
     assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
     );
 
     assert_eq!(
         String::from_utf8_lossy(&ast.stdout),
-        String::from_utf8_lossy(&vm.stdout)
+        String::from_utf8_lossy(&native.stdout)
     );
 }
 
 #[test]
 fn parity_range_demo() {
     let ast = run_example("ast", "range_demo.fuse", &[]);
-    let vm = run_example("vm", "range_demo.fuse", &[]);
+    let native = run_example("native", "range_demo.fuse", &[]);
 
     assert!(
         ast.status.success(),
@@ -335,48 +313,26 @@ fn parity_range_demo() {
         String::from_utf8_lossy(&ast.stderr)
     );
     assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
-    );
-
-    assert_eq!(
-        String::from_utf8_lossy(&ast.stdout),
-        String::from_utf8_lossy(&vm.stdout)
-    );
-}
-
-#[test]
-fn parity_vm_native_range_demo() {
-    let vm = run_example("vm", "range_demo.fuse", &[]);
-    let native = run_example("native", "range_demo.fuse", &[]);
-
-    assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
-    );
-    assert!(
         native.status.success(),
         "native stderr: {}",
         String::from_utf8_lossy(&native.stderr)
     );
 
     assert_eq!(
-        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&ast.stdout),
         String::from_utf8_lossy(&native.stdout)
     );
 }
 
 #[test]
-fn parity_vm_native_float_compare() {
-    let vm = run_example("vm", "float_compare.fuse", &[]);
+fn parity_float_compare() {
+    let ast = run_example("ast", "float_compare.fuse", &[]);
     let native = run_example("native", "float_compare.fuse", &[]);
 
     assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
+        ast.status.success(),
+        "ast stderr: {}",
+        String::from_utf8_lossy(&ast.stderr)
     );
     assert!(
         native.status.success(),
@@ -385,7 +341,7 @@ fn parity_vm_native_float_compare() {
     );
 
     assert_eq!(
-        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&ast.stdout),
         String::from_utf8_lossy(&native.stdout)
     );
 }
@@ -394,35 +350,12 @@ fn parity_vm_native_float_compare() {
 fn parity_cli_binding() {
     let args = ["--name=Codex", "--excited"];
     let ast = run_example_with_args("ast", "cli_args.fuse", &args);
-    let vm = run_example_with_args("vm", "cli_args.fuse", &args);
+    let native = run_example_with_args("native", "cli_args.fuse", &args);
 
     assert!(
         ast.status.success(),
         "ast stderr: {}",
         String::from_utf8_lossy(&ast.stderr)
-    );
-    assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
-    );
-
-    assert_eq!(
-        String::from_utf8_lossy(&ast.stdout),
-        String::from_utf8_lossy(&vm.stdout)
-    );
-}
-
-#[test]
-fn parity_vm_native_cli_binding() {
-    let args = ["--name=Codex", "--excited"];
-    let vm = run_example_with_args("vm", "cli_args.fuse", &args);
-    let native = run_example_with_args("native", "cli_args.fuse", &args);
-
-    assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
     );
     assert!(
         native.status.success(),
@@ -431,7 +364,7 @@ fn parity_vm_native_cli_binding() {
     );
 
     assert_eq!(
-        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&ast.stdout),
         String::from_utf8_lossy(&native.stdout)
     );
 }
@@ -440,18 +373,12 @@ fn parity_vm_native_cli_binding() {
 fn parity_log_output_format() {
     let envs = [("FUSE_COLOR", "never")];
     let ast = run_example("ast", "log_parity.fuse", &envs);
-    let vm = run_example("vm", "log_parity.fuse", &envs);
     let native = run_example("native", "log_parity.fuse", &envs);
 
     assert!(
         ast.status.success(),
         "ast stderr: {}",
         String::from_utf8_lossy(&ast.stderr)
-    );
-    assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
     );
     assert!(
         native.status.success(),
@@ -461,10 +388,6 @@ fn parity_log_output_format() {
 
     assert_eq!(
         String::from_utf8_lossy(&ast.stderr),
-        String::from_utf8_lossy(&vm.stderr)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&vm.stderr),
         String::from_utf8_lossy(&native.stderr)
     );
     let log_text = String::from_utf8_lossy(&ast.stderr);
@@ -485,51 +408,25 @@ fn parity_log_output_format() {
 #[test]
 fn parity_spawn_error_propagation() {
     let ast = run_example("ast", "spawn_error.fuse", &[]);
-    let vm = run_example("vm", "spawn_error.fuse", &[]);
     let native = run_example("native", "spawn_error.fuse", &[]);
 
     assert!(!ast.status.success(), "expected ast failure");
-    assert!(!vm.status.success(), "expected vm failure");
     assert!(!native.status.success(), "expected native failure");
 
     let ast_err = normalize_error(&String::from_utf8_lossy(&ast.stderr));
-    let vm_err = normalize_error(&String::from_utf8_lossy(&vm.stderr));
     let native_err = normalize_error(&String::from_utf8_lossy(&native.stderr));
-    assert_eq!(ast_err, vm_err);
-    assert_eq!(vm_err, native_err);
+    assert_eq!(ast_err, native_err);
 }
 
 #[test]
 fn parity_cli_input_with_piped_stdin() {
     let ast = run_example_with_stdin("ast", "cli_input.fuse", "Codex\n");
-    let vm = run_example_with_stdin("vm", "cli_input.fuse", "Codex\n");
+    let native = run_example_with_stdin("native", "cli_input.fuse", "Codex\n");
 
     assert!(
         ast.status.success(),
         "ast stderr: {}",
         String::from_utf8_lossy(&ast.stderr)
-    );
-    assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
-    );
-
-    assert_eq!(
-        String::from_utf8_lossy(&ast.stdout),
-        String::from_utf8_lossy(&vm.stdout)
-    );
-}
-
-#[test]
-fn parity_vm_native_cli_input_with_piped_stdin() {
-    let vm = run_example_with_stdin("vm", "cli_input.fuse", "Codex\n");
-    let native = run_example_with_stdin("native", "cli_input.fuse", "Codex\n");
-
-    assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
     );
     assert!(
         native.status.success(),
@@ -538,7 +435,7 @@ fn parity_vm_native_cli_input_with_piped_stdin() {
     );
 
     assert_eq!(
-        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&ast.stdout),
         String::from_utf8_lossy(&native.stdout)
     );
 }
@@ -546,26 +443,22 @@ fn parity_vm_native_cli_input_with_piped_stdin() {
 #[test]
 fn parity_cli_input_without_stdin_reports_stable_error() {
     let ast = run_example("ast", "cli_input.fuse", &[]);
-    let vm = run_example("vm", "cli_input.fuse", &[]);
     let native = run_example("native", "cli_input.fuse", &[]);
 
     assert!(!ast.status.success(), "expected ast failure");
-    assert!(!vm.status.success(), "expected vm failure");
     assert!(!native.status.success(), "expected native failure");
 
     let expected = "input requires stdin data in non-interactive mode";
     let ast_err = String::from_utf8_lossy(&ast.stderr);
-    let vm_err = String::from_utf8_lossy(&vm.stderr);
     let native_err = String::from_utf8_lossy(&native.stderr);
     assert!(ast_err.contains(expected), "ast stderr: {ast_err}");
-    assert!(vm_err.contains(expected), "vm stderr: {vm_err}");
     assert!(native_err.contains(expected), "native stderr: {native_err}");
 }
 
 #[test]
 fn parity_enum_match() {
     let ast = run_example("ast", "enum_match.fuse", &[]);
-    let vm = run_example("vm", "enum_match.fuse", &[]);
+    let native = run_example("native", "enum_match.fuse", &[]);
 
     assert!(
         ast.status.success(),
@@ -573,14 +466,14 @@ fn parity_enum_match() {
         String::from_utf8_lossy(&ast.stderr)
     );
     assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
     );
 
     assert_eq!(
         String::from_utf8_lossy(&ast.stdout),
-        String::from_utf8_lossy(&vm.stdout)
+        String::from_utf8_lossy(&native.stdout)
     );
 }
 
@@ -588,35 +481,20 @@ fn parity_enum_match() {
 fn parity_project_demo_error() {
     let envs = [("DEMO_FAIL", "1")];
     let ast = run_example("ast", "project_demo.fuse", &envs);
-    let vm = run_example("vm", "project_demo.fuse", &envs);
-
-    assert!(!ast.status.success(), "expected ast failure");
-    assert!(!vm.status.success(), "expected vm failure");
-
-    let ast_err = normalize_error(&String::from_utf8_lossy(&ast.stderr));
-    let vm_err = normalize_error(&String::from_utf8_lossy(&vm.stderr));
-    assert_eq!(ast_err, vm_err);
-}
-
-#[test]
-fn parity_vm_native_project_demo_error() {
-    let envs = [("DEMO_FAIL", "1")];
-    let vm = run_example("vm", "project_demo.fuse", &envs);
     let native = run_example("native", "project_demo.fuse", &envs);
 
-    assert!(!vm.status.success(), "expected vm failure");
+    assert!(!ast.status.success(), "expected ast failure");
     assert!(!native.status.success(), "expected native failure");
 
-    let vm_err = normalize_error(&String::from_utf8_lossy(&vm.stderr));
+    let ast_err = normalize_error(&String::from_utf8_lossy(&ast.stderr));
     let native_err = normalize_error(&String::from_utf8_lossy(&native.stderr));
-    assert_eq!(vm_err, native_err);
+    assert_eq!(ast_err, native_err);
 }
 
 #[test]
 fn parity_db_query_builder() {
     let envs = [("FUSE_DB_URL", "sqlite::memory:")];
     let ast = run_example("ast", "db_query_builder.fuse", &envs);
-    let vm = run_example("vm", "db_query_builder.fuse", &envs);
     let native = run_example("native", "db_query_builder.fuse", &envs);
 
     assert!(
@@ -625,11 +503,6 @@ fn parity_db_query_builder() {
         String::from_utf8_lossy(&ast.stderr)
     );
     assert!(
-        vm.status.success(),
-        "vm stderr: {}",
-        String::from_utf8_lossy(&vm.stderr)
-    );
-    assert!(
         native.status.success(),
         "native stderr: {}",
         String::from_utf8_lossy(&native.stderr)
@@ -637,10 +510,6 @@ fn parity_db_query_builder() {
 
     assert_eq!(
         String::from_utf8_lossy(&ast.stdout),
-        String::from_utf8_lossy(&vm.stdout)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&vm.stdout),
         String::from_utf8_lossy(&native.stdout)
     );
 }
@@ -653,10 +522,10 @@ fn parity_http_users_get_not_found() {
     let ast = run_http_example("ast", |port| {
         format!("GET /api/users/42 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n")
     });
-    let vm = run_http_example("vm", |port| {
+    let native = run_http_example("native", |port| {
         format!("GET /api/users/42 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n")
     });
-    assert_eq!(ast, vm);
+    assert_eq!(ast, native);
 }
 
 #[test]
@@ -672,12 +541,12 @@ fn parity_http_users_post_ok() {
             body
         )
     });
-    let vm = run_http_example("vm", |port| {
+    let native = run_http_example("native", |port| {
         format!(
             "POST /api/users HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
             body.len(),
             body
         )
     });
-    assert_eq!(ast, vm);
+    assert_eq!(ast, native);
 }

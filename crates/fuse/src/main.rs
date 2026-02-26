@@ -488,6 +488,14 @@ fn run(args: Vec<String>) -> i32 {
                         ),
                     );
                 }
+                // Fall back to cached IR (VM) when no native artifact exists.
+                if let Some(ir) = try_load_ir(manifest_dir.as_deref()) {
+                    apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
+                    return finalize_command(
+                        command,
+                        run_vm_ir(ir, app.as_deref(), &entry, &deps, &common.program_args),
+                    );
+                }
             }
         }
     }

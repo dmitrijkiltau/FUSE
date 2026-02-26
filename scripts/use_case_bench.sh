@@ -171,7 +171,7 @@ start_reference_service_runtime() {
       "$ROOT/scripts/fuse" run --manifest-path "$REFERENCE_SERVICE_DIR" >"$LOG_FILE" 2>&1 &
     SERVER_PID="$!"
     probe_code=0
-    wait_for_http "http://127.0.0.1:${PORT}/api/notes" "$SERVER_PID" "$timeout_secs" || probe_code=$?
+    wait_for_http "http://127.0.0.1:${PORT}/api/public/notes" "$SERVER_PID" "$timeout_secs" || probe_code=$?
     LAST_PROBE_CODE="$probe_code"
     if [[ "$probe_code" -eq 0 ]]; then
       return 0
@@ -276,33 +276,48 @@ run_single_iteration() {
     exit 1
   fi
 
+  # Register a benchmark user and extract the session token.
+  BENCH_REGISTER_RESP=$(curl -sS --max-time 3 \
+    -X POST \
+    -H 'content-type: application/json' \
+    --data '{"email":"bench@test.local","password":"benchpass1234"}' \
+    "http://127.0.0.1:${PORT}/api/auth/register")
+  BENCH_TOKEN=$(echo "$BENCH_REGISTER_RESP" | grep -oP '"token"\s*:\s*\{\s*"value"\s*:\s*"\K[^"]+')
+  if [[ -z "$BENCH_TOKEN" ]]; then
+    echo "Failed to register bench user or extract token from: $BENCH_REGISTER_RESP" >&2
+    exit 1
+  fi
+
   # Warm route and DB path before recording request metrics.
-  curl -sS -o /dev/null --max-time 3 "http://127.0.0.1:${PORT}/api/notes" || true
-  curl -sS -o /dev/null --max-time 3 \
+  # Each first request triggers native JIT compilation for that route's code
+  # path; warmup all measured routes so we capture steady-state latency.
+  curl -sS -o /dev/null --max-time 5 "http://127.0.0.1:${PORT}/api/sessions/${BENCH_TOKEN}/notes" || true
+  curl -sS -o /dev/null --max-time 5 \
     -X POST \
     -H 'content-type: application/json' \
     --data '{"title":"bench-warmup","content":"warm"}' \
-    "http://127.0.0.1:${PORT}/api/notes" || true
+    "http://127.0.0.1:${PORT}/api/sessions/${BENCH_TOKEN}/notes" || true
+  curl -sS -o /dev/null --max-time 5 "http://127.0.0.1:${PORT}/" || true
 
-  read -r status_list notes_get_list_ms <<<"$(http_request_status_ms GET "http://127.0.0.1:${PORT}/api/notes")"
+  read -r status_list notes_get_list_ms <<<"$(http_request_status_ms GET "http://127.0.0.1:${PORT}/api/sessions/${BENCH_TOKEN}/notes")"
   if [[ "$status_list" != "200" ]]; then
-    echo "GET /api/notes expected 200, got $status_list" >&2
+    echo "GET /api/sessions/.../notes expected 200, got $status_list" >&2
     exit 1
   fi
 
   read -r status_post_ok notes_post_ok_ms <<<"$(
-    http_request_status_ms POST "http://127.0.0.1:${PORT}/api/notes" '{"title":"bench-note","content":"hello"}'
+    http_request_status_ms POST "http://127.0.0.1:${PORT}/api/sessions/${BENCH_TOKEN}/notes" '{"title":"bench-note","content":"hello"}'
   )"
   if [[ "$status_post_ok" != "200" ]]; then
-    echo "POST /api/notes valid payload expected 200, got $status_post_ok" >&2
+    echo "POST /api/sessions/.../notes valid payload expected 200, got $status_post_ok" >&2
     exit 1
   fi
 
   read -r status_post_invalid notes_post_invalid_ms <<<"$(
-    http_request_status_ms POST "http://127.0.0.1:${PORT}/api/notes" '{"title":"","content":""}'
+    http_request_status_ms POST "http://127.0.0.1:${PORT}/api/sessions/${BENCH_TOKEN}/notes" '{"title":"","content":""}'
   )"
   if [[ "$status_post_invalid" != "400" ]]; then
-    echo "POST /api/notes invalid payload expected 400, got $status_post_invalid" >&2
+    echo "POST /api/sessions/.../notes invalid payload expected 400, got $status_post_invalid" >&2
     exit 1
   fi
 

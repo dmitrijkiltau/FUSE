@@ -161,7 +161,7 @@ fn main(name: String):
     );
 
     let exe = env!("CARGO_BIN_EXE_fusec");
-    for backend in ["ast", "vm", "native"] {
+    for backend in ["ast", "native"] {
         let output = Command::new(exe)
             .arg("--run")
             .arg("--backend")

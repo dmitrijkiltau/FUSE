@@ -668,7 +668,8 @@ impl HostCalls {
         get_field_sig.params.push(AbiParam::new(pointer_ty));
         get_field_sig.params.push(AbiParam::new(types::I64));
         get_field_sig.params.push(AbiParam::new(types::I64));
-        get_field_sig.returns.push(AbiParam::new(types::I64));
+        get_field_sig.params.push(AbiParam::new(pointer_ty));
+        get_field_sig.returns.push(AbiParam::new(types::I8));
         let get_struct_field = module
             .declare_function(
                 "fuse_native_get_struct_field",
@@ -1413,30 +1414,41 @@ extern "C" fn fuse_native_get_struct_field(
     heap: *mut NativeHeap,
     struct_handle: u64,
     field_handle: u64,
-) -> u64 {
+    out: *mut NativeValue,
+) -> u8 {
     let heap = unsafe { heap.as_mut() };
     let Some(heap) = heap else {
-        return u64::MAX;
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
     };
     let Some(field_value) = heap.get(field_handle) else {
-        return u64::MAX;
+        return builtin_runtime_error(out, heap, "field lookup failed: invalid field handle");
     };
     let HeapValue::String(field) = field_value else {
-        return u64::MAX;
+        return builtin_runtime_error(
+            out,
+            heap,
+            "field lookup failed: field name is not a string",
+        );
     };
+    let field = field.clone();
     let Some(struct_value) = heap.get(struct_handle) else {
-        return u64::MAX;
+        return builtin_runtime_error(out, heap, "field lookup failed: invalid struct handle");
     };
     let HeapValue::Struct { fields, .. } = struct_value else {
-        return u64::MAX;
+        return builtin_runtime_error(out, heap, "field lookup failed: value is not a struct");
     };
-    let Some(value) = fields.get(field) else {
-        return u64::MAX;
+    let Some(value) = fields.get(&field).copied() else {
+        return builtin_runtime_error(
+            out,
+            heap,
+            format!("field lookup failed: unknown field '{}'", field),
+        );
     };
-    if value.tag != NativeTag::Heap {
-        return u64::MAX;
-    }
-    value.payload
+    *out = value;
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -5436,16 +5448,45 @@ fn compile_function<M: Module>(
                     };
                     let field_handle = NativeValue::intern_string(field.clone(), heap).payload;
                     let field_val = builder.ins().iconst(types::I64, field_handle as i64);
+                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        NATIVE_VALUE_SIZE as u32,
+                        NATIVE_VALUE_ALIGN_SHIFT,
+                    ));
+                    let field_out_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
                     let func_ref =
                         module.declare_func_in_func(hostcalls.get_struct_field, builder.func);
                     let call = builder
                         .ins()
-                        .call(func_ref, &[heap_ptr, base_handle, field_val]);
-                    let handle = builder.inst_results(call)[0];
-                    stack.push(StackValue {
-                        value: handle,
-                        kind: JitType::Heap,
+                        .call(func_ref, &[heap_ptr, base_handle, field_val, field_out_ptr]);
+                    let status = builder.inst_results(call)[0];
+                    let ok_idx = *block_for_start.get(&(ip + 1))?;
+                    let mut ok_stack = stack.clone();
+                    ok_stack.push(StackValue {
+                        value: field_out_ptr,
+                        kind: JitType::Value,
                     });
+                    let ok_args = coerce_stack_args(
+                        &mut builder,
+                        pointer_ty,
+                        &ok_stack,
+                        entry_stacks.get(ok_idx)?,
+                    )?;
+                    let err_block = builder.create_block();
+                    builder.append_block_param(err_block, types::I8);
+                    builder.append_block_param(err_block, pointer_ty);
+                    let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    let err_args = [BlockArg::Value(status), BlockArg::Value(field_out_ptr)];
+                    builder
+                        .ins()
+                        .brif(is_ok, blocks[ok_idx], &ok_args, err_block, &err_args);
+                    builder.switch_to_block(err_block);
+                    let status_val = builder.block_params(err_block)[0];
+                    let err_out_ptr = builder.block_params(err_block)[1];
+                    copy_native_value(&mut builder, err_out_ptr, out_ptr);
+                    builder.ins().return_(&[status_val]);
+                    terminated = true;
+                    break;
                 }
                 Instr::GetIndex => {
                     let index = stack.pop()?;
@@ -6120,6 +6161,7 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
             Instr::Add
             | Instr::Eq
             | Instr::NotEq
+            | Instr::GetField { .. }
             | Instr::GetIndex
             | Instr::SetIndex
             | Instr::SetField { .. } => {
@@ -6589,8 +6631,18 @@ fn analyze_types(
                             let merged = merge_kind(*existing, kind)?;
                             if merged != *existing {
                                 *existing = merged;
-                                if !worklist.contains(&block_idx) {
-                                    worklist.push(block_idx);
+                                // Re-process all previously-visited blocks:
+                                // earlier blocks may read this local via
+                                // LoadLocal and their outgoing stacks must
+                                // reflect the widened type.
+                                for idx in 0..starts.len() {
+                                    if entry_stacks
+                                        .get(idx)
+                                        .map_or(false, |s| s.is_some())
+                                        && !worklist.contains(&idx)
+                                    {
+                                        worklist.push(idx);
+                                    }
                                 }
                             }
                         }
@@ -6691,7 +6743,7 @@ fn analyze_types(
                             JitType::Value
                         }
                         CallKind::Function => {
-                            let callee = program
+                            if let Some(callee) = program
                                 .functions
                                 .get(name)
                                 .or_else(|| program.apps.get(name))
@@ -6700,8 +6752,16 @@ fn analyze_types(
                                         .apps
                                         .values()
                                         .find(|func| func.name == name.as_str())
-                                })?;
-                            return_jit_kind(callee.ret.as_ref(), program)?
+                                })
+                            {
+                                return_jit_kind(callee.ret.as_ref(), program)
+                                    .unwrap_or(JitType::Value)
+                            } else {
+                                // Unknown callee — will produce a runtime error
+                                // during codegen; treat as returning Value so
+                                // type analysis does not bail out.
+                                JitType::Value
+                            }
                         }
                     };
                     for _ in 0..*argc {
@@ -6821,11 +6881,15 @@ fn analyze_types(
                 Instr::GetField { .. } => {
                     let base = stack.pop()?;
                     match base {
-                        JitType::Struct | JitType::Heap | JitType::Value => {
-                            stack.push(JitType::Heap)
-                        }
+                        JitType::Struct | JitType::Heap | JitType::Value => {}
                         _ => return None,
                     }
+                    stack.push(JitType::Value);
+                    let ok_ip = ip + 1;
+                    let ok_idx = *block_for_start.get(&ok_ip)?;
+                    merge_block_stack(&mut entry_stacks[ok_idx], &stack, &mut worklist, ok_idx)?;
+                    terminated = true;
+                    break;
                 }
                 Instr::GetIndex => {
                     let _ = stack.pop()?;
