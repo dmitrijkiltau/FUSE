@@ -38,31 +38,6 @@ fn render_private_note_card(token: String, note: Map<String, String>) -> Html:
       html.text(title)
     p(class="note-card__body"):
       html.text(content)
-    div(class="note-card__meta-line"):
-      div(class="note-card__meta"):
-        html.text(id)
-      span(class="note-card__pill"):
-        html.text(visibility)
-    div(class="note-card__actions"):
-      form({
-        "class": "inline-form",
-        "hx-put": visibility_url,
-        "hx-ext": "json-enc",
-        "hx-target": "#app-shell",
-        "hx-swap": "outerHTML"
-      }):
-        input({"type": "hidden", "name": "published", "value": next_published})
-        button(type="submit", class="btn btn--ghost btn--sm"):
-          html.text(publish_label)
-      button({
-        "type": "button",
-        "class": "btn btn--danger btn--sm",
-        "hx-delete": delete_url,
-        "hx-confirm": "Delete note?",
-        "hx-target": "#app-shell",
-        "hx-swap": "outerHTML"
-      }):
-        "Delete"
     form({
       "class": "note-card__edit-form",
       "hx-put": edit_url,
@@ -94,6 +69,35 @@ fn render_private_note_card(token: String, note: Map<String, String>) -> Html:
       div(class="create-form__footer"):
         button(type="submit", class="btn btn--ghost btn--sm"):
           "Save"
+    div(class="note-card__meta-line"):
+      div(class="note-card__meta"):
+        html.text(id)
+      span(class="note-card__pill"):
+        html.text(visibility)
+    div(class="note-card__actions"):
+      form({
+        "class": "inline-form note-card__publish-btn",
+        "hx-put": visibility_url,
+        "hx-ext": "json-enc",
+        "hx-target": "#app-shell",
+        "hx-swap": "outerHTML"
+      }):
+        input({"type": "hidden", "name": "published", "value": next_published})
+        button(type="submit", class="btn btn--ghost btn--sm"):
+          html.text(publish_label)
+      label():
+        span(class="btn btn--ghost btn--sm btn--checkbox"):
+          "Edit"
+        input(type="checkbox", class="btn btn--sm btn--checkbox", hidden="hidden")
+      button({
+        "type": "button",
+        "class": "btn btn--danger btn--sm",
+        "hx-delete": delete_url,
+        "hx-confirm": "Delete note?",
+        "hx-target": "#app-shell",
+        "hx-swap": "outerHTML"
+      }):
+        "Delete"
 
 fn render_private_notes_section(token: String?, user_id: String?) -> Html:
   let session_token = token ?? ""

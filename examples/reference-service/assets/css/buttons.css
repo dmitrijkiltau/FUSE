@@ -58,3 +58,9 @@
   padding: var(--sp-2) var(--sp-3);
   font-size: var(--fs-xs);
 }
+
+input[type="checkbox"].btn--checkbox {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}

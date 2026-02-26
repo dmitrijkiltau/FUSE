@@ -10,6 +10,18 @@
   &:hover {
     background: var(--c-bg);
   }
+
+  &:has(.btn--checkbox:checked) {
+    .note-card__title, .note-card__body, .note-card__publish-btn {
+      display: none;
+    }
+  }
+
+  &:not(:has(.btn--checkbox:checked)) {
+    .note-card__edit-form {
+      display: none;
+    }
+  }
 }
 
 .note-card__title {
@@ -72,10 +84,6 @@
 }
 
 .note-card__edit-form {
-  margin-top: var(--sp-4);
-  padding-top: var(--sp-4);
-  border-top: 1px dashed var(--c-border);
-
   & .form-group {
     margin-bottom: var(--sp-3);
   }
