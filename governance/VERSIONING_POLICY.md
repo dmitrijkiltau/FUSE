@@ -58,6 +58,8 @@ Recent release-line notes:
   - VS Code packaging artifact change (`.tgz` -> `.vsix`)
 - `0.3.0` is a quality/stability minor that keeps `0.2.x` source compatibility while expanding
   parity/tooling/release artifact reliability coverage.
+- `0.5.0` is a breaking minor that removes the VM bytecode backend (RFC 0007). The `--backend vm`
+  CLI flag is no longer accepted. Backend set is now `ast | native`.
 
 - semantic regressions across AST/native are release blockers on all active release lines. (VM removed per RFC 0007.)
 
@@ -68,6 +70,8 @@ Recent release-line notes:
 - Programs valid on `0.1.0` must remain valid and equivalent on `0.1.x`.
 - Programs valid on `0.2.0` must remain valid and equivalent on `0.2.x`.
 - Programs valid on `0.3.0` must remain valid and equivalent on `0.3.x`.
+- Programs valid on `0.4.0` must remain valid and equivalent on `0.5.x` (VM removal is a
+  tooling-only break; language source compatibility is preserved).
 - If behavior must change incompatibly, release must bump at least `MINOR` and include migration guidance.
 
 ### Runtime behavior compatibility

@@ -2,6 +2,55 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.5.0] - 2026-02-26
+
+### Breaking
+
+- **VM backend removed** (RFC 0007). The `--backend vm` CLI flag is no longer accepted.
+  Users should remove `--backend vm` from scripts/CI; the default backend is already Native.
+  Migration: drop `--backend vm` or replace with `--backend native`.
+- `program.ir` cache artifact is no longer written by `fuse build`. Only `program.native`
+  and `program.meta` are produced.
+
+### Added
+
+- Reference service with CRUD operations, user authentication, note visibility/public
+  access, and like functionality.
+- v1.0.0 stability contract and execution plan (`spec/1.0.0_STABILITY_CONTRACT.md`).
+- Native spawn task implementation (`run_native_spawn_task`) — spawned async tasks now
+  execute entirely on the native backend instead of falling back to the VM.
+- Note card UI enhancements with checkbox-based edit and visibility actions.
+
+### Changed
+
+- Default backend is Native for all execution paths (was already changed in 0.4.x, now
+  the VM fallback is fully removed).
+- JIT error handling improvements for native backend.
+- Backend rendering improvements for empty strings.
+- IR lowering error messages updated from "not supported in VM yet" to
+  "not supported in IR yet".
+- Documentation, governance, specs, scripts, and issue templates updated to reflect
+  two-backend model (AST/native). CHANGELOG historical entries preserved.
+- `release_smoke.sh` reduced from 24 to 23 steps (VM smoke step removed).
+- `use_case_bench.sh` CLI workload metrics now use `--backend native`.
+- `docs/fuse.toml` backend changed from `vm` to `native`.
+- Parity tests compare AST vs Native only (VM removed from matrix).
+- RFC 0007 status updated to Implemented.
+
+### Removed
+
+- `crates/fusec/src/vm/` module (~3,000 LoC).
+- `Backend::Vm` / `RunBackend::Vm` enum variants.
+- `run_vm_ir`, `try_load_ir` functions from CLI runner.
+- `program.ir` serialization from `write_compiled_artifacts`.
+- VM benchmark comparisons from `native_bench_smoke` tests.
+
+### Migration
+
+- Remove `--backend vm` from any CLI invocations or scripts.
+- Rebuild cached artifacts (`fuse build --clean`) — `program.ir` is no longer produced.
+- No language source migration is required from `0.4.x` to `0.5.0`.
+
 ## [0.4.0] - 2026-02-22
 
 ### Added

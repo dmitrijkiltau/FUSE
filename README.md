@@ -30,9 +30,9 @@ app "users":
 
 ## Status
 
-FUSE v0.4.0 is released. This branch tracks the v0.4.x quality/stability line with
-native/backend parity hardening, multi-file tooling reliability, dependency workflow
-contract coverage, comparison-operator parity (`Bool` equality/inequality included), and release artifact matrix automation.
+FUSE v0.5.0 is released. This is a breaking minor that removes the VM bytecode backend
+(RFC 0007) and consolidates execution on AST + Native only. Includes reference service,
+v1.0.0 stability contract, and native spawn task improvements.
 
 Compatibility is defined by documented behavior in `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, and
 `governance/VERSIONING_POLICY.md`.
