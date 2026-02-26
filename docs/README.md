@@ -21,7 +21,9 @@ Docs are served at <http://localhost:4080>.
 
 ## Run Docs with Docker
 
-The Docker image downloads the `fuse` CLI from GitHub Releases, builds docs with `fuse build --aot --release`, and runs the resulting docs AOT binary.
+The Docker image downloads the `fuse` CLI from GitHub Releases, builds docs with `fuse build --aot --release`, and runs the resulting AOT binary.
+Only the binary, static site assets, and SVGs are copied into the runtime image.
+A `HEALTHCHECK` pings `/api/health` every 30 s.
 Guide docs regeneration is skipped in Docker because generated guides are committed.
 It does not publish downloadable release artifacts.
 Run these commands from the repository root.

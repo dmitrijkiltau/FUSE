@@ -3,7 +3,7 @@
 FROM rust:slim-bookworm AS builder
 WORKDIR /workspace
 
-ARG FUSE_RELEASE_TAG=v0.4.0
+ARG FUSE_RELEASE_TAG=v0.5.0
 ARG FUSE_PLATFORM=linux-x64
 
 RUN apt-get update \
@@ -29,11 +29,16 @@ FROM debian:bookworm-slim AS runtime
 WORKDIR /app/docs
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates libsqlite3-0 \
+  && apt-get install -y --no-install-recommends ca-certificates libsqlite3-0 curl \
   && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /workspace/docs /app/docs
+# Copy only the AOT binary, static site assets, and SVG dir — not the full source tree
 COPY --from=builder /workspace/docs/.fuse/build/program.aot /app/docs/docs-aot
+COPY --from=builder /workspace/docs/site /app/docs/site
+COPY --from=builder /workspace/docs/assets /app/docs/assets
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:${PORT:-4080}/api/health || exit 1
 
 EXPOSE 4080
 ENV PORT=4080

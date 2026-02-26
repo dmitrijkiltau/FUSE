@@ -20,7 +20,7 @@ fn home_page() -> Html:
           p(): "All downloadable release artifacts are published on the GitHub Releases page."
         a(href="/specs/reference", class="card"):
           h3(): "Release Reference"
-          p(): "Release policy, runtime contract, and packaging behavior for v0.4.x."
+          p(): "Release policy, runtime contract, and packaging behavior for v0.5.x."
 
     section(class="quick-start"):
       h2(): "Quick Start"

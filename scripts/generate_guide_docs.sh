@@ -252,13 +252,13 @@ Downloadable release artifacts are not served by the docs app; use GitHub Releas
 Build the docs image from repository root:
 
 ```bash
-docker build -f docs/Dockerfile -t fuse-docs:0.4.0 .
+docker build -f docs/Dockerfile -t fuse-docs:0.5.0 .
 ```
 
 Run the docs container:
 
 ```bash
-docker run --rm -p 4080:4080 -e PORT=4080 -e FUSE_HOST=0.0.0.0 fuse-docs:0.4.0
+docker run --rm -p 4080:4080 -e PORT=4080 -e FUSE_HOST=0.0.0.0 fuse-docs:0.5.0
 ```
 
 Then open <http://localhost:4080>.
@@ -289,7 +289,7 @@ DOCKER
     echo "- SQLite-focused database runtime"
     echo "- no full ORM layer"
     echo "- task model is still evolving"
-    echo "- native backend path targets IR-compatible semantics"
+    echo "- native backend uses Cranelift JIT"
 
   } >"$dst"
 
