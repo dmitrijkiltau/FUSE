@@ -180,6 +180,12 @@ where
     }
 
     if migrate {
+        // Migrations always use the AST interpreter: migration bodies are AST
+        // blocks not lowered to IR, and migrations are one-shot operations where
+        // native performance provides no benefit.
+        if backend_forced && !matches!(backend, Backend::Ast) {
+            eprintln!("note: --backend is ignored for --migrate (always uses AST interpreter)");
+        }
         let (_analysis, diags) = crate::sema::analyze_registry(&registry);
         if !diags.is_empty() {
             emit_diags(&diags, Some(&src));
@@ -205,6 +211,14 @@ where
     }
 
     if test {
+        // Tests always use the AST interpreter: test bodies are AST blocks not
+        // lowered to IR, and test execution is a one-shot validation pass where
+        // native performance provides no benefit. Since all backends must produce
+        // identical semantics (governance/IDENTITY_CHARTER.md), testing via AST
+        // is sufficient.
+        if backend_forced && !matches!(backend, Backend::Ast) {
+            eprintln!("note: --backend is ignored for --test (always uses AST interpreter)");
+        }
         let (_analysis, diags) = crate::sema::analyze_registry(&registry);
         if !diags.is_empty() {
             emit_diags(&diags, Some(&src));
