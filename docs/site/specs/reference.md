@@ -424,7 +424,7 @@ Compiler/runtime CLI operations include:
 
 ## Run Docs with Docker
 
-`docs/Dockerfile` downloads `fuse` from GitHub Releases, builds docs with `fuse build --aot --release`, and runs the resulting docs AOT binary.
+`docs/Dockerfile` builds the `fuse` CLI from source, then runs `fuse build --aot --release` to produce the docs AOT binary.
 Guide docs generation is skipped in Docker because generated docs are committed.
 Downloadable release artifacts are not served by the docs app; use GitHub Releases instead.
 

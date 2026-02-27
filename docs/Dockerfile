@@ -1,20 +1,17 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1.7
 
 FROM rust:slim-bookworm AS builder
 WORKDIR /workspace
 
-ARG FUSE_RELEASE_TAG=v0.5.0
-ARG FUSE_PLATFORM=linux-x64
-
+# System deps for building (sqlite + pkg-config etc.)
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl tar pkg-config libsqlite3-dev \
+  && apt-get install -y --no-install-recommends \
+       ca-certificates \
+       pkg-config \
+       libsqlite3-dev \
   && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL "https://github.com/dmitrijkiltau/FUSE/releases/download/${FUSE_RELEASE_TAG}/fuse-cli-${FUSE_PLATFORM}.tar.gz" -o /tmp/fuse-cli.tar.gz \
-  && tar -xzf /tmp/fuse-cli.tar.gz -C /usr/local/bin fuse \
-  && chmod +x /usr/local/bin/fuse \
-  && rm -f /tmp/fuse-cli.tar.gz
-
+# 1) Copy only the files that affect dependency resolution first (better caching)
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 COPY scripts/cargo_env.sh ./scripts/cargo_env.sh
@@ -22,27 +19,51 @@ COPY scripts/generate_guide_docs.sh ./scripts/generate_guide_docs.sh
 COPY docs ./docs
 
 RUN chmod +x scripts/cargo_env.sh scripts/generate_guide_docs.sh
+
+# 2) Build the fuse CLI from source (multi-arch safe)
+#    Use BuildKit cache mounts to speed up rebuilds.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/workspace/target \
+    scripts/cargo_env.sh cargo build -p fuse --release --locked \
+ && cp -f tmp/fuse-target/release/fuse /usr/local/bin/fuse \
+ && /usr/local/bin/fuse --version || true
+
+# 3) Build docs AOT
 ENV FUSE_SKIP_GUIDE_DOCS=1
-RUN fuse build --manifest-path docs --aot --release
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/workspace/target \
+    fuse build --manifest-path docs --aot --release
+
 
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app/docs
 
+# runtime deps: sqlite + curl for healthcheck
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates libsqlite3-0 curl \
+  && apt-get install -y --no-install-recommends \
+       ca-certificates \
+       libsqlite3-0 \
+       curl \
   && rm -rf /var/lib/apt/lists/*
 
-# Copy only the AOT binary, static site assets, and SVG dir — not the full source tree
+# copy only what we need
 COPY --from=builder /workspace/docs/.fuse/build/program.aot /app/docs/docs-aot
 COPY --from=builder /workspace/docs/site /app/docs/site
 COPY --from=builder /workspace/docs/assets /app/docs/assets
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:${PORT:-4080}/api/health || exit 1
+# run as non-root (Coolify likes that, security likes that, humans should too)
+RUN useradd -r -u 10001 appuser \
+ && chown -R appuser:appuser /app/docs
+USER appuser
 
-EXPOSE 4080
 ENV PORT=4080
 ENV FUSE_HOST=0.0.0.0
 ENV FUSE_STATIC_DIR=/app/docs
+EXPOSE 4080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD curl -fsS "http://localhost:${PORT}/api/health" || exit 1
 
 CMD ["./docs-aot"]
