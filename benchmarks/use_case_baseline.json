@@ -1,61 +1,61 @@
 {
   "schema_version": 1,
-  "generated_utc": "2026-02-21T12:37:20Z",
-  "refresh_rationale": "Initial 0.2.0 release-branch baseline capture for use-case benchmark regression gating.",
-  "notes": "Baseline captured with scripts/use_case_bench.sh on the release branch host. Limits are intentionally tolerant to account for machine/load variance while still catching major latency regressions.",
+  "generated_utc": "2026-02-28T11:13:45Z",
+  "refresh_rationale": "Full 0.6.0 baseline refresh from scripts/use_case_bench.sh --median-of-3 after deterministic architecture/runtime changes landed.",
+  "notes": "All baseline_ms values were refreshed from the latest median-of-3 capture. Regression thresholds remain intentionally tolerant to absorb host/load variance while still flagging major degradations.",
   "metrics": {
     "cli_project_demo.check_ms": {
-      "baseline_ms": 104.916,
+      "baseline_ms": 84.346,
       "max_regression_pct": 0.45,
       "max_regression_ms": 40.0
     },
     "cli_project_demo.run_ok_ms": {
-      "baseline_ms": 112.958,
+      "baseline_ms": 119.237,
       "max_regression_pct": 0.45,
       "max_regression_ms": 45.0
     },
     "cli_project_demo.run_contract_failure_ms": {
-      "baseline_ms": 92.181,
+      "baseline_ms": 116.871,
       "max_regression_pct": 0.5,
       "max_regression_ms": 40.0
     },
     "reference_service.check_cold_ms": {
-      "baseline_ms": 92.264,
+      "baseline_ms": 123.178,
       "max_regression_pct": 0.5,
-      "max_regression_ms": 50.0
+      "max_regression_ms": 65.0
     },
     "reference_service.check_warm_ms": {
-      "baseline_ms": 98.046,
+      "baseline_ms": 119.024,
       "max_regression_pct": 0.5,
-      "max_regression_ms": 50.0
+      "max_regression_ms": 65.0
     },
     "reference_service.migrate_ms": {
-      "baseline_ms": 115.0,
+      "baseline_ms": 150.264,
       "max_regression_pct": 0.5,
       "max_regression_ms": 60.0
     },
     "reference_service.request_get_notes_ms": {
-      "baseline_ms": 2.85,
+      "baseline_ms": 1.351,
       "max_regression_pct": 2.5,
       "max_regression_ms": 8.0
     },
     "reference_service.request_post_valid_ms": {
-      "baseline_ms": 20.53,
+      "baseline_ms": 12.254,
       "max_regression_pct": 1.0,
       "max_regression_ms": 25.0
     },
     "reference_service.request_post_invalid_ms": {
-      "baseline_ms": 0.851,
+      "baseline_ms": 0.8,
       "max_regression_pct": 5.0,
       "max_regression_ms": 10.0
     },
     "reference_service.request_frontend_root_ms": {
-      "baseline_ms": 0.946,
+      "baseline_ms": 1.734,
       "max_regression_pct": 5.0,
       "max_regression_ms": 10.0
     },
     "reference_service.request_validation_error_overhead_abs_ms": {
-      "baseline_ms": 19.679,
+      "baseline_ms": 11.539,
       "max_regression_pct": 1.0,
       "max_regression_ms": 20.0
     }

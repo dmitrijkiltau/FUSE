@@ -1,5 +1,7 @@
 # HTTP users service example
 
+requires network
+
 config App:
   port: Int = env("PORT") ?? 3000
 

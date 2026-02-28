@@ -81,16 +81,16 @@ Authenticated non-owners can leave likes on published notes.
 - `GET /sessions/{token}` (server-rendered shell for an existing token)
 - `POST /ui/auth/register`
 - `POST /ui/auth/login`
-- `DELETE /ui/sessions/{token}/logout`
-- `POST /ui/sessions/{token}/notes`
-- `PUT /ui/sessions/{token}/notes/{id}`
-- `PUT /ui/sessions/{token}/notes/{id}/visibility`
-- `DELETE /ui/sessions/{token}/notes/{id}`
-- `POST /ui/sessions/{token}/public/notes/{id}/likes`
-- `GET /ui/public/notes` (public feed fragment)
-- `GET /ui/sessions/{token}/public/notes` (public feed fragment with viewer context)
+- `DELETE /ui/auth/logout`
+- `POST /ui/notes`
+- `PUT /ui/notes/{id}`
+- `PUT /ui/notes/{id}/visibility`
+- `DELETE /ui/notes/{id}`
+- `POST /ui/public/notes/{id}/likes`
+- `GET /ui/public/notes` (public feed fragment; viewer context derived from cookie)
 
-The browser UI no longer depends on client-side note rendering or localStorage session state.
+The browser UI no longer depends on client-side note rendering.
+Session state is persisted using an HTTP-only `sid` cookie (set by UI auth routes).
 The package now declares a single HTTP service, so `fuse run` does not require `FUSE_SERVICE`.
 
 UI module layout:

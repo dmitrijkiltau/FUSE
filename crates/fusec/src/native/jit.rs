@@ -232,11 +232,19 @@ pub(crate) struct HostCalls {
     builtin_serve: FuncId,
     builtin_assert: FuncId,
     builtin_asset: FuncId,
+    builtin_request_header: FuncId,
+    builtin_request_cookie: FuncId,
+    builtin_response_header: FuncId,
+    builtin_response_cookie: FuncId,
+    builtin_response_delete_cookie: FuncId,
     config_get: FuncId,
     db_exec: FuncId,
     db_query: FuncId,
     db_one: FuncId,
     db_from: FuncId,
+    db_tx_begin: FuncId,
+    db_tx_commit: FuncId,
+    db_tx_rollback: FuncId,
     query_select: FuncId,
     query_where: FuncId,
     query_order_by: FuncId,
@@ -351,6 +359,26 @@ impl JitRuntime {
             fuse_native_builtin_asset as *const u8,
         );
         builder.symbol(
+            "fuse_native_builtin_request_header",
+            fuse_native_builtin_request_header as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_request_cookie",
+            fuse_native_builtin_request_cookie as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_response_header",
+            fuse_native_builtin_response_header as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_response_cookie",
+            fuse_native_builtin_response_cookie as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_response_delete_cookie",
+            fuse_native_builtin_response_delete_cookie as *const u8,
+        );
+        builder.symbol(
             "fuse_native_config_get",
             fuse_native_config_get as *const u8,
         );
@@ -381,6 +409,18 @@ impl JitRuntime {
         builder.symbol("fuse_native_db_query", fuse_native_db_query as *const u8);
         builder.symbol("fuse_native_db_one", fuse_native_db_one as *const u8);
         builder.symbol("fuse_native_db_from", fuse_native_db_from as *const u8);
+        builder.symbol(
+            "fuse_native_db_tx_begin",
+            fuse_native_db_tx_begin as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_db_tx_commit",
+            fuse_native_db_tx_commit as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_db_tx_rollback",
+            fuse_native_db_tx_rollback as *const u8,
+        );
         builder.symbol(
             "fuse_native_query_select",
             fuse_native_query_select as *const u8,
@@ -800,6 +840,41 @@ impl HostCalls {
         let builtin_asset = module
             .declare_function("fuse_native_builtin_asset", Linkage::Import, &builtin_sig)
             .expect("declare builtin asset hostcall");
+        let builtin_request_header = module
+            .declare_function(
+                "fuse_native_builtin_request_header",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin request.header hostcall");
+        let builtin_request_cookie = module
+            .declare_function(
+                "fuse_native_builtin_request_cookie",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin request.cookie hostcall");
+        let builtin_response_header = module
+            .declare_function(
+                "fuse_native_builtin_response_header",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin response.header hostcall");
+        let builtin_response_cookie = module
+            .declare_function(
+                "fuse_native_builtin_response_cookie",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin response.cookie hostcall");
+        let builtin_response_delete_cookie = module
+            .declare_function(
+                "fuse_native_builtin_response_delete_cookie",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin response.delete_cookie hostcall");
         let config_get = module
             .declare_function("fuse_native_config_get", Linkage::Import, &builtin_sig)
             .expect("declare config get hostcall");
@@ -815,6 +890,15 @@ impl HostCalls {
         let db_from = module
             .declare_function("fuse_native_db_from", Linkage::Import, &builtin_sig)
             .expect("declare db from hostcall");
+        let db_tx_begin = module
+            .declare_function("fuse_native_db_tx_begin", Linkage::Import, &builtin_sig)
+            .expect("declare db tx begin hostcall");
+        let db_tx_commit = module
+            .declare_function("fuse_native_db_tx_commit", Linkage::Import, &builtin_sig)
+            .expect("declare db tx commit hostcall");
+        let db_tx_rollback = module
+            .declare_function("fuse_native_db_tx_rollback", Linkage::Import, &builtin_sig)
+            .expect("declare db tx rollback hostcall");
         let query_select = module
             .declare_function("fuse_native_query_select", Linkage::Import, &builtin_sig)
             .expect("declare query select hostcall");
@@ -906,11 +990,19 @@ impl HostCalls {
             builtin_serve,
             builtin_assert,
             builtin_asset,
+            builtin_request_header,
+            builtin_request_cookie,
+            builtin_response_header,
+            builtin_response_cookie,
+            builtin_response_delete_cookie,
             config_get,
             db_exec,
             db_query,
             db_one,
             db_from,
+            db_tx_begin,
+            db_tx_commit,
+            db_tx_rollback,
             query_select,
             query_where,
             query_order_by,
@@ -1427,11 +1519,7 @@ extern "C" fn fuse_native_get_struct_field(
         return builtin_runtime_error(out, heap, "field lookup failed: invalid field handle");
     };
     let HeapValue::String(field) = field_value else {
-        return builtin_runtime_error(
-            out,
-            heap,
-            "field lookup failed: field name is not a string",
-        );
+        return builtin_runtime_error(out, heap, "field lookup failed: field name is not a string");
     };
     let field = field.clone();
     let Some(struct_value) = heap.get(struct_handle) else {
@@ -2614,6 +2702,253 @@ extern "C" fn fuse_native_builtin_asset(
 }
 
 #[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_request_header(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "request.header expects 1 argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = args.first() else {
+        return builtin_runtime_error(out, heap, "request.header expects a string name");
+    };
+    let Some(value) = value.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "request.header expects a string name");
+    };
+    let name = match value {
+        Value::String(name) => name,
+        _ => return builtin_runtime_error(out, heap, "request.header expects a string name"),
+    };
+    let Some(vm) = current_vm() else {
+        return builtin_runtime_error(out, heap, "request.header requires native runtime context");
+    };
+    match vm.request_header(&name) {
+        Ok(Some(value)) => {
+            *out = NativeValue::string(value, heap);
+            0
+        }
+        Ok(None) => {
+            *out = NativeValue::null();
+            0
+        }
+        Err(err) => builtin_runtime_error(out, heap, err),
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_request_cookie(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "request.cookie expects 1 argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = args.first() else {
+        return builtin_runtime_error(out, heap, "request.cookie expects a string name");
+    };
+    let Some(value) = value.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "request.cookie expects a string name");
+    };
+    let name = match value {
+        Value::String(name) => name,
+        _ => return builtin_runtime_error(out, heap, "request.cookie expects a string name"),
+    };
+    let Some(vm) = current_vm() else {
+        return builtin_runtime_error(out, heap, "request.cookie requires native runtime context");
+    };
+    match vm.request_cookie(&name) {
+        Ok(Some(value)) => {
+            *out = NativeValue::string(value, heap);
+            0
+        }
+        Ok(None) => {
+            *out = NativeValue::null();
+            0
+        }
+        Err(err) => builtin_runtime_error(out, heap, err),
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_response_header(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "response.header expects 2 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(name_val) = args.first() else {
+        return builtin_runtime_error(out, heap, "response.header expects string name and value");
+    };
+    let Some(value_val) = args.get(1) else {
+        return builtin_runtime_error(out, heap, "response.header expects string name and value");
+    };
+    let Some(name_val) = name_val.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "response.header expects string name and value");
+    };
+    let Some(value_val) = value_val.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "response.header expects string name and value");
+    };
+    let (name, value) = match (name_val, value_val) {
+        (Value::String(name), Value::String(value)) => (name, value),
+        _ => {
+            return builtin_runtime_error(
+                out,
+                heap,
+                "response.header expects string name and value",
+            );
+        }
+    };
+    let Some(vm) = current_vm() else {
+        return builtin_runtime_error(out, heap, "response.header requires native runtime context");
+    };
+    match vm.response_add_header(&name, &value) {
+        Ok(()) => {
+            *out = NativeValue::unit();
+            0
+        }
+        Err(err) => builtin_runtime_error(out, heap, err),
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_response_cookie(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "response.cookie expects 2 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(name_val) = args.first() else {
+        return builtin_runtime_error(out, heap, "response.cookie expects string name and value");
+    };
+    let Some(value_val) = args.get(1) else {
+        return builtin_runtime_error(out, heap, "response.cookie expects string name and value");
+    };
+    let Some(name_val) = name_val.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "response.cookie expects string name and value");
+    };
+    let Some(value_val) = value_val.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "response.cookie expects string name and value");
+    };
+    let (name, value) = match (name_val, value_val) {
+        (Value::String(name), Value::String(value)) => (name, value),
+        _ => {
+            return builtin_runtime_error(
+                out,
+                heap,
+                "response.cookie expects string name and value",
+            );
+        }
+    };
+    let Some(vm) = current_vm() else {
+        return builtin_runtime_error(out, heap, "response.cookie requires native runtime context");
+    };
+    match vm.response_set_cookie(&name, &value) {
+        Ok(()) => {
+            *out = NativeValue::unit();
+            0
+        }
+        Err(err) => builtin_runtime_error(out, heap, err),
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_response_delete_cookie(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "response.delete_cookie expects 1 argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = args.first() else {
+        return builtin_runtime_error(out, heap, "response.delete_cookie expects a string name");
+    };
+    let Some(value) = value.to_value(heap_ref) else {
+        return builtin_runtime_error(out, heap, "response.delete_cookie expects a string name");
+    };
+    let name = match value {
+        Value::String(name) => name,
+        _ => {
+            return builtin_runtime_error(
+                out,
+                heap,
+                "response.delete_cookie expects a string name",
+            );
+        }
+    };
+    let Some(vm) = current_vm() else {
+        return builtin_runtime_error(
+            out,
+            heap,
+            "response.delete_cookie requires native runtime context",
+        );
+    };
+    match vm.response_delete_cookie(&name) {
+        Ok(()) => {
+            *out = NativeValue::unit();
+            0
+        }
+        Err(err) => builtin_runtime_error(out, heap, err),
+    }
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn fuse_native_builtin_serve(
     heap: *mut NativeHeap,
     args: *const NativeValue,
@@ -3496,6 +3831,87 @@ extern "C" fn fuse_native_db_from(
         return builtin_runtime_error(out, heap, "db.from result unsupported");
     };
     *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_db_tx_begin(
+    heap: *mut NativeHeap,
+    _args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 0 {
+        return builtin_runtime_error(out, heap, "db.tx_begin expects no arguments");
+    }
+    let pool_size = match db_pool_size(heap) {
+        Ok(size) => size,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let url = match db_url() {
+        Ok(url) => url,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    if let Err(err) = heap.begin_db_transaction(url, pool_size) {
+        return builtin_runtime_error(out, heap, err);
+    }
+    *out = NativeValue::int(0);
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_db_tx_commit(
+    heap: *mut NativeHeap,
+    _args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 0 {
+        return builtin_runtime_error(out, heap, "db.tx_commit expects no arguments");
+    }
+    if let Err(err) = heap.commit_db_transaction() {
+        let _ = heap.rollback_db_transaction();
+        return builtin_runtime_error(out, heap, err);
+    }
+    *out = NativeValue::int(0);
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_db_tx_rollback(
+    heap: *mut NativeHeap,
+    _args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 0 {
+        return builtin_runtime_error(out, heap, "db.tx_rollback expects no arguments");
+    }
+    if let Err(err) = heap.rollback_db_transaction() {
+        return builtin_runtime_error(out, heap, err);
+    }
+    *out = NativeValue::int(0);
     0
 }
 
@@ -5277,11 +5693,21 @@ fn compile_function<M: Module>(
                                 "serve" => hostcalls.builtin_serve,
                                 "assert" => hostcalls.builtin_assert,
                                 "asset" => hostcalls.builtin_asset,
+                                "request.header" => hostcalls.builtin_request_header,
+                                "request.cookie" => hostcalls.builtin_request_cookie,
+                                "response.header" => hostcalls.builtin_response_header,
+                                "response.cookie" => hostcalls.builtin_response_cookie,
+                                "response.delete_cookie" => {
+                                    hostcalls.builtin_response_delete_cookie
+                                }
                                 "range" => hostcalls.range,
                                 "db.exec" => hostcalls.db_exec,
                                 "db.query" => hostcalls.db_query,
                                 "db.one" => hostcalls.db_one,
                                 "db.from" => hostcalls.db_from,
+                                "db.tx_begin" => hostcalls.db_tx_begin,
+                                "db.tx_commit" => hostcalls.db_tx_commit,
+                                "db.tx_rollback" => hostcalls.db_tx_rollback,
                                 "query.select" => hostcalls.query_select,
                                 "query.where" => hostcalls.query_where,
                                 "query.order_by" => hostcalls.query_order_by,
@@ -6190,11 +6616,19 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     | "serve"
                     | "assert"
                     | "asset"
+                    | "request.header"
+                    | "request.cookie"
+                    | "response.header"
+                    | "response.cookie"
+                    | "response.delete_cookie"
                     | "range"
                     | "db.exec"
                     | "db.query"
                     | "db.one"
                     | "db.from"
+                    | "db.tx_begin"
+                    | "db.tx_commit"
+                    | "db.tx_rollback"
                     | "query.select"
                     | "query.where"
                     | "query.order_by"
@@ -6636,9 +7070,7 @@ fn analyze_types(
                                 // LoadLocal and their outgoing stacks must
                                 // reflect the widened type.
                                 for idx in 0..starts.len() {
-                                    if entry_stacks
-                                        .get(idx)
-                                        .map_or(false, |s| s.is_some())
+                                    if entry_stacks.get(idx).map_or(false, |s| s.is_some())
                                         && !worklist.contains(&idx)
                                     {
                                         worklist.push(idx);
@@ -6732,8 +7164,12 @@ fn analyze_types(
                         CallKind::Builtin => {
                             match name.as_str() {
                                 "print" | "input" | "log" | "env" | "serve" | "assert"
-                                | "asset" | "range" | "db.exec" | "db.query" | "db.one"
-                                | "db.from" | "query.select" | "query.where" | "query.order_by"
+                                | "asset" | "request.header" | "request.cookie"
+                                | "response.header" | "response.cookie"
+                                | "response.delete_cookie" | "range" | "db.exec" | "db.query"
+                                | "db.one"
+                                | "db.from" | "db.tx_begin" | "db.tx_commit" | "db.tx_rollback"
+                                | "query.select" | "query.where" | "query.order_by"
                                 | "query.limit" | "query.one" | "query.all" | "query.exec"
                                 | "query.sql" | "query.params" | "json.encode" | "json.decode"
                                 | "html.text" | "html.raw" | "html.node" | "html.render"

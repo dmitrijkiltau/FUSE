@@ -4,6 +4,8 @@ FUSE is a small, strict language for building CLI apps and HTTP services with
 built-in config loading, validation, JSON binding, and OpenAPI generation.
 
 ```fuse
+requires network
+
 config App:
   port: Int = env("PORT") ?? 3000
 
@@ -30,9 +32,9 @@ app "users":
 
 ## Status
 
-FUSE v0.5.0 is released. This is a breaking minor that removes the VM bytecode backend
-(RFC 0007) and consolidates execution on AST + Native only. Includes reference service,
-v1.0.0 stability contract, and native spawn task improvements.
+FUSE v0.6.0 is released. This is a breaking minor focused on deterministic architecture:
+compile-time capabilities, typed error domains, structured concurrency enforcement,
+deterministic transaction blocks, immutable request context patterns, and strict architecture checks.
 
 Compatibility is defined by documented behavior in `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, and
 `governance/VERSIONING_POLICY.md`.
@@ -60,6 +62,67 @@ Historical upgrade guidance for the `0.1.x -> 0.2.0` breaking minor is in
 ./scripts/fuse lsp
 ```
 
+## Module capabilities
+
+Capability boundaries are declared at module top-level and enforced at compile-time:
+
+```fuse
+requires db
+requires network
+```
+
+Current capability checks:
+
+- `db.exec/query/one/from` require `requires db`
+- `serve(...)` requires `requires network`
+- `time(...)` / `time.*` require `requires time`
+- `crypto.*` requires `requires crypto`
+- calling imported module functions requires declaring the callee module's capabilities
+- `transaction:` blocks require `requires db` and reject non-`db` capability usage inside the block
+
+## Typed error domains
+
+Fallible boundaries require explicit error domains:
+
+- use `T!Domain` (and chained forms like `T!AuthError!DbError`) on function/service return types
+- bare `T!` is rejected at compile-time
+- `expr ?!` without an explicit error value is allowed only for `Result` propagation; `Option ?!` requires `err`
+
+## Structured concurrency
+
+`spawn`/`await` is compile-time constrained for deterministic task lifetimes:
+
+- detached task expressions are rejected
+- spawned task bindings must be awaited before leaving scope
+- spawned task bindings cannot be reassigned before `await`
+
+## Deterministic transactions
+
+`transaction:` introduces a constrained DB transaction scope:
+
+- commits on success, rolls back on block failure
+- requires `requires db`
+- rejects `spawn`, `await`, early `return`, and `break`/`continue` inside the block
+- rejects non-`db` capability usage inside the block
+
+## HTTP request/response primitives
+
+Service routes can directly access HTTP headers/cookies without custom runtime glue:
+
+- `request.header(name: String) -> String?` reads inbound headers (case-insensitive)
+- `request.cookie(name: String) -> String?` reads inbound cookie values
+- `response.header(name: String, value: String)` appends response headers
+- `response.cookie(name: String, value: String)` appends `Set-Cookie` headers
+- `response.delete_cookie(name: String)` emits cookie-expiration `Set-Cookie` headers
+
+## Strict architecture mode
+
+`fuse check --strict-architecture` enables additional architecture validation:
+
+- capability purity (declared `requires` capabilities must be used)
+- cross-layer import-cycle rejection
+- error-domain isolation (boundary signatures in a module cannot mix domains from multiple modules)
+
 ## Package commands
 
 | Command | Description |
@@ -79,6 +142,8 @@ Global CLI output option:
   `auto` is default and respects `NO_COLOR`.
 - `fuse check|run|build|test` emit consistent stderr step markers:
   `[command] start`, `[command] ok|failed|validation failed`.
+- `--strict-architecture` enables strict architecture checks in semantic analysis
+  (primarily used with `fuse check` and `fuse build`).
 
 Build-specific options:
 

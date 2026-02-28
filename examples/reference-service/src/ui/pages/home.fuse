@@ -1,8 +1,11 @@
+requires db
+
+import { RequestContext } from "../../domain"
 import Auth from "../components/auth"
 import Create from "../components/create"
 import Notes from "../components/notes"
 
-fn render_shell(token: String?, user_id: String?) -> Html:
+fn render_shell(ctx: RequestContext) -> Html:
   return div({"id": "app-shell"}):
     main({"class": "page"}):
       header({"class": "page__header"}):
@@ -10,13 +13,13 @@ fn render_shell(token: String?, user_id: String?) -> Html:
           "Notes"
         p({"class": "page__subtitle"}):
           "HTMX and HTML DSL reference service."
-      Auth.render_session_section(token, user_id)
-      Create.render_create_section(token)
-      hr({"class": "separator"})
-      Notes.render_private_notes_section(token, user_id)
-      Notes.render_public_section(token, user_id)
+      Auth.render_session_section(ctx)
+      Create.render_create_section(ctx)
+      hr(class="separator")
+      Notes.render_private_notes_section(ctx)
+      Notes.render_public_section(ctx)
 
-fn render_page(token: String?, user_id: String?) -> Html:
+fn render_page(ctx: RequestContext) -> Html:
   let css = asset("assets/css/style.css")
   return html():
     head():
@@ -28,4 +31,4 @@ fn render_page(token: String?, user_id: String?) -> Html:
       script({"src": "/assets/lib/htmx_1.9.10_json-enc.js"})
       link({"rel": "stylesheet", "href": css})
     body():
-      render_shell(token, user_id)
+      render_shell(ctx)

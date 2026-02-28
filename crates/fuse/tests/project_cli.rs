@@ -159,13 +159,12 @@ fn contains_ansi(raw: &str) -> bool {
 fn overwrite_cached_ir_from_source(dir: &Path, source: &str) {
     let source_path = dir.join("__cache_override__.fuse");
     fs::write(&source_path, source).expect("write cache override source");
-    let native =
-        fusec::native::compile_registry(&{
-            let (registry, diags) = fusec::load_program_with_modules(&source_path, source);
-            assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
-            registry
-        })
-        .expect("compile cache override native");
+    let native = fusec::native::compile_registry(&{
+        let (registry, diags) = fusec::load_program_with_modules(&source_path, source);
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        registry
+    })
+    .expect("compile cache override native");
     let native_bytes = bincode::serialize(&native).expect("encode cache override native");
     fs::write(
         dir.join(".fuse").join("build").join("program.native"),
@@ -372,11 +371,7 @@ app "Demo":
 
     let css_dir = dir.join("public").join("css");
     fs::create_dir_all(&css_dir).expect("create css dir");
-    fs::write(
-        css_dir.join("app.css"),
-        "body{color:#fff}\n",
-    )
-    .expect("write css");
+    fs::write(css_dir.join("app.css"), "body{color:#fff}\n").expect("write css");
 
     let exe = env!("CARGO_BIN_EXE_fuse");
     let output = Command::new(exe)
@@ -2193,6 +2188,8 @@ app = "Docs"
     fs::write(
         dir.join("main.fuse"),
         r#"
+requires network
+
 config App:
   port: String = env("PORT") ?? "3000"
 
@@ -2351,4 +2348,41 @@ fn unknown_command_uses_error_prefix() {
         stderr.contains("error: unknown command"),
         "stderr: {stderr}"
     );
+}
+
+#[test]
+fn check_strict_architecture_flag_enforces_additional_sema_guards() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+requires db
+
+fn main() -> Int:
+  return 1
+
+app "Demo":
+  print(main())
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--strict-architecture")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse check --strict-architecture");
+    assert!(!output.status.success(), "strict check unexpectedly passed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("strict architecture: capability purity violation"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
 }

@@ -58,6 +58,8 @@ fn migration_failure_rolls_back_data_and_history_with_pool() {
         .expect("create table");
 
     let program = r#"
+requires db
+
 migration "001_fail_insert":
   db.exec("insert into items (id) values (1)")
   assert(false, "boom")
@@ -93,6 +95,8 @@ fn migration_success_commits_data_and_history_with_pool() {
         .expect("create table");
 
     let program = r#"
+requires db
+
 migration "001_insert":
   db.exec("insert into items (id) values (1)")
 "#;

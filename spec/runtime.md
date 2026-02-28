@@ -140,14 +140,16 @@ Status mapping uses the error name first, then `std.Error.status` if present:
 
 ### Result types + `?!`
 
-- `T!` is `Result<T, Error>`.
 - `T!E` is `Result<T, E>`.
+- `T!` is a compile-time error (explicit error domains are required).
+- for function/service return boundaries, each error domain must be a declared nominal `type` or `enum`
 
 `expr ?! err` rules:
 
 - If `expr` is `Option<T>` and is `None`, return `Err(err)`.
 - If `expr` is `Result<T, E>` and is `Err`, replace the error with `err`.
-- If `expr ?!` omits `err`, `Option` uses a default error, and `Result` propagates the existing error.
+- If `expr ?!` omits `err`, `Result` propagates the existing error.
+- `Option<T> ?!` without an explicit `err` is a compile-time error.
 
 See also: [Boundary model](#boundary-model), [Type system (current static model)](fls.md#type-system-current-static-model).
 
@@ -329,9 +331,18 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 - successful values encode as JSON with `Content-Type: application/json` by default
 - if route return type is `Html` (or `Result<Html, E>` on success), response is rendered once with
   `Content-Type: text/html; charset=utf-8`
+- route handlers may append response headers via `response.header(name, value)`
+- route handlers may manage cookies via `response.cookie(name, value)` and
+  `response.delete_cookie(name)` (emitted as `Set-Cookie` headers)
 - `Result` errors are mapped using the status rules above
 - unsupported HTTP methods return `405` with `internal_error` JSON
 - no HTMX-specific runtime mode: HTMX-style flows are ordinary `Html` route returns
+
+#### Request primitives
+
+- route handlers may read inbound headers with `request.header(name)` (case-insensitive)
+- route handlers may read cookie values with `request.cookie(name)`
+- `request.*` and `response.*` primitives are only valid while evaluating an HTTP route handler
 
 #### Environment knobs
 
@@ -347,7 +358,6 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 #### Observability baseline (current implementation)
 
 - request ID propagation is not currently implemented:
-  - inbound HTTP headers are not surfaced to route handlers
   - responses do not include a runtime-generated request ID header
 - there is no dedicated structured request logging mode yet:
   - request-level access logs are not emitted automatically
@@ -370,10 +380,16 @@ See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [
 - `log(...)` writes log lines to stderr (see Logging)
 - `db.exec/query/one` execute SQL against configured DB
 - `db.from(table)` builds parameterized queries
+- `transaction:` opens a constrained DB transaction scope (`BEGIN`/`COMMIT`/`ROLLBACK`)
 - `assert(cond, message?)` throws runtime error when `cond` is false
 - `env(name: String) -> String?` returns env var or `null`
 - `asset(path: String) -> String` resolves to hashed/static public URL when asset map is configured
 - `serve(port)` starts HTTP server on `FUSE_HOST:port`
+- `request.header(name: String) -> String?` reads inbound HTTP headers
+- `request.cookie(name: String) -> String?` reads inbound HTTP cookie values
+- `response.header(name: String, value: String)` appends response headers
+- `response.cookie(name: String, value: String)` appends HTTP-only session cookies
+- `response.delete_cookie(name: String)` emits cookie expiration headers
 - HTML tag builtins (`html`, `head`, `body`, `div`, `meta`, `button`, ...)
 - `html.text`, `html.raw`, `html.node`, `html.render`
 - `svg.inline(path: String) -> Html`
@@ -392,6 +408,24 @@ Compile-time sugar affecting HTML builtins:
 - HTML block syntax (`div(): ...`) lowers to normal calls with explicit attrs + `List<Html>` children
 - bare string literals in HTML blocks lower to `html.text(...)`
 - attribute shorthand (`div(class="hero")`) lowers to attrs maps
+
+### Compile-time capability requirements
+
+Static capability checks are enforced by semantic analysis (see `fls.md`) and have no runtime
+fallback behavior.
+
+- modules declare capabilities with top-level `requires` declarations
+- `db.exec/query/one/from` calls require `requires db`
+- `serve(...)` calls require `requires network`
+- `time(...)` / `time.*` calls require `requires time`
+- `crypto.*` calls require `requires crypto`
+- calls to imported module functions require the caller to declare the callee module's capabilities
+- `transaction:` blocks require `requires db`, forbid non-`db` module capabilities, and reject
+  non-`db` capability usage inside the block
+- `--strict-architecture` enables additional compile-time checks:
+  - capability purity (no unused declared capabilities)
+  - cross-layer import-cycle rejection
+  - error-domain isolation across module boundaries
 
 ### Database (SQLite only)
 
@@ -415,6 +449,8 @@ Builtins:
 - `db.query(sql, params?)` returns `List<Map<String, Value>>`
 - `db.one(sql, params?)` returns first row map or `null`
 - `db.from(table)` returns `Query` builder
+- `transaction:` opens a transaction, executes its block, commits on success, and rolls back on
+  block failure
 
 Query builder methods (immutable style; each returns a new `Query`):
 
@@ -451,7 +487,7 @@ Value mapping:
 Connection pool behavior:
 
 - DB calls use pooled SQLite connections.
-- the active connection is pinned for migration transaction scope (`BEGIN`/`COMMIT`/`ROLLBACK`).
+- the active connection is pinned for migration and `transaction:` scopes (`BEGIN`/`COMMIT`/`ROLLBACK`).
 - pool-size values must be integer `>= 1`; invalid values report runtime/config errors.
 
 ### Migrations
@@ -496,6 +532,13 @@ Spawned tasks run on a shared worker pool. Execution is asynchronous relative to
 and may overlap with other spawned tasks.
 
 `await expr` waits on a task and yields its result.
+
+Structured concurrency is enforced at compile time:
+
+- detached task expressions are invalid
+- spawned task bindings must be awaited before scope exit
+- spawned task bindings cannot be reassigned before `await`
+- `transaction:` blocks reject `spawn` and `await`
 
 Task surface (v0.2.0):
 

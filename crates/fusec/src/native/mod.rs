@@ -273,6 +273,8 @@ pub struct NativeVm<'a> {
     heap: NativeHeap,
     configs_loaded: bool,
     regex_cache: HashMap<String, regex::Regex>,
+    current_http_request: Option<HttpRequestContext>,
+    current_http_response: Option<HttpResponseMeta>,
 }
 
 pub struct NativeRuntimeContextGuard {
@@ -339,6 +341,8 @@ impl<'a> NativeVm<'a> {
             heap,
             configs_loaded: false,
             regex_cache: HashMap::new(),
+            current_http_request: None,
+            current_http_response: None,
         }
     }
 
@@ -846,7 +850,10 @@ impl<'a> NativeVm<'a> {
         } else {
             None
         };
-        let value = match self.eval_route(route, params, body_value) {
+        self.begin_http_route_context(&request);
+        let value = self.eval_route(route, params, body_value);
+        let response_meta = self.end_http_route_context();
+        let value = match value {
             Ok(value) => value,
             Err(err) => return Err(err),
         };
@@ -855,28 +862,114 @@ impl<'a> NativeVm<'a> {
             Value::ResultErr(err) => {
                 let status = self.http_status_for_error_value(&err);
                 let json = self.error_json_from_value(&err);
-                Ok(self.http_response(status, json))
+                Ok(self.http_response_with_meta(
+                    status,
+                    json,
+                    "application/json",
+                    Some(&response_meta),
+                ))
             }
             Value::ResultOk(ok) => {
                 if html_response {
                     let body =
                         self.maybe_inject_live_reload_html(self.render_html_value(ok.as_ref())?);
-                    Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
+                    Ok(self.http_response_with_meta(
+                        200,
+                        body,
+                        "text/html; charset=utf-8",
+                        Some(&response_meta),
+                    ))
                 } else {
                     let json = self.value_to_json(&ok);
-                    Ok(self.http_response(200, rt_json::encode(&json)))
+                    Ok(self.http_response_with_meta(
+                        200,
+                        rt_json::encode(&json),
+                        "application/json",
+                        Some(&response_meta),
+                    ))
                 }
             }
             other => {
                 if html_response {
                     let body = self.maybe_inject_live_reload_html(self.render_html_value(&other)?);
-                    Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
+                    Ok(self.http_response_with_meta(
+                        200,
+                        body,
+                        "text/html; charset=utf-8",
+                        Some(&response_meta),
+                    ))
                 } else {
                     let json = self.value_to_json(&other);
-                    Ok(self.http_response(200, rt_json::encode(&json)))
+                    Ok(self.http_response_with_meta(
+                        200,
+                        rt_json::encode(&json),
+                        "application/json",
+                        Some(&response_meta),
+                    ))
                 }
             }
         }
+    }
+
+    fn begin_http_route_context(&mut self, request: &HttpRequest) {
+        self.current_http_request = Some(HttpRequestContext {
+            headers: request.headers.clone(),
+            cookies: parse_cookie_map(request.headers.get("cookie").map(String::as_str)),
+        });
+        self.current_http_response = Some(HttpResponseMeta::default());
+    }
+
+    fn end_http_route_context(&mut self) -> HttpResponseMeta {
+        self.current_http_request = None;
+        self.current_http_response.take().unwrap_or_default()
+    }
+
+    pub(crate) fn request_header(&self, name: &str) -> Result<Option<String>, String> {
+        let request = self.current_http_request.as_ref().ok_or_else(|| {
+            "request.header is only available while handling an HTTP route".to_string()
+        })?;
+        Ok(request.headers.get(&name.to_ascii_lowercase()).cloned())
+    }
+
+    pub(crate) fn request_cookie(&self, name: &str) -> Result<Option<String>, String> {
+        let request = self.current_http_request.as_ref().ok_or_else(|| {
+            "request.cookie is only available while handling an HTTP route".to_string()
+        })?;
+        Ok(request.cookies.get(name).cloned())
+    }
+
+    pub(crate) fn response_add_header(&mut self, name: &str, value: &str) -> Result<(), String> {
+        validate_http_header(name, value)?;
+        let response = self.current_http_response.as_mut().ok_or_else(|| {
+            "response.header is only available while handling an HTTP route".to_string()
+        })?;
+        response
+            .headers
+            .push((name.to_string(), value.to_string()));
+        Ok(())
+    }
+
+    pub(crate) fn response_set_cookie(&mut self, name: &str, value: &str) -> Result<(), String> {
+        validate_cookie_name(name)?;
+        validate_cookie_value(value)?;
+        let response = self.current_http_response.as_mut().ok_or_else(|| {
+            "response.cookie is only available while handling an HTTP route".to_string()
+        })?;
+        response
+            .cookies
+            .push(format!("{name}={value}; Path=/; HttpOnly; SameSite=Lax"));
+        Ok(())
+    }
+
+    pub(crate) fn response_delete_cookie(&mut self, name: &str) -> Result<(), String> {
+        validate_cookie_name(name)?;
+        let response = self.current_http_response.as_mut().ok_or_else(|| {
+            "response.delete_cookie is only available while handling an HTTP route".to_string()
+        })?;
+        response.cookies.push(format!(
+            "{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+        ));
+        Ok(())
     }
 
     fn try_static_response(&self, method: &str, path: &str) -> Option<String> {
@@ -1089,14 +1182,29 @@ impl<'a> NativeVm<'a> {
         if body.len() > content_length {
             body.truncate(content_length);
         }
-        Ok(HttpRequest { method, path, body })
+        Ok(HttpRequest {
+            method,
+            path,
+            headers,
+            body,
+        })
     }
 
     fn http_response(&self, status: u16, body: String) -> String {
-        self.http_response_with_type(status, body, "application/json")
+        self.http_response_with_meta(status, body, "application/json", None)
     }
 
     fn http_response_with_type(&self, status: u16, body: String, content_type: &str) -> String {
+        self.http_response_with_meta(status, body, content_type, None)
+    }
+
+    fn http_response_with_meta(
+        &self,
+        status: u16,
+        body: String,
+        content_type: &str,
+        meta: Option<&HttpResponseMeta>,
+    ) -> String {
         let reason = match status {
             200 => "OK",
             400 => "Bad Request",
@@ -1107,10 +1215,19 @@ impl<'a> NativeVm<'a> {
             500 => "Internal Server Error",
             _ => "OK",
         };
-        format!(
-            "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n{body}",
-            body.len()
-        )
+        let mut response = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\n"
+        );
+        if let Some(meta) = meta {
+            for (name, value) in &meta.headers {
+                response.push_str(&format!("{name}: {value}\r\n"));
+            }
+            for cookie in &meta.cookies {
+                response.push_str(&format!("Set-Cookie: {cookie}\r\n"));
+            }
+        }
+        response.push_str(&format!("Content-Length: {}\r\n\r\n{body}", body.len()));
+        response
     }
 
     fn maybe_inject_live_reload_html(&self, mut body: String) -> String {
@@ -1607,14 +1724,30 @@ fn call_function_native_only_with(
         let out = match result {
             Ok(value) => Ok(wrap_function_result(func, value)),
             Err(JitCallError::Error(err_val)) => {
+                if let Err(rollback_err) = heap.rollback_db_transaction() {
+                    heap.collect_garbage();
+                    return Err(format!("db rollback failed: {rollback_err}"));
+                }
                 if is_result_type(func.ret.as_ref()) {
                     Ok(Value::ResultErr(Box::new(err_val)))
                 } else {
                     Err(format_error_value(&err_val))
                 }
             }
-            Err(JitCallError::Runtime(message)) => Err(message),
-            Err(JitCallError::Compile(message)) => Err(message),
+            Err(JitCallError::Runtime(message)) => {
+                if let Err(rollback_err) = heap.rollback_db_transaction() {
+                    heap.collect_garbage();
+                    return Err(format!("db rollback failed: {rollback_err}"));
+                }
+                Err(message)
+            }
+            Err(JitCallError::Compile(message)) => {
+                if let Err(rollback_err) = heap.rollback_db_transaction() {
+                    heap.collect_garbage();
+                    return Err(format!("db rollback failed: {rollback_err}"));
+                }
+                Err(message)
+            }
         };
         heap.collect_garbage();
         return out;
@@ -1991,9 +2124,22 @@ impl ConfigEvaluator {
     }
 }
 
+#[derive(Clone, Default)]
+struct HttpRequestContext {
+    headers: HashMap<String, String>,
+    cookies: HashMap<String, String>,
+}
+
+#[derive(Clone, Default)]
+struct HttpResponseMeta {
+    headers: Vec<(String, String)>,
+    cookies: Vec<String>,
+}
+
 struct HttpRequest {
     method: String,
     path: String,
+    headers: HashMap<String, String>,
     body: Vec<u8>,
 }
 
@@ -2129,6 +2275,58 @@ fn parse_route_param(segment: &str) -> Option<(String, String)> {
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn parse_cookie_map(raw: Option<&str>) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let Some(raw) = raw else {
+        return out;
+    };
+    for part in raw.split(';') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        out.insert(name.to_string(), value.trim().to_string());
+    }
+    out
+}
+
+fn validate_http_header(name: &str, value: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("response.header requires a non-empty name".to_string());
+    }
+    if name.contains('\r') || name.contains('\n') || value.contains('\r') || value.contains('\n') {
+        return Err("response.header rejects CR/LF characters".to_string());
+    }
+    Ok(())
+}
+
+fn validate_cookie_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("cookie name must not be empty".to_string());
+    }
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        return Err("cookie name contains unsupported characters".to_string());
+    }
+    Ok(())
+}
+
+fn validate_cookie_value(value: &str) -> Result<(), String> {
+    if value.contains(';') || value.contains('\r') || value.contains('\n') {
+        return Err("cookie value contains unsupported characters".to_string());
+    }
+    Ok(())
 }
 
 fn proxy_http_request(request: &HttpRequest, base_url: &str) -> Option<String> {

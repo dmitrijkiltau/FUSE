@@ -53,6 +53,8 @@ fn run_program(backend: &str, path: &PathBuf, db_url: &str, pool_size: Option<&s
 #[test]
 fn db_pool_size_env_rejects_invalid_values_all_backends() {
     let program = r#"
+requires db
+
 fn main():
   db.exec("create table if not exists items (id integer)")
 
@@ -78,6 +80,8 @@ app "demo":
 #[test]
 fn db_pool_size_defaults_to_one_when_unset_all_backends() {
     let program = r#"
+requires db
+
 fn main():
   db.exec("create table if not exists items (id integer)")
 
@@ -98,6 +102,8 @@ app "demo":
 #[test]
 fn db_pool_size_app_config_fallback_rejects_invalid_value_all_backends() {
     let program = r#"
+requires db
+
 config App:
   dbPoolSize: Int = 0
 

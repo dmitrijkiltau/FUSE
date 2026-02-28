@@ -25,6 +25,19 @@ type AuthSession:
   token: SessionToken
   scopes: List<String>
 
+type RequestContext:
+  session_token: String
+  user_id: String
+
+fn request_context(session_token: String, user_id: String) -> RequestContext:
+  return RequestContext(session_token=session_token, user_id=user_id)
+
+fn request_context_session_token(ctx: RequestContext) -> String:
+  return ctx.session_token
+
+fn request_context_user_id(ctx: RequestContext) -> String:
+  return ctx.user_id
+
 type RegisterInput:
   email: String(3..120)
   password: String(8..128)

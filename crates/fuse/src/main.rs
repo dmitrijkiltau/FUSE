@@ -31,6 +31,7 @@ options:
   --file <path>           Entry file override
   --app <name>            App name override
   --backend <ast|native>  Backend override (run only)
+  --strict-architecture   Enable strict architectural checks during semantic analysis
   --color <auto|always|never>  Colorized CLI output policy
   --clean                 Remove .fuse/build before building (build only)
   --aot                   Emit deployable AOT binary (build only)
@@ -179,6 +180,7 @@ struct CommonArgs {
     clean: bool,
     aot: bool,
     release: bool,
+    strict_architecture: bool,
 }
 
 #[derive(Default)]
@@ -492,6 +494,9 @@ fn run(args: Vec<String>) -> i32 {
             apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
             let mut args = Vec::new();
             args.push("--run".to_string());
+            if common.strict_architecture {
+                args.push("--strict-architecture".to_string());
+            }
             if let Some(backend) = backend_flag {
                 args.push("--backend".to_string());
                 args.push(backend);
@@ -510,6 +515,9 @@ fn run(args: Vec<String>) -> i32 {
         Command::Test => {
             let mut args = Vec::new();
             args.push("--test".to_string());
+            if common.strict_architecture {
+                args.push("--strict-architecture".to_string());
+            }
             args.push(entry.to_string_lossy().to_string());
             fusec::cli::run_with_deps(args, Some(&deps))
         }
@@ -522,13 +530,17 @@ fn run(args: Vec<String>) -> i32 {
             common.clean,
             common.aot,
             common.release,
+            common.strict_architecture,
         ),
         Command::Check => {
             if common.entry.is_none() && manifest.is_some() {
-                run_project_check(&entry, &deps)
+                run_project_check(&entry, &deps, common.strict_architecture)
             } else {
                 let mut args = Vec::new();
                 args.push("--check".to_string());
+                if common.strict_architecture {
+                    args.push("--strict-architecture".to_string());
+                }
                 args.push(entry.to_string_lossy().to_string());
                 fusec::cli::run_with_deps(args, Some(&deps))
             }
@@ -546,12 +558,18 @@ fn run(args: Vec<String>) -> i32 {
         Command::Openapi => {
             let mut args = Vec::new();
             args.push("--openapi".to_string());
+            if common.strict_architecture {
+                args.push("--strict-architecture".to_string());
+            }
             args.push(entry.to_string_lossy().to_string());
             fusec::cli::run_with_deps(args, Some(&deps))
         }
         Command::Migrate => {
             let mut args = Vec::new();
             args.push("--migrate".to_string());
+            if common.strict_architecture {
+                args.push("--strict-architecture".to_string());
+            }
             args.push(entry.to_string_lossy().to_string());
             fusec::cli::run_with_deps(args, Some(&deps))
         }
@@ -1662,6 +1680,11 @@ fn parse_common_args(
             idx += 1;
             continue;
         }
+        if arg == "--strict-architecture" {
+            out.strict_architecture = true;
+            idx += 1;
+            continue;
+        }
         if arg == "--aot" {
             if !allow_build_mode {
                 return Err("--aot is only supported for fuse build".to_string());
@@ -1782,6 +1805,7 @@ fn run_build(
     clean: bool,
     aot: bool,
     release: bool,
+    strict_architecture: bool,
 ) -> i32 {
     if clean {
         if let Err(err) = clean_build_dir(manifest_dir) {
@@ -1798,7 +1822,7 @@ fn run_build(
         emit_cli_error(&err);
         return 1;
     }
-    let artifacts = match compile_artifacts(entry, manifest_dir, deps) {
+    let artifacts = match compile_artifacts(entry, manifest_dir, deps, strict_architecture) {
         Ok(artifacts) => artifacts,
         Err(err) => {
             emit_cli_error(&err);
@@ -1853,7 +1877,11 @@ fn run_build(
     0
 }
 
-fn run_project_check(entry: &Path, deps: &HashMap<String, PathBuf>) -> i32 {
+fn run_project_check(
+    entry: &Path,
+    deps: &HashMap<String, PathBuf>,
+    strict_architecture: bool,
+) -> i32 {
     let files = match collect_project_files(entry, deps) {
         Ok(files) => files,
         Err(err) => {
@@ -1876,7 +1904,12 @@ fn run_project_check(entry: &Path, deps: &HashMap<String, PathBuf>) -> i32 {
             had_errors = true;
             continue;
         }
-        let (_analysis, diags) = fusec::sema::analyze_registry(&registry);
+        let (_analysis, diags) = fusec::sema::analyze_registry_with_options(
+            &registry,
+            fusec::sema::AnalyzeOptions {
+                strict_architecture,
+            },
+        );
         if !diags.is_empty() {
             emit_diags_with_fallback(&diags, Some((&file, &src)));
             had_errors = true;
@@ -2473,6 +2506,7 @@ fn compile_artifacts(
     entry: &Path,
     manifest_dir: Option<&Path>,
     deps: &HashMap<String, PathBuf>,
+    strict_architecture: bool,
 ) -> Result<BuildArtifacts, String> {
     let src = fs::read_to_string(entry)
         .map_err(|err| format!("failed to read {}: {err}", entry.display()))?;
@@ -2481,7 +2515,12 @@ fn compile_artifacts(
         emit_diags(&diags);
         return Err("build failed".to_string());
     }
-    let (_analysis, sema_diags) = fusec::sema::analyze_registry(&registry);
+    let (_analysis, sema_diags) = fusec::sema::analyze_registry_with_options(
+        &registry,
+        fusec::sema::AnalyzeOptions {
+            strict_architecture,
+        },
+    );
     if !sema_diags.is_empty() {
         emit_diags(&sema_diags);
         return Err("build failed".to_string());

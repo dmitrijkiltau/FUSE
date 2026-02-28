@@ -73,6 +73,73 @@ fn load_bad() -> User!Err:
 }
 
 #[test]
+fn rejects_implicit_result_error_domain() {
+    let src = r#"
+type User:
+  name: String
+
+fn load() -> User!:
+  return User(name="ada")
+"#;
+    assert_diags(
+        src,
+        &["Error: result type requires an explicit error domain; use `T!MyError`"],
+    );
+}
+
+#[test]
+fn rejects_non_domain_error_type_in_function_return() {
+    let src = r#"
+fn load() -> Int!String:
+  return 1
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: function return type error domains must be declared type/enum names, found String",
+        ],
+    );
+}
+
+#[test]
+fn rejects_option_bang_without_explicit_error_value() {
+    let src = r#"
+type Missing:
+  message: String
+
+fn fetch() -> Int?:
+  return null
+
+fn load() -> Int!Missing:
+  let value = fetch() ?!
+  return value
+"#;
+    assert_diags(
+        src,
+        &["Error: ?! on Option requires an explicit error value"],
+    );
+}
+
+#[test]
+fn rejects_non_domain_bang_error_value() {
+    let src = r#"
+type Missing:
+  message: String
+
+fn fetch() -> Int?:
+  return null
+
+fn load() -> Int!Missing:
+  let value = fetch() ?! "missing"
+  return value
+"#;
+    assert_diags(
+        src,
+        &["Error: ?! error value must be a declared error domain type or enum, found String"],
+    );
+}
+
+#[test]
 fn checks_pattern_matching() {
     let src = r#"
 enum Color:
@@ -108,6 +175,7 @@ fn main():
     assert_diags(
         src,
         &[
+            "Error: spawned task `t` is not awaited before scope exit",
             "Error: task.cancel was removed in v0.2.0; use spawn + await instead",
             "Error: task.done was removed in v0.2.0; use spawn + await instead",
             "Error: task.id was removed in v0.2.0; use spawn + await instead",
@@ -126,6 +194,20 @@ fn main():
     assert_diags(
         src,
         &["Error: spawn blocks cannot call side-effect builtin print"],
+    );
+}
+
+#[test]
+fn spawn_rejects_response_builtins() {
+    let src = r#"
+fn main():
+  let t = spawn:
+    response.header("x-test", "1")
+  await t
+"#;
+    assert_diags(
+        src,
+        &["Error: spawn blocks cannot call side-effect builtin response.*"],
     );
 }
 
@@ -164,6 +246,29 @@ fn field() -> Html:
 }
 
 #[test]
+fn request_response_http_primitives_typecheck() {
+    let src = r#"
+requires network
+
+config App:
+  port: Int = 3000
+
+service Api at "/":
+  get "/" -> Html:
+    let auth = request.header("authorization") ?? ""
+    let sid = request.cookie("sid") ?? ""
+    response.header("x-auth", auth)
+    response.cookie("sid", sid)
+    response.delete_cookie("old_sid")
+    return html.text("ok")
+
+app "api":
+  serve(App.port)
+"#;
+    assert_diags(src, &[]);
+}
+
+#[test]
 fn spawn_rejects_box_capture() {
     let src = r#"
 fn main():
@@ -194,14 +299,187 @@ fn main():
 }
 
 #[test]
+fn spawn_rejects_detached_expression() {
+    let src = r#"
+fn main():
+  spawn:
+    1
+"#;
+    assert_diags(
+        src,
+        &["Error: detached task is forbidden; await it or bind it and await before scope exit"],
+    );
+}
+
+#[test]
+fn spawn_rejects_unawaited_binding() {
+    let src = r#"
+fn main():
+  let t = spawn:
+    1
+"#;
+    assert_diags(
+        src,
+        &["Error: spawned task `t` is not awaited before scope exit"],
+    );
+}
+
+#[test]
+fn spawn_rejects_reassignment_before_await() {
+    let src = r#"
+fn main():
+  var t = spawn:
+    1
+  t = 2
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: spawned task `t` must be awaited before reassignment",
+            "Error: spawned task `t` starts here",
+            "Error: type mismatch: expected Task<Int>, found Int",
+        ],
+    );
+}
+
+#[test]
+fn spawn_binding_can_be_awaited_in_nested_scope() {
+    let src = r#"
+fn main():
+  let t = spawn:
+    1
+  if true:
+    let _ = await t
+"#;
+    assert_diags(src, &[]);
+}
+
+#[test]
 fn checks_db_api_types() {
     let src = r#"
+requires db
+
 fn main():
   let rows = db.query("select 1")
   let first = db.one("select 1")
   db.exec(1)
 "#;
     assert_diags(src, &["Error: type mismatch: expected String, found Int"]);
+}
+
+#[test]
+fn requires_db_capability_for_db_calls() {
+    let src = r#"
+fn main():
+  db.exec("select 1")
+"#;
+    assert_diags(
+        src,
+        &["Error: db call requires capability db; add `requires db` at module top-level"],
+    );
+}
+
+#[test]
+fn requires_network_capability_for_serve_calls() {
+    let src = r#"
+fn main():
+  serve(3000)
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: call serve requires capability network; add `requires network` at module top-level",
+        ],
+    );
+}
+
+#[test]
+fn transaction_requires_db_capability() {
+    let src = r#"
+fn main():
+  transaction:
+    let _ = 1
+"#;
+    assert_diags(
+        src,
+        &["Error: transaction blocks require capability db; add `requires db` at module top-level"],
+    );
+}
+
+#[test]
+fn transaction_rejects_non_db_module_capabilities() {
+    let src = r#"
+requires db
+requires network
+
+fn main():
+  transaction:
+    db.exec("select 1")
+"#;
+    assert_diags(
+        src,
+        &["Error: transaction blocks require db-only modules; remove non-db capabilities: network"],
+    );
+}
+
+#[test]
+fn transaction_rejects_spawn_and_await() {
+    let src = r#"
+requires db
+
+fn main():
+  transaction:
+    let t = spawn:
+      1
+    let _ = await t
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: transaction blocks cannot await tasks",
+            "Error: transaction blocks cannot spawn tasks",
+        ],
+    );
+}
+
+#[test]
+fn transaction_rejects_non_db_capability_calls_and_early_return() {
+    let src = r#"
+requires db
+requires network
+
+fn main() -> Int:
+  transaction:
+    serve(3000)
+    return 1
+  return 0
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: transaction blocks cannot return early; use the final expression result",
+            "Error: transaction blocks cannot use capability network (call serve)",
+            "Error: transaction blocks require db-only modules; remove non-db capabilities: network",
+        ],
+    );
+}
+
+#[test]
+fn rejects_duplicate_requires_declarations() {
+    let src = r#"
+requires db
+requires db
+
+fn main():
+  db.exec("select 1")
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: duplicate requires declaration for db",
+            "Error: previous requires db here",
+        ],
+    );
 }
 
 #[test]

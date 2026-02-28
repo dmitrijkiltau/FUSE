@@ -43,7 +43,7 @@ const SEM_KEYWORD: usize = 8;
 const SEM_STRING: usize = 9;
 const SEM_NUMBER: usize = 10;
 const SEM_COMMENT: usize = 11;
-const COMPLETION_KEYWORDS: [&str; 34] = [
+const COMPLETION_KEYWORDS: [&str; 35] = [
     "app",
     "service",
     "at",
@@ -66,6 +66,7 @@ const COMPLETION_KEYWORDS: [&str; 34] = [
     "while",
     "break",
     "continue",
+    "requires",
     "import",
     "from",
     "as",
@@ -79,7 +80,8 @@ const COMPLETION_KEYWORDS: [&str; 34] = [
     "without",
     "spawn",
 ];
-const COMPLETION_BUILTIN_RECEIVERS: [&str; 4] = ["db", "json", "html", "svg"];
+const COMPLETION_BUILTIN_RECEIVERS: [&str; 6] =
+    ["db", "json", "html", "svg", "request", "response"];
 const COMPLETION_BUILTIN_FUNCTIONS: [&str; 6] = ["print", "env", "serve", "log", "assert", "asset"];
 const COMPLETION_BUILTIN_TYPES: [&str; 14] = [
     "Unit", "Int", "Float", "Bool", "String", "Bytes", "Html", "Id", "Email", "Error", "List",
@@ -2118,6 +2120,20 @@ fn builtin_member_signature_info(base: &str) -> Option<SignatureInfo> {
                 "Loads an SVG by logical name and returns inline Html.".to_string(),
             ),
         }),
+        "request" => Some(SignatureInfo {
+            label: "fn request.header(name: String) -> String?".to_string(),
+            params: vec!["name: String".to_string()],
+            documentation: Some(
+                "Reads an inbound HTTP request header (case-insensitive), or null.".to_string(),
+            ),
+        }),
+        "response" => Some(SignatureInfo {
+            label: "fn response.header(name: String, value: String) -> Unit".to_string(),
+            params: vec!["name: String".to_string(), "value: String".to_string()],
+            documentation: Some(
+                "Appends an HTTP response header for the current route response.".to_string(),
+            ),
+        }),
         _ => None,
     }
 }
@@ -2240,6 +2256,7 @@ fn collect_call_context_stmt(stmt: &Stmt, cursor: usize, best: &mut Option<CallC
             collect_call_context_expr(cond, cursor, best);
             collect_call_context_block(block, cursor, best);
         }
+        StmtKind::Transaction { block } => collect_call_context_block(block, cursor, best),
         StmtKind::Expr(expr) => collect_call_context_expr(expr, cursor, best),
         StmtKind::Break | StmtKind::Continue => {}
     }
@@ -2869,6 +2886,8 @@ fn builtin_receiver_methods(receiver: &str) -> &'static [&'static str] {
         "json" => &["encode", "decode"],
         "html" => &["text", "raw", "node", "render"],
         "svg" => &["inline"],
+        "request" => &["header", "cookie"],
+        "response" => &["header", "cookie", "delete_cookie"],
         _ => &[],
     }
 }
@@ -3361,7 +3380,7 @@ fn is_type_context(tokens: &[fusec::token::Token], idx: usize) -> bool {
 }
 
 fn is_builtin_receiver(name: &str) -> bool {
-    matches!(name, "db" | "json" | "html" | "svg")
+    matches!(name, "db" | "json" | "html" | "svg" | "request" | "response")
 }
 
 fn is_builtin_function_name(name: &str) -> bool {
@@ -3556,6 +3575,9 @@ fn collect_inlay_hints_block(
             }
             StmtKind::While { cond, block } => {
                 collect_inlay_hints_expr(index, uri, text, offsets, cond, range, hints, seen);
+                collect_inlay_hints_block(index, uri, text, offsets, block, range, hints, seen);
+            }
+            StmtKind::Transaction { block } => {
                 collect_inlay_hints_block(index, uri, text, offsets, block, range, hints, seen);
             }
             StmtKind::Expr(expr) => {
@@ -5857,6 +5879,7 @@ fn collect_qualified_stmt(stmt: &Stmt, out: &mut Vec<QualifiedNameRef>) {
             collect_qualified_expr(cond, out);
             collect_qualified_block(block, out);
         }
+        StmtKind::Transaction { block } => collect_qualified_block(block, out),
         StmtKind::Expr(expr) => collect_qualified_expr(expr, out),
         StmtKind::Break | StmtKind::Continue => {}
     }
@@ -6480,6 +6503,9 @@ impl<'a> IndexBuilder<'a> {
             }
             StmtKind::While { cond, block } => {
                 self.visit_expr(cond);
+                self.visit_block(block);
+            }
+            StmtKind::Transaction { block } => {
                 self.visit_block(block);
             }
             StmtKind::Expr(expr) => {

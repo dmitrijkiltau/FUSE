@@ -612,6 +612,8 @@ pub struct Interpreter {
     module_import_items: HashMap<ModuleId, HashMap<String, ModuleLink>>,
     config_owner: HashMap<String, ModuleId>,
     current_module: ModuleId,
+    current_http_request: Option<HttpRequestContext>,
+    current_http_response: Option<HttpResponseMeta>,
 }
 
 pub struct MigrationJob<'a> {
@@ -747,6 +749,8 @@ impl Interpreter {
             module_import_items,
             config_owner,
             current_module: 0,
+            current_http_request: None,
+            current_http_response: None,
         }
     }
 
@@ -813,6 +817,8 @@ impl Interpreter {
             module_import_items,
             config_owner,
             current_module: registry.root,
+            current_http_request: None,
+            current_http_response: None,
         }
     }
 
@@ -834,6 +840,8 @@ impl Interpreter {
             module_import_items: self.module_import_items.clone(),
             config_owner: self.config_owner.clone(),
             current_module: self.current_module,
+            current_http_request: None,
+            current_http_response: None,
         }
     }
 
@@ -1399,6 +1407,28 @@ impl Interpreter {
                 }
                 Ok(Value::Unit)
             }
+            StmtKind::Transaction { block } => {
+                {
+                    let db = self.db_mut()?;
+                    db.begin_transaction().map_err(ExecError::Runtime)?;
+                }
+                match self.eval_block(block) {
+                    Ok(_) => {
+                        let db = self.db_mut()?;
+                        if let Err(err) = db.commit_transaction() {
+                            let _ = db.rollback_transaction();
+                            return Err(ExecError::Runtime(err));
+                        }
+                        Ok(Value::Unit)
+                    }
+                    Err(err) => {
+                        if let Ok(db) = self.db_mut() {
+                            let _ = db.rollback_transaction();
+                        }
+                        Err(err)
+                    }
+                }
+            }
             StmtKind::Break => Err(ExecError::Break),
             StmtKind::Continue => Err(ExecError::Continue),
         }
@@ -1649,7 +1679,7 @@ impl Interpreter {
         }
         match name {
             "print" | "input" | "env" | "serve" | "log" | "db" | "assert" | "asset" | "json"
-            | "html" | "svg" => Ok(Value::Builtin(name.to_string())),
+            | "html" | "svg" | "request" | "response" => Ok(Value::Builtin(name.to_string())),
             _ if html_tags::is_html_tag(name) => Ok(Value::Builtin(name.to_string())),
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),
         }
@@ -1961,6 +1991,39 @@ impl Interpreter {
                 };
                 let db = self.db_mut()?;
                 db.exec_params(&sql, &params).map_err(ExecError::Runtime)?;
+                Ok(Value::Unit)
+            }
+            "db.tx_begin" => {
+                if !args.is_empty() {
+                    return Err(ExecError::Runtime(
+                        "db.tx_begin expects no arguments".to_string(),
+                    ));
+                }
+                let db = self.db_mut()?;
+                db.begin_transaction().map_err(ExecError::Runtime)?;
+                Ok(Value::Unit)
+            }
+            "db.tx_commit" => {
+                if !args.is_empty() {
+                    return Err(ExecError::Runtime(
+                        "db.tx_commit expects no arguments".to_string(),
+                    ));
+                }
+                let db = self.db_mut()?;
+                if let Err(err) = db.commit_transaction() {
+                    let _ = db.rollback_transaction();
+                    return Err(ExecError::Runtime(err));
+                }
+                Ok(Value::Unit)
+            }
+            "db.tx_rollback" => {
+                if !args.is_empty() {
+                    return Err(ExecError::Runtime(
+                        "db.tx_rollback expects no arguments".to_string(),
+                    ));
+                }
+                let db = self.db_mut()?;
+                db.rollback_transaction().map_err(ExecError::Runtime)?;
                 Ok(Value::Unit)
             }
             "db.query" => {
@@ -2284,6 +2347,101 @@ impl Interpreter {
                     Err(_) => Ok(Value::Null),
                 }
             }
+            "request.header" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "request.header expects 1 argument".to_string(),
+                    ));
+                }
+                let name = match args.first() {
+                    Some(Value::String(name)) => name,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "request.header expects a string name".to_string(),
+                        ));
+                    }
+                };
+                let value = self.request_header(name)?;
+                match value {
+                    Some(value) => Ok(Value::String(value)),
+                    None => Ok(Value::Null),
+                }
+            }
+            "request.cookie" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "request.cookie expects 1 argument".to_string(),
+                    ));
+                }
+                let name = match args.first() {
+                    Some(Value::String(name)) => name,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "request.cookie expects a string name".to_string(),
+                        ));
+                    }
+                };
+                let value = self.request_cookie(name)?;
+                match value {
+                    Some(value) => Ok(Value::String(value)),
+                    None => Ok(Value::Null),
+                }
+            }
+            "response.header" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "response.header expects 2 arguments".to_string(),
+                    ));
+                }
+                let (name, value) = match (args.first(), args.get(1)) {
+                    (Some(Value::String(name)), Some(Value::String(value))) => {
+                        (name.as_str(), value.as_str())
+                    }
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "response.header expects string name and value".to_string(),
+                        ));
+                    }
+                };
+                self.response_add_header(name, value)?;
+                Ok(Value::Unit)
+            }
+            "response.cookie" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "response.cookie expects 2 arguments".to_string(),
+                    ));
+                }
+                let (name, value) = match (args.first(), args.get(1)) {
+                    (Some(Value::String(name)), Some(Value::String(value))) => {
+                        (name.as_str(), value.as_str())
+                    }
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "response.cookie expects string name and value".to_string(),
+                        ));
+                    }
+                };
+                self.response_set_cookie(name, value)?;
+                Ok(Value::Unit)
+            }
+            "response.delete_cookie" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "response.delete_cookie expects 1 argument".to_string(),
+                    ));
+                }
+                let name = match args.first() {
+                    Some(Value::String(name)) => name,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "response.delete_cookie expects a string name".to_string(),
+                        ));
+                    }
+                };
+                self.response_delete_cookie(name)?;
+                Ok(Value::Unit)
+            }
             "serve" => {
                 let port = match args.get(0) {
                     Some(Value::Int(v)) => *v,
@@ -2563,7 +2721,10 @@ impl Interpreter {
         } else {
             None
         };
-        let value = match self.eval_route(route, params, body_value) {
+        self.begin_http_route_context(&request);
+        let value = self.eval_route(route, params, body_value);
+        let response_meta = self.end_http_route_context();
+        let value = match value {
             Ok(value) => value,
             Err(err) => return Err(err),
         };
@@ -2572,28 +2733,125 @@ impl Interpreter {
             Value::ResultErr(err) => {
                 let status = self.http_status_for_error_value(&err);
                 let json = self.error_json_from_value(&err);
-                Ok(self.http_response(status, json))
+                Ok(self.http_response_with_meta(
+                    status,
+                    json,
+                    "application/json",
+                    Some(&response_meta),
+                ))
             }
             Value::ResultOk(ok) => {
                 if html_response {
                     let body =
                         self.maybe_inject_live_reload_html(self.render_html_value(ok.as_ref())?);
-                    Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
+                    Ok(self.http_response_with_meta(
+                        200,
+                        body,
+                        "text/html; charset=utf-8",
+                        Some(&response_meta),
+                    ))
                 } else {
                     let json = self.value_to_json(&ok);
-                    Ok(self.http_response(200, rt_json::encode(&json)))
+                    Ok(self.http_response_with_meta(
+                        200,
+                        rt_json::encode(&json),
+                        "application/json",
+                        Some(&response_meta),
+                    ))
                 }
             }
             other => {
                 if html_response {
                     let body = self.maybe_inject_live_reload_html(self.render_html_value(&other)?);
-                    Ok(self.http_response_with_type(200, body, "text/html; charset=utf-8"))
+                    Ok(self.http_response_with_meta(
+                        200,
+                        body,
+                        "text/html; charset=utf-8",
+                        Some(&response_meta),
+                    ))
                 } else {
                     let json = self.value_to_json(&other);
-                    Ok(self.http_response(200, rt_json::encode(&json)))
+                    Ok(self.http_response_with_meta(
+                        200,
+                        rt_json::encode(&json),
+                        "application/json",
+                        Some(&response_meta),
+                    ))
                 }
             }
         }
+    }
+
+    fn begin_http_route_context(&mut self, request: &HttpRequest) {
+        self.current_http_request = Some(HttpRequestContext {
+            headers: request.headers.clone(),
+            cookies: parse_cookie_map(request.headers.get("cookie").map(String::as_str)),
+        });
+        self.current_http_response = Some(HttpResponseMeta::default());
+    }
+
+    fn end_http_route_context(&mut self) -> HttpResponseMeta {
+        self.current_http_request = None;
+        self.current_http_response.take().unwrap_or_default()
+    }
+
+    fn request_header(&self, name: &str) -> ExecResult<Option<String>> {
+        let request = self.current_http_request.as_ref().ok_or_else(|| {
+            ExecError::Runtime(
+                "request.header is only available while handling an HTTP route".to_string(),
+            )
+        })?;
+        Ok(request.headers.get(&name.to_ascii_lowercase()).cloned())
+    }
+
+    fn request_cookie(&self, name: &str) -> ExecResult<Option<String>> {
+        let request = self.current_http_request.as_ref().ok_or_else(|| {
+            ExecError::Runtime(
+                "request.cookie is only available while handling an HTTP route".to_string(),
+            )
+        })?;
+        Ok(request.cookies.get(name).cloned())
+    }
+
+    fn response_add_header(&mut self, name: &str, value: &str) -> ExecResult<()> {
+        validate_http_header(name, value)?;
+        let response = self.current_http_response.as_mut().ok_or_else(|| {
+            ExecError::Runtime(
+                "response.header is only available while handling an HTTP route".to_string(),
+            )
+        })?;
+        response
+            .headers
+            .push((name.to_string(), value.to_string()));
+        Ok(())
+    }
+
+    fn response_set_cookie(&mut self, name: &str, value: &str) -> ExecResult<()> {
+        validate_cookie_name(name)?;
+        validate_cookie_value(value)?;
+        let response = self.current_http_response.as_mut().ok_or_else(|| {
+            ExecError::Runtime(
+                "response.cookie is only available while handling an HTTP route".to_string(),
+            )
+        })?;
+        response
+            .cookies
+            .push(format!("{name}={value}; Path=/; HttpOnly; SameSite=Lax"));
+        Ok(())
+    }
+
+    fn response_delete_cookie(&mut self, name: &str) -> ExecResult<()> {
+        validate_cookie_name(name)?;
+        let response = self.current_http_response.as_mut().ok_or_else(|| {
+            ExecError::Runtime(
+                "response.delete_cookie is only available while handling an HTTP route"
+                    .to_string(),
+            )
+        })?;
+        response.cookies.push(format!(
+            "{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+        ));
+        Ok(())
     }
 
     fn try_static_response(&self, method: &str, path: &str) -> Option<String> {
@@ -2815,14 +3073,29 @@ impl Interpreter {
         if body.len() > content_length {
             body.truncate(content_length);
         }
-        Ok(HttpRequest { method, path, body })
+        Ok(HttpRequest {
+            method,
+            path,
+            headers,
+            body,
+        })
     }
 
     fn http_response(&self, status: u16, body: String) -> String {
-        self.http_response_with_type(status, body, "application/json")
+        self.http_response_with_meta(status, body, "application/json", None)
     }
 
     fn http_response_with_type(&self, status: u16, body: String, content_type: &str) -> String {
+        self.http_response_with_meta(status, body, content_type, None)
+    }
+
+    fn http_response_with_meta(
+        &self,
+        status: u16,
+        body: String,
+        content_type: &str,
+        meta: Option<&HttpResponseMeta>,
+    ) -> String {
         let reason = match status {
             200 => "OK",
             400 => "Bad Request",
@@ -2833,10 +3106,19 @@ impl Interpreter {
             500 => "Internal Server Error",
             _ => "OK",
         };
-        format!(
-            "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n{body}",
-            body.len()
-        )
+        let mut response = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\n"
+        );
+        if let Some(meta) = meta {
+            for (name, value) in &meta.headers {
+                response.push_str(&format!("{name}: {value}\r\n"));
+            }
+            for cookie in &meta.cookies {
+                response.push_str(&format!("Set-Cookie: {cookie}\r\n"));
+            }
+        }
+        response.push_str(&format!("Content-Length: {}\r\n\r\n{body}", body.len()));
+        response
     }
 
     fn maybe_inject_live_reload_html(&self, mut body: String) -> String {
@@ -2968,6 +3250,20 @@ impl Interpreter {
             Value::Builtin(name) if name == "svg" => match field {
                 "inline" => Ok(Value::Builtin(format!("svg.{field}"))),
                 _ => Err(ExecError::Runtime(format!("unknown svg method {field}"))),
+            },
+            Value::Builtin(name) if name == "request" => match field {
+                "header" | "cookie" => Ok(Value::Builtin(format!("request.{field}"))),
+                _ => Err(ExecError::Runtime(format!(
+                    "unknown request method {field}"
+                ))),
+            },
+            Value::Builtin(name) if name == "response" => match field {
+                "header" | "cookie" | "delete_cookie" => {
+                    Ok(Value::Builtin(format!("response.{field}")))
+                }
+                _ => Err(ExecError::Runtime(format!(
+                    "unknown response method {field}"
+                ))),
             },
             Value::Config(name) => {
                 let map = self
@@ -4075,9 +4371,22 @@ impl Interpreter {
     // email validation lives in fuse-rt
 }
 
+#[derive(Clone, Default)]
+struct HttpRequestContext {
+    headers: HashMap<String, String>,
+    cookies: HashMap<String, String>,
+}
+
+#[derive(Clone, Default)]
+struct HttpResponseMeta {
+    headers: Vec<(String, String)>,
+    cookies: Vec<String>,
+}
+
 struct HttpRequest {
     method: String,
     path: String,
+    headers: HashMap<String, String>,
     body: Vec<u8>,
 }
 
@@ -4106,6 +4415,68 @@ fn parse_route_param(segment: &str) -> Option<(String, String)> {
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn parse_cookie_map(raw: Option<&str>) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let Some(raw) = raw else {
+        return out;
+    };
+    for part in raw.split(';') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        out.insert(name.to_string(), value.trim().to_string());
+    }
+    out
+}
+
+fn validate_http_header(name: &str, value: &str) -> ExecResult<()> {
+    if name.trim().is_empty() {
+        return Err(ExecError::Runtime(
+            "response.header requires a non-empty name".to_string(),
+        ));
+    }
+    if name.contains('\r') || name.contains('\n') || value.contains('\r') || value.contains('\n') {
+        return Err(ExecError::Runtime(
+            "response.header rejects CR/LF characters".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_cookie_name(name: &str) -> ExecResult<()> {
+    if name.is_empty() {
+        return Err(ExecError::Runtime(
+            "cookie name must not be empty".to_string(),
+        ));
+    }
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        return Err(ExecError::Runtime(
+            "cookie name contains unsupported characters".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_cookie_value(value: &str) -> ExecResult<()> {
+    if value.contains(';') || value.contains('\r') || value.contains('\n') {
+        return Err(ExecError::Runtime(
+            "cookie value contains unsupported characters".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn proxy_http_request(request: &HttpRequest, base_url: &str) -> Option<String> {

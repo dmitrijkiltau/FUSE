@@ -21,7 +21,9 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_program(&mut self) -> Program {
+        let mut requires = Vec::new();
         let mut items = Vec::new();
+        let mut saw_non_require_decl = false;
         while !self.at_eof() {
             self.consume_newlines();
             if self.at_eof() {
@@ -31,12 +33,49 @@ impl<'a> Parser<'a> {
             if self.at_eof() {
                 break;
             }
+            if self.eat_keyword(Keyword::Requires).is_some() {
+                if saw_non_require_decl {
+                    self.error_here(
+                        "requires declarations must appear before other top-level declarations",
+                    );
+                }
+                if doc.is_some() {
+                    self.error_here("requires declarations cannot have doc comments");
+                }
+                requires.extend(self.parse_requires_decls());
+                continue;
+            }
+            saw_non_require_decl = true;
             match self.parse_item(doc) {
                 Some(item) => items.push(item),
                 None => self.sync_to_next_item(),
             }
         }
-        Program { items }
+        Program { requires, items }
+    }
+
+    fn parse_requires_decls(&mut self) -> Vec<RequireDecl> {
+        let mut decls = Vec::new();
+        loop {
+            let capability_ident = self.expect_ident();
+            match Capability::from_name(&capability_ident.name) {
+                Some(capability) => decls.push(RequireDecl {
+                    capability,
+                    span: capability_ident.span,
+                }),
+                None => self.diags.error(
+                    capability_ident.span,
+                    format!(
+                        "unknown capability {}; expected one of: db, crypto, network, time",
+                        capability_ident.name
+                    ),
+                ),
+            }
+            if self.eat_punct(Punct::Comma).is_none() {
+                break;
+            }
+        }
+        decls
     }
 
     fn parse_item(&mut self, doc: Option<Doc>) -> Option<Item> {
@@ -516,6 +555,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Match) => self.parse_match_stmt(),
             TokenKind::Keyword(Keyword::For) => self.parse_for_stmt(),
             TokenKind::Keyword(Keyword::While) => self.parse_while_stmt(),
+            TokenKind::Keyword(Keyword::Transaction) => self.parse_transaction_stmt(),
             TokenKind::Keyword(Keyword::Break) => {
                 self.bump();
                 StmtKind::Break
@@ -547,7 +587,8 @@ impl<'a> Parser<'a> {
             StmtKind::If { .. }
             | StmtKind::Match { .. }
             | StmtKind::For { .. }
-            | StmtKind::While { .. } => false,
+            | StmtKind::While { .. }
+            | StmtKind::Transaction { .. } => false,
             StmtKind::Expr(expr) => !block_expr(expr),
             StmtKind::Let { expr, .. } => !block_expr(expr),
             StmtKind::Var { expr, .. } => !block_expr(expr),
@@ -779,6 +820,13 @@ impl<'a> Parser<'a> {
         self.expect_punct(Punct::Colon);
         let block = self.parse_block();
         StmtKind::While { cond, block }
+    }
+
+    fn parse_transaction_stmt(&mut self) -> StmtKind {
+        self.expect_keyword(Keyword::Transaction);
+        self.expect_punct(Punct::Colon);
+        let block = self.parse_block();
+        StmtKind::Transaction { block }
     }
 
     fn parse_pattern(&mut self) -> Pattern {
@@ -1916,6 +1964,7 @@ impl ItemStart for TokenKind {
         matches!(
             self,
             TokenKind::Keyword(Keyword::Import)
+                | TokenKind::Keyword(Keyword::Requires)
                 | TokenKind::Keyword(Keyword::Type)
                 | TokenKind::Keyword(Keyword::Enum)
                 | TokenKind::Keyword(Keyword::Fn)

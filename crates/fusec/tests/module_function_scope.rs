@@ -240,3 +240,269 @@ fn main() -> String:
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn capability_leakage_across_module_boundaries_is_reported() {
+    let dir = temp_project_dir("capability_leak");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let main_path = dir.join("main.fuse");
+    write_file(
+        &dir.join("auth.fuse"),
+        r#"
+requires db
+
+fn lookup() -> Int:
+  db.exec("create table if not exists users (id int)")
+  return 1
+"#,
+    );
+    write_file(
+        &main_path,
+        r#"
+import Auth from "./auth"
+
+fn main() -> Int:
+  return Auth.lookup()
+"#,
+    );
+
+    let src = fs::read_to_string(&main_path).expect("read root source");
+    let (registry, diags) = fusec::load_program_with_modules(&main_path, &src);
+    assert!(diags.is_empty(), "unexpected loader diagnostics: {diags:?}");
+    let (_analysis, sema_diags) = fusec::sema::analyze_registry(&registry);
+    let messages: Vec<String> = sema_diags.into_iter().map(|diag| diag.message).collect();
+    assert!(
+        messages.iter().any(|msg| msg
+            == "call to Auth.lookup leaks capability db; add `requires db` at module top-level"),
+        "missing capability leakage diagnostic: {messages:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn module_calls_with_declared_capability_pass() {
+    let dir = temp_project_dir("capability_ok");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let main_path = dir.join("main.fuse");
+    write_file(
+        &dir.join("auth.fuse"),
+        r#"
+requires db
+
+fn lookup() -> Int:
+  db.exec("create table if not exists users (id int)")
+  return 1
+"#,
+    );
+    write_file(
+        &main_path,
+        r#"
+requires db
+
+import Auth from "./auth"
+
+fn main() -> Int:
+  return Auth.lookup()
+"#,
+    );
+
+    let src = fs::read_to_string(&main_path).expect("read root source");
+    let (registry, diags) = fusec::load_program_with_modules(&main_path, &src);
+    assert!(diags.is_empty(), "unexpected loader diagnostics: {diags:?}");
+    let (_analysis, sema_diags) = fusec::sema::analyze_registry(&registry);
+    assert!(
+        sema_diags.is_empty(),
+        "unexpected sema diagnostics: {sema_diags:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cross_module_error_domain_leakage_is_rejected() {
+    let dir = temp_project_dir("error_domain_leak");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let main_path = dir.join("main.fuse");
+    write_file(
+        &dir.join("auth.fuse"),
+        r#"
+type AuthError:
+  message: String
+
+fn lookup() -> Int!AuthError:
+  return null ?! AuthError(message="missing")
+"#,
+    );
+    write_file(
+        &main_path,
+        r#"
+import Auth from "./auth"
+
+type ApiError:
+  message: String
+
+fn main() -> Int!ApiError:
+  return Auth.lookup()
+"#,
+    );
+
+    let src = fs::read_to_string(&main_path).expect("read root source");
+    let (registry, diags) = fusec::load_program_with_modules(&main_path, &src);
+    assert!(diags.is_empty(), "unexpected loader diagnostics: {diags:?}");
+    let (_analysis, sema_diags) = fusec::sema::analyze_registry(&registry);
+    let messages: Vec<String> = sema_diags.into_iter().map(|diag| diag.message).collect();
+    assert!(
+        messages
+            .iter()
+            .any(|msg| msg == "type mismatch: expected Int!ApiError, found Int!AuthError"),
+        "missing error-domain leakage diagnostic: {messages:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn strict_architecture_rejects_unused_capability_declarations() {
+    let dir = temp_project_dir("strict_cap_purity");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let main_path = dir.join("main.fuse");
+    write_file(
+        &main_path,
+        r#"
+requires db
+
+fn main() -> Int:
+  return 1
+"#,
+    );
+
+    let src = fs::read_to_string(&main_path).expect("read root source");
+    let (registry, diags) = fusec::load_program_with_modules(&main_path, &src);
+    assert!(diags.is_empty(), "unexpected loader diagnostics: {diags:?}");
+    let (_analysis, sema_diags) = fusec::sema::analyze_registry_with_options(
+        &registry,
+        fusec::sema::AnalyzeOptions {
+            strict_architecture: true,
+        },
+    );
+    let messages: Vec<String> = sema_diags.into_iter().map(|diag| diag.message).collect();
+    assert!(
+        messages
+            .iter()
+            .any(|msg| msg.contains("strict architecture: capability purity violation")),
+        "missing strict capability purity diagnostic: {messages:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn strict_architecture_rejects_cross_layer_import_cycles() {
+    let dir = temp_project_dir("strict_layer_cycle");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_file(
+        &dir.join("src").join("main.fuse"),
+        r#"
+import Api from "./api/entry"
+
+fn main() -> String:
+  return Api.value()
+"#,
+    );
+    write_file(
+        &dir.join("src").join("api").join("entry.fuse"),
+        r#"
+import Ui from "../ui/screen"
+
+fn value() -> String:
+  return Ui.value()
+"#,
+    );
+    write_file(
+        &dir.join("src").join("api").join("helper.fuse"),
+        r#"
+fn value() -> String:
+  return "ok"
+"#,
+    );
+    write_file(
+        &dir.join("src").join("ui").join("screen.fuse"),
+        r#"
+import ApiHelper from "../api/helper"
+
+fn value() -> String:
+  return ApiHelper.value()
+"#,
+    );
+
+    let main_path = dir.join("src").join("main.fuse");
+    let src = fs::read_to_string(&main_path).expect("read root source");
+    let (registry, diags) = fusec::load_program_with_modules(&main_path, &src);
+    assert!(diags.is_empty(), "unexpected loader diagnostics: {diags:?}");
+    let (_analysis, sema_diags) = fusec::sema::analyze_registry_with_options(
+        &registry,
+        fusec::sema::AnalyzeOptions {
+            strict_architecture: true,
+        },
+    );
+    let messages: Vec<String> = sema_diags.into_iter().map(|diag| diag.message).collect();
+    assert!(
+        messages
+            .iter()
+            .any(|msg| msg.contains("strict architecture: cross-layer import cycle detected")),
+        "missing strict cross-layer cycle diagnostic: {messages:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn strict_architecture_rejects_mixed_error_domain_modules() {
+    let dir = temp_project_dir("strict_error_isolation");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let main_path = dir.join("main.fuse");
+    write_file(
+        &dir.join("auth_errors.fuse"),
+        r#"
+type AuthError:
+  message: String
+"#,
+    );
+    write_file(
+        &dir.join("db_errors.fuse"),
+        r#"
+type DbError:
+  message: String
+"#,
+    );
+    write_file(
+        &main_path,
+        r#"
+import { AuthError } from "./auth_errors"
+import { DbError } from "./db_errors"
+
+fn main() -> Int!AuthError!DbError:
+  return 1
+"#,
+    );
+
+    let src = fs::read_to_string(&main_path).expect("read root source");
+    let (registry, diags) = fusec::load_program_with_modules(&main_path, &src);
+    assert!(diags.is_empty(), "unexpected loader diagnostics: {diags:?}");
+    let (_analysis, sema_diags) = fusec::sema::analyze_registry_with_options(
+        &registry,
+        fusec::sema::AnalyzeOptions {
+            strict_architecture: true,
+        },
+    );
+    let messages: Vec<String> = sema_diags.into_iter().map(|diag| diag.message).collect();
+    assert!(
+        messages
+            .iter()
+            .any(|msg| msg.contains("strict architecture: error domain isolation violation")),
+        "missing strict error-domain isolation diagnostic: {messages:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

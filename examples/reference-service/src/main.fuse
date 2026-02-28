@@ -1,3 +1,5 @@
+requires network
+
 import Api from "./api"
 import Db from "./db"
 

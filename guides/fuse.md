@@ -91,6 +91,8 @@ app "hello":
 ### HTTP service
 
 ```fuse
+requires network
+
 config App:
   port: Int = env("PORT") ?? 3000
 
@@ -121,6 +123,12 @@ FUSE currently ships with:
 - native backend (Cranelift JIT)
 - semantic parity gates across AST/native backends
 - module imports (relative, `root:`, and `dep:` paths)
+- compile-time module capability declarations (`requires db|crypto|network|time`)
+- typed error-domain boundaries on function/service returns (`T!Domain`, no implicit `T!`)
+- structured-concurrency checks for `spawn`/`await` task lifetimes (no detached/orphaned tasks)
+- deterministic `transaction:` blocks (commit on success, rollback on failure) with compile-time restrictions
+- strict architecture mode (`--strict-architecture`) for capability purity, cross-layer cycle rejection, and error-domain isolation
+- HTTP request/response primitives (`request.header/cookie`, `response.header/cookie/delete_cookie`)
 - package tooling via `fuse.toml` and `fuse` commands
 
 Detailed capability matrices and caveats live in:
@@ -150,6 +158,7 @@ See also: [Runtime surface and ownership](../spec/runtime.md).
 Typical commands:
 
 - `fuse check`
+- `fuse check --strict-architecture`
 - `fuse run`
 - `fuse dev`
 - `fuse test`

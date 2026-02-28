@@ -1,3 +1,5 @@
+requires db
+
 migration 001:
   db.exec("create table if not exists notes (id text primary key, title text not null, content text not null)")
 

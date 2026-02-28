@@ -30,7 +30,7 @@ Normative terms in this document:
 - Identifiers: `[A-Za-z_][A-Za-z0-9_]*`
 - Keywords:
   `app, service, at, get, post, put, patch, delete, fn, type, enum, let, var, return, if, else,
-  match, for, in, while, break, continue, import, from, as, config, migration, test,
+  match, for, in, while, transaction, break, continue, requires, import, from, as, config, migration, test,
   body, and, or, without, spawn, await, box`
 - Literals:
   - integers (`123`)
@@ -84,7 +84,9 @@ See also: [Grammar (EBNF approximation)](#grammar-ebnf-approximation), [AST mode
 Top level:
 
 ```ebnf
-Program        := { TopDecl }
+Program        := { RequiresDecl } { TopDecl }
+RequiresDecl   := "requires" Capability { "," Capability } NEWLINE
+Capability     := "db" | "crypto" | "network" | "time"
 
 TopDecl        := ImportDecl
                 | AppDecl
@@ -123,6 +125,7 @@ Stmt           := LetStmt
                 | MatchStmt
                 | ForStmt
                 | WhileStmt
+                | TransactionStmt
                 | BreakStmt
                 | ContinueStmt
                 | ExprStmt
@@ -142,6 +145,7 @@ MatchCase      := Pattern ( "->" Expr NEWLINE | ":" NEWLINE Block )
                 # `Pattern -> Expr` is sugar for `Pattern: return Expr`
 ForStmt        := "for" Pattern "in" Expr ":" NEWLINE Block
 WhileStmt      := "while" Expr ":" NEWLINE Block
+TransactionStmt := "transaction" ":" NEWLINE Block
 
 AppDecl        := "app" StringLit ":" NEWLINE Block
 ServiceDecl    := "service" Ident "at" StringLit ":" NEWLINE INDENT { RouteDecl } DEDENT
@@ -253,7 +257,8 @@ The AST shape matches `crates/fusec/src/ast.rs`.
 
 Program:
 
-- `Program { items: Vec<Item> }`
+- `Program { requires: Vec<RequireDecl>, items: Vec<Item> }`
+- `RequireDecl { capability }`
 
 Items:
 
@@ -293,6 +298,7 @@ Statements:
 - `Match { expr, cases }`
 - `For { pat, iter, block }`
 - `While { cond, block }`
+- `Transaction { block }`
 - `Expr(expr)`
 - `Break`
 - `Continue`
@@ -354,10 +360,11 @@ Reserved namespace:
 
 ### Results (`T!` / `T!E`)
 
-- `T!` desugars to `Result<T, Error>`.
 - `T!E` desugars to `Result<T, E>`.
+- `T!` is invalid; result types must declare an explicit error domain.
+- for function/service return boundaries, each `E` must be a declared nominal `type` or `enum` (including chained forms like `T!AuthError!DbError`)
 - `expr ?! err` applies bang-chain error conversion.
-- `expr ?!` uses default/propagated error behavior (runtime details in `runtime.md`).
+- `expr ?!` is propagation-only for `Result<T,E>`; `Option<T> ?!` requires an explicit `err`.
 
 ### Refined types
 
@@ -411,9 +418,34 @@ Inside a `spawn` block, semantic analysis rejects:
 - runtime side-effect builtins (`db.*`, `serve`, `print`, `input`, `log`, `env`, `asset`, `svg.inline`)
 - mutation of captured outer bindings
 
+Structured task lifetime checks are also enforced at compile time:
+
+- detached task expressions are rejected
+- spawned task bindings must be awaited before leaving lexical scope
+- reassigning a spawned task binding before `await` is rejected
+
 These restrictions are part of the language contract for deterministic cross-backend concurrency.
 
 See also: [Imports and modules (current)](#imports-and-modules-current), [Runtime semantics](runtime.md), [Scope + constraints](../governance/scope.md).
+
+### Transaction static restrictions (v0.6.0)
+
+`transaction:` defines a compiler-constrained block for deterministic DB transaction scope.
+
+Inside a `transaction` block, semantic analysis rejects:
+
+- `spawn` expressions
+- `await` expressions
+- early `return`
+- loop control flow (`break` / `continue`)
+- capability use outside `db`
+
+Module-level guardrails for `transaction` blocks:
+
+- the containing module must declare `requires db`
+- the containing module must not declare non-`db` capabilities
+
+See also: [Imports and modules (current)](#imports-and-modules-current), [Runtime semantics](runtime.md#database-sqlite-only), [Scope + constraints](../governance/scope.md).
 
 ---
 
@@ -444,6 +476,24 @@ Notes:
 - dependency modules use `dep:` import paths (for example, `dep:Auth/lib`)
 - root-qualified modules use `root:` import paths (for example, `root:lib/auth`)
 
+Module capabilities:
+
+- modules may declare capability requirements with top-level `requires` declarations
+- allowed capabilities are `db`, `crypto`, `network`, and `time`
+- duplicate capability declarations in one module are semantic errors
+- capability checks are compile-time only (no runtime capability guard)
+- calls requiring capabilities are rejected when the current module does not declare them
+- call sites to imported module functions must declare every capability required by the callee module
+  (capability leakage across module boundaries is rejected)
+- `transaction` blocks are valid only in modules with `requires db` and no additional capabilities
+
+Strict architecture mode (`--strict-architecture`) adds compile-time architectural checks:
+
+- capability purity: modules must not declare unused capabilities
+- cross-layer cycle detection: import graphs that form cycles between logical layers are rejected
+- error-domain isolation: a module's function/service boundary signatures must not mix error
+  domains from multiple modules
+
 See also: [Services and declaration syntax](#services-and-declaration-syntax), [README](../README.md), [FUSE overview companion](../guides/fuse.md).
 
 ---
@@ -465,5 +515,8 @@ post "/users" body UserCreate -> User:
 ```
 
 Binding/encoding/error semantics for routes are runtime behavior and are defined in `runtime.md`.
+
+HTTP-specific route primitives (`request.header/cookie` and
+`response.header/cookie/delete_cookie`) are runtime semantics owned by `runtime.md`.
 
 See also: [Runtime semantics](runtime.md), [Error model](runtime.md#error-model), [Boundary model](runtime.md#boundary-model).

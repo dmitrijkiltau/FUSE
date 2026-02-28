@@ -70,10 +70,11 @@ Type shorthand:
 
 Result types:
 
-- `T!` desugars to `Result<T, Error>`.
 - `T!E` desugars to `Result<T, E>`.
+- `T!` is invalid; result types must declare an explicit error domain.
+- for function/service return boundaries, each `E` must be a declared nominal `type` or `enum` (including chained forms like `T!AuthError!DbError`)
 - `expr ?! err` applies bang-chain error conversion.
-- `expr ?!` uses default/propagated error behavior (runtime details in `runtime.md`).
+- `expr ?!` is propagation-only for `Result<T,E>`; `Option<T> ?!` requires an explicit `err`.
 
 Refinements:
 
@@ -127,6 +128,24 @@ Notes:
 - dependency modules use `dep:` import paths (for example, `dep:Auth/lib`)
 - root-qualified modules use `root:` import paths (for example, `root:lib/auth`)
 
+Module capabilities:
+
+- modules may declare capability requirements with top-level `requires` declarations
+- allowed capabilities are `db`, `crypto`, `network`, and `time`
+- duplicate capability declarations in one module are semantic errors
+- capability checks are compile-time only (no runtime capability guard)
+- calls requiring capabilities are rejected when the current module does not declare them
+- call sites to imported module functions must declare every capability required by the callee module
+  (capability leakage across module boundaries is rejected)
+- `transaction` blocks are valid only in modules with `requires db` and no additional capabilities
+
+Strict architecture mode (`--strict-architecture`) adds compile-time architectural checks:
+
+- capability purity: modules must not declare unused capabilities
+- cross-layer cycle detection: import graphs that form cycles between logical layers are rejected
+- error-domain isolation: a module's function/service boundary signatures must not mix error
+  domains from multiple modules
+
 ---
 
 ## Services and HTTP Contracts
@@ -146,6 +165,9 @@ post "/users" body UserCreate -> User:
 ```
 
 Binding/encoding/error semantics for routes are runtime behavior and are defined in `runtime.md`.
+
+HTTP-specific route primitives (`request.header/cookie` and
+`response.header/cookie/delete_cookie`) are runtime semantics owned by `runtime.md`.
 
 ---
 
@@ -268,14 +290,16 @@ Status mapping uses the error name first, then `std.Error.status` if present:
 
 `expr ?! err` behavior:
 
-- `T!` is `Result<T, Error>`.
 - `T!E` is `Result<T, E>`.
+- `T!` is a compile-time error (explicit error domains are required).
+- for function/service return boundaries, each error domain must be a declared nominal `type` or `enum`
 
 `expr ?! err` rules:
 
 - If `expr` is `Option<T>` and is `None`, return `Err(err)`.
 - If `expr` is `Result<T, E>` and is `Err`, replace the error with `err`.
-- If `expr ?!` omits `err`, `Option` uses a default error, and `Result` propagates the existing error.
+- If `expr ?!` omits `err`, `Result` propagates the existing error.
+- `Option<T> ?!` without an explicit `err` is a compile-time error.
 
 ### Config and CLI binding
 
@@ -361,10 +385,16 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 - `log(...)` writes log lines to stderr (see Logging)
 - `db.exec/query/one` execute SQL against configured DB
 - `db.from(table)` builds parameterized queries
+- `transaction:` opens a constrained DB transaction scope (`BEGIN`/`COMMIT`/`ROLLBACK`)
 - `assert(cond, message?)` throws runtime error when `cond` is false
 - `env(name: String) -> String?` returns env var or `null`
 - `asset(path: String) -> String` resolves to hashed/static public URL when asset map is configured
 - `serve(port)` starts HTTP server on `FUSE_HOST:port`
+- `request.header(name: String) -> String?` reads inbound HTTP headers
+- `request.cookie(name: String) -> String?` reads inbound HTTP cookie values
+- `response.header(name: String, value: String)` appends response headers
+- `response.cookie(name: String, value: String)` appends HTTP-only session cookies
+- `response.delete_cookie(name: String)` emits cookie expiration headers
 - HTML tag builtins (`html`, `head`, `body`, `div`, `meta`, `button`, ...)
 - `html.text`, `html.raw`, `html.node`, `html.render`
 - `svg.inline(path: String) -> Html`
@@ -431,13 +461,13 @@ Downloadable release artifacts are not served by the docs app; use GitHub Releas
 Build the docs image from repository root:
 
 ```bash
-docker build -f docs/Dockerfile -t fuse-docs:0.5.0 .
+docker build -f docs/Dockerfile -t fuse-docs:0.6.0 .
 ```
 
 Run the docs container:
 
 ```bash
-docker run --rm -p 4080:4080 -e PORT=4080 -e FUSE_HOST=0.0.0.0 fuse-docs:0.5.0
+docker run --rm -p 4080:4080 -e PORT=4080 -e FUSE_HOST=0.0.0.0 fuse-docs:0.6.0
 ```
 
 Then open <http://localhost:4080>.

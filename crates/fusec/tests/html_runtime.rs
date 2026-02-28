@@ -334,6 +334,8 @@ app "asset":
 #[test]
 fn vite_proxy_fallback_routes_unknown_paths_across_backends() {
     let program = r#"
+requires network
+
 config App:
   port: Int = 3000
 
@@ -429,6 +431,8 @@ app "svg":
 #[test]
 fn html_http_response_sets_text_html_content_type() {
     let program = r#"
+requires network
+
 config App:
   port: Int = 3000
 
@@ -464,6 +468,8 @@ app "docs":
 #[test]
 fn html_http_injects_live_reload_script_when_enabled() {
     let program = r#"
+requires network
+
 config App:
   port: Int = 3000
 
@@ -496,6 +502,8 @@ app "docs":
 #[test]
 fn openapi_ui_routes_are_served_when_enabled() {
     let program = r#"
+requires network
+
 config App:
   port: Int = 3000
 
@@ -550,6 +558,8 @@ app "docs":
 #[test]
 fn html_fragment_post_route_supports_server_driven_swaps() {
     let program = r#"
+requires network
+
 config App:
   port: Int = 3000
 
@@ -589,6 +599,101 @@ app "notes":
             response.body.trim(),
             r#"<li class="note-row">Ship it</li>"#,
             "{backend} body"
+        );
+    }
+}
+
+#[test]
+fn http_request_and_response_header_cookie_primitives_work_across_backends() {
+    let program = r#"
+requires network
+
+config App:
+  port: Int = 3000
+
+service Echo at "/":
+  get "/" -> Html:
+    let header = request.header("x-auth") ?? "none"
+    let cookie = request.cookie("sid") ?? "none"
+    response.header("X-Echo-Auth", header)
+    response.cookie("sid", "fresh-token")
+    return html.text("${header}|${cookie}")
+
+app "echo":
+  serve(App.port)
+"#;
+
+    let request = "GET / HTTP/1.1\r\nHost: localhost\r\nX-Auth: Bearer demo\r\nCookie: sid=old-token; theme=dark\r\nConnection: close\r\n\r\n";
+    for backend in ["ast", "native"] {
+        let port = find_free_port();
+        let responses =
+            run_http_program_with_env_requests(backend, program, port, &[], &[request]);
+        let response = &responses[0];
+        assert_eq!(response.status, 200, "{backend} status");
+        assert_eq!(
+            response.body.trim(),
+            "Bearer demo|old-token",
+            "{backend} body"
+        );
+        assert_eq!(
+            response
+                .headers
+                .get("x-echo-auth")
+                .cloned()
+                .unwrap_or_default(),
+            "Bearer demo",
+            "{backend} echo header"
+        );
+        let set_cookie = response
+            .headers
+            .get("set-cookie")
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            set_cookie.contains("sid=fresh-token"),
+            "{backend} set-cookie: {set_cookie}"
+        );
+        assert!(
+            set_cookie.contains("HttpOnly"),
+            "{backend} set-cookie: {set_cookie}"
+        );
+    }
+}
+
+#[test]
+fn response_delete_cookie_emits_expired_cookie_header_across_backends() {
+    let program = r#"
+requires network
+
+config App:
+  port: Int = 3000
+
+service Echo at "/":
+  get "/" -> Html:
+    response.delete_cookie("sid")
+    return html.text("ok")
+
+app "echo":
+  serve(App.port)
+"#;
+
+    for backend in ["ast", "native"] {
+        let port = find_free_port();
+        let response = run_http_program(backend, program, port);
+        assert_eq!(response.status, 200, "{backend} status");
+        assert_eq!(response.body.trim(), "ok", "{backend} body");
+        let set_cookie = response
+            .headers
+            .get("set-cookie")
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            set_cookie.contains("sid="),
+            "{backend} set-cookie: {set_cookie}"
+        );
+        assert!(
+            set_cookie.contains("Max-Age=0"),
+            "{backend} set-cookie: {set_cookie}"
         );
     }
 }

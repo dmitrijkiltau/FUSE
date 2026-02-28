@@ -270,7 +270,16 @@ impl<'a> Lowerer<'a> {
             }
         }
         let builtin_names = [
-            "print", "input", "env", "serve", "log", "assert", "asset", "svg",
+            "print",
+            "input",
+            "env",
+            "serve",
+            "log",
+            "assert",
+            "asset",
+            "svg",
+            "request",
+            "response",
         ]
         .into_iter()
         .map(|s| s.to_string())
@@ -1027,6 +1036,21 @@ impl FuncBuilder {
             StmtKind::While { cond, block } => {
                 self.lower_while(cond, block);
             }
+            StmtKind::Transaction { block } => {
+                self.emit(Instr::Call {
+                    name: "db.tx_begin".to_string(),
+                    argc: 0,
+                    kind: CallKind::Builtin,
+                });
+                self.emit(Instr::Pop);
+                self.lower_block(block);
+                self.emit(Instr::Pop);
+                self.emit(Instr::Call {
+                    name: "db.tx_commit".to_string(),
+                    argc: 0,
+                    kind: CallKind::Builtin,
+                });
+            }
             StmtKind::For { pat, iter, block } => {
                 self.lower_for(pat, iter, block);
             }
@@ -1381,6 +1405,8 @@ impl FuncBuilder {
                             || ident.name == "json"
                             || ident.name == "html"
                             || ident.name == "svg"
+                            || ident.name == "request"
+                            || ident.name == "response"
                         {
                             for arg in args {
                                 self.lower_expr(&arg.value);

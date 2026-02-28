@@ -2,6 +2,8 @@
 # @summary Start from typed contracts and ship a small HTTP service.
 # @summary This page is generated from FUSE source comments + code blocks.
 
+requires network
+
 # ## 1) Declare typed config
 # `config` gives one place for runtime settings and environment overrides.
 config App:
