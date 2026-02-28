@@ -23,7 +23,7 @@ fn temp_project_dir() -> PathBuf {
     dir
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct TestIrMeta {
     #[serde(default)]
     version: u32,
@@ -43,7 +43,7 @@ struct TestIrMeta {
     cli_version: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct TestIrFileMeta {
     path: String,
     #[serde(default)]
@@ -2128,6 +2128,211 @@ app "Demo":
     assert!(stdout.contains("cli="), "stdout: {stdout}");
     assert!(stdout.contains("runtime_cache="), "stdout: {stdout}");
     assert!(stdout.contains("contract="), "stdout: {stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_rebuild_keeps_metadata_stable_for_identical_inputs() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run first fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "first build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let first_meta = read_program_meta(&dir);
+    let aot = default_aot_binary_path(&dir);
+    let first_info = Command::new(&aot)
+        .env("FUSE_AOT_BUILD_INFO", "1")
+        .output()
+        .expect("run first aot build info");
+    assert!(
+        first_info.status.success(),
+        "first info stderr: {}",
+        String::from_utf8_lossy(&first_info.stderr)
+    );
+    let first_info_line = String::from_utf8_lossy(&first_info.stdout).trim().to_string();
+
+    fs::remove_dir_all(dir.join(".fuse").join("build")).expect("remove first build outputs");
+
+    let rebuild = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run second fuse build --aot --release");
+    assert!(
+        rebuild.status.success(),
+        "second build stderr: {}",
+        String::from_utf8_lossy(&rebuild.stderr)
+    );
+
+    let second_meta = read_program_meta(&dir);
+    let second_info = Command::new(&aot)
+        .env("FUSE_AOT_BUILD_INFO", "1")
+        .output()
+        .expect("run second aot build info");
+    assert!(
+        second_info.status.success(),
+        "second info stderr: {}",
+        String::from_utf8_lossy(&second_info.stderr)
+    );
+    let second_info_line = String::from_utf8_lossy(&second_info.stdout).trim().to_string();
+
+    assert_eq!(first_meta, second_meta);
+    assert_eq!(first_info_line, second_info_line);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_build_info_short_circuits_startup_and_runtime() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  assert(false, "should-not-run")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let aot = default_aot_binary_path(&dir);
+    let baseline = Command::new(&aot)
+        .output()
+        .expect("run aot baseline without build info");
+    assert_eq!(baseline.status.code(), Some(1), "status: {:?}", baseline.status);
+    let baseline_stderr = String::from_utf8_lossy(&baseline.stderr);
+    assert!(
+        baseline_stderr.contains("fatal: class=runtime_fatal"),
+        "stderr: {baseline_stderr}"
+    );
+
+    let info = Command::new(&aot)
+        .env("FUSE_AOT_BUILD_INFO", "1")
+        .env("FUSE_AOT_STARTUP_TRACE", "1")
+        .output()
+        .expect("run aot binary with build-info short-circuit");
+    assert!(
+        info.status.success(),
+        "info stderr: {}",
+        String::from_utf8_lossy(&info.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&info.stdout);
+    let stderr = String::from_utf8_lossy(&info.stderr);
+    assert!(stdout.contains("mode=aot"), "stdout: {stdout}");
+    assert!(!stderr.contains("startup: pid="), "stderr: {stderr}");
+    assert!(!stderr.contains("fatal:"), "stderr: {stderr}");
+    assert!(!stderr.contains("should-not-run"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_runtime_respects_config_env_file_default_precedence() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+config App:
+  greeting: String = "DefaultGreet"
+  who: String = "DefaultWho"
+  role: String = "DefaultRole"
+
+app "Demo":
+  print(App.greeting)
+  print(App.who)
+  print(App.role)
+"#,
+    )
+    .expect("write main.fuse");
+    fs::write(
+        dir.join("config.toml"),
+        r#"
+[App]
+greeting = "FileGreet"
+who = "FileWho"
+"#,
+    )
+    .expect("write config.toml");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let aot = default_aot_binary_path(&dir);
+    let run = Command::new(&aot)
+        .current_dir(&dir)
+        .env("FUSE_CONFIG", dir.join("config.toml"))
+        .env("APP_GREETING", "EnvGreet")
+        .output()
+        .expect("run aot config precedence check");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["EnvGreet", "FileWho", "DefaultRole"]);
 
     let _ = fs::remove_dir_all(&dir);
 }

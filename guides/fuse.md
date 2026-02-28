@@ -161,6 +161,23 @@ See also: [Runtime surface and ownership](../spec/runtime.md).
 
 ---
 
+## AOT runtime posture (production)
+
+For deployable AOT binaries (`fuse build --release`, `fuse build --aot`), runtime guarantees are
+frozen in `../spec/runtime.md`:
+
+- deterministic startup order (`FUSE_AOT_BUILD_INFO` short-circuit, optional startup trace)
+- stable exit codes + fatal envelope taxonomy
+- deterministic config precedence (env -> config file -> defaults)
+- sealed runtime posture (no dynamic backend fallback, no AOT runtime compilation fallback)
+
+Signal handling is intentionally minimal in this milestone (platform default behavior); deterministic
+graceful signal shutdown is tracked under the next hardening milestone.
+
+See also: [Runtime semantics](../spec/runtime.md), [Package workflow (summary)](#package-workflow-summary).
+
+---
+
 ## Package workflow (summary)
 
 Typical commands:

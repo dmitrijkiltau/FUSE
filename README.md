@@ -236,12 +236,20 @@ Deployable AOT output:
   `mode`, `profile`, `target`, `rustc`, `cli`, `runtime_cache`, and `contract`.
   Use `FUSE_AOT_BUILD_INFO=1 <aot-binary>` to print this metadata and exit.
 - `FUSE_AOT_STARTUP_TRACE=1 <aot-binary>` emits a startup diagnostic line with PID + build metadata.
+- Startup order contract:
+  `FUSE_AOT_BUILD_INFO=1` short-circuits before startup trace and before app execution.
 - AOT build/link failures are deterministic command failures with `error:` diagnostics and
   `[build] failed` step footer.
 - Runtime failures in AOT binaries emit a stable fatal envelope:
   `fatal: class=<runtime_fatal|panic> pid=<...> message=<...> <build-info>`.
   For `class=panic`, message starts with
   `panic_kind=<panic_static_str|panic_string|panic_non_string>`.
+- AOT runtime exit codes are stable: `0` success, `1` runtime failure, `101` panic.
+- AOT runtime config resolution is deterministic: env -> config file (`FUSE_CONFIG` or
+  `config.toml` in process cwd) -> config defaults.
+- AOT runtime does not auto-load `.env`; only process environment is observed.
+- AOT runtime is sealed: no dynamic backend fallback, no JIT compilation for app execution, and no
+  runtime source compilation.
 
 Use `fuse build --clean` to clear the cache.
 

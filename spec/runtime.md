@@ -64,6 +64,64 @@ Native backend note:
 - AOT fallback is an operational decision (not automatic); incident fallback guidance is tracked in
   `../ops/AOT_ROLLBACK_PLAYBOOK.md`.
 
+### AOT runtime contract (`v0.7.0` baseline)
+
+This section freezes runtime guarantees for binaries emitted by
+`fuse build --release` and `fuse build --aot`.
+
+Startup order guarantees:
+
+1. If `FUSE_AOT_BUILD_INFO=1`, the binary must print exactly one build-info line to stdout and
+   exit with code `0`.
+2. In build-info mode, startup tracing and program execution must not run.
+3. Otherwise, if `FUSE_AOT_STARTUP_TRACE=1`, the binary must emit one startup line on stderr
+   before loading configs/types and before executing app logic.
+4. Runtime then loads embedded type metadata, resolves config values, and executes the compiled app
+   entrypoint.
+
+Signal handling semantics (`M7` scope):
+
+- AOT runtime installs no custom signal handlers.
+- `SIGINT`, `SIGTERM`, and other process signals follow platform-default behavior.
+- Graceful signal shutdown policy is not part of this milestone and is tracked under `M8`.
+
+Shutdown and exit-code contract:
+
+- success exit: `0`
+- handled runtime failure (`class=runtime_fatal`): `1`
+- process panic (`class=panic`): `101`
+- AOT build/link failures are CLI build-time failures, not runtime exits from the produced binary.
+
+Fatal envelope invariants:
+
+- fatal lines must use:
+  `fatal: class=<runtime_fatal|panic> pid=<...> message=<...> mode=<...> profile=<...> target=<...> rustc=<...> cli=<...> runtime_cache=<...> contract=<...>`
+- `message` is single-line sanitized text (`\n`/`\r` escaped).
+- `class=panic` messages must start with
+  `panic_kind=<panic_static_str|panic_string|panic_non_string>`.
+
+Observability consistency guarantees:
+
+- HTTP request ID propagation and structured request logging semantics are identical to
+  [Observability baseline](#observability-baseline).
+- Startup trace and fatal envelopes must include the same build-info key set
+  (`mode`, `profile`, `target`, `rustc`, `cli`, `runtime_cache`, `contract`).
+
+Deterministic config resolution order in AOT binaries:
+
+1. process environment variable override
+2. config file (`FUSE_CONFIG`; default `config.toml` in process working directory)
+3. config field default expression
+
+AOT runtime does not implicitly load `.env`; only the invoking environment is observed.
+
+Backend/runtime sealing guarantees:
+
+- no dynamic backend fallback in AOT runtime
+- no JIT compilation for app execution in AOT runtime
+- no source-level runtime compilation in AOT binaries
+- no runtime reinterpretation of source syntax by backend-specific fallback logic
+
 ### Function symbol resolution
 
 Function symbols are module-scoped. Resolution rules (unqualified, qualified, duplicate names)
