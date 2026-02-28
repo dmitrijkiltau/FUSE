@@ -73,6 +73,73 @@ fn load_bad() -> User!Err:
 }
 
 #[test]
+fn rejects_implicit_result_error_domain() {
+    let src = r#"
+type User:
+  name: String
+
+fn load() -> User!:
+  return User(name="ada")
+"#;
+    assert_diags(
+        src,
+        &["Error: result type requires an explicit error domain; use `T!MyError`"],
+    );
+}
+
+#[test]
+fn rejects_non_domain_error_type_in_function_return() {
+    let src = r#"
+fn load() -> Int!String:
+  return 1
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: function return type error domains must be declared type/enum names, found String",
+        ],
+    );
+}
+
+#[test]
+fn rejects_option_bang_without_explicit_error_value() {
+    let src = r#"
+type Missing:
+  message: String
+
+fn fetch() -> Int?:
+  return null
+
+fn load() -> Int!Missing:
+  let value = fetch() ?!
+  return value
+"#;
+    assert_diags(
+        src,
+        &["Error: ?! on Option requires an explicit error value"],
+    );
+}
+
+#[test]
+fn rejects_non_domain_bang_error_value() {
+    let src = r#"
+type Missing:
+  message: String
+
+fn fetch() -> Int?:
+  return null
+
+fn load() -> Int!Missing:
+  let value = fetch() ?! "missing"
+  return value
+"#;
+    assert_diags(
+        src,
+        &["Error: ?! error value must be a declared error domain type or enum, found String"],
+    );
+}
+
+#[test]
 fn checks_pattern_matching() {
     let src = r#"
 enum Color:
@@ -226,7 +293,9 @@ fn main():
 "#;
     assert_diags(
         src,
-        &["Error: call serve requires capability network; add `requires network` at module top-level"],
+        &[
+            "Error: call serve requires capability network; add `requires network` at module top-level",
+        ],
     );
 }
 

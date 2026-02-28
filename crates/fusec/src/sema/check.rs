@@ -162,6 +162,11 @@ impl<'a> Checker<'a> {
             self.env.push();
             let prev_return = self.current_return.clone();
             let route_ret = self.resolve_type_ref(&route.ret_type);
+            self.validate_return_error_domains(
+                route.ret_type.span,
+                &route_ret,
+                "service route return type",
+            );
             self.current_return = Some(route_ret);
             for (name, ty) in self.extract_route_params(route) {
                 self.insert_var(&name, ty, false, route.span);
@@ -178,6 +183,9 @@ impl<'a> Checker<'a> {
 
     fn check_fn_decl(&mut self, decl: &crate::ast::FnDecl) {
         let sig = self.resolve_fn_sig(decl);
+        if let Some(ret) = &decl.ret {
+            self.validate_return_error_domains(ret.span, sig.ret.as_ref(), "function return type");
+        }
         self.current_return = Some(*sig.ret.clone());
         self.env.push();
         for param in &sig.params {
@@ -657,13 +665,21 @@ impl<'a> Checker<'a> {
                 let err_ty = error.as_ref().map(|expr| self.check_expr(expr));
                 match inner_ty {
                     Ty::Option(inner) => {
-                        let err_ty = err_ty.unwrap_or(Ty::Error);
-                        self.check_bang_error(expr.span, &err_ty);
+                        let Some(err_ty) = err_ty else {
+                            self.diags
+                                .error(expr.span, "?! on Option requires an explicit error value");
+                            return *inner;
+                        };
+                        if self.validate_bang_error_domain(expr.span, &err_ty) {
+                            self.check_bang_error(expr.span, &err_ty);
+                        }
                         *inner
                     }
                     Ty::Result(ok, err) => {
                         if let Some(err_ty) = err_ty {
-                            self.check_bang_error(expr.span, &err_ty);
+                            if self.validate_bang_error_domain(expr.span, &err_ty) {
+                                self.check_bang_error(expr.span, &err_ty);
+                            }
                         } else {
                             self.check_bang_error(expr.span, &err);
                         }
@@ -1496,10 +1512,16 @@ impl<'a> Checker<'a> {
             }
             TypeRefKind::Result { ok, err } => {
                 let ok = self.resolve_type_ref_in(module_id, ok);
-                let err = err
-                    .as_ref()
-                    .map(|err| self.resolve_type_ref_in(module_id, err))
-                    .unwrap_or(Ty::Error);
+                let err = match err {
+                    Some(err) => self.resolve_type_ref_in(module_id, err),
+                    None => {
+                        self.diags.error(
+                            ty.span,
+                            "result type requires an explicit error domain; use `T!MyError`",
+                        );
+                        Ty::Unknown
+                    }
+                };
                 Ty::Result(Box::new(ok), Box::new(err))
             }
             TypeRefKind::Refined { base, args } => {
@@ -1978,13 +2000,18 @@ impl<'a> Checker<'a> {
                 return;
             }
         };
+        let mut actual_errs = Vec::new();
+        self.collect_error_domains_from_error_ty(err_ty, &mut actual_errs);
         if let Some(expected_errs) = expected_errs {
-            if !expected_errs
-                .iter()
-                .any(|expected| self.is_assignable(err_ty, expected))
-            {
-                if let Some(first) = expected_errs.first() {
-                    self.type_mismatch(span, first, err_ty);
+            for actual_err in actual_errs {
+                if !expected_errs
+                    .iter()
+                    .any(|expected| self.is_assignable(&actual_err, expected))
+                {
+                    if let Some(first) = expected_errs.first() {
+                        self.type_mismatch(span, first, &actual_err);
+                    }
+                    break;
                 }
             }
         }
@@ -2003,6 +2030,63 @@ impl<'a> Checker<'a> {
             }
             out.push(*err.clone());
             break;
+        }
+    }
+
+    fn collect_error_domains_from_error_ty(&self, err_ty: &Ty, out: &mut Vec<Ty>) {
+        match err_ty {
+            Ty::Result(ok, err) => {
+                out.push(*ok.clone());
+                self.collect_error_domains_from_error_ty(err, out);
+            }
+            other => out.push(other.clone()),
+        }
+    }
+
+    fn validate_bang_error_domain(&mut self, span: Span, err_ty: &Ty) -> bool {
+        if matches!(err_ty, Ty::Unknown) {
+            return false;
+        }
+        if !matches!(err_ty, Ty::Struct(_) | Ty::Enum(_)) {
+            self.diags.error(
+                span,
+                format!(
+                    "?! error value must be a declared error domain type or enum, found {}",
+                    err_ty
+                ),
+            );
+            return false;
+        }
+        true
+    }
+
+    fn validate_return_error_domains(&mut self, span: Span, ret_ty: &Ty, context: &str) {
+        let Ty::Result(_, _) = ret_ty else {
+            return;
+        };
+        let mut domains = Vec::new();
+        self.collect_result_errors(ret_ty, &mut domains);
+        for domain in domains {
+            self.validate_error_domain_type(span, &domain, context);
+        }
+    }
+
+    fn validate_error_domain_type(&mut self, span: Span, domain_ty: &Ty, context: &str) {
+        match domain_ty {
+            Ty::Struct(_) | Ty::Enum(_) | Ty::Unknown => {}
+            Ty::Error => self.diags.error(
+                span,
+                format!(
+                    "{context} cannot use catch-all Error; declare a module error domain type or enum"
+                ),
+            ),
+            other => self.diags.error(
+                span,
+                format!(
+                    "{context} error domains must be declared type/enum names, found {}",
+                    other
+                ),
+            ),
         }
     }
 

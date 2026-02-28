@@ -70,10 +70,11 @@ Type shorthand:
 
 Result types:
 
-- `T!` desugars to `Result<T, Error>`.
 - `T!E` desugars to `Result<T, E>`.
+- `T!` is invalid; result types must declare an explicit error domain.
+- for function/service return boundaries, each `E` must be a declared nominal `type` or `enum` (including chained forms like `T!AuthError!DbError`)
 - `expr ?! err` applies bang-chain error conversion.
-- `expr ?!` uses default/propagated error behavior (runtime details in `runtime.md`).
+- `expr ?!` is propagation-only for `Result<T,E>`; `Option<T> ?!` requires an explicit `err`.
 
 Refinements:
 
@@ -278,14 +279,16 @@ Status mapping uses the error name first, then `std.Error.status` if present:
 
 `expr ?! err` behavior:
 
-- `T!` is `Result<T, Error>`.
 - `T!E` is `Result<T, E>`.
+- `T!` is a compile-time error (explicit error domains are required).
+- for function/service return boundaries, each error domain must be a declared nominal `type` or `enum`
 
 `expr ?! err` rules:
 
 - If `expr` is `Option<T>` and is `None`, return `Err(err)`.
 - If `expr` is `Result<T, E>` and is `Err`, replace the error with `err`.
-- If `expr ?!` omits `err`, `Option` uses a default error, and `Result` propagates the existing error.
+- If `expr ?!` omits `err`, `Result` propagates the existing error.
+- `Option<T> ?!` without an explicit `err` is a compile-time error.
 
 ### Config and CLI binding
 

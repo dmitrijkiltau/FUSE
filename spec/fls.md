@@ -357,10 +357,11 @@ Reserved namespace:
 
 ### Results (`T!` / `T!E`)
 
-- `T!` desugars to `Result<T, Error>`.
 - `T!E` desugars to `Result<T, E>`.
+- `T!` is invalid; result types must declare an explicit error domain.
+- for function/service return boundaries, each `E` must be a declared nominal `type` or `enum` (including chained forms like `T!AuthError!DbError`)
 - `expr ?! err` applies bang-chain error conversion.
-- `expr ?!` uses default/propagated error behavior (runtime details in `runtime.md`).
+- `expr ?!` is propagation-only for `Result<T,E>`; `Option<T> ?!` requires an explicit `err`.
 
 ### Refined types
 

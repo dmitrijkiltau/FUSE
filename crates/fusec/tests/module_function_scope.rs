@@ -272,9 +272,8 @@ fn main() -> Int:
     let (_analysis, sema_diags) = fusec::sema::analyze_registry(&registry);
     let messages: Vec<String> = sema_diags.into_iter().map(|diag| diag.message).collect();
     assert!(
-        messages
-            .iter()
-            .any(|msg| msg == "call to Auth.lookup leaks capability db; add `requires db` at module top-level"),
+        messages.iter().any(|msg| msg
+            == "call to Auth.lookup leaks capability db; add `requires db` at module top-level"),
         "missing capability leakage diagnostic: {messages:?}"
     );
 
@@ -315,6 +314,49 @@ fn main() -> Int:
     assert!(
         sema_diags.is_empty(),
         "unexpected sema diagnostics: {sema_diags:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cross_module_error_domain_leakage_is_rejected() {
+    let dir = temp_project_dir("error_domain_leak");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let main_path = dir.join("main.fuse");
+    write_file(
+        &dir.join("auth.fuse"),
+        r#"
+type AuthError:
+  message: String
+
+fn lookup() -> Int!AuthError:
+  return null ?! AuthError(message="missing")
+"#,
+    );
+    write_file(
+        &main_path,
+        r#"
+import Auth from "./auth"
+
+type ApiError:
+  message: String
+
+fn main() -> Int!ApiError:
+  return Auth.lookup()
+"#,
+    );
+
+    let src = fs::read_to_string(&main_path).expect("read root source");
+    let (registry, diags) = fusec::load_program_with_modules(&main_path, &src);
+    assert!(diags.is_empty(), "unexpected loader diagnostics: {diags:?}");
+    let (_analysis, sema_diags) = fusec::sema::analyze_registry(&registry);
+    let messages: Vec<String> = sema_diags.into_iter().map(|diag| diag.message).collect();
+    assert!(
+        messages
+            .iter()
+            .any(|msg| msg == "type mismatch: expected Int!ApiError, found Int!AuthError"),
+        "missing error-domain leakage diagnostic: {messages:?}"
     );
 
     let _ = fs::remove_dir_all(&dir);

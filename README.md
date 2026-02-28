@@ -79,6 +79,14 @@ Current capability checks:
 - `crypto.*` requires `requires crypto`
 - calling imported module functions requires declaring the callee module's capabilities
 
+## Typed error domains
+
+Fallible boundaries require explicit error domains:
+
+- use `T!Domain` (and chained forms like `T!AuthError!DbError`) on function/service return types
+- bare `T!` is rejected at compile-time
+- `expr ?!` without an explicit error value is allowed only for `Result` propagation; `Option ?!` requires `err`
+
 ## Package commands
 
 | Command | Description |

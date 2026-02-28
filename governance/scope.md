@@ -68,6 +68,7 @@ FUSE is currently scoped as a strict, typed language with integrated boundary/ru
 - integrated runtime boundary handling (validation, JSON/config/CLI/HTTP binding, error mapping)
 - compile-time module capability declarations (`requires db|crypto|network|time`) with
   boundary-call and cross-module leakage checks
+- typed error-domain boundaries on function/service returns (explicit `T!Domain`, no implicit `T!`)
 - SQLite-backed DB runtime and migration workflow
 - service-oriented package workflow (`fuse check/run/dev/test/build`)
 

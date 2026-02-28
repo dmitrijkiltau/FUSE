@@ -140,14 +140,16 @@ Status mapping uses the error name first, then `std.Error.status` if present:
 
 ### Result types + `?!`
 
-- `T!` is `Result<T, Error>`.
 - `T!E` is `Result<T, E>`.
+- `T!` is a compile-time error (explicit error domains are required).
+- for function/service return boundaries, each error domain must be a declared nominal `type` or `enum`
 
 `expr ?! err` rules:
 
 - If `expr` is `Option<T>` and is `None`, return `Err(err)`.
 - If `expr` is `Result<T, E>` and is `Err`, replace the error with `err`.
-- If `expr ?!` omits `err`, `Option` uses a default error, and `Result` propagates the existing error.
+- If `expr ?!` omits `err`, `Result` propagates the existing error.
+- `Option<T> ?!` without an explicit `err` is a compile-time error.
 
 See also: [Boundary model](#boundary-model), [Type system (current static model)](fls.md#type-system-current-static-model).
 

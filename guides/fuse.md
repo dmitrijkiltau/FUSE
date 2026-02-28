@@ -124,6 +124,7 @@ FUSE currently ships with:
 - semantic parity gates across AST/native backends
 - module imports (relative, `root:`, and `dep:` paths)
 - compile-time module capability declarations (`requires db|crypto|network|time`)
+- typed error-domain boundaries on function/service returns (`T!Domain`, no implicit `T!`)
 - package tooling via `fuse.toml` and `fuse` commands
 
 Detailed capability matrices and caveats live in:
