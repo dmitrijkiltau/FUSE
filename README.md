@@ -156,11 +156,11 @@ Global CLI output option:
 
 Build-specific options:
 
-- `fuse build --aot` emits a deployable AOT binary using the default output path
+- `fuse build --release` emits a deployable AOT binary using the default output path
   `.fuse/build/program.aot` (`.fuse/build/program.aot.exe` on Windows) unless
   `[build].native_bin` is configured.
-- `fuse build --aot --release` uses the release profile for AOT binary generation.
-- `fuse build --release` without `--aot` is rejected.
+- `fuse build --aot` forces AOT output in debug profile.
+- `fuse build` remains the explicit non-AOT local development path (cache artifacts only).
 
 Packages use a `fuse.toml` manifest. Minimal example:
 
@@ -229,7 +229,8 @@ Native/IR cache reuse also requires matching build fingerprints (target triple, 
 
 Deployable AOT output:
 
-- `fuse build --aot` emits `.fuse/build/program.aot` (`.exe` on Windows) by default.
+- `fuse build --release` emits `.fuse/build/program.aot` (`.exe` on Windows) by default.
+- `fuse build --aot` also emits AOT output (debug profile).
 - `[build].native_bin` overrides the AOT output path and remains supported.
 - AOT binaries embed build metadata:
   `mode`, `profile`, `target`, `rustc`, `cli`, `runtime_cache`, and `contract`.

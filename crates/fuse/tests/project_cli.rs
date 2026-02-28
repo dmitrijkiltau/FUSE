@@ -1958,7 +1958,7 @@ app "Demo":
 }
 
 #[test]
-fn build_release_requires_aot_flag() {
+fn build_release_defaults_to_aot_output() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");
     write_basic_manifest_project(
@@ -1979,11 +1979,63 @@ app "Demo":
         .arg("never")
         .output()
         .expect("run fuse build --release");
-    assert!(!output.status.success(), "build unexpectedly succeeded");
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("--release requires --aot"),
-        "stderr: {stderr}"
+        output.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let aot_path = default_aot_binary_path(&dir);
+    assert!(aot_path.exists(), "expected {}", aot_path.display());
+    assert!(
+        dir.join(".fuse")
+            .join("build")
+            .join("program.native")
+            .exists(),
+        "expected cached native artifact"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_without_release_remains_explicit_non_aot_path() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse build");
+    assert!(
+        output.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let aot_path = default_aot_binary_path(&dir);
+    assert!(
+        !aot_path.exists(),
+        "did not expect AOT output for non-release build: {}",
+        aot_path.display()
+    );
+    assert!(
+        dir.join(".fuse")
+            .join("build")
+            .join("program.native")
+            .exists(),
+        "expected cached native artifact"
     );
 
     let _ = fs::remove_dir_all(&dir);

@@ -34,7 +34,7 @@ ENV FUSE_SKIP_GUIDE_DOCS=1
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/workspace/target \
-    fuse build --manifest-path docs --aot --release
+    fuse build --manifest-path docs --release
 
 
 FROM debian:bookworm-slim AS runtime

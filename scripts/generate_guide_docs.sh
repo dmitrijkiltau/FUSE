@@ -245,7 +245,7 @@ TOOLING
 
 ## Run Docs with Docker
 
-`docs/Dockerfile` builds the `fuse` CLI from source, then runs `fuse build --aot --release` to produce the docs AOT binary.
+`docs/Dockerfile` builds the `fuse` CLI from source, then runs `fuse build --release` to produce the docs AOT binary.
 Guide docs generation is skipped in Docker because generated docs are committed.
 Downloadable release artifacts are not served by the docs app; use GitHub Releases instead.
 

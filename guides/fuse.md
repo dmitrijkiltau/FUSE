@@ -171,6 +171,7 @@ Typical commands:
 - `fuse dev`
 - `fuse test`
 - `fuse build`
+- `fuse build --release`
 - `fuse build --aot`
 - `fuse build --aot --release`
 

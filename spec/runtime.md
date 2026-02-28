@@ -53,7 +53,8 @@ Source -> Parser -> AST -> Lowering passes -> Canonical program
 Native backend note:
 
 - If native compilation/execution fails for a function, the run fails (no automatic backend fallback).
-- `fuse build --aot` emits a standalone native executable wrapper over compiled native artifacts.
+- `fuse build --release` emits a standalone native executable wrapper over compiled native artifacts.
+  `fuse build --aot` also emits AOT output (debug profile).
   The wrapper embeds build metadata (`mode`, `profile`, `target`, `rustc`, `cli`, `runtime_cache`, `contract`),
   exposes it via `FUSE_AOT_BUILD_INFO=1`, supports startup tracing via `FUSE_AOT_STARTUP_TRACE=1`,
   and emits fatal envelopes as:

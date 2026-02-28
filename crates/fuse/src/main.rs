@@ -35,7 +35,7 @@ options:
   --color <auto|always|never>  Colorized CLI output policy
   --clean                 Remove .fuse/build before building (build only)
   --aot                   Emit deployable AOT binary (build only)
-  --release               Use release profile for AOT output (build only; requires --aot)
+  --release               Use release profile for build output (build only; implies --aot)
 "#;
 
 const FUSE_ASSET_MAP_ENV: &str = "FUSE_ASSET_MAP";
@@ -1719,9 +1719,6 @@ fn parse_common_args(
         }
         return Err(format!("unexpected argument: {arg}"));
     }
-    if out.release && !out.aot {
-        return Err("--release requires --aot (use `fuse build --aot --release`)".to_string());
-    }
     Ok(out)
 }
 
@@ -1835,8 +1832,9 @@ fn run_build(
     }
     let configured_native_bin =
         manifest.and_then(|m| m.build.as_ref().and_then(|b| b.native_bin.clone()));
+    let aot_enabled = aot || release;
     let aot_out = configured_native_bin.or_else(|| {
-        if aot {
+        if aot_enabled {
             Some(default_aot_output_path())
         } else {
             None
