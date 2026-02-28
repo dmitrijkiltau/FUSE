@@ -229,7 +229,7 @@ extern "C" fn handle_unix_shutdown_signal(sig: i32) {
 
 #[cfg(unix)]
 unsafe fn install_unix_shutdown_signal_handler(sig: i32) {
-    let _ = unsafe { signal(sig, handle_unix_shutdown_signal as usize) };
+    let _ = unsafe { signal(sig, handle_unix_shutdown_signal as *const () as usize) };
 }
 
 fn request_id_from_header(headers: &HashMap<String, String>, key: &str) -> Option<String> {
