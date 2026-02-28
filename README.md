@@ -245,6 +245,7 @@ Deployable AOT output:
   For `class=panic`, message starts with
   `panic_kind=<panic_static_str|panic_string|panic_non_string>`.
 - AOT runtime exit codes are stable: `0` success, `1` runtime failure, `101` panic.
+- Signal behavior remains platform-default (no runtime-installed handlers in this milestone).
 - AOT runtime config resolution is deterministic: env -> config file (`FUSE_CONFIG` or
   `config.toml` in process cwd) -> config defaults.
 - AOT runtime does not auto-load `.env`; only process environment is observed.

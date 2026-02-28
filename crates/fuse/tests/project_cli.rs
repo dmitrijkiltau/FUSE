@@ -2,10 +2,10 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -200,14 +200,134 @@ fn reserve_local_port() -> u16 {
     listener.local_addr().expect("read local test addr").port()
 }
 
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("workspace root")
+        .to_path_buf()
+}
+
+fn resolve_target_dir_for_tests() -> PathBuf {
+    let root = workspace_root();
+    if let Some(raw) = std::env::var_os("CARGO_TARGET_DIR") {
+        let path = PathBuf::from(raw);
+        return if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        };
+    }
+    let tmp_target = root.join("tmp").join("fuse-target");
+    if tmp_target.exists() {
+        return tmp_target;
+    }
+    root.join("target")
+}
+
+fn find_latest_rlib_for_tests(dir: &Path, prefix: &str) -> PathBuf {
+    let entries = fs::read_dir(dir).expect("read deps dir");
+    let mut best: Option<(SystemTime, PathBuf)> = None;
+    for entry in entries {
+        let entry = entry.expect("read deps entry");
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rlib") {
+            continue;
+        }
+        let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        if !file_name.starts_with(prefix) {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .expect("deps metadata")
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        match best {
+            Some((best_time, _)) if modified <= best_time => {}
+            _ => best = Some((modified, path)),
+        }
+    }
+    best.expect("find latest rlib").1
+}
+
+fn native_link_search_paths_for_tests(target_dir: &Path, profile: &str) -> Vec<PathBuf> {
+    let build_dir = target_dir.join(profile).join("build");
+    if !build_dir.exists() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let entries = fs::read_dir(&build_dir).expect("read build dir");
+    for entry in entries {
+        let path = entry.expect("read build entry").path().join("output");
+        if !path.exists() {
+            continue;
+        }
+        let contents = fs::read_to_string(path).expect("read build output metadata");
+        for line in contents.lines() {
+            let Some(search) = line.strip_prefix("cargo:rustc-link-search=") else {
+                continue;
+            };
+            let search = search.trim();
+            if search.is_empty() {
+                continue;
+            }
+            out.push(PathBuf::from(search));
+        }
+    }
+    out
+}
+
+fn relink_aot_runner_for_tests(dir: &Path, release: bool) {
+    let profile = if release { "release" } else { "debug" };
+    let target_dir = resolve_target_dir_for_tests();
+    let deps_dir = target_dir.join(profile).join("deps");
+    let fusec_rlib = find_latest_rlib_for_tests(&deps_dir, "libfusec");
+    let bincode_rlib = find_latest_rlib_for_tests(&deps_dir, "libbincode");
+    let runner = dir.join(".fuse").join("build").join("native_main.rs");
+    let object = dir.join(".fuse").join("build").join("program.o");
+    let output = default_aot_binary_path(dir);
+
+    let mut rustc = Command::new("rustc");
+    rustc
+        .arg("--edition=2024")
+        .arg(&runner)
+        .arg("-o")
+        .arg(&output)
+        .arg("-L")
+        .arg(format!("dependency={}", deps_dir.display()))
+        .arg("--extern")
+        .arg(format!("fusec={}", fusec_rlib.display()))
+        .arg("--extern")
+        .arg(format!("bincode={}", bincode_rlib.display()))
+        .arg("-C")
+        .arg(format!("link-arg={}", object.display()));
+    for search in native_link_search_paths_for_tests(&target_dir, profile) {
+        rustc.arg("-L").arg(search);
+    }
+    if release {
+        rustc.arg("-C").arg("opt-level=3");
+    }
+    let output = rustc.output().expect("run rustc for relink");
+    assert!(
+        output.status.success(),
+        "relink stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn http_get_with_retry(port: u16, path: &str, attempts: usize) -> Option<String> {
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    http_request_with_retry(port, &request, attempts)
+}
+
+fn http_request_with_retry(port: u16, request: &str, attempts: usize) -> Option<String> {
     for _ in 0..attempts {
         if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) {
             let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
             let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-            let request = format!(
-                "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
-            );
             if stream.write_all(request.as_bytes()).is_ok() {
                 let mut response = String::new();
                 if stream.read_to_string(&mut response).is_ok() && !response.is_empty() {
@@ -218,6 +338,36 @@ fn http_get_with_retry(port: u16, path: &str, attempts: usize) -> Option<String>
         thread::sleep(Duration::from_millis(100));
     }
     None
+}
+
+fn wait_for_child_exit_status(child: &mut Child, timeout: Duration) -> ExitStatus {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status,
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    panic!("timed out waiting for child exit");
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(err) => panic!("failed to poll child status: {err}"),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn send_unix_signal(pid: u32, signal: &str) {
+    let status = Command::new("kill")
+        .arg(signal)
+        .arg(pid.to_string())
+        .status()
+        .expect("run kill");
+    assert!(
+        status.success(),
+        "kill {signal} {pid} failed with status {status}"
+    );
 }
 
 #[test]
@@ -2383,6 +2533,64 @@ app "Demo":
 }
 
 #[test]
+fn build_aot_runtime_panic_uses_exit_101_and_panic_fatal_envelope() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let runner = dir.join(".fuse").join("build").join("native_main.rs");
+    let source = fs::read_to_string(&runner).expect("read native_main.rs");
+    let patched = source.replacen(
+        "fn run_program() -> Result<(), String> {\n",
+        "fn run_program() -> Result<(), String> {\n    panic!(\"aot-panic-contract-test\");\n",
+        1,
+    );
+    assert_ne!(
+        source, patched,
+        "failed to patch run_program in native_main.rs"
+    );
+    fs::write(&runner, patched).expect("write patched native_main.rs");
+    relink_aot_runner_for_tests(&dir, true);
+
+    let aot = default_aot_binary_path(&dir);
+    let run = Command::new(&aot).output().expect("run patched aot binary");
+    assert_eq!(run.status.code(), Some(101), "status: {:?}", run.status);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(stderr.contains("fatal: class=panic"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("panic_kind=panic_static_str aot-panic-contract-test"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("mode=aot"), "stderr: {stderr}");
+    assert!(stderr.contains("profile=release"), "stderr: {stderr}");
+    assert!(stderr.contains("target="), "stderr: {stderr}");
+    assert!(stderr.contains("contract="), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn build_aot_runner_wires_deterministic_panic_taxonomy() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");
@@ -2555,6 +2763,200 @@ app "Docs":
         "aot stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_service_request_id_and_structured_logs_are_consistent() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Docs"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+requires network
+
+config App:
+  port: String = env("PORT") ?? "3000"
+
+service DocsApi at "/api":
+  get "/id" -> Map<String, String>:
+    let req_id = request.header("x-request-id") ?? "missing"
+    return {"id": req_id}
+
+app "Docs":
+  serve(App.port)
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let port = reserve_local_port();
+    let aot = default_aot_binary_path(&dir);
+    let child = Command::new(&aot)
+        .env("PORT", port.to_string())
+        .env("FUSE_HOST", "127.0.0.1")
+        .env("FUSE_MAX_REQUESTS", "1")
+        .env("FUSE_REQUEST_LOG", "structured")
+        .env("FUSE_METRICS_HOOK", "stderr")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn aot service");
+
+    let request = format!(
+        "GET /api/id HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Request-Id: aot-obs-1\r\nConnection: close\r\n\r\n"
+    );
+    let response = match http_request_with_retry(port, &request, 60) {
+        Some(response) => response,
+        None => {
+            let output = child
+                .wait_with_output()
+                .expect("wait aot child after timeout");
+            panic!(
+                "failed to query aot id endpoint; stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    };
+    assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
+    let response_lower = response.to_ascii_lowercase();
+    assert!(
+        response_lower.contains("x-request-id: aot-obs-1"),
+        "response: {response}"
+    );
+    assert!(response.contains(r#"{"id":"aot-obs-1"}"#), "response: {response}");
+
+    let output = child.wait_with_output().expect("wait aot child");
+    assert!(
+        output.status.success(),
+        "aot stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("\"event\":\"http.request\""), "stderr: {stderr}");
+    assert!(stderr.contains("\"runtime\":\"native\""), "stderr: {stderr}");
+    assert!(stderr.contains("\"request_id\":\"aot-obs-1\""), "stderr: {stderr}");
+    assert!(
+        stderr.contains("\"metric\":\"http.server.request\""),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn build_aot_signal_termination_uses_platform_default_handlers() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Docs"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+requires network
+
+config App:
+  port: String = env("PORT") ?? "3000"
+
+service DocsApi at "/api":
+  get "/health" -> Map<String, String>:
+    return {"status": "ok"}
+
+app "Docs":
+  serve(App.port)
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let aot = default_aot_binary_path(&dir);
+    for (signal, expected) in [("-TERM", 15), ("-INT", 2)] {
+        let port = reserve_local_port();
+        let mut child = Command::new(&aot)
+            .env("PORT", port.to_string())
+            .env("FUSE_HOST", "127.0.0.1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn aot service");
+        let mut stderr_pipe = child.stderr.take().expect("child stderr pipe");
+
+        let response = match http_get_with_retry(port, "/api/health", 60) {
+            Some(response) => response,
+            None => {
+                let _ = child.kill();
+                let _ = wait_for_child_exit_status(&mut child, Duration::from_secs(2));
+                let mut stderr = String::new();
+                let _ = stderr_pipe.read_to_string(&mut stderr);
+                panic!("failed to query aot health endpoint; stderr: {stderr}");
+            }
+        };
+        assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
+
+        send_unix_signal(child.id(), signal);
+        let status = wait_for_child_exit_status(&mut child, Duration::from_secs(5));
+        assert_eq!(
+            status.signal(),
+            Some(expected),
+            "signal {signal} produced status {status:?}"
+        );
+
+        let mut stderr = String::new();
+        stderr_pipe
+            .read_to_string(&mut stderr)
+            .expect("read child stderr");
+        assert!(!stderr.contains("fatal:"), "stderr: {stderr}");
+    }
 
     let _ = fs::remove_dir_all(&dir);
 }

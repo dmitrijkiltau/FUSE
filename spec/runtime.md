@@ -83,6 +83,8 @@ Signal handling semantics (`M7` scope):
 
 - AOT runtime installs no custom signal handlers.
 - `SIGINT`, `SIGTERM`, and other process signals follow platform-default behavior.
+- On Unix, external `SIGINT`/`SIGTERM` terminate the process with signal-based exit status
+  semantics; this is not rewritten into runtime fatal envelopes.
 - Graceful signal shutdown policy is not part of this milestone and is tracked under `M8`.
 
 Shutdown and exit-code contract:
