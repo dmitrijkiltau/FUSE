@@ -32,9 +32,9 @@ app "users":
 
 ## Status
 
-FUSE v0.6.0 is released. This is a breaking minor focused on deterministic architecture:
-compile-time capabilities, typed error domains, structured concurrency enforcement,
-deterministic transaction blocks, immutable request context patterns, and strict architecture checks.
+FUSE `v0.7.0` release prep is active. This minor hardens AOT as production posture:
+explicit runtime contract guarantees, production ergonomics defaults, deployment-surface formalization,
+and AST/native/AOT parity-lock gates.
 
 Compatibility is defined by documented behavior in `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, and
 `governance/VERSIONING_POLICY.md`.

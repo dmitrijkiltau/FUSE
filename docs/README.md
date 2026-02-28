@@ -30,13 +30,13 @@ Run these commands from the repository root.
 Build the image:
 
 ```bash
-docker build -f docs/Dockerfile -t fuse-docs:0.6.0 .
+docker build -f docs/Dockerfile -t fuse-docs:0.7.0 .
 ```
 
 Run:
 
 ```bash
-docker run --rm -p 4080:4080 -e PORT=4080 -e FUSE_HOST=0.0.0.0 fuse-docs:0.6.0
+docker run --rm -p 4080:4080 -e PORT=4080 -e FUSE_HOST=0.0.0.0 fuse-docs:0.7.0
 ```
 
 Or run with Compose (from the repository root):

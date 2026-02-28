@@ -63,6 +63,9 @@ Recent release-line notes:
 - `0.6.0` is a breaking minor focused on deterministic architecture:
   capability enforcement, typed error domains, structured concurrency checks,
   transaction block constraints, and strict architecture mode.
+- `0.7.0` is an operational hardening minor focused on AOT production posture:
+  runtime contract hardening, production ergonomics, deployment formalization, and
+  AST/native/AOT parity-lock release gates.
 
 - semantic regressions across AST/native are release blockers on all active release lines. (VM removed per RFC 0007.)
 
@@ -76,6 +79,7 @@ Recent release-line notes:
 - Programs valid on `0.4.0` must remain valid and equivalent on `0.5.x` (VM removal is a
   tooling-only break; language source compatibility is preserved).
 - Programs valid on `0.6.0` must remain valid and equivalent on `0.6.x`.
+- Programs valid on `0.7.0` must remain valid and equivalent on `0.7.x`.
 - If behavior must change incompatibly, release must bump at least `MINOR` and include migration guidance.
 
 ### Runtime behavior compatibility

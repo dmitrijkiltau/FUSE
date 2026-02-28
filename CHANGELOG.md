@@ -2,6 +2,39 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.7.0] - 2026-02-28
+
+### Added
+
+- AOT runtime contract hardening (`M7`):
+  - explicit startup order guarantees
+  - deterministic config precedence and startup determinism checks
+  - stable AOT exit-code and fatal-envelope invariants
+  - explicit runtime sealing guarantees (no dynamic backend fallback / runtime compilation)
+- Production ergonomics layer (`M8`):
+  - canonical `/health` production pattern
+  - stable startup log line format contract
+  - deterministic graceful shutdown semantics for `SIGTERM`/`SIGINT`
+  - explicit runtime plugin system non-goal
+- Deployment surface formalization (`M9`):
+  - single-page deployment guide (`ops/DEPLOY.md`) for VM/Docker/systemd/Kubernetes
+  - canonical minimal production Dockerfile (`ops/docker/AOT_MINIMAL.Dockerfile`)
+  - release-artifact container image packaging script and workflow wiring
+- AOT parity lock (`M10`):
+  - explicit AST/native/AOT observable-equivalence matrix gate
+  - dedicated panic taxonomy parity gate (`exit=101`, `class=panic`)
+
+### Changed
+
+- `scripts/authority_parity.sh` now includes AST/native/AOT parity-lock and AOT panic-taxonomy checks.
+- Benchmark regression gate now applies a local WSL2 profile floor for known loopback-latency metrics
+  while preserving default/CI thresholds.
+- Stability plan execution status now records `M7`-`M10` as complete and tracks release-candidate gates.
+
+### Migration
+
+- No language source migration is required from `0.6.x` to `0.7.0`.
+
 ## [0.6.0] - 2026-02-28
 
 ### Breaking

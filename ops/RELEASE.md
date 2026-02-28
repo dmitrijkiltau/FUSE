@@ -11,7 +11,7 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
   - `spec/runtime.md`
   - `guides/fuse.md` (overview companion context)
   - `DEPLOY.md` (deployment patterns and official image path)
-- For AOT production rollout (`v0.4.0` line), enforce the contract and SLO targets in `AOT_RELEASE_CONTRACT.md`.
+- For AOT production rollout (`v0.7.0` line), enforce the contract and SLO targets in `AOT_RELEASE_CONTRACT.md`.
 - Enforce rollback preparedness from `AOT_ROLLBACK_PLAYBOOK.md`.
 - Enforce version bump and compatibility rules from `governance/VERSIONING_POLICY.md`.
 - Features marked planned/unsupported stay out of release criteria.

@@ -1,6 +1,6 @@
 [package]
 name = "fuse-rt"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 description = "Shared runtime primitives for the FUSE toolchain."
 repository = "https://github.com/dmitrijkiltau/fuse"

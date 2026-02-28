@@ -461,13 +461,13 @@ Downloadable release artifacts are not served by the docs app; use GitHub Releas
 Build the docs image from repository root:
 
 ```bash
-docker build -f docs/Dockerfile -t fuse-docs:0.6.0 .
+docker build -f docs/Dockerfile -t fuse-docs:0.7.0 .
 ```
 
 Run the docs container:
 
 ```bash
-docker run --rm -p 4080:4080 -e PORT=4080 -e FUSE_HOST=0.0.0.0 fuse-docs:0.6.0
+docker run --rm -p 4080:4080 -e PORT=4080 -e FUSE_HOST=0.0.0.0 fuse-docs:0.7.0
 ```
 
 Then open <http://localhost:4080>.
