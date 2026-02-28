@@ -1027,6 +1027,21 @@ impl FuncBuilder {
             StmtKind::While { cond, block } => {
                 self.lower_while(cond, block);
             }
+            StmtKind::Transaction { block } => {
+                self.emit(Instr::Call {
+                    name: "db.tx_begin".to_string(),
+                    argc: 0,
+                    kind: CallKind::Builtin,
+                });
+                self.emit(Instr::Pop);
+                self.lower_block(block);
+                self.emit(Instr::Pop);
+                self.emit(Instr::Call {
+                    name: "db.tx_commit".to_string(),
+                    argc: 0,
+                    kind: CallKind::Builtin,
+                });
+            }
             StmtKind::For { pat, iter, block } => {
                 self.lower_for(pat, iter, block);
             }

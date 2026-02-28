@@ -137,6 +137,7 @@ Module capabilities:
 - calls requiring capabilities are rejected when the current module does not declare them
 - call sites to imported module functions must declare every capability required by the callee module
   (capability leakage across module boundaries is rejected)
+- `transaction` blocks are valid only in modules with `requires db` and no additional capabilities
 
 ---
 
@@ -374,6 +375,7 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 - `log(...)` writes log lines to stderr (see Logging)
 - `db.exec/query/one` execute SQL against configured DB
 - `db.from(table)` builds parameterized queries
+- `transaction:` opens a constrained DB transaction scope (`BEGIN`/`COMMIT`/`ROLLBACK`)
 - `assert(cond, message?)` throws runtime error when `cond` is false
 - `env(name: String) -> String?` returns env var or `null`
 - `asset(path: String) -> String` resolves to hashed/static public URL when asset map is configured

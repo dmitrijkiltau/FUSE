@@ -372,6 +372,7 @@ See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [
 - `log(...)` writes log lines to stderr (see Logging)
 - `db.exec/query/one` execute SQL against configured DB
 - `db.from(table)` builds parameterized queries
+- `transaction:` opens a constrained DB transaction scope (`BEGIN`/`COMMIT`/`ROLLBACK`)
 - `assert(cond, message?)` throws runtime error when `cond` is false
 - `env(name: String) -> String?` returns env var or `null`
 - `asset(path: String) -> String` resolves to hashed/static public URL when asset map is configured
@@ -406,6 +407,8 @@ fallback behavior.
 - `time(...)` / `time.*` calls require `requires time`
 - `crypto.*` calls require `requires crypto`
 - calls to imported module functions require the caller to declare the callee module's capabilities
+- `transaction:` blocks require `requires db`, forbid non-`db` module capabilities, and reject
+  non-`db` capability usage inside the block
 
 ### Database (SQLite only)
 
@@ -429,6 +432,8 @@ Builtins:
 - `db.query(sql, params?)` returns `List<Map<String, Value>>`
 - `db.one(sql, params?)` returns first row map or `null`
 - `db.from(table)` returns `Query` builder
+- `transaction:` opens a transaction, executes its block, commits on success, and rolls back on
+  block failure
 
 Query builder methods (immutable style; each returns a new `Query`):
 
@@ -465,7 +470,7 @@ Value mapping:
 Connection pool behavior:
 
 - DB calls use pooled SQLite connections.
-- the active connection is pinned for migration transaction scope (`BEGIN`/`COMMIT`/`ROLLBACK`).
+- the active connection is pinned for migration and `transaction:` scopes (`BEGIN`/`COMMIT`/`ROLLBACK`).
 - pool-size values must be integer `>= 1`; invalid values report runtime/config errors.
 
 ### Migrations
@@ -516,6 +521,7 @@ Structured concurrency is enforced at compile time:
 - detached task expressions are invalid
 - spawned task bindings must be awaited before scope exit
 - spawned task bindings cannot be reassigned before `await`
+- `transaction:` blocks reject `spawn` and `await`
 
 Task surface (v0.2.0):
 

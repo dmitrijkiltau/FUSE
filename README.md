@@ -78,6 +78,7 @@ Current capability checks:
 - `time(...)` / `time.*` require `requires time`
 - `crypto.*` requires `requires crypto`
 - calling imported module functions requires declaring the callee module's capabilities
+- `transaction:` blocks require `requires db` and reject non-`db` capability usage inside the block
 
 ## Typed error domains
 
@@ -94,6 +95,15 @@ Fallible boundaries require explicit error domains:
 - detached task expressions are rejected
 - spawned task bindings must be awaited before leaving scope
 - spawned task bindings cannot be reassigned before `await`
+
+## Deterministic transactions
+
+`transaction:` introduces a constrained DB transaction scope:
+
+- commits on success, rolls back on block failure
+- requires `requires db`
+- rejects `spawn`, `await`, early `return`, and `break`/`continue` inside the block
+- rejects non-`db` capability usage inside the block
 
 ## Package commands
 

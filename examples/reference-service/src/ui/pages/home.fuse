@@ -14,7 +14,7 @@ fn render_shell(token: String?, user_id: String?) -> Html:
           "HTMX and HTML DSL reference service."
       Auth.render_session_section(token, user_id)
       Create.render_create_section(token)
-      hr({"class": "separator"})
+      hr(class="separator")
       Notes.render_private_notes_section(token, user_id)
       Notes.render_public_section(token, user_id)
 

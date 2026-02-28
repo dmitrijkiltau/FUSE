@@ -219,6 +219,10 @@ impl Canonicalizer {
                 let mut loop_scope = scope.clone();
                 self.canonicalize_block(block, &mut loop_scope);
             }
+            StmtKind::Transaction { block } => {
+                let mut tx_scope = scope.clone();
+                self.canonicalize_block(block, &mut tx_scope);
+            }
             StmtKind::Expr(expr) => self.canonicalize_expr(expr, scope),
             StmtKind::Break | StmtKind::Continue => {}
         }

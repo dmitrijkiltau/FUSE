@@ -2241,6 +2241,7 @@ fn collect_call_context_stmt(stmt: &Stmt, cursor: usize, best: &mut Option<CallC
             collect_call_context_expr(cond, cursor, best);
             collect_call_context_block(block, cursor, best);
         }
+        StmtKind::Transaction { block } => collect_call_context_block(block, cursor, best),
         StmtKind::Expr(expr) => collect_call_context_expr(expr, cursor, best),
         StmtKind::Break | StmtKind::Continue => {}
     }
@@ -3557,6 +3558,9 @@ fn collect_inlay_hints_block(
             }
             StmtKind::While { cond, block } => {
                 collect_inlay_hints_expr(index, uri, text, offsets, cond, range, hints, seen);
+                collect_inlay_hints_block(index, uri, text, offsets, block, range, hints, seen);
+            }
+            StmtKind::Transaction { block } => {
                 collect_inlay_hints_block(index, uri, text, offsets, block, range, hints, seen);
             }
             StmtKind::Expr(expr) => {
@@ -5858,6 +5862,7 @@ fn collect_qualified_stmt(stmt: &Stmt, out: &mut Vec<QualifiedNameRef>) {
             collect_qualified_expr(cond, out);
             collect_qualified_block(block, out);
         }
+        StmtKind::Transaction { block } => collect_qualified_block(block, out),
         StmtKind::Expr(expr) => collect_qualified_expr(expr, out),
         StmtKind::Break | StmtKind::Continue => {}
     }
@@ -6481,6 +6486,9 @@ impl<'a> IndexBuilder<'a> {
             }
             StmtKind::While { cond, block } => {
                 self.visit_expr(cond);
+                self.visit_block(block);
+            }
+            StmtKind::Transaction { block } => {
                 self.visit_block(block);
             }
             StmtKind::Expr(expr) => {

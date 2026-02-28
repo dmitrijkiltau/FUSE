@@ -357,6 +357,77 @@ fn main():
 }
 
 #[test]
+fn transaction_requires_db_capability() {
+    let src = r#"
+fn main():
+  transaction:
+    let _ = 1
+"#;
+    assert_diags(
+        src,
+        &["Error: transaction blocks require capability db; add `requires db` at module top-level"],
+    );
+}
+
+#[test]
+fn transaction_rejects_non_db_module_capabilities() {
+    let src = r#"
+requires db
+requires network
+
+fn main():
+  transaction:
+    db.exec("select 1")
+"#;
+    assert_diags(
+        src,
+        &["Error: transaction blocks require db-only modules; remove non-db capabilities: network"],
+    );
+}
+
+#[test]
+fn transaction_rejects_spawn_and_await() {
+    let src = r#"
+requires db
+
+fn main():
+  transaction:
+    let t = spawn:
+      1
+    let _ = await t
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: transaction blocks cannot await tasks",
+            "Error: transaction blocks cannot spawn tasks",
+        ],
+    );
+}
+
+#[test]
+fn transaction_rejects_non_db_capability_calls_and_early_return() {
+    let src = r#"
+requires db
+requires network
+
+fn main() -> Int:
+  transaction:
+    serve(3000)
+    return 1
+  return 0
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: transaction blocks cannot return early; use the final expression result",
+            "Error: transaction blocks cannot use capability network (call serve)",
+            "Error: transaction blocks require db-only modules; remove non-db capabilities: network",
+        ],
+    );
+}
+
+#[test]
 fn rejects_duplicate_requires_declarations() {
     let src = r#"
 requires db

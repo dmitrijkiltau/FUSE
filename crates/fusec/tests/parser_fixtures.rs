@@ -130,6 +130,18 @@ fn main():
 }
 
 #[test]
+fn parses_transaction_block() {
+    let src = r#"
+requires db
+
+fn main():
+  transaction:
+    db.exec("create table if not exists t (id integer)")
+"#;
+    assert_parse_ok(src);
+}
+
+#[test]
 fn parses_index_access() {
     let src = r#"
 fn main():

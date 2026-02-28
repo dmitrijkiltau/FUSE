@@ -31,6 +31,7 @@ pub struct Checker<'a> {
     fn_cache: HashMap<(ModuleId, String), FnSig>,
     current_return: Option<Ty>,
     spawn_scope_markers: Vec<usize>,
+    transaction_scope_depth: usize,
     declared_capabilities: HashSet<Capability>,
 }
 
@@ -100,6 +101,7 @@ impl<'a> Checker<'a> {
             fn_cache: HashMap::new(),
             current_return: None,
             spawn_scope_markers: Vec::new(),
+            transaction_scope_depth: 0,
             declared_capabilities,
         }
     }
@@ -247,6 +249,14 @@ impl<'a> Checker<'a> {
     }
 
     fn require_capability(&mut self, span: Span, capability: Capability, detail: &str) {
+        if self.transaction_scope_depth > 0 && capability != Capability::Db {
+            let name = capability.as_str();
+            self.diags.error(
+                span,
+                format!("transaction blocks cannot use capability {name} ({detail})"),
+            );
+            return;
+        }
         if self.declared_capabilities.contains(&capability) {
             return;
         }
@@ -271,6 +281,16 @@ impl<'a> Checker<'a> {
         let mut caps: Vec<_> = required_caps.iter().copied().collect();
         caps.sort_by_key(|cap| cap.as_str());
         for capability in caps {
+            if self.transaction_scope_depth > 0 && capability != Capability::Db {
+                let name = capability.as_str();
+                self.diags.error(
+                    span,
+                    format!(
+                        "transaction blocks cannot call {callee_label}: capability {name} is not allowed"
+                    ),
+                );
+                continue;
+            }
             if self.declared_capabilities.contains(&capability) {
                 continue;
             }
@@ -431,6 +451,12 @@ impl<'a> Checker<'a> {
                 Ty::Unit
             }
             StmtKind::Return { expr } => {
+                if self.transaction_scope_depth > 0 {
+                    self.diags.error(
+                        stmt.span,
+                        "transaction blocks cannot return early; use the final expression result",
+                    );
+                }
                 let value_ty = expr
                     .as_ref()
                     .map(|expr| self.check_expr(expr))
@@ -495,6 +521,35 @@ impl<'a> Checker<'a> {
                 let _ = self.check_block(block);
                 Ty::Unit
             }
+            StmtKind::Transaction { block } => {
+                if !self.declared_capabilities.contains(&Capability::Db) {
+                    self.diags.error(
+                        stmt.span,
+                        "transaction blocks require capability db; add `requires db` at module top-level",
+                    );
+                }
+                let mut extra_caps: Vec<&str> = self
+                    .declared_capabilities
+                    .iter()
+                    .copied()
+                    .filter(|cap| *cap != Capability::Db)
+                    .map(|cap| cap.as_str())
+                    .collect();
+                extra_caps.sort_unstable();
+                if !extra_caps.is_empty() {
+                    self.diags.error(
+                        stmt.span,
+                        format!(
+                            "transaction blocks require db-only modules; remove non-db capabilities: {}",
+                            extra_caps.join(", ")
+                        ),
+                    );
+                }
+                self.transaction_scope_depth += 1;
+                let _ = self.check_block(block);
+                self.transaction_scope_depth -= 1;
+                Ty::Unit
+            }
             StmtKind::Expr(expr) => {
                 let expr_ty = self.check_expr(expr);
                 if matches!(expr_ty, Ty::Task(_)) {
@@ -505,7 +560,15 @@ impl<'a> Checker<'a> {
                 }
                 expr_ty
             }
-            StmtKind::Break | StmtKind::Continue => Ty::Unit,
+            StmtKind::Break | StmtKind::Continue => {
+                if self.transaction_scope_depth > 0 {
+                    self.diags.error(
+                        stmt.span,
+                        "transaction blocks cannot use loop control flow (break/continue)",
+                    );
+                }
+                Ty::Unit
+            }
         }
     }
 
@@ -731,6 +794,10 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Spawn { block } => {
+                if self.transaction_scope_depth > 0 {
+                    self.diags
+                        .error(expr.span, "transaction blocks cannot spawn tasks");
+                }
                 let marker = self.env.depth();
                 self.spawn_scope_markers.push(marker);
                 let block_ty = self.check_block(block);
@@ -738,6 +805,10 @@ impl<'a> Checker<'a> {
                 Ty::Task(Box::new(block_ty))
             }
             ExprKind::Await { expr: inner } => {
+                if self.transaction_scope_depth > 0 {
+                    self.diags
+                        .error(expr.span, "transaction blocks cannot await tasks");
+                }
                 let inner_ty = self.check_expr(inner);
                 match inner_ty {
                     Ty::Task(task_inner) => {

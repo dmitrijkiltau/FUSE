@@ -271,6 +271,9 @@ pub enum StmtKind {
         cond: Expr,
         block: Block,
     },
+    Transaction {
+        block: Block,
+    },
     Expr(Expr),
     Break,
     Continue,

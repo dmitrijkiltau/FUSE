@@ -35,7 +35,9 @@ impl<'a> Parser<'a> {
             }
             if self.eat_keyword(Keyword::Requires).is_some() {
                 if saw_non_require_decl {
-                    self.error_here("requires declarations must appear before other top-level declarations");
+                    self.error_here(
+                        "requires declarations must appear before other top-level declarations",
+                    );
                 }
                 if doc.is_some() {
                     self.error_here("requires declarations cannot have doc comments");
@@ -553,6 +555,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Match) => self.parse_match_stmt(),
             TokenKind::Keyword(Keyword::For) => self.parse_for_stmt(),
             TokenKind::Keyword(Keyword::While) => self.parse_while_stmt(),
+            TokenKind::Keyword(Keyword::Transaction) => self.parse_transaction_stmt(),
             TokenKind::Keyword(Keyword::Break) => {
                 self.bump();
                 StmtKind::Break
@@ -584,7 +587,8 @@ impl<'a> Parser<'a> {
             StmtKind::If { .. }
             | StmtKind::Match { .. }
             | StmtKind::For { .. }
-            | StmtKind::While { .. } => false,
+            | StmtKind::While { .. }
+            | StmtKind::Transaction { .. } => false,
             StmtKind::Expr(expr) => !block_expr(expr),
             StmtKind::Let { expr, .. } => !block_expr(expr),
             StmtKind::Var { expr, .. } => !block_expr(expr),
@@ -816,6 +820,13 @@ impl<'a> Parser<'a> {
         self.expect_punct(Punct::Colon);
         let block = self.parse_block();
         StmtKind::While { cond, block }
+    }
+
+    fn parse_transaction_stmt(&mut self) -> StmtKind {
+        self.expect_keyword(Keyword::Transaction);
+        self.expect_punct(Punct::Colon);
+        let block = self.parse_block();
+        StmtKind::Transaction { block }
     }
 
     fn parse_pattern(&mut self) -> Pattern {

@@ -133,6 +133,25 @@ impl NativeHeap {
         Ok(self.db.as_mut().expect("db initialized"))
     }
 
+    pub fn begin_db_transaction(&mut self, url: String, pool_size: usize) -> Result<(), String> {
+        let db = self.db_mut(url, pool_size)?;
+        db.begin_transaction()
+    }
+
+    pub fn commit_db_transaction(&mut self) -> Result<(), String> {
+        let Some(db) = self.db.as_ref() else {
+            return Err("db transaction not active".to_string());
+        };
+        db.commit_transaction()
+    }
+
+    pub fn rollback_db_transaction(&mut self) -> Result<(), String> {
+        let Some(db) = self.db.as_ref() else {
+            return Ok(());
+        };
+        db.rollback_transaction()
+    }
+
     pub fn set_configs(
         &mut self,
         configs: std::collections::HashMap<String, std::collections::HashMap<String, Value>>,

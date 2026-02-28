@@ -126,6 +126,7 @@ FUSE currently ships with:
 - compile-time module capability declarations (`requires db|crypto|network|time`)
 - typed error-domain boundaries on function/service returns (`T!Domain`, no implicit `T!`)
 - structured-concurrency checks for `spawn`/`await` task lifetimes (no detached/orphaned tasks)
+- deterministic `transaction:` blocks (commit on success, rollback on failure) with compile-time restrictions
 - package tooling via `fuse.toml` and `fuse` commands
 
 Detailed capability matrices and caveats live in:

@@ -237,6 +237,9 @@ pub(crate) struct HostCalls {
     db_query: FuncId,
     db_one: FuncId,
     db_from: FuncId,
+    db_tx_begin: FuncId,
+    db_tx_commit: FuncId,
+    db_tx_rollback: FuncId,
     query_select: FuncId,
     query_where: FuncId,
     query_order_by: FuncId,
@@ -381,6 +384,18 @@ impl JitRuntime {
         builder.symbol("fuse_native_db_query", fuse_native_db_query as *const u8);
         builder.symbol("fuse_native_db_one", fuse_native_db_one as *const u8);
         builder.symbol("fuse_native_db_from", fuse_native_db_from as *const u8);
+        builder.symbol(
+            "fuse_native_db_tx_begin",
+            fuse_native_db_tx_begin as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_db_tx_commit",
+            fuse_native_db_tx_commit as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_db_tx_rollback",
+            fuse_native_db_tx_rollback as *const u8,
+        );
         builder.symbol(
             "fuse_native_query_select",
             fuse_native_query_select as *const u8,
@@ -815,6 +830,15 @@ impl HostCalls {
         let db_from = module
             .declare_function("fuse_native_db_from", Linkage::Import, &builtin_sig)
             .expect("declare db from hostcall");
+        let db_tx_begin = module
+            .declare_function("fuse_native_db_tx_begin", Linkage::Import, &builtin_sig)
+            .expect("declare db tx begin hostcall");
+        let db_tx_commit = module
+            .declare_function("fuse_native_db_tx_commit", Linkage::Import, &builtin_sig)
+            .expect("declare db tx commit hostcall");
+        let db_tx_rollback = module
+            .declare_function("fuse_native_db_tx_rollback", Linkage::Import, &builtin_sig)
+            .expect("declare db tx rollback hostcall");
         let query_select = module
             .declare_function("fuse_native_query_select", Linkage::Import, &builtin_sig)
             .expect("declare query select hostcall");
@@ -911,6 +935,9 @@ impl HostCalls {
             db_query,
             db_one,
             db_from,
+            db_tx_begin,
+            db_tx_commit,
+            db_tx_rollback,
             query_select,
             query_where,
             query_order_by,
@@ -1427,11 +1454,7 @@ extern "C" fn fuse_native_get_struct_field(
         return builtin_runtime_error(out, heap, "field lookup failed: invalid field handle");
     };
     let HeapValue::String(field) = field_value else {
-        return builtin_runtime_error(
-            out,
-            heap,
-            "field lookup failed: field name is not a string",
-        );
+        return builtin_runtime_error(out, heap, "field lookup failed: field name is not a string");
     };
     let field = field.clone();
     let Some(struct_value) = heap.get(struct_handle) else {
@@ -3500,6 +3523,87 @@ extern "C" fn fuse_native_db_from(
 }
 
 #[unsafe(no_mangle)]
+extern "C" fn fuse_native_db_tx_begin(
+    heap: *mut NativeHeap,
+    _args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 0 {
+        return builtin_runtime_error(out, heap, "db.tx_begin expects no arguments");
+    }
+    let pool_size = match db_pool_size(heap) {
+        Ok(size) => size,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let url = match db_url() {
+        Ok(url) => url,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    if let Err(err) = heap.begin_db_transaction(url, pool_size) {
+        return builtin_runtime_error(out, heap, err);
+    }
+    *out = NativeValue::int(0);
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_db_tx_commit(
+    heap: *mut NativeHeap,
+    _args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 0 {
+        return builtin_runtime_error(out, heap, "db.tx_commit expects no arguments");
+    }
+    if let Err(err) = heap.commit_db_transaction() {
+        let _ = heap.rollback_db_transaction();
+        return builtin_runtime_error(out, heap, err);
+    }
+    *out = NativeValue::int(0);
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_db_tx_rollback(
+    heap: *mut NativeHeap,
+    _args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 0 {
+        return builtin_runtime_error(out, heap, "db.tx_rollback expects no arguments");
+    }
+    if let Err(err) = heap.rollback_db_transaction() {
+        return builtin_runtime_error(out, heap, err);
+    }
+    *out = NativeValue::int(0);
+    0
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn fuse_native_query_select(
     heap: *mut NativeHeap,
     args: *const NativeValue,
@@ -5282,6 +5386,9 @@ fn compile_function<M: Module>(
                                 "db.query" => hostcalls.db_query,
                                 "db.one" => hostcalls.db_one,
                                 "db.from" => hostcalls.db_from,
+                                "db.tx_begin" => hostcalls.db_tx_begin,
+                                "db.tx_commit" => hostcalls.db_tx_commit,
+                                "db.tx_rollback" => hostcalls.db_tx_rollback,
                                 "query.select" => hostcalls.query_select,
                                 "query.where" => hostcalls.query_where,
                                 "query.order_by" => hostcalls.query_order_by,
@@ -6195,6 +6302,9 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     | "db.query"
                     | "db.one"
                     | "db.from"
+                    | "db.tx_begin"
+                    | "db.tx_commit"
+                    | "db.tx_rollback"
                     | "query.select"
                     | "query.where"
                     | "query.order_by"
@@ -6636,9 +6746,7 @@ fn analyze_types(
                                 // LoadLocal and their outgoing stacks must
                                 // reflect the widened type.
                                 for idx in 0..starts.len() {
-                                    if entry_stacks
-                                        .get(idx)
-                                        .map_or(false, |s| s.is_some())
+                                    if entry_stacks.get(idx).map_or(false, |s| s.is_some())
                                         && !worklist.contains(&idx)
                                     {
                                         worklist.push(idx);
@@ -6733,7 +6841,8 @@ fn analyze_types(
                             match name.as_str() {
                                 "print" | "input" | "log" | "env" | "serve" | "assert"
                                 | "asset" | "range" | "db.exec" | "db.query" | "db.one"
-                                | "db.from" | "query.select" | "query.where" | "query.order_by"
+                                | "db.from" | "db.tx_begin" | "db.tx_commit" | "db.tx_rollback"
+                                | "query.select" | "query.where" | "query.order_by"
                                 | "query.limit" | "query.one" | "query.all" | "query.exec"
                                 | "query.sql" | "query.params" | "json.encode" | "json.decode"
                                 | "html.text" | "html.raw" | "html.node" | "html.render"

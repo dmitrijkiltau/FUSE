@@ -1399,6 +1399,28 @@ impl Interpreter {
                 }
                 Ok(Value::Unit)
             }
+            StmtKind::Transaction { block } => {
+                {
+                    let db = self.db_mut()?;
+                    db.begin_transaction().map_err(ExecError::Runtime)?;
+                }
+                match self.eval_block(block) {
+                    Ok(_) => {
+                        let db = self.db_mut()?;
+                        if let Err(err) = db.commit_transaction() {
+                            let _ = db.rollback_transaction();
+                            return Err(ExecError::Runtime(err));
+                        }
+                        Ok(Value::Unit)
+                    }
+                    Err(err) => {
+                        if let Ok(db) = self.db_mut() {
+                            let _ = db.rollback_transaction();
+                        }
+                        Err(err)
+                    }
+                }
+            }
             StmtKind::Break => Err(ExecError::Break),
             StmtKind::Continue => Err(ExecError::Continue),
         }
@@ -1961,6 +1983,39 @@ impl Interpreter {
                 };
                 let db = self.db_mut()?;
                 db.exec_params(&sql, &params).map_err(ExecError::Runtime)?;
+                Ok(Value::Unit)
+            }
+            "db.tx_begin" => {
+                if !args.is_empty() {
+                    return Err(ExecError::Runtime(
+                        "db.tx_begin expects no arguments".to_string(),
+                    ));
+                }
+                let db = self.db_mut()?;
+                db.begin_transaction().map_err(ExecError::Runtime)?;
+                Ok(Value::Unit)
+            }
+            "db.tx_commit" => {
+                if !args.is_empty() {
+                    return Err(ExecError::Runtime(
+                        "db.tx_commit expects no arguments".to_string(),
+                    ));
+                }
+                let db = self.db_mut()?;
+                if let Err(err) = db.commit_transaction() {
+                    let _ = db.rollback_transaction();
+                    return Err(ExecError::Runtime(err));
+                }
+                Ok(Value::Unit)
+            }
+            "db.tx_rollback" => {
+                if !args.is_empty() {
+                    return Err(ExecError::Runtime(
+                        "db.tx_rollback expects no arguments".to_string(),
+                    ));
+                }
+                let db = self.db_mut()?;
+                db.rollback_transaction().map_err(ExecError::Runtime)?;
                 Ok(Value::Unit)
             }
             "db.query" => {

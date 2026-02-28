@@ -70,6 +70,7 @@ FUSE is currently scoped as a strict, typed language with integrated boundary/ru
   boundary-call and cross-module leakage checks
 - typed error-domain boundaries on function/service returns (explicit `T!Domain`, no implicit `T!`)
 - structured-concurrency lifetime checks for `spawn`/`await` (no detached/orphaned task bindings)
+- deterministic `transaction:` block semantics with compile-time transactional restrictions
 - SQLite-backed DB runtime and migration workflow
 - service-oriented package workflow (`fuse check/run/dev/test/build`)
 

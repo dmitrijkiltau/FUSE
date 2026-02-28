@@ -1607,14 +1607,30 @@ fn call_function_native_only_with(
         let out = match result {
             Ok(value) => Ok(wrap_function_result(func, value)),
             Err(JitCallError::Error(err_val)) => {
+                if let Err(rollback_err) = heap.rollback_db_transaction() {
+                    heap.collect_garbage();
+                    return Err(format!("db rollback failed: {rollback_err}"));
+                }
                 if is_result_type(func.ret.as_ref()) {
                     Ok(Value::ResultErr(Box::new(err_val)))
                 } else {
                     Err(format_error_value(&err_val))
                 }
             }
-            Err(JitCallError::Runtime(message)) => Err(message),
-            Err(JitCallError::Compile(message)) => Err(message),
+            Err(JitCallError::Runtime(message)) => {
+                if let Err(rollback_err) = heap.rollback_db_transaction() {
+                    heap.collect_garbage();
+                    return Err(format!("db rollback failed: {rollback_err}"));
+                }
+                Err(message)
+            }
+            Err(JitCallError::Compile(message)) => {
+                if let Err(rollback_err) = heap.rollback_db_transaction() {
+                    heap.collect_garbage();
+                    return Err(format!("db rollback failed: {rollback_err}"));
+                }
+                Err(message)
+            }
         };
         heap.collect_garbage();
         return out;

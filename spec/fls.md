@@ -30,7 +30,7 @@ Normative terms in this document:
 - Identifiers: `[A-Za-z_][A-Za-z0-9_]*`
 - Keywords:
   `app, service, at, get, post, put, patch, delete, fn, type, enum, let, var, return, if, else,
-  match, for, in, while, break, continue, requires, import, from, as, config, migration, test,
+  match, for, in, while, transaction, break, continue, requires, import, from, as, config, migration, test,
   body, and, or, without, spawn, await, box`
 - Literals:
   - integers (`123`)
@@ -125,6 +125,7 @@ Stmt           := LetStmt
                 | MatchStmt
                 | ForStmt
                 | WhileStmt
+                | TransactionStmt
                 | BreakStmt
                 | ContinueStmt
                 | ExprStmt
@@ -144,6 +145,7 @@ MatchCase      := Pattern ( "->" Expr NEWLINE | ":" NEWLINE Block )
                 # `Pattern -> Expr` is sugar for `Pattern: return Expr`
 ForStmt        := "for" Pattern "in" Expr ":" NEWLINE Block
 WhileStmt      := "while" Expr ":" NEWLINE Block
+TransactionStmt := "transaction" ":" NEWLINE Block
 
 AppDecl        := "app" StringLit ":" NEWLINE Block
 ServiceDecl    := "service" Ident "at" StringLit ":" NEWLINE INDENT { RouteDecl } DEDENT
@@ -296,6 +298,7 @@ Statements:
 - `Match { expr, cases }`
 - `For { pat, iter, block }`
 - `While { cond, block }`
+- `Transaction { block }`
 - `Expr(expr)`
 - `Break`
 - `Continue`
@@ -425,6 +428,25 @@ These restrictions are part of the language contract for deterministic cross-bac
 
 See also: [Imports and modules (current)](#imports-and-modules-current), [Runtime semantics](runtime.md), [Scope + constraints](../governance/scope.md).
 
+### Transaction static restrictions (v0.6.0)
+
+`transaction:` defines a compiler-constrained block for deterministic DB transaction scope.
+
+Inside a `transaction` block, semantic analysis rejects:
+
+- `spawn` expressions
+- `await` expressions
+- early `return`
+- loop control flow (`break` / `continue`)
+- capability use outside `db`
+
+Module-level guardrails for `transaction` blocks:
+
+- the containing module must declare `requires db`
+- the containing module must not declare non-`db` capabilities
+
+See also: [Imports and modules (current)](#imports-and-modules-current), [Runtime semantics](runtime.md#database-sqlite-only), [Scope + constraints](../governance/scope.md).
+
 ---
 
 ## Imports and modules (current)
@@ -463,6 +485,7 @@ Module capabilities:
 - calls requiring capabilities are rejected when the current module does not declare them
 - call sites to imported module functions must declare every capability required by the callee module
   (capability leakage across module boundaries is rejected)
+- `transaction` blocks are valid only in modules with `requires db` and no additional capabilities
 
 See also: [Services and declaration syntax](#services-and-declaration-syntax), [README](../README.md), [FUSE overview companion](../guides/fuse.md).
 
