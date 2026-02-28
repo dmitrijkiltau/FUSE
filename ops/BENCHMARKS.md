@@ -77,8 +77,9 @@ Baseline + thresholds live in `benchmarks/use_case_baseline.json`.
 - The harness intentionally checks status codes so failures are semantic regressions, not only performance noise.
 - Runtime HTTP metrics are required for `scripts/use_case_bench.sh`; that harness fails if the service cannot be started or reached on loopback.
 - `scripts/check_use_case_bench_regression.sh` applies default thresholds everywhere, and adds explicit
-  request-latency floor limits only for local WSL2 hosts (`benchmark regression profile: local_wsl2`);
-  CI thresholds remain unchanged.
+  request-latency floor limits for host classes with known loopback variance:
+  local WSL2 (`benchmark regression profile: local_wsl2`) and GitHub-hosted CI
+  (`benchmark regression profile: ci_github_actions`).
 - `scripts/release_smoke.sh` retries benchmark collection/check once if the first regression check fails, to filter transient host jitter without changing baseline thresholds.
 - `scripts/reliability_repeat.sh` uses `--median-of-3` when collecting benchmark metrics.
 - `scripts/reliability_repeat.sh` also runs `scripts/aot_perf_bench.sh` and `scripts/check_aot_perf_slo.sh`.

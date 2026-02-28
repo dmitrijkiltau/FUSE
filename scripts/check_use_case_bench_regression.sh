@@ -129,20 +129,24 @@ if (typeof baselineRaw.refresh_rationale !== "string" || baselineRaw.refresh_rat
 function benchmarkProfile(current) {
   const env = current?.benchmark_context?.environment ?? {};
   const osRelease = String(env.os_release ?? "");
+  const ciProvider = String(env.ci_provider ?? "").toLowerCase();
   const isCi = Boolean(env.ci);
   if (!isCi && /microsoft-standard-wsl2/i.test(osRelease)) {
     return "local_wsl2";
+  }
+  if (isCi && ciProvider === "github_actions") {
+    return "ci_github_actions";
   }
   return "default";
 }
 
 function profileMetricLimitFloors(profile) {
-  if (profile !== "local_wsl2") {
+  if (profile !== "local_wsl2" && profile !== "ci_github_actions") {
     return {};
   }
   return {
-    // WSL2 host loopback/network stack often adds ~20-25ms request latency.
-    // Keep CI/default thresholds unchanged; apply local floor only for these host-class paths.
+    // WSL2 and hosted CI runners can add sizable loopback/network stack latency variance.
+    // Apply floor only for high-variance request paths on these host classes.
     "reference_service.request_get_notes_ms": 30.0,
     "reference_service.request_post_invalid_ms": 30.0,
     "reference_service.request_frontend_root_ms": 30.0
