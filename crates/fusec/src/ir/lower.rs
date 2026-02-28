@@ -1432,9 +1432,22 @@ impl FuncBuilder {
                         return;
                     }
                     if let ExprKind::Ident(module_ident) = &base.kind {
+                        if let Some((target, decl)) = self.resolve_module_member_function_decl(
+                            &module_ident.name,
+                            &name.name,
+                        ) {
+                            self.lower_call_with_defaults(&target, &decl, args);
+                            return;
+                        }
                         if let Some(module) = self.modules.get(&module_ident.name) {
                             if module.exports.functions.contains(&name.name) {
                                 let module_id = module.id;
+                                // This should not happen in normal lowering: exported
+                                // functions should have declaration metadata available.
+                                self.errors.push(format!(
+                                    "missing function declaration for exported module member {}.{}",
+                                    module_ident.name, name.name
+                                ));
                                 for arg in args {
                                     self.lower_expr(&arg.value);
                                 }
@@ -1712,6 +1725,23 @@ impl FuncBuilder {
         Some((canonical_function_name(link.id, name), decl))
     }
 
+    fn resolve_module_member_function_decl(
+        &self,
+        module_name: &str,
+        function_name: &str,
+    ) -> Option<(String, FnDecl)> {
+        let module = self.modules.get(module_name)?;
+        if !module.exports.functions.contains(function_name) {
+            return None;
+        }
+        let decl = self
+            .module_fn_decls
+            .get(&module.id)?
+            .get(function_name)?
+            .clone();
+        Some((canonical_function_name(module.id, function_name), decl))
+    }
+
     fn lower_html_tag_builtin_call(&mut self, tag: &str, args: &[crate::ast::CallArg]) {
         let Some(kind) = html_tags::tag_kind(tag) else {
             self.errors
@@ -1885,7 +1915,10 @@ impl FuncBuilder {
         if let Some(existing) = self.default_helpers.borrow().get(&key) {
             return existing.clone();
         }
-        let helper_name = format!("__default::{}::{}", func_name, param.name.name);
+        let helper_name = format!(
+            "__default::m{}::{}::{}",
+            self.module_id, func_name, param.name.name
+        );
         self.default_helpers
             .borrow_mut()
             .insert(key, helper_name.clone());

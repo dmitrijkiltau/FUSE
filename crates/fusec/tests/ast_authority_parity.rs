@@ -303,6 +303,88 @@ app "demo":
 }
 
 #[test]
+fn module_member_function_defaults_apply_across_backends() {
+    let dir = temp_project_dir("module_member_defaults");
+    let main_path = dir.join("main.fuse");
+    write_file(
+        &dir.join("dep.fuse"),
+        r#"
+fn greet(prefix: String, name: String = prefix + " Ada", full: String = name + "!") -> String:
+  return full
+"#,
+    );
+    write_file(
+        &main_path,
+        r#"
+import Dep from "./dep"
+
+app "demo":
+  print(Dep.greet("Hello"))
+  print(Dep.greet("Hi", "Bea"))
+  print(Dep.greet("Yo", "Cid", "done"))
+"#,
+    );
+
+    for backend in ["ast", "native"] {
+        let output = run_program_path(backend, &main_path, &[]);
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(
+            lines,
+            vec!["Hello Ada!", "Bea!", "done"],
+            "{backend} stdout"
+        );
+    }
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn module_member_defaults_do_not_collide_with_dep_local_default_helpers() {
+    let dir = temp_project_dir("module_member_default_collision");
+    let main_path = dir.join("main.fuse");
+    write_file(
+        &dir.join("dep.fuse"),
+        r#"
+fn greet(prefix: String, name: String = prefix + " Ada") -> String:
+  return name
+
+fn dep_use() -> String:
+  return greet("dep")
+"#,
+    );
+    write_file(
+        &main_path,
+        r#"
+import Dep from "./dep"
+
+app "demo":
+  print(Dep.greet("main"))
+  print(Dep.dep_use())
+"#,
+    );
+
+    for backend in ["ast", "native"] {
+        let output = run_program_path(backend, &main_path, &[]);
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines, vec!["main Ada", "dep Ada"], "{backend} stdout");
+    }
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn html_attr_shorthand_non_literal_rejected_across_backends() {
     let program = r#"
 fn page(name: String) -> Html:
