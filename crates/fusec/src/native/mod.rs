@@ -3,10 +3,11 @@ pub mod value;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::thread;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -749,18 +750,35 @@ impl<'a> NativeVm<'a> {
         let addr = format!("{host}:{port}");
         let listener = TcpListener::bind(&addr)
             .map_err(|err| NativeError::Runtime(format!("failed to bind {addr}: {err}")))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|err| NativeError::Runtime(format!("failed to configure {addr}: {err}")))?;
+        observability::begin_graceful_shutdown_session();
         let max_requests = std::env::var("FUSE_MAX_REQUESTS")
             .ok()
             .and_then(|val| val.parse::<usize>().ok())
             .unwrap_or(0);
         let mut handled = 0usize;
-        for stream in listener.incoming() {
-            let mut stream = match stream {
-                Ok(stream) => stream,
-                Err(err) => {
-                    return Err(NativeError::Runtime(format!(
-                        "failed to accept connection: {err}"
-                    )));
+        loop {
+            if observability::graceful_shutdown_requested() {
+                let signal = observability::take_shutdown_signal_name().unwrap_or("unknown");
+                eprintln!(
+                    "shutdown: runtime=native signal={signal} handled_requests={handled}"
+                );
+                break;
+            }
+            let mut stream = match listener.accept() {
+                Ok((stream, _)) => stream,
+                Err(err) => match err.kind() {
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted => {
+                        thread::sleep(Duration::from_millis(25));
+                        continue;
+                    }
+                    _ => {
+                        return Err(NativeError::Runtime(format!(
+                            "failed to accept connection: {err}"
+                        )));
+                    }
                 }
             };
             let request = match self.read_http_request(&mut stream) {

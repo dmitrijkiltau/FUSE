@@ -490,6 +490,8 @@ docker compose --project-directory . -f docs/docker-compose.yml up --build
 - `FUSE_ASSET_MAP` provides logical-path -> public-URL mappings for `asset(path)`
 - `FUSE_VITE_PROXY_URL` enables fallback proxying of unknown routes to Vite dev server
 - `FUSE_SVG_DIR` overrides SVG base directory for `svg.inline`
+- `FUSE_AOT_REQUEST_LOG_DEFAULT` (AOT release only) enables structured request logging default
+  when `FUSE_REQUEST_LOG` is unset
 
 ---
 

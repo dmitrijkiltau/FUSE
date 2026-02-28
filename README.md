@@ -123,6 +123,9 @@ Observability baseline for HTTP runtime:
 - `request.header("x-request-id")` returns the resolved lifecycle request ID inside route handlers
 - `FUSE_REQUEST_LOG=structured` enables one JSON request log line per handled request on stderr
 - `FUSE_METRICS_HOOK=stderr` enables one metrics line (`metrics: <json>`) per handled request
+- canonical production health route pattern (non-built-in):
+  `get "/health" -> Map<String, String>: return {"status": "ok"}`
+- no runtime plugin extension system (explicit non-goal)
 
 ## Strict architecture mode
 
@@ -245,10 +248,13 @@ Deployable AOT output:
   For `class=panic`, message starts with
   `panic_kind=<panic_static_str|panic_string|panic_non_string>`.
 - AOT runtime exit codes are stable: `0` success, `1` runtime failure, `101` panic.
-- Signal behavior remains platform-default (no runtime-installed handlers in this milestone).
+- Unix `SIGINT`/`SIGTERM` use deterministic graceful shutdown for service loops
+  (`shutdown: runtime=<ast|native> signal=<...> handled_requests=<n>`) with clean exit.
 - AOT runtime config resolution is deterministic: env -> config file (`FUSE_CONFIG` or
   `config.toml` in process cwd) -> config defaults.
 - AOT runtime does not auto-load `.env`; only process environment is observed.
+- Optional release logging posture: if `FUSE_AOT_REQUEST_LOG_DEFAULT=1` and `FUSE_REQUEST_LOG` is
+  unset, AOT runtime defaults to structured request logs.
 - AOT runtime is sealed: no dynamic backend fallback, no JIT compilation for app execution, and no
   runtime source compilation.
 

@@ -2185,6 +2185,29 @@ fn emit_startup_trace() {{
     }}
 }}
 
+fn env_truthy(key: &str) -> bool {{
+    let Ok(raw) = std::env::var(key) else {{
+        return false;
+    }};
+    let value = raw.trim().to_ascii_lowercase();
+    value == "1" || value == "true" || value == "structured" || value == "json"
+}}
+
+fn apply_release_structured_log_default() {{
+    if AOT_BUILD_PROFILE != "release" {{
+        return;
+    }}
+    if std::env::var_os("FUSE_REQUEST_LOG").is_some() {{
+        return;
+    }}
+    if !env_truthy("FUSE_AOT_REQUEST_LOG_DEFAULT") {{
+        return;
+    }}
+    unsafe {{
+        std::env::set_var("FUSE_REQUEST_LOG", "structured");
+    }}
+}}
+
 fn call_native(entry: EntryFn, heap: &mut NativeHeap) -> Result<fusec::interp::Value, String> {{
     let mut out = NativeValue::null();
     let status = unsafe {{ entry(std::ptr::null(), &mut out, heap as *mut _ as *mut std::ffi::c_void) }};
@@ -2256,6 +2279,7 @@ fn main() {{
         println!("{{}}", build_info_line());
         return;
     }}
+    apply_release_structured_log_default();
     emit_startup_trace();
     let status = match std::panic::catch_unwind(run_program) {{
         Ok(Ok(())) => 0,

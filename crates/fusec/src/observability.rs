@@ -1,6 +1,7 @@
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Once;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use fuse_rt::json as rt_json;
@@ -10,6 +11,9 @@ pub const REQUEST_ID_FALLBACK_HEADER: &str = "x-correlation-id";
 pub const RESPONSE_REQUEST_ID_HEADER: &str = "X-Request-Id";
 
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+static LAST_SHUTDOWN_SIGNAL: AtomicI32 = AtomicI32::new(0);
+static SHUTDOWN_SIGNAL_INIT: Once = Once::new();
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PanicDetails {
@@ -179,6 +183,53 @@ pub fn inject_request_id_header(response: String, request_id: &str) -> String {
     out.push_str("\r\n");
     out.push_str(body);
     out
+}
+
+pub fn begin_graceful_shutdown_session() {
+    #[cfg(unix)]
+    {
+        SHUTDOWN_SIGNAL_INIT.call_once(|| unsafe {
+            install_unix_shutdown_signal_handler(2);
+            install_unix_shutdown_signal_handler(15);
+        });
+        SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
+        LAST_SHUTDOWN_SIGNAL.store(0, Ordering::SeqCst);
+    }
+}
+
+pub fn graceful_shutdown_requested() -> bool {
+    SHUTDOWN_REQUESTED.load(Ordering::SeqCst)
+}
+
+pub fn take_shutdown_signal_name() -> Option<&'static str> {
+    #[cfg(unix)]
+    {
+        match LAST_SHUTDOWN_SIGNAL.swap(0, Ordering::SeqCst) {
+            2 => Some("SIGINT"),
+            15 => Some("SIGTERM"),
+            _ => None,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn signal(sig: i32, handler: usize) -> usize;
+}
+
+#[cfg(unix)]
+extern "C" fn handle_unix_shutdown_signal(sig: i32) {
+    LAST_SHUTDOWN_SIGNAL.store(sig, Ordering::SeqCst);
+    SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+#[cfg(unix)]
+unsafe fn install_unix_shutdown_signal_handler(sig: i32) {
+    let _ = unsafe { signal(sig, handle_unix_shutdown_signal as usize) };
 }
 
 fn request_id_from_header(headers: &HashMap<String, String>, key: &str) -> Option<String> {

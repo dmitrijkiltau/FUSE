@@ -2673,10 +2673,43 @@ app "Demo":
         String::from_utf8_lossy(&run.stderr)
     );
     let stderr = String::from_utf8_lossy(&run.stderr);
-    assert!(stderr.contains("startup: pid="), "stderr: {stderr}");
-    assert!(stderr.contains("mode=aot"), "stderr: {stderr}");
-    assert!(stderr.contains("profile=release"), "stderr: {stderr}");
-    assert!(stderr.contains("contract="), "stderr: {stderr}");
+    let startup_line = stderr
+        .lines()
+        .find(|line| line.starts_with("startup: "))
+        .unwrap_or_else(|| panic!("missing startup line in stderr: {stderr}"));
+    let expected_markers = [
+        "startup: pid=",
+        " mode=",
+        " profile=",
+        " target=",
+        " rustc=",
+        " cli=",
+        " runtime_cache=",
+        " contract=",
+    ];
+    let mut offsets = Vec::with_capacity(expected_markers.len());
+    let mut search_from = 0usize;
+    for marker in expected_markers {
+        let rel = startup_line[search_from..]
+            .find(marker)
+            .unwrap_or_else(|| panic!("missing marker {marker} in startup line: {startup_line}"));
+        let absolute = search_from + rel;
+        offsets.push(absolute);
+        search_from = absolute + marker.len();
+    }
+    for window in offsets.windows(2) {
+        assert!(
+            window[0] < window[1],
+            "startup markers are out of order in {startup_line}"
+        );
+    }
+    let pid_start = "startup: pid=".len();
+    let mode_pos = offsets[1];
+    let pid = &startup_line[pid_start..mode_pos];
+    assert!(
+        !pid.is_empty() && pid.chars().all(|ch| ch.is_ascii_digit()),
+        "invalid pid segment in startup line: {startup_line}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -2869,11 +2902,106 @@ app "Docs":
     let _ = fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn build_aot_release_can_optionally_default_to_structured_request_logs() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Docs"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+requires network
+
+config App:
+  port: String = env("PORT") ?? "3000"
+
+service DocsApi at "/api":
+  get "/id" -> Map<String, String>:
+    let req_id = request.header("x-request-id") ?? "missing"
+    return {"id": req_id}
+
+app "Docs":
+  serve(App.port)
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let port = reserve_local_port();
+    let aot = default_aot_binary_path(&dir);
+    let child = Command::new(&aot)
+        .env("PORT", port.to_string())
+        .env("FUSE_HOST", "127.0.0.1")
+        .env("FUSE_MAX_REQUESTS", "1")
+        .env("FUSE_AOT_REQUEST_LOG_DEFAULT", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn aot service");
+
+    let request = format!(
+        "GET /api/id HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Request-Id: aot-default-log\r\nConnection: close\r\n\r\n"
+    );
+    let response = match http_request_with_retry(port, &request, 60) {
+        Some(response) => response,
+        None => {
+            let output = child
+                .wait_with_output()
+                .expect("wait aot child after timeout");
+            panic!(
+                "failed to query aot id endpoint; stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    };
+    assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
+    assert!(
+        response.contains(r#"{"id":"aot-default-log"}"#),
+        "response: {response}"
+    );
+
+    let output = child.wait_with_output().expect("wait aot child");
+    assert!(
+        output.status.success(),
+        "aot stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("\"event\":\"http.request\""), "stderr: {stderr}");
+    assert!(
+        stderr.contains("\"request_id\":\"aot-default-log\""),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[cfg(unix)]
 #[test]
-fn build_aot_signal_termination_uses_platform_default_handlers() {
-    use std::os::unix::process::ExitStatusExt;
-
+fn build_aot_signal_termination_is_graceful_and_deterministic() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");
 
@@ -2920,7 +3048,7 @@ app "Docs":
     );
 
     let aot = default_aot_binary_path(&dir);
-    for (signal, expected) in [("-TERM", 15), ("-INT", 2)] {
+    for (signal, expected_name) in [("-TERM", "SIGTERM"), ("-INT", "SIGINT")] {
         let port = reserve_local_port();
         let mut child = Command::new(&aot)
             .env("PORT", port.to_string())
@@ -2945,17 +3073,19 @@ app "Docs":
 
         send_unix_signal(child.id(), signal);
         let status = wait_for_child_exit_status(&mut child, Duration::from_secs(5));
-        assert_eq!(
-            status.signal(),
-            Some(expected),
-            "signal {signal} produced status {status:?}"
-        );
+        assert_eq!(status.code(), Some(0), "status: {status:?}");
 
         let mut stderr = String::new();
         stderr_pipe
             .read_to_string(&mut stderr)
             .expect("read child stderr");
         assert!(!stderr.contains("fatal:"), "stderr: {stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "shutdown: runtime=native signal={expected_name}"
+            )),
+            "stderr: {stderr}"
+        );
     }
 
     let _ = fs::remove_dir_all(&dir);
