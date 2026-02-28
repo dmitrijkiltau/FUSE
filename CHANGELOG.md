@@ -2,6 +2,53 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.6.0] - 2026-02-28
+
+### Breaking
+
+- **Module capability enforcement is now compile-time strict.**
+  Calls that require capabilities (`db`, `network`, `time`, `crypto`) now fail to compile unless
+  the module declares matching top-level `requires ...` entries; cross-module capability leakage is rejected.
+- **Typed error domains are now required on fallible boundaries.**
+  Bare `T!` signatures are rejected; `Option ?!` without an explicit error value is rejected.
+- **Structured concurrency is compiler-enforced.**
+  Detached `spawn` expressions are rejected; spawned task bindings must be awaited before scope exit
+  and cannot be reassigned prior to `await`.
+- **`transaction:` introduces constrained execution semantics.**
+  Transaction blocks reject `spawn`, `await`, early `return`, and loop control jumps;
+  non-`db` capability usage inside transaction scope is rejected.
+
+### Added
+
+- Strict architecture compile mode:
+  - `--strict-architecture` enforces capability purity
+  - cross-layer import-cycle rejection
+  - error-domain isolation
+- HTTP request/response primitives:
+  - `request.header(name)` / `request.cookie(name)`
+  - `response.header(name, value)` / `response.cookie(name, value)` / `response.delete_cookie(name)`
+- Deterministic transaction runtime behavior:
+  - `BEGIN` on transaction entry
+  - `COMMIT` on success
+  - `ROLLBACK` on failure
+
+### Changed
+
+- Reference service migrated to deterministic architecture patterns:
+  - explicit capability declarations and strict-architecture compliance
+  - explicit request context flow across API/UI boundaries
+  - DB flows wrapped in `transaction:` blocks
+  - HTMX UI session persistence moved to HTTP-only `sid` cookie handling
+- LSP builtin metadata/completion/signature coverage updated for new request/response primitives.
+- Runtime/sema test suites expanded for capability/error/transaction/HTTP primitive contracts.
+
+### Migration
+
+- Add required module-level `requires ...` declarations for capability-gated operations and imports.
+- Update fallible return signatures to explicit domains (`T!Domain`, chained where needed).
+- Ensure every spawned task is bound and awaited in lexical scope.
+- Wrap DB transactional write/read-modify-write flows in `transaction:` and remove disallowed control flow from those blocks.
+
 ## [0.5.0] - 2026-02-26
 
 ### Breaking
