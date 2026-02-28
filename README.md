@@ -87,6 +87,14 @@ Fallible boundaries require explicit error domains:
 - bare `T!` is rejected at compile-time
 - `expr ?!` without an explicit error value is allowed only for `Result` propagation; `Option ?!` requires `err`
 
+## Structured concurrency
+
+`spawn`/`await` is compile-time constrained for deterministic task lifetimes:
+
+- detached task expressions are rejected
+- spawned task bindings must be awaited before leaving scope
+- spawned task bindings cannot be reassigned before `await`
+
 ## Package commands
 
 | Command | Description |

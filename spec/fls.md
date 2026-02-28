@@ -415,6 +415,12 @@ Inside a `spawn` block, semantic analysis rejects:
 - runtime side-effect builtins (`db.*`, `serve`, `print`, `input`, `log`, `env`, `asset`, `svg.inline`)
 - mutation of captured outer bindings
 
+Structured task lifetime checks are also enforced at compile time:
+
+- detached task expressions are rejected
+- spawned task bindings must be awaited before leaving lexical scope
+- reassigning a spawned task binding before `await` is rejected
+
 These restrictions are part of the language contract for deterministic cross-backend concurrency.
 
 See also: [Imports and modules (current)](#imports-and-modules-current), [Runtime semantics](runtime.md), [Scope + constraints](../governance/scope.md).

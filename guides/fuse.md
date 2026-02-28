@@ -125,6 +125,7 @@ FUSE currently ships with:
 - module imports (relative, `root:`, and `dep:` paths)
 - compile-time module capability declarations (`requires db|crypto|network|time`)
 - typed error-domain boundaries on function/service returns (`T!Domain`, no implicit `T!`)
+- structured-concurrency checks for `spawn`/`await` task lifetimes (no detached/orphaned tasks)
 - package tooling via `fuse.toml` and `fuse` commands
 
 Detailed capability matrices and caveats live in:

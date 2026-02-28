@@ -338,6 +338,7 @@ impl<'a> Checker<'a> {
         for stmt in &block.stmts {
             last = self.check_stmt(stmt);
         }
+        self.report_unawaited_tasks_in_current_scope();
         self.env.pop();
         last
     }
@@ -370,6 +371,9 @@ impl<'a> Checker<'a> {
                     value_ty
                 };
                 self.insert_var(&name.name, final_ty, false, name.span);
+                if matches!(expr.kind, ExprKind::Spawn { .. }) {
+                    self.env.mark_pending_spawn(&name.name, expr.span);
+                }
                 Ty::Unit
             }
             StmtKind::Var { name, ty, expr } => {
@@ -384,6 +388,9 @@ impl<'a> Checker<'a> {
                     value_ty
                 };
                 self.insert_var(&name.name, final_ty, true, name.span);
+                if matches!(expr.kind, ExprKind::Spawn { .. }) {
+                    self.env.mark_pending_spawn(&name.name, expr.span);
+                }
                 Ty::Unit
             }
             StmtKind::Assign { target, expr } => {
@@ -401,6 +408,25 @@ impl<'a> Checker<'a> {
                 let value_ty = self.check_expr(expr);
                 if !self.is_assignable(&value_ty, &target_ty) {
                     self.type_mismatch(expr.span, &target_ty, &value_ty);
+                }
+                if let ExprKind::Ident(ident) = &target.kind {
+                    if let Some(spawn_span) = self.env.pending_spawn_span(&ident.name) {
+                        self.diags.error(
+                            target.span,
+                            format!(
+                                "spawned task `{}` must be awaited before reassignment",
+                                ident.name
+                            ),
+                        );
+                        self.diags.error(
+                            spawn_span,
+                            format!("spawned task `{}` starts here", ident.name),
+                        );
+                        self.env.clear_pending_spawn(&ident.name);
+                    }
+                    if matches!(expr.kind, ExprKind::Spawn { .. }) {
+                        self.env.mark_pending_spawn(&ident.name, expr.span);
+                    }
                 }
                 Ty::Unit
             }
@@ -469,7 +495,16 @@ impl<'a> Checker<'a> {
                 let _ = self.check_block(block);
                 Ty::Unit
             }
-            StmtKind::Expr(expr) => self.check_expr(expr),
+            StmtKind::Expr(expr) => {
+                let expr_ty = self.check_expr(expr);
+                if matches!(expr_ty, Ty::Task(_)) {
+                    self.diags.error(
+                        expr.span,
+                        "detached task is forbidden; await it or bind it and await before scope exit",
+                    );
+                }
+                expr_ty
+            }
             StmtKind::Break | StmtKind::Continue => Ty::Unit,
         }
     }
@@ -705,7 +740,12 @@ impl<'a> Checker<'a> {
             ExprKind::Await { expr: inner } => {
                 let inner_ty = self.check_expr(inner);
                 match inner_ty {
-                    Ty::Task(inner) => *inner,
+                    Ty::Task(task_inner) => {
+                        if let ExprKind::Ident(ident) = &inner.kind {
+                            self.env.clear_pending_spawn(&ident.name);
+                        }
+                        *task_inner
+                    }
                     Ty::Unknown => Ty::Unknown,
                     other => {
                         self.diags
@@ -2251,6 +2291,15 @@ impl<'a> Checker<'a> {
         self.diags.error(span, "expected Bool condition");
     }
 
+    fn report_unawaited_tasks_in_current_scope(&mut self) {
+        for (name, spawn_span) in self.env.current_scope_unawaited_spawn_tasks() {
+            self.diags.error(
+                spawn_span,
+                format!("spawned task `{name}` is not awaited before scope exit"),
+            );
+        }
+    }
+
     fn insert_var(&mut self, name: &str, ty: Ty, mutable: bool, span: Span) {
         if let Err(msg) = self.env.insert(name, ty, mutable) {
             self.diags.error(span, msg);
@@ -2467,7 +2516,14 @@ impl TypeEnv {
             if scope.vars.contains_key(name) {
                 return Err(format!("duplicate binding: {name}"));
             }
-            scope.vars.insert(name.to_string(), VarInfo { ty, mutable });
+            scope.vars.insert(
+                name.to_string(),
+                VarInfo {
+                    ty,
+                    mutable,
+                    pending_spawn: None,
+                },
+            );
         }
         Ok(())
     }
@@ -2489,6 +2545,44 @@ impl TypeEnv {
         }
         None
     }
+
+    fn lookup_mut(&mut self, name: &str) -> Option<&mut VarInfo> {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(var) = scope.vars.get_mut(name) {
+                return Some(var);
+            }
+        }
+        None
+    }
+
+    fn mark_pending_spawn(&mut self, name: &str, span: Span) {
+        if let Some(var) = self.lookup_mut(name) {
+            var.pending_spawn = Some(span);
+        }
+    }
+
+    fn clear_pending_spawn(&mut self, name: &str) {
+        if let Some(var) = self.lookup_mut(name) {
+            var.pending_spawn = None;
+        }
+    }
+
+    fn pending_spawn_span(&self, name: &str) -> Option<Span> {
+        self.lookup(name).and_then(|var| var.pending_spawn)
+    }
+
+    fn current_scope_unawaited_spawn_tasks(&self) -> Vec<(String, Span)> {
+        let Some(scope) = self.scopes.last() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (name, var) in &scope.vars {
+            if let Some(span) = var.pending_spawn {
+                out.push((name.clone(), span));
+            }
+        }
+        out
+    }
 }
 
 #[derive(Default)]
@@ -2499,4 +2593,5 @@ struct Scope {
 struct VarInfo {
     ty: Ty,
     mutable: bool,
+    pending_spawn: Option<Span>,
 }

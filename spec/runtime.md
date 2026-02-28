@@ -511,6 +511,12 @@ and may overlap with other spawned tasks.
 
 `await expr` waits on a task and yields its result.
 
+Structured concurrency is enforced at compile time:
+
+- detached task expressions are invalid
+- spawned task bindings must be awaited before scope exit
+- spawned task bindings cannot be reassigned before `await`
+
 Task surface (v0.2.0):
 
 - `Task<T>` remains an opaque runtime type

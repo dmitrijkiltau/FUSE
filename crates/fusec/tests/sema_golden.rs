@@ -175,6 +175,7 @@ fn main():
     assert_diags(
         src,
         &[
+            "Error: spawned task `t` is not awaited before scope exit",
             "Error: task.cancel was removed in v0.2.0; use spawn + await instead",
             "Error: task.done was removed in v0.2.0; use spawn + await instead",
             "Error: task.id was removed in v0.2.0; use spawn + await instead",
@@ -258,6 +259,62 @@ fn main():
         src,
         &["Error: spawn blocks cannot mutate captured outer state (total)"],
     );
+}
+
+#[test]
+fn spawn_rejects_detached_expression() {
+    let src = r#"
+fn main():
+  spawn:
+    1
+"#;
+    assert_diags(
+        src,
+        &["Error: detached task is forbidden; await it or bind it and await before scope exit"],
+    );
+}
+
+#[test]
+fn spawn_rejects_unawaited_binding() {
+    let src = r#"
+fn main():
+  let t = spawn:
+    1
+"#;
+    assert_diags(
+        src,
+        &["Error: spawned task `t` is not awaited before scope exit"],
+    );
+}
+
+#[test]
+fn spawn_rejects_reassignment_before_await() {
+    let src = r#"
+fn main():
+  var t = spawn:
+    1
+  t = 2
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: spawned task `t` must be awaited before reassignment",
+            "Error: spawned task `t` starts here",
+            "Error: type mismatch: expected Task<Int>, found Int",
+        ],
+    );
+}
+
+#[test]
+fn spawn_binding_can_be_awaited_in_nested_scope() {
+    let src = r#"
+fn main():
+  let t = spawn:
+    1
+  if true:
+    let _ = await t
+"#;
+    assert_diags(src, &[]);
 }
 
 #[test]
