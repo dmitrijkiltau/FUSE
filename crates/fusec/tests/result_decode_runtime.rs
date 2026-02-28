@@ -60,7 +60,6 @@ fn send_http_request_with_retry(port: u16, request: &str) -> (u16, String) {
 }
 
 fn run_decode_request(backend: &str, payload: &str) -> (u16, String) {
-    let port = find_free_port();
     let program = r#"
 requires network
 
@@ -79,6 +78,11 @@ service Api at "":
 app "demo":
   serve(App.port)
 "#;
+    run_decode_request_with_program(backend, program, payload)
+}
+
+fn run_decode_request_with_program(backend: &str, program: &str, payload: &str) -> (u16, String) {
+    let port = find_free_port();
     let path = write_temp_file("fuse_result_decode_runtime", "fuse", program);
     let exe = env!("CARGO_BIN_EXE_fusec");
     let mut child = Command::new(exe)
@@ -156,5 +160,71 @@ fn tagged_result_json_decode_rejects_missing_or_invalid_tag_all_backends() {
                 "case={name} backend={backend} body={body}"
             );
         }
+    }
+}
+
+#[test]
+fn http_decode_missing_field_uses_default_before_validation_all_backends() {
+    if skip_if_loopback_unavailable(
+        "http_decode_missing_field_uses_default_before_validation_all_backends",
+    ) {
+        return;
+    }
+    let program = r#"
+requires network
+
+config App:
+  port: Int = 0
+
+type Payload:
+  name: String(1..20) = "anon"
+
+service Api at "":
+  post "/decode" body Payload -> String:
+    return body.name
+
+app "demo":
+  serve(App.port)
+"#;
+    for backend in ["ast", "native"] {
+        let (status, body) = run_decode_request_with_program(backend, program, r#"{}"#);
+        assert_eq!(status, 200, "backend={backend} body={body}");
+        assert_eq!(body, r#""anon""#, "backend={backend} body={body}");
+    }
+}
+
+#[test]
+fn http_decode_unknown_field_rejected_all_backends() {
+    if skip_if_loopback_unavailable("http_decode_unknown_field_rejected_all_backends") {
+        return;
+    }
+    let program = r#"
+requires network
+
+config App:
+  port: Int = 0
+
+type Payload:
+  name: String(1..20) = "anon"
+
+service Api at "":
+  post "/decode" body Payload -> String:
+    return body.name
+
+app "demo":
+  serve(App.port)
+"#;
+    let payload = r#"{"name":"Ada","extra":"boom"}"#;
+    for backend in ["ast", "native"] {
+        let (status, body) = run_decode_request_with_program(backend, program, payload);
+        assert_eq!(status, 400, "backend={backend} body={body}");
+        assert!(
+            body.contains("\"code\":\"validation_error\""),
+            "backend={backend} body={body}"
+        );
+        assert!(
+            body.contains("unknown field"),
+            "backend={backend} body={body}"
+        );
     }
 }

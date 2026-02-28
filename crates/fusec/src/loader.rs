@@ -13,6 +13,7 @@ const STD_ERROR_MODULE: &str = r#"
 type Error:
   code: String
   message: String
+  status: Int = 500
 
 type ValidationField:
   path: String

@@ -3404,10 +3404,13 @@ fn normalize_dependency_spec(
             ));
         }
         let path = resolve_path(base_dir, &normalize_dependency_path_input(&path));
-        let requested = format!("path:{}", path.display());
+        let normalized_path = canonicalize_dependency_path_for_requested(&path);
+        let requested = format!("path:{}", normalized_path.display());
         return Ok(NormalizedDependency {
             requested,
-            kind: NormalizedKind::Path { path },
+            kind: NormalizedKind::Path {
+                path: normalized_path,
+            },
         });
     }
 
@@ -3616,6 +3619,14 @@ fn normalize_dependency_path_input(raw: &str) -> String {
     #[cfg(not(target_os = "windows"))]
     {
         raw.replace('\\', "/")
+    }
+}
+
+fn canonicalize_dependency_path_for_requested(path: &Path) -> PathBuf {
+    if path.exists() {
+        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    } else {
+        path.to_path_buf()
     }
 }
 
