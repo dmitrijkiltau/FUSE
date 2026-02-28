@@ -409,6 +409,10 @@ fallback behavior.
 - calls to imported module functions require the caller to declare the callee module's capabilities
 - `transaction:` blocks require `requires db`, forbid non-`db` module capabilities, and reject
   non-`db` capability usage inside the block
+- `--strict-architecture` enables additional compile-time checks:
+  - capability purity (no unused declared capabilities)
+  - cross-layer import-cycle rejection
+  - error-domain isolation across module boundaries
 
 ### Database (SQLite only)
 
