@@ -289,7 +289,7 @@ Always run Cargo through `scripts/cargo_env.sh` to avoid cross-device link error
 | Gate | Command | Purpose |
 |---|---|---|
 | Semantic suite | `./scripts/semantic_suite.sh` | Parser, type system, and boundary contract tests |
-| Authority parity | `./scripts/authority_parity.sh` | AST/native semantic equivalence |
+| Authority parity | `./scripts/authority_parity.sh` | AST/native semantic authority plus AST/native/AOT observable parity lock (errors/JSON/logging/panic taxonomy/transaction/spawn) |
 | LSP suite | `./scripts/lsp_suite.sh` | LSP contracts, navigation, completions, code actions |
 | LSP performance | `./scripts/lsp_perf_reliability.sh` | Cancellation handling and responsiveness budgets |
 | LSP incremental | `./scripts/lsp_workspace_incremental.sh` | Workspace cache correctness |
@@ -312,6 +312,7 @@ Canonical artifact names:
 | CLI bundle (Windows) | `dist/fuse-cli-<platform>.zip` |
 | AOT reference bundle (Linux/macOS) | `dist/fuse-aot-<platform>.tar.gz` |
 | AOT reference bundle (Windows) | `dist/fuse-aot-<platform>.zip` |
+| Official reference image (release tags) | `ghcr.io/dmitrijkiltau/fuse-aot-demo:<tag>` |
 | VS Code extension | `dist/fuse-vscode-<platform>.vsix` |
 | Release checksums | `dist/SHA256SUMS` |
 | Release metadata | `dist/release-artifacts.json` |
@@ -330,6 +331,9 @@ Reproducibility + static profile policy: `ops/AOT_RELEASE_CONTRACT.md`.
 
 # Package host AOT reference bundle (archive + integrity check)
 ./scripts/package_aot_artifact.sh --release --manifest-path .
+
+# Build official reference container image from release archive
+./scripts/package_aot_container_image.sh --archive dist/fuse-aot-linux-x64.tar.gz --tag v0.7.0
 
 # Package VS Code extension with bundled LSP (.vsix + integrity check)
 ./scripts/package_vscode_extension.sh --release
@@ -388,6 +392,7 @@ If two documents disagree, defer to the owning document listed for that tier.
 |---|---|
 | `ops/AOT_RELEASE_CONTRACT.md` | AOT production release contract, SLO thresholds, and reproducibility policy |
 | `ops/AOT_ROLLBACK_PLAYBOOK.md` | Incident rollback plan (AOT primary, JIT-native fallback) |
+| `ops/DEPLOY.md` | Canonical deployment guide (VM, Docker, systemd, Kubernetes) |
 | `ops/RELEASE.md` | Release checklist and publication workflow |
 | `ops/FLAKE_TRIAGE.md` | Checklist for diagnosing and closing intermittent CI/test failures |
 | `ops/BENCHMARKS.md` | Workload matrix and benchmark definitions |

@@ -6,6 +6,7 @@ Canonical operational contract documents for the active `v0.4.x` line:
 
 - [`AOT_RELEASE_CONTRACT.md`](AOT_RELEASE_CONTRACT.md) - AOT production + reproducibility release contract
 - [`AOT_ROLLBACK_PLAYBOOK.md`](AOT_ROLLBACK_PLAYBOOK.md) - AOT rollback and recovery steps
+- [`DEPLOY.md`](DEPLOY.md) - canonical deployment patterns (VM, Docker, systemd, Kubernetes)
 - [`RELEASE.md`](RELEASE.md) - release workflow and gate checklist
 - [`FLAKE_TRIAGE.md`](FLAKE_TRIAGE.md) - intermittent failure triage workflow
 - [`BENCHMARKS.md`](BENCHMARKS.md) - benchmark matrix and metric definitions

@@ -39,6 +39,7 @@ Primary references while working in this codebase:
 - `../governance/scope.md` defines constraints, roadmap priorities, and explicit non-goals.
 - `../governance/EXTENSIBILITY_BOUNDARIES.md` defines allowed extension surfaces and stability boundaries.
 - `../ops/BENCHMARKS.md` defines real-world workload benchmarks and metric collection.
+- `../ops/DEPLOY.md` defines canonical AOT deployment patterns (VM, Docker, `systemd`, Kubernetes).
 - `../governance/VERSIONING_POLICY.md` defines language/runtime/tooling versioning and compatibility guarantees.
 
 If a detail appears in multiple docs, treat `../governance/IDENTITY_CHARTER.md` as authoritative
@@ -128,7 +129,7 @@ FUSE currently ships with:
 - parser + semantic analysis + formatter
 - AST interpreter backend
 - native backend (Cranelift JIT)
-- semantic parity gates across AST/native backends
+- semantic authority gates across AST/native plus parity-lock coverage for AST/native/AOT observable behavior
 - module imports (relative, `root:`, and `dep:` paths)
 - compile-time module capability declarations (`requires db|crypto|network|time`)
 - typed error-domain boundaries on function/service returns (`T!Domain`, no implicit `T!`)
