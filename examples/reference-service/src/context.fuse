@@ -10,6 +10,22 @@ fn anonymous_context() -> RequestContext:
 fn session_context(token: String, user_id: String) -> RequestContext:
   return request_context(token, user_id)
 
+fn request_session_token() -> String:
+  return request.cookie("sid") ?? ""
+
+fn request_context_or_anonymous() -> RequestContext:
+  let token = request_session_token()
+  if token == "":
+    return anonymous_context()
+  var user_id = ""
+  transaction:
+    let rows = db.query("select user_id from sessions where token = ? limit 1", [token])
+    for row in rows:
+      user_id = row["user_id"]
+  if user_id == "":
+    return anonymous_context()
+  return request_context(token, user_id)
+
 fn authenticated_context(token: String) -> RequestContext!Unauthorized:
   let auth = require_auth(token) ?!
   return request_context(token, auth_user_id(auth))

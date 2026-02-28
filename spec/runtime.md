@@ -331,9 +331,18 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 - successful values encode as JSON with `Content-Type: application/json` by default
 - if route return type is `Html` (or `Result<Html, E>` on success), response is rendered once with
   `Content-Type: text/html; charset=utf-8`
+- route handlers may append response headers via `response.header(name, value)`
+- route handlers may manage cookies via `response.cookie(name, value)` and
+  `response.delete_cookie(name)` (emitted as `Set-Cookie` headers)
 - `Result` errors are mapped using the status rules above
 - unsupported HTTP methods return `405` with `internal_error` JSON
 - no HTMX-specific runtime mode: HTMX-style flows are ordinary `Html` route returns
+
+#### Request primitives
+
+- route handlers may read inbound headers with `request.header(name)` (case-insensitive)
+- route handlers may read cookie values with `request.cookie(name)`
+- `request.*` and `response.*` primitives are only valid while evaluating an HTTP route handler
 
 #### Environment knobs
 
@@ -349,7 +358,6 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 #### Observability baseline (current implementation)
 
 - request ID propagation is not currently implemented:
-  - inbound HTTP headers are not surfaced to route handlers
   - responses do not include a runtime-generated request ID header
 - there is no dedicated structured request logging mode yet:
   - request-level access logs are not emitted automatically
@@ -377,6 +385,11 @@ See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [
 - `env(name: String) -> String?` returns env var or `null`
 - `asset(path: String) -> String` resolves to hashed/static public URL when asset map is configured
 - `serve(port)` starts HTTP server on `FUSE_HOST:port`
+- `request.header(name: String) -> String?` reads inbound HTTP headers
+- `request.cookie(name: String) -> String?` reads inbound HTTP cookie values
+- `response.header(name: String, value: String)` appends response headers
+- `response.cookie(name: String, value: String)` appends HTTP-only session cookies
+- `response.delete_cookie(name: String)` emits cookie expiration headers
 - HTML tag builtins (`html`, `head`, `body`, `div`, `meta`, `button`, ...)
 - `html.text`, `html.raw`, `html.node`, `html.render`
 - `svg.inline(path: String) -> Html`

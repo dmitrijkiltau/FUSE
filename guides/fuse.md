@@ -128,6 +128,7 @@ FUSE currently ships with:
 - structured-concurrency checks for `spawn`/`await` task lifetimes (no detached/orphaned tasks)
 - deterministic `transaction:` blocks (commit on success, rollback on failure) with compile-time restrictions
 - strict architecture mode (`--strict-architecture`) for capability purity, cross-layer cycle rejection, and error-domain isolation
+- HTTP request/response primitives (`request.header/cookie`, `response.header/cookie/delete_cookie`)
 - package tooling via `fuse.toml` and `fuse` commands
 
 Detailed capability matrices and caveats live in:

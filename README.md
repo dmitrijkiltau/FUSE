@@ -105,6 +105,16 @@ Fallible boundaries require explicit error domains:
 - rejects `spawn`, `await`, early `return`, and `break`/`continue` inside the block
 - rejects non-`db` capability usage inside the block
 
+## HTTP request/response primitives
+
+Service routes can directly access HTTP headers/cookies without custom runtime glue:
+
+- `request.header(name: String) -> String?` reads inbound headers (case-insensitive)
+- `request.cookie(name: String) -> String?` reads inbound cookie values
+- `response.header(name: String, value: String)` appends response headers
+- `response.cookie(name: String, value: String)` appends `Set-Cookie` headers
+- `response.delete_cookie(name: String)` emits cookie-expiration `Set-Cookie` headers
+
 ## Strict architecture mode
 
 `fuse check --strict-architecture` enables additional architecture validation:

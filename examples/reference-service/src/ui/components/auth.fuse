@@ -50,7 +50,7 @@ fn render_session_section(ctx: RequestContext) -> Html:
           auth_form("register", "/ui/auth/register", "Register", "btn btn--primary")
           auth_form("login", "/ui/auth/login", "Login", "btn btn--ghost")
 
-  let logout_url = "/ui/sessions/${session_token}/logout"
+  let logout_url = "/ui/auth/logout"
   let uid = request_context_user_id(ctx)
 
   return section({"class": "section"}):

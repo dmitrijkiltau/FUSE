@@ -1,19 +1,28 @@
 requires db
 
 import { NotFound, Unauthorized, BadRequest, Forbidden } from "./errors"
-import { Note, NoteId, NoteCreate, NoteVisibilityUpdate, AuthSession, RegisterInput, LoginInput, request_context_user_id } from "./domain"
+import { Note, NoteId, NoteCreate, NoteVisibilityUpdate, AuthSession, RegisterInput, LoginInput, RequestContext, request_context_user_id } from "./domain"
 import { register_user, login_user, logout_session, session_user_id, session_token } from "./auth"
-import { anonymous_context, session_context, authenticated_context, scoped_context } from "./context"
+import { anonymous_context, session_context, authenticated_context, scoped_context, request_context_or_anonymous, request_session_token } from "./context"
 import Home from "./ui/pages/home"
 import NotesUi from "./ui/components/notes"
 
 fn new_note_id() -> NoteId!BadRequest:
   var seed = ""
   transaction:
-    let row = db.one("select lower(hex(randomblob(12))) as id")
-      ?! BadRequest(message="failed to allocate note id")
+    let row = db.one("select lower(hex(randomblob(12))) as id") ?! BadRequest(message="failed to allocate note id")
     seed = row["id"]
   return NoteId(value="note-${seed}")
+
+fn require_request_token() -> String!Unauthorized:
+  let token = request_session_token()
+  if token == "":
+    null ?! Unauthorized(message="missing session cookie")
+  return token
+
+fn scoped_request_context(scope: String) -> RequestContext!Unauthorized!Forbidden:
+  let token = require_request_token() ?!
+  return scoped_context(token, scope) ?!
 
 service ReferenceService at "/":
   # Register a new user account and issue a session token.
@@ -174,37 +183,46 @@ service ReferenceService at "/":
 
   # Server-rendered UI entry point.
   get "/" -> Html:
-    return Home.render_page(anonymous_context())
+    let token = request_session_token()
+    let ctx = request_context_or_anonymous()
+    if token != "" and request_context_user_id(ctx) == "":
+      response.delete_cookie("sid")
+    return Home.render_page(ctx)
 
   # Server-rendered shell for an existing session token.
   get "/sessions/{token: String}" -> Html!Unauthorized:
     let ctx = authenticated_context(token) ?!
+    response.cookie("sid", token)
     return Home.render_page(ctx)
 
   post "/ui/auth/register" body RegisterInput -> Html!Unauthorized:
     let session = register_user(body) ?!
-    let ctx = session_context(session_token(session), session_user_id(session))
+    let token = session_token(session)
+    response.cookie("sid", token)
+    let ctx = session_context(token, session_user_id(session))
     return Home.render_shell(ctx)
 
   post "/ui/auth/login" body LoginInput -> Html!Unauthorized:
     let session = login_user(body) ?!
-    let ctx = session_context(session_token(session), session_user_id(session))
+    let token = session_token(session)
+    response.cookie("sid", token)
+    let ctx = session_context(token, session_user_id(session))
     return Home.render_shell(ctx)
 
-  delete "/ui/sessions/{token: String}/logout" -> Html:
-    transaction:
-      db.exec("delete from sessions where token = ?", [token])
+  delete "/ui/auth/logout" -> Html:
+    let token = request_session_token()
+    if token != "":
+      transaction:
+        db.exec("delete from sessions where token = ?", [token])
+    response.delete_cookie("sid")
     return Home.render_shell(anonymous_context())
 
   get "/ui/public/notes" -> Html:
-    return NotesUi.render_public_notes_inner(anonymous_context())
-
-  get "/ui/sessions/{token: String}/public/notes" -> Html!Unauthorized:
-    let ctx = authenticated_context(token) ?!
+    let ctx = request_context_or_anonymous()
     return NotesUi.render_public_notes_inner(ctx)
 
-  post "/ui/sessions/{token: String}/notes" body NoteCreate -> Html!Unauthorized!Forbidden!BadRequest:
-    let ctx = scoped_context(token, "notes:write") ?!
+  post "/ui/notes" body NoteCreate -> Html!Unauthorized!Forbidden!BadRequest:
+    let ctx = scoped_request_context("notes:write") ?!
     let id = new_note_id() ?!
     transaction:
       db.exec(
@@ -213,8 +231,8 @@ service ReferenceService at "/":
       )
     return Home.render_shell(ctx)
 
-  put "/ui/sessions/{token: String}/notes/{id: String}" body NoteCreate -> Html!NotFound!Unauthorized!Forbidden!BadRequest:
-    let ctx = scoped_context(token, "notes:write") ?!
+  put "/ui/notes/{id: String}" body NoteCreate -> Html!NotFound!Unauthorized!Forbidden!BadRequest:
+    let ctx = scoped_request_context("notes:write") ?!
     transaction:
       db
         .from("notes")
@@ -229,8 +247,8 @@ service ReferenceService at "/":
       )
     return Home.render_shell(ctx)
 
-  put "/ui/sessions/{token: String}/notes/{id: String}/visibility" body NoteVisibilityUpdate -> Html!NotFound!Unauthorized!Forbidden!BadRequest:
-    let ctx = scoped_context(token, "notes:write") ?!
+  put "/ui/notes/{id: String}/visibility" body NoteVisibilityUpdate -> Html!NotFound!Unauthorized!Forbidden!BadRequest:
+    let ctx = scoped_request_context("notes:write") ?!
     var is_public = "0"
     if body.published == "1":
       is_public = "1"
@@ -251,14 +269,14 @@ service ReferenceService at "/":
       )
     return Home.render_shell(ctx)
 
-  delete "/ui/sessions/{token: String}/notes/{id: String}" -> Html!Unauthorized!Forbidden:
-    let ctx = scoped_context(token, "notes:write") ?!
+  delete "/ui/notes/{id: String}" -> Html!Unauthorized!Forbidden:
+    let ctx = scoped_request_context("notes:write") ?!
     transaction:
       db.exec("delete from notes where id = ? and owner_id = ?", [id, request_context_user_id(ctx)])
     return Home.render_shell(ctx)
 
-  post "/ui/sessions/{token: String}/public/notes/{id: String}/likes" -> Html!NotFound!Unauthorized!Forbidden:
-    let ctx = scoped_context(token, "notes:read") ?!
+  post "/ui/public/notes/{id: String}/likes" -> Html!NotFound!Unauthorized!Forbidden:
+    let ctx = scoped_request_context("notes:read") ?!
     transaction:
       let note = db
         .from("notes")

@@ -4,7 +4,7 @@ fn render_create_section(ctx: RequestContext) -> Html:
   let session_token = request_context_session_token(ctx)
   if session_token == "":
     return html.raw("")
-  let create_url = "/ui/sessions/${session_token}/notes"
+  let create_url = "/ui/notes"
 
   return section(class="section"):
     h2(class="section__title"): "New note"

@@ -516,4 +516,7 @@ post "/users" body UserCreate -> User:
 
 Binding/encoding/error semantics for routes are runtime behavior and are defined in `runtime.md`.
 
+HTTP-specific route primitives (`request.header/cookie` and
+`response.header/cookie/delete_cookie`) are runtime semantics owned by `runtime.md`.
+
 See also: [Runtime semantics](runtime.md), [Error model](runtime.md#error-model), [Boundary model](runtime.md#boundary-model).

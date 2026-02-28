@@ -198,6 +198,20 @@ fn main():
 }
 
 #[test]
+fn spawn_rejects_response_builtins() {
+    let src = r#"
+fn main():
+  let t = spawn:
+    response.header("x-test", "1")
+  await t
+"#;
+    assert_diags(
+        src,
+        &["Error: spawn blocks cannot call side-effect builtin response.*"],
+    );
+}
+
+#[test]
 fn spawn_rejects_input_builtin() {
     let src = r#"
 fn main():
@@ -227,6 +241,29 @@ fn html_input_tag_remains_available_with_named_attrs() {
     let src = r#"
 fn field() -> Html:
   return input(type="text")
+"#;
+    assert_diags(src, &[]);
+}
+
+#[test]
+fn request_response_http_primitives_typecheck() {
+    let src = r#"
+requires network
+
+config App:
+  port: Int = 3000
+
+service Api at "/":
+  get "/" -> Html:
+    let auth = request.header("authorization") ?? ""
+    let sid = request.cookie("sid") ?? ""
+    response.header("x-auth", auth)
+    response.cookie("sid", sid)
+    response.delete_cookie("old_sid")
+    return html.text("ok")
+
+app "api":
+  serve(App.port)
 "#;
     assert_diags(src, &[]);
 }

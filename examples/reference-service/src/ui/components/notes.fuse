@@ -22,7 +22,7 @@ fn public_note_rows() -> List<Map<String, String>>:
     )
   return rows
 
-fn render_private_note_card(token: String, note: Map<String, String>) -> Html:
+fn render_private_note_card(note: Map<String, String>) -> Html:
   let id = note["id"]
   let title = note["title"]
   let content = note["content"]
@@ -36,9 +36,9 @@ fn render_private_note_card(token: String, note: Map<String, String>) -> Html:
     publish_label = "Unpublish"
     next_published = "0"
 
-  let edit_url = "/ui/sessions/${token}/notes/${id}"
-  let visibility_url = "/ui/sessions/${token}/notes/${id}/visibility"
-  let delete_url = "/ui/sessions/${token}/notes/${id}"
+  let edit_url = "/ui/notes/${id}"
+  let visibility_url = "/ui/notes/${id}/visibility"
+  let delete_url = "/ui/notes/${id}"
   let title_id = "edit-title-${id}"
   let content_id = "edit-content-${id}"
 
@@ -126,7 +126,7 @@ fn render_private_notes_section(ctx: RequestContext) -> Html:
     let prev = cards
     cards = div(class="note-stack"):
       prev
-      render_private_note_card(session_token, row)
+      render_private_note_card(row)
 
   if has_rows == false:
     return section(class="section"):
@@ -155,7 +155,7 @@ fn render_public_note_actions(ctx: RequestContext, note: Map<String, String>) ->
         "Your note"
 
   let id = note["id"]
-  let like_url = "/ui/sessions/${session_token}/public/notes/${id}/likes"
+  let like_url = "/ui/public/notes/${id}/likes"
 
   return div(class="note-card__actions note-card__actions--public"):
     button({
@@ -205,11 +205,7 @@ fn render_public_notes_inner(ctx: RequestContext) -> Html:
   return cards
 
 fn render_public_section(ctx: RequestContext) -> Html:
-  let session_token = request_context_session_token(ctx)
-  var feed_url = "/ui/public/notes"
-  if session_token != "":
-    feed_url = "/ui/sessions/${session_token}/public/notes"
-
+  let feed_url = "/ui/public/notes"
   return section(class="section", id="public-notes-section"):
     h2(class="section__title"):
       "Public notes"

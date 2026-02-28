@@ -83,6 +83,8 @@ impl<'a> Checker<'a> {
         env.insert_builtin_with_ty("task", Ty::External("task".to_string()));
         env.insert_builtin_with_ty("html", Ty::External("html".to_string()));
         env.insert_builtin_with_ty("svg", Ty::External("svg".to_string()));
+        env.insert_builtin_with_ty("request", Ty::External("request".to_string()));
+        env.insert_builtin_with_ty("response", Ty::External("response".to_string()));
         env.insert_builtin("errors");
         let declared_capabilities = module_capabilities
             .get(&module_id)
@@ -1040,6 +1042,8 @@ impl<'a> Checker<'a> {
             "task" => self.lookup_task_member(name),
             "html" => self.lookup_html_member(name),
             "svg" => self.lookup_svg_member(name),
+            "request" => self.lookup_request_member(name),
+            "response" => self.lookup_response_member(name),
             _ => {
                 self.diags.error(
                     name.span,
@@ -1109,6 +1113,61 @@ impl<'a> Checker<'a> {
             _ => {
                 self.diags
                     .error(name.span, format!("unknown svg method {}", name.name));
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn lookup_request_member(&mut self, name: &crate::ast::Ident) -> Ty {
+        match name.name.as_str() {
+            "header" | "cookie" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "name".to_string(),
+                    ty: Ty::String,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::Option(Box::new(Ty::String))),
+            }),
+            _ => {
+                self.diags.error(
+                    name.span,
+                    format!("unknown request method {}", name.name),
+                );
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn lookup_response_member(&mut self, name: &crate::ast::Ident) -> Ty {
+        match name.name.as_str() {
+            "header" | "cookie" => Ty::Fn(FnSig {
+                params: vec![
+                    ParamSig {
+                        name: "name".to_string(),
+                        ty: Ty::String,
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "value".to_string(),
+                        ty: Ty::String,
+                        has_default: false,
+                    },
+                ],
+                ret: Box::new(Ty::Unit),
+            }),
+            "delete_cookie" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "name".to_string(),
+                    ty: Ty::String,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::Unit),
+            }),
+            _ => {
+                self.diags.error(
+                    name.span,
+                    format!("unknown response method {}", name.name),
+                );
                 Ty::Unknown
             }
         }
@@ -2533,6 +2592,10 @@ fn spawn_forbidden_builtin(callee: &Expr) -> Option<&'static str> {
         },
         ExprKind::Member { base, name } => match &base.kind {
             ExprKind::Ident(ident) if ident.name == "db" => Some("db.*"),
+            ExprKind::Ident(ident) if ident.name == "response" => match name.name.as_str() {
+                "header" | "cookie" | "delete_cookie" => Some("response.*"),
+                _ => None,
+            },
             ExprKind::Ident(ident) if ident.name == "svg" && name.name == "inline" => {
                 Some("svg.inline")
             }

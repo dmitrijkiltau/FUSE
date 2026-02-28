@@ -166,6 +166,9 @@ post "/users" body UserCreate -> User:
 
 Binding/encoding/error semantics for routes are runtime behavior and are defined in `runtime.md`.
 
+HTTP-specific route primitives (`request.header/cookie` and
+`response.header/cookie/delete_cookie`) are runtime semantics owned by `runtime.md`.
+
 ---
 
 ## Runtime Behavior
@@ -387,6 +390,11 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 - `env(name: String) -> String?` returns env var or `null`
 - `asset(path: String) -> String` resolves to hashed/static public URL when asset map is configured
 - `serve(port)` starts HTTP server on `FUSE_HOST:port`
+- `request.header(name: String) -> String?` reads inbound HTTP headers
+- `request.cookie(name: String) -> String?` reads inbound HTTP cookie values
+- `response.header(name: String, value: String)` appends response headers
+- `response.cookie(name: String, value: String)` appends HTTP-only session cookies
+- `response.delete_cookie(name: String)` emits cookie expiration headers
 - HTML tag builtins (`html`, `head`, `body`, `div`, `meta`, `button`, ...)
 - `html.text`, `html.raw`, `html.node`, `html.render`
 - `svg.inline(path: String) -> Html`

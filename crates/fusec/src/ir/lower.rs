@@ -270,7 +270,16 @@ impl<'a> Lowerer<'a> {
             }
         }
         let builtin_names = [
-            "print", "input", "env", "serve", "log", "assert", "asset", "svg",
+            "print",
+            "input",
+            "env",
+            "serve",
+            "log",
+            "assert",
+            "asset",
+            "svg",
+            "request",
+            "response",
         ]
         .into_iter()
         .map(|s| s.to_string())
@@ -1396,6 +1405,8 @@ impl FuncBuilder {
                             || ident.name == "json"
                             || ident.name == "html"
                             || ident.name == "svg"
+                            || ident.name == "request"
+                            || ident.name == "response"
                         {
                             for arg in args {
                                 self.lower_expr(&arg.value);

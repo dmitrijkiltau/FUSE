@@ -75,6 +75,7 @@ FUSE is currently scoped as a strict, typed language with integrated boundary/ru
   cross-layer import-cycle rejection, and error-domain isolation
 - SQLite-backed DB runtime and migration workflow
 - service-oriented package workflow (`fuse check/run/dev/test/build`)
+- HTTP handler request/response primitives for header and cookie handling
 
 Detailed behavior is intentionally kept out of this doc and lives in `../spec/fls.md` and `../spec/runtime.md`.
 Identity guardrails are defined in `IDENTITY_CHARTER.md`.
