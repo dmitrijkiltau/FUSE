@@ -110,6 +110,13 @@ app "users":
 
 For detailed route binding and error/status behavior, see `../spec/runtime.md`.
 
+HTTP observability baseline:
+
+- request ID propagation (`x-request-id` / `x-correlation-id` / generated `req-<hex>`)
+- response emission of `X-Request-Id`
+- optional request JSON logs via `FUSE_REQUEST_LOG=structured`
+- optional metrics line hook via `FUSE_METRICS_HOOK=stderr`
+
 See also: [Runtime semantics](../spec/runtime.md), [Formal language specification](../spec/fls.md), [Package workflow (summary)](#package-workflow-summary).
 
 ---
@@ -129,6 +136,7 @@ FUSE currently ships with:
 - deterministic `transaction:` blocks (commit on success, rollback on failure) with compile-time restrictions
 - strict architecture mode (`--strict-architecture`) for capability purity, cross-layer cycle rejection, and error-domain isolation
 - HTTP request/response primitives (`request.header/cookie`, `response.header/cookie/delete_cookie`)
+- HTTP observability baseline (request IDs, optional structured request logs, optional metrics hook)
 - package tooling via `fuse.toml` and `fuse` commands
 
 Detailed capability matrices and caveats live in:

@@ -172,6 +172,18 @@ fn run_http_program_with_env_requests(
     extra_env: &[(String, String)],
     requests: &[&str],
 ) -> Vec<HttpResponse> {
+    let (responses, _stderr) =
+        run_http_program_with_env_requests_capture(backend, source, port, extra_env, requests);
+    responses
+}
+
+fn run_http_program_with_env_requests_capture(
+    backend: &str,
+    source: &str,
+    port: u16,
+    extra_env: &[(String, String)],
+    requests: &[&str],
+) -> (Vec<HttpResponse>, String) {
     let _lock = http_runtime_test_lock()
         .lock()
         .expect("http runtime test lock");
@@ -205,7 +217,10 @@ fn run_http_program_with_env_requests(
         "{backend} stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    responses
+    (
+        responses,
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    )
 }
 
 #[test]
@@ -626,8 +641,7 @@ app "echo":
     let request = "GET / HTTP/1.1\r\nHost: localhost\r\nX-Auth: Bearer demo\r\nCookie: sid=old-token; theme=dark\r\nConnection: close\r\n\r\n";
     for backend in ["ast", "native"] {
         let port = find_free_port();
-        let responses =
-            run_http_program_with_env_requests(backend, program, port, &[], &[request]);
+        let responses = run_http_program_with_env_requests(backend, program, port, &[], &[request]);
         let response = &responses[0];
         assert_eq!(response.status, 200, "{backend} status");
         assert_eq!(
@@ -656,6 +670,147 @@ app "echo":
         assert!(
             set_cookie.contains("HttpOnly"),
             "{backend} set-cookie: {set_cookie}"
+        );
+    }
+}
+
+#[test]
+fn http_request_id_propagates_and_emits_across_backends() {
+    let program = r#"
+requires network
+
+config App:
+  port: Int = 3000
+
+service Echo at "/":
+  get "/id" -> Map<String, String>:
+    let req_id = request.header("x-request-id") ?? "missing"
+    return {"id": req_id}
+
+app "echo":
+  serve(App.port)
+"#;
+    let requests = [
+        "GET /id HTTP/1.1\r\nHost: localhost\r\nX-Request-Id: client-req-1\r\nConnection: close\r\n\r\n",
+        "GET /id HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        "GET /missing HTTP/1.1\r\nHost: localhost\r\nX-Request-Id: client-missing\r\nConnection: close\r\n\r\n",
+    ];
+    for backend in ["ast", "native"] {
+        let port = find_free_port();
+        let responses = run_http_program_with_env_requests(backend, program, port, &[], &requests);
+
+        let explicit = &responses[0];
+        assert_eq!(explicit.status, 200, "{backend} explicit status");
+        assert_eq!(
+            explicit
+                .headers
+                .get("x-request-id")
+                .cloned()
+                .unwrap_or_default(),
+            "client-req-1",
+            "{backend} explicit request-id header"
+        );
+        assert_eq!(
+            explicit.body.trim(),
+            r#"{"id":"client-req-1"}"#,
+            "{backend} explicit body"
+        );
+
+        let generated = &responses[1];
+        assert_eq!(generated.status, 200, "{backend} generated status");
+        let generated_id = generated
+            .headers
+            .get("x-request-id")
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            generated_id.starts_with("req-"),
+            "{backend} generated request-id header: {generated_id}"
+        );
+        assert_eq!(
+            generated.body.trim(),
+            format!(r#"{{"id":"{generated_id}"}}"#),
+            "{backend} generated body"
+        );
+
+        let missing = &responses[2];
+        assert_eq!(missing.status, 404, "{backend} missing status");
+        assert_eq!(
+            missing
+                .headers
+                .get("x-request-id")
+                .cloned()
+                .unwrap_or_default(),
+            "client-missing",
+            "{backend} missing request-id header"
+        );
+    }
+}
+
+#[test]
+fn structured_request_logging_and_metrics_hook_emit_stable_payloads() {
+    let program = r#"
+requires network
+
+config App:
+  port: Int = 3000
+
+service Echo at "/":
+  get "/" -> Map<String, String>:
+    return {"status": "ok"}
+
+app "echo":
+  serve(App.port)
+"#;
+    let request =
+        "GET / HTTP/1.1\r\nHost: localhost\r\nX-Request-Id: obs-1\r\nConnection: close\r\n\r\n";
+    let env = [
+        ("FUSE_REQUEST_LOG".to_string(), "structured".to_string()),
+        ("FUSE_METRICS_HOOK".to_string(), "stderr".to_string()),
+    ];
+    for backend in ["ast", "native"] {
+        let port = find_free_port();
+        let (responses, stderr) =
+            run_http_program_with_env_requests_capture(backend, program, port, &env, &[request]);
+        let response = &responses[0];
+        assert_eq!(response.status, 200, "{backend} status");
+        assert_eq!(
+            response
+                .headers
+                .get("x-request-id")
+                .cloned()
+                .unwrap_or_default(),
+            "obs-1",
+            "{backend} response request-id"
+        );
+        assert!(
+            stderr.contains("\"event\":\"http.request\""),
+            "{backend} stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains(&format!("\"runtime\":\"{backend}\"")),
+            "{backend} stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("\"request_id\":\"obs-1\""),
+            "{backend} stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("\"method\":\"GET\""),
+            "{backend} stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("\"path\":\"/\""),
+            "{backend} stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("\"status\":200"),
+            "{backend} stderr: {stderr}"
+        );
+        assert!(stderr.contains("metrics: "), "{backend} stderr: {stderr}");
+        assert!(
+            stderr.contains("\"metric\":\"http.server.request\""),
+            "{backend} stderr: {stderr}"
         );
     }
 }

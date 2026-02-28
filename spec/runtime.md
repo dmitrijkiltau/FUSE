@@ -58,6 +58,8 @@ Native backend note:
   exposes it via `FUSE_AOT_BUILD_INFO=1`, supports startup tracing via `FUSE_AOT_STARTUP_TRACE=1`,
   and emits fatal envelopes as:
   `fatal: class=<runtime_fatal|panic> pid=<...> message=<...> <build-info>`.
+  For `class=panic`, `message` starts with
+  `panic_kind=<panic_static_str|panic_string|panic_non_string>`.
 - AOT fallback is an operational decision (not automatic); incident fallback guidance is tracked in
   `../ops/AOT_ROLLBACK_PLAYBOOK.md`.
 
@@ -355,17 +357,44 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 - `FUSE_VITE_PROXY_URL` enables fallback proxying of unknown routes to Vite dev server
 - `FUSE_SVG_DIR` overrides SVG base directory for `svg.inline`
 
-#### Observability baseline (current implementation)
+#### Observability baseline
 
-- request ID propagation is not currently implemented:
-  - responses do not include a runtime-generated request ID header
-- there is no dedicated structured request logging mode yet:
-  - request-level access logs are not emitted automatically
-  - runtime `log(...)` remains the explicit logging mechanism
-- panic classification is currently binary in fatal envelopes:
-  - `runtime_fatal` for handled runtime failures
-  - `panic` for process-level panic paths
-- no metrics hook extension point is currently exposed by the runtime
+Request ID propagation:
+
+- each HTTP request resolves one request ID with precedence:
+  1. inbound `x-request-id` (if valid)
+  2. inbound `x-correlation-id` (if valid)
+  3. runtime-generated ID (`req-<hex>`)
+- runtime normalizes the resolved value into request headers, so
+  `request.header("x-request-id")` returns the lifecycle request ID inside route handlers
+- runtime emits `X-Request-Id` on HTTP responses for runtime-owned handlers and runtime-generated
+  status/error responses
+- Vite proxy fallback forwards `X-Request-Id` upstream and injects it into the proxied response
+
+Structured request logging mode:
+
+- opt-in via `FUSE_REQUEST_LOG=structured` (`1`/`true` are also accepted)
+- emits one JSON line to stderr per handled request with stable fields:
+  `event`, `runtime`, `request_id`, `method`, `path`, `status`, `duration_ms`, `response_bytes`
+- disabled by default; does not change runtime semantics
+
+Metrics hook extension point (non-semantic):
+
+- opt-in via `FUSE_METRICS_HOOK=stderr`
+- emits one line per handled request on stderr as:
+  `metrics: <json>`
+- stable JSON fields:
+  `metric` (`http.server.request`), `runtime`, `request_id`, `method`, `path`, `status`,
+  `duration_ms`
+- unsupported/empty hook values are treated as no-op
+- hook emission is best-effort and must not change request/response behavior
+
+Deterministic panic taxonomy:
+
+- fatal envelope class remains `runtime_fatal` for handled runtime errors and `panic` for
+  process-level panics
+- `panic` envelope messages include `panic_kind=<panic_static_str|panic_string|panic_non_string>`
+  for deterministic panic payload classification
 
 See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [Services and declaration syntax](fls.md#services-and-declaration-syntax).
 

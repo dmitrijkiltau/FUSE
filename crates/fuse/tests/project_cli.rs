@@ -2126,6 +2126,51 @@ app "Demo":
 }
 
 #[test]
+fn build_aot_runner_wires_deterministic_panic_taxonomy() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let runner = dir.join(".fuse").join("build").join("native_main.rs");
+    let source = fs::read_to_string(&runner).expect("read generated native_main.rs");
+    assert!(
+        source.contains("classify_panic_payload"),
+        "runner source: {source}"
+    );
+    assert!(
+        source.contains("format_panic_message"),
+        "runner source: {source}"
+    );
+    assert!(
+        source.contains("emit_fatal(\"panic\", &msg);"),
+        "runner source: {source}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn build_aot_startup_trace_env_emits_operability_header() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");

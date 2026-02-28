@@ -2127,6 +2127,7 @@ fn write_native_runner(
         r#"use fusec::interp::format_error_value;
 use fusec::native::value::{{NativeHeap, NativeValue}};
 use fusec::native::{{load_configs_for_binary, load_types_for_binary}};
+use fusec::observability::{{classify_panic_payload, format_panic_message}};
 
 type EntryFn = unsafe extern "C" fn(*const NativeValue, *mut NativeValue, *mut std::ffi::c_void) -> u8;
 
@@ -2184,16 +2185,6 @@ fn emit_startup_trace() {{
     if std::env::var("FUSE_AOT_STARTUP_TRACE").ok().as_deref() == Some("1") {{
         eprintln!("startup: pid={{}} {{}}", std::process::id(), build_info_line());
     }}
-}}
-
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {{
-    if let Some(msg) = payload.downcast_ref::<&str>() {{
-        return (*msg).to_string();
-    }}
-    if let Some(msg) = payload.downcast_ref::<String>() {{
-        return msg.clone();
-    }}
-    "panic".to_string()
 }}
 
 fn call_native(entry: EntryFn, heap: &mut NativeHeap) -> Result<fusec::interp::Value, String> {{
@@ -2275,7 +2266,8 @@ fn main() {{
             1
         }}
         Err(payload) => {{
-            let msg = panic_message(payload.as_ref());
+            let details = classify_panic_payload(payload.as_ref());
+            let msg = format_panic_message(&details);
             emit_fatal("panic", &msg);
             101
         }}

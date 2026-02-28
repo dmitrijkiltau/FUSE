@@ -115,6 +115,15 @@ Service routes can directly access HTTP headers/cookies without custom runtime g
 - `response.cookie(name: String, value: String)` appends `Set-Cookie` headers
 - `response.delete_cookie(name: String)` emits cookie-expiration `Set-Cookie` headers
 
+Observability baseline for HTTP runtime:
+
+- request ID precedence: inbound `x-request-id`, then `x-correlation-id`, otherwise generated
+  `req-<hex>`
+- runtime emits `X-Request-Id` on runtime-owned HTTP responses
+- `request.header("x-request-id")` returns the resolved lifecycle request ID inside route handlers
+- `FUSE_REQUEST_LOG=structured` enables one JSON request log line per handled request on stderr
+- `FUSE_METRICS_HOOK=stderr` enables one metrics line (`metrics: <json>`) per handled request
+
 ## Strict architecture mode
 
 `fuse check --strict-architecture` enables additional architecture validation:
@@ -230,6 +239,8 @@ Deployable AOT output:
   `[build] failed` step footer.
 - Runtime failures in AOT binaries emit a stable fatal envelope:
   `fatal: class=<runtime_fatal|panic> pid=<...> message=<...> <build-info>`.
+  For `class=panic`, message starts with
+  `panic_kind=<panic_static_str|panic_string|panic_non_string>`.
 
 Use `fuse build --clean` to clear the cache.
 

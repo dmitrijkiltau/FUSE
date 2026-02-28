@@ -5,6 +5,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
+use std::time::Instant;
 
 use fuse_rt::{
     bytes as rt_bytes, config as rt_config, error as rt_error, json as rt_json,
@@ -25,6 +26,7 @@ use crate::frontend::html_shorthand::{CanonicalizationPhase, validate_named_args
 use crate::frontend::html_tag_builtin::should_use_html_tag_builtin;
 use crate::html_tags::{self, HtmlTagKind};
 use crate::loader::{ModuleId, ModuleLink, ModuleMap, ModuleRegistry};
+use crate::observability;
 use crate::refinement::{
     NumberLiteral, RefinementConstraint, base_is_string_like, parse_constraints,
 };
@@ -2637,10 +2639,34 @@ impl Interpreter {
                     )));
                 }
             };
-            let response = match self.handle_http_request(&service, &mut stream) {
-                Ok(resp) => resp,
-                Err(err) => self.http_error_response(err),
+            let request = match self.read_http_request(&mut stream) {
+                Ok(request) => request,
+                Err(err) => {
+                    let response = self.http_error_response(err);
+                    let _ = stream.write_all(response.as_bytes());
+                    handled += 1;
+                    if max_requests > 0 && handled >= max_requests {
+                        break;
+                    }
+                    continue;
+                }
             };
+            let started = Instant::now();
+            let response = match self.handle_http_request(&service, &request) {
+                Ok(resp) => resp,
+                Err(err) => self.http_error_response_for_request(&request, err),
+            };
+            let (status, response_bytes) =
+                observability::parse_http_response_status_and_body_len(&response);
+            observability::emit_http_observability(
+                "ast",
+                &request.request_id,
+                &request.method,
+                &request.path,
+                status,
+                started.elapsed(),
+                response_bytes,
+            );
             let _ = stream.write_all(response.as_bytes());
             handled += 1;
             if max_requests > 0 && handled >= max_requests {
@@ -2672,16 +2698,21 @@ impl Interpreter {
     fn handle_http_request(
         &mut self,
         service: &ServiceDecl,
-        stream: &mut TcpStream,
+        request: &HttpRequest,
     ) -> ExecResult<String> {
-        let request = self.read_http_request(stream)?;
         let verb = match request.method.as_str() {
             "GET" => HttpVerb::Get,
             "POST" => HttpVerb::Post,
             "PUT" => HttpVerb::Put,
             "PATCH" => HttpVerb::Patch,
             "DELETE" => HttpVerb::Delete,
-            _ => return Ok(self.http_response(405, self.internal_error_json("method not allowed"))),
+            _ => {
+                return Ok(self.http_response_for_request(
+                    request,
+                    405,
+                    self.internal_error_json("method not allowed"),
+                ));
+            }
         };
         let path = request
             .path
@@ -2690,19 +2721,28 @@ impl Interpreter {
             .unwrap_or(&request.path)
             .to_string();
         if let Some(response) = self.try_openapi_ui_response(request.method.as_str(), &path) {
-            return Ok(response);
+            return Ok(observability::inject_request_id_header(
+                response,
+                &request.request_id,
+            ));
         }
         if let Some(response) = self.try_static_response(request.method.as_str(), &path) {
-            return Ok(response);
+            return Ok(observability::inject_request_id_header(
+                response,
+                &request.request_id,
+            ));
         }
         let (route, params) = match self.match_route(service, &verb, &path)? {
             Some(result) => result,
             None => {
-                if let Some(response) = self.try_vite_proxy_response(&request) {
-                    return Ok(response);
+                if let Some(response) = self.try_vite_proxy_response(request) {
+                    return Ok(observability::inject_request_id_header(
+                        response,
+                        &request.request_id,
+                    ));
                 }
                 let body = self.error_json_from_code("not_found", "not found");
-                return Ok(self.http_response(404, body));
+                return Ok(self.http_response_for_request(request, 404, body));
             }
         };
         let body_value = if let Some(body_ty) = &route.body_type {
@@ -2787,7 +2827,10 @@ impl Interpreter {
             headers: request.headers.clone(),
             cookies: parse_cookie_map(request.headers.get("cookie").map(String::as_str)),
         });
-        self.current_http_response = Some(HttpResponseMeta::default());
+        self.current_http_response = Some(HttpResponseMeta {
+            request_id: Some(request.request_id.clone()),
+            ..HttpResponseMeta::default()
+        });
     }
 
     fn end_http_route_context(&mut self) -> HttpResponseMeta {
@@ -2820,9 +2863,7 @@ impl Interpreter {
                 "response.header is only available while handling an HTTP route".to_string(),
             )
         })?;
-        response
-            .headers
-            .push((name.to_string(), value.to_string()));
+        response.headers.push((name.to_string(), value.to_string()));
         Ok(())
     }
 
@@ -2844,8 +2885,7 @@ impl Interpreter {
         validate_cookie_name(name)?;
         let response = self.current_http_response.as_mut().ok_or_else(|| {
             ExecError::Runtime(
-                "response.delete_cookie is only available while handling an HTTP route"
-                    .to_string(),
+                "response.delete_cookie is only available while handling an HTTP route".to_string(),
             )
         })?;
         response.cookies.push(format!(
@@ -3056,6 +3096,11 @@ impl Interpreter {
                 headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
             }
         }
+        let request_id = observability::resolve_request_id(&headers);
+        headers.insert(
+            observability::REQUEST_ID_HEADER.to_string(),
+            request_id.clone(),
+        );
         let content_length = headers
             .get("content-length")
             .and_then(|v| v.parse::<usize>().ok())
@@ -3076,6 +3121,7 @@ impl Interpreter {
         Ok(HttpRequest {
             method,
             path,
+            request_id,
             headers,
             body,
         })
@@ -3085,8 +3131,29 @@ impl Interpreter {
         self.http_response_with_meta(status, body, "application/json", None)
     }
 
+    fn http_response_for_request(
+        &self,
+        request: &HttpRequest,
+        status: u16,
+        body: String,
+    ) -> String {
+        self.http_response_with_type_for_request(request, status, body, "application/json")
+    }
+
     fn http_response_with_type(&self, status: u16, body: String, content_type: &str) -> String {
         self.http_response_with_meta(status, body, content_type, None)
+    }
+
+    fn http_response_with_type_for_request(
+        &self,
+        request: &HttpRequest,
+        status: u16,
+        body: String,
+        content_type: &str,
+    ) -> String {
+        let mut meta = HttpResponseMeta::default();
+        meta.request_id = Some(request.request_id.clone());
+        self.http_response_with_meta(status, body, content_type, Some(&meta))
     }
 
     fn http_response_with_meta(
@@ -3106,11 +3173,19 @@ impl Interpreter {
             500 => "Internal Server Error",
             _ => "OK",
         };
-        let mut response = format!(
-            "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\n"
-        );
+        let mut response =
+            format!("HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\n");
         if let Some(meta) = meta {
+            if let Some(request_id) = meta.request_id.as_deref() {
+                response.push_str(&format!(
+                    "{}: {request_id}\r\n",
+                    observability::RESPONSE_REQUEST_ID_HEADER
+                ));
+            }
             for (name, value) in &meta.headers {
+                if name.eq_ignore_ascii_case(observability::REQUEST_ID_HEADER) {
+                    continue;
+                }
                 response.push_str(&format!("{name}: {value}\r\n"));
             }
             for cookie in &meta.cookies {
@@ -3161,6 +3236,35 @@ impl Interpreter {
             ExecError::Continue => {
                 self.http_response(500, self.internal_error_json("continue outside loop"))
             }
+        }
+    }
+
+    fn http_error_response_for_request(&self, request: &HttpRequest, err: ExecError) -> String {
+        match err {
+            ExecError::Error(value) => {
+                let status = self.http_status_for_error_value(&value);
+                let body = self.error_json_from_value(&value);
+                self.http_response_for_request(request, status, body)
+            }
+            ExecError::Runtime(message) => {
+                let body = self.internal_error_json(&message);
+                self.http_response_for_request(request, 500, body)
+            }
+            ExecError::Return(_) => self.http_response_for_request(
+                request,
+                500,
+                self.internal_error_json("unexpected return"),
+            ),
+            ExecError::Break => self.http_response_for_request(
+                request,
+                500,
+                self.internal_error_json("break outside loop"),
+            ),
+            ExecError::Continue => self.http_response_for_request(
+                request,
+                500,
+                self.internal_error_json("continue outside loop"),
+            ),
         }
     }
 
@@ -4379,6 +4483,7 @@ struct HttpRequestContext {
 
 #[derive(Clone, Default)]
 struct HttpResponseMeta {
+    request_id: Option<String>,
     headers: Vec<(String, String)>,
     cookies: Vec<String>,
 }
@@ -4386,6 +4491,7 @@ struct HttpResponseMeta {
 struct HttpRequest {
     method: String,
     path: String,
+    request_id: String,
     headers: HashMap<String, String>,
     body: Vec<u8>,
 }
@@ -4496,6 +4602,12 @@ fn proxy_http_request(request: &HttpRequest, base_url: &str) -> Option<String> {
     );
     if !request.body.is_empty() {
         head.push_str("Content-Type: application/json\r\n");
+    }
+    if let Some(request_id) = request.headers.get(observability::REQUEST_ID_HEADER) {
+        head.push_str(&format!(
+            "{}: {request_id}\r\n",
+            observability::RESPONSE_REQUEST_ID_HEADER
+        ));
     }
     head.push_str("\r\n");
     upstream.write_all(head.as_bytes()).ok()?;
