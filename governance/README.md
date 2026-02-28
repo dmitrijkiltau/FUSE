@@ -2,7 +2,7 @@
 
 This directory is the documentation-tier index for project identity, scope, and policy.
 
-Canonical governance documents for the active `v0.4.x` line:
+Canonical governance documents for the current pre-`1.0.0` line:
 
 - [`scope.md`](scope.md) - project constraints, priorities, and non-goals
 - [`IDENTITY_CHARTER.md`](IDENTITY_CHARTER.md) - language identity boundaries
