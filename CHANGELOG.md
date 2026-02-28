@@ -6,22 +6,22 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
-- AOT runtime contract hardening (`M7`):
+- AOT runtime contract guarantees were formalized and test-backed:
   - explicit startup order guarantees
   - deterministic config precedence and startup determinism checks
   - stable AOT exit-code and fatal-envelope invariants
   - explicit runtime sealing guarantees (no dynamic backend fallback / runtime compilation)
-- Production ergonomics layer (`M8`):
+- Production ergonomics were expanded:
   - canonical `/health` production pattern
   - stable startup log line format contract
   - deterministic graceful shutdown semantics for `SIGTERM`/`SIGINT`
   - explicit runtime plugin system non-goal
-- Deployment surface formalization (`M9`):
+- Deployment surface was formalized:
   - single-page deployment guide (`ops/DEPLOY.md`) for VM/Docker/systemd/Kubernetes
   - canonical minimal production Dockerfile (`ops/docker/AOT_MINIMAL.Dockerfile`)
   - release-artifact container image packaging script and workflow wiring
-- AOT parity lock (`M10`):
-  - explicit AST/native/AOT observable-equivalence matrix gate
+- AST/native/AOT parity gates were tightened:
+  - explicit observable-equivalence matrix gate
   - dedicated panic taxonomy parity gate (`exit=101`, `class=panic`)
 
 ### Changed
@@ -29,7 +29,7 @@ All notable changes to this project are documented in this file.
 - `scripts/authority_parity.sh` now includes AST/native/AOT parity-lock and AOT panic-taxonomy checks.
 - Benchmark regression gate now applies a local WSL2 profile floor for known loopback-latency metrics
   while preserving default/CI thresholds.
-- Stability plan execution status now records `M7`-`M10` as complete and tracks release-candidate gates.
+- Governance/release tracking docs were refreshed for the finalized AOT hardening scope.
 
 ### Migration
 
@@ -96,7 +96,6 @@ All notable changes to this project are documented in this file.
 
 - Reference service with CRUD operations, user authentication, note visibility/public
   access, and like functionality.
-- v1.0.0 stability contract and execution plan (`spec/1.0.0_STABILITY_CONTRACT.md`).
 - Native spawn task implementation (`run_native_spawn_task`) — spawned async tasks now
   execute entirely on the native backend instead of falling back to the VM.
 - Note card UI enhancements with checkbox-based edit and visibility actions.
