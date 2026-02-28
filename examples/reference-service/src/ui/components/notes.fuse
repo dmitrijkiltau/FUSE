@@ -1,3 +1,5 @@
+requires db
+
 import Base from "./base"
 
 fn private_note_rows(user_id: String) -> List<Map<String, String>>:

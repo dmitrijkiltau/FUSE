@@ -127,6 +127,16 @@ Notes:
 - dependency modules use `dep:` import paths (for example, `dep:Auth/lib`)
 - root-qualified modules use `root:` import paths (for example, `root:lib/auth`)
 
+Module capabilities:
+
+- modules may declare capability requirements with top-level `requires` declarations
+- allowed capabilities are `db`, `crypto`, `network`, and `time`
+- duplicate capability declarations in one module are semantic errors
+- capability checks are compile-time only (no runtime capability guard)
+- calls requiring capabilities are rejected when the current module does not declare them
+- call sites to imported module functions must declare every capability required by the callee module
+  (capability leakage across module boundaries is rejected)
+
 ---
 
 ## Services and HTTP Contracts

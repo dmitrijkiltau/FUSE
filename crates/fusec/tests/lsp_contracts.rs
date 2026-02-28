@@ -38,7 +38,9 @@ fn helper(input: String) -> String:
   return input
 "#
     .to_string();
-    let main_src = r#"import { Person, greet } from "./util"
+    let main_src = r#"requires db
+
+import { Person, greet } from "./util"
 
 fn local_id(input: String) -> String:
   return input

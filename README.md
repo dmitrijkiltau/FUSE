@@ -4,6 +4,8 @@ FUSE is a small, strict language for building CLI apps and HTTP services with
 built-in config loading, validation, JSON binding, and OpenAPI generation.
 
 ```fuse
+requires network
+
 config App:
   port: Int = env("PORT") ?? 3000
 
@@ -59,6 +61,23 @@ Historical upgrade guidance for the `0.1.x -> 0.2.0` breaking minor is in
 # Start the language server
 ./scripts/fuse lsp
 ```
+
+## Module capabilities
+
+Capability boundaries are declared at module top-level and enforced at compile-time:
+
+```fuse
+requires db
+requires network
+```
+
+Current capability checks:
+
+- `db.exec/query/one/from` require `requires db`
+- `serve(...)` requires `requires network`
+- `time(...)` / `time.*` require `requires time`
+- `crypto.*` requires `requires crypto`
+- calling imported module functions requires declaring the callee module's capabilities
 
 ## Package commands
 

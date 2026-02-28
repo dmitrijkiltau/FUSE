@@ -192,6 +192,8 @@ fn golden_http_body_structured_and_bytes_validation() {
     }
     let port = find_free_port();
     let src = r#"
+requires network
+
 config App:
   port: Int = 0
 

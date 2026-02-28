@@ -196,12 +196,56 @@ fn main():
 #[test]
 fn checks_db_api_types() {
     let src = r#"
+requires db
+
 fn main():
   let rows = db.query("select 1")
   let first = db.one("select 1")
   db.exec(1)
 "#;
     assert_diags(src, &["Error: type mismatch: expected String, found Int"]);
+}
+
+#[test]
+fn requires_db_capability_for_db_calls() {
+    let src = r#"
+fn main():
+  db.exec("select 1")
+"#;
+    assert_diags(
+        src,
+        &["Error: db call requires capability db; add `requires db` at module top-level"],
+    );
+}
+
+#[test]
+fn requires_network_capability_for_serve_calls() {
+    let src = r#"
+fn main():
+  serve(3000)
+"#;
+    assert_diags(
+        src,
+        &["Error: call serve requires capability network; add `requires network` at module top-level"],
+    );
+}
+
+#[test]
+fn rejects_duplicate_requires_declarations() {
+    let src = r#"
+requires db
+requires db
+
+fn main():
+  db.exec("select 1")
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: duplicate requires declaration for db",
+            "Error: previous requires db here",
+        ],
+    );
 }
 
 #[test]

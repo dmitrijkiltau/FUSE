@@ -5,7 +5,43 @@ pub type Doc = String;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Program {
+    pub requires: Vec<RequireDecl>,
     pub items: Vec<Item>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Capability {
+    Db,
+    Crypto,
+    Network,
+    Time,
+}
+
+impl Capability {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "db" => Some(Self::Db),
+            "crypto" => Some(Self::Crypto),
+            "network" => Some(Self::Network),
+            "time" => Some(Self::Time),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Db => "db",
+            Self::Crypto => "crypto",
+            Self::Network => "network",
+            Self::Time => "time",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequireDecl {
+    pub capability: Capability,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

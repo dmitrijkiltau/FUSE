@@ -1,3 +1,5 @@
+requires network
+
 import DocsApi from "./api"
 import Meta from "./meta"
 

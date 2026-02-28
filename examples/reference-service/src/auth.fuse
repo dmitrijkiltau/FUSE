@@ -1,3 +1,5 @@
+requires db
+
 import { Unauthorized, Forbidden } from "./errors"
 import { AuthSession, LoginInput, RegisterInput, SessionToken, UserId } from "./domain"
 

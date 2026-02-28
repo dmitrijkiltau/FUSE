@@ -1,3 +1,5 @@
+requires db
+
 import { NotFound, Unauthorized, BadRequest, Forbidden } from "./errors"
 import { Note, NoteId, NoteCreate, NoteVisibilityUpdate, AuthSession, RegisterInput, LoginInput } from "./domain"
 import { register_user, login_user, logout_session, require_auth, require_scope, auth_user_id, session_user_id, session_token } from "./auth"

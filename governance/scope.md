@@ -66,6 +66,8 @@ FUSE is currently scoped as a strict, typed language with integrated boundary/ru
 - language authoring (`fn`, `type`, `enum`, modules/imports, services/config/apps)
 - backend execution across AST/native with semantic parity gates (including operator semantics such as `Bool` equality/inequality); VM removed per RFC 0007
 - integrated runtime boundary handling (validation, JSON/config/CLI/HTTP binding, error mapping)
+- compile-time module capability declarations (`requires db|crypto|network|time`) with
+  boundary-call and cross-module leakage checks
 - SQLite-backed DB runtime and migration workflow
 - service-oriented package workflow (`fuse check/run/dev/test/build`)
 
@@ -80,12 +82,13 @@ See also: [Formal language specification](../spec/fls.md), [Runtime semantics](.
 
 Near-term priorities:
 
-1. AOT production performance/operability hardening (startup SLOs, observability hooks, rollback readiness)
-2. Native backend maturity and predictability
-3. Concurrency throughput and observability improvements on the existing worker-pool + deterministic `spawn` model
-4. Faster run/build iteration with hash-validated cache artifacts
-5. Tooling quality for multi-file projects (diagnostics, refactors, discoverability)
-6. Publishable VS Code distribution artifacts (`.vsix`)
+1. Deterministic architecture enforcement (capabilities, error-domain boundaries, strict architecture mode)
+2. AOT production performance/operability hardening (startup SLOs, observability hooks, rollback readiness)
+3. Native backend maturity and predictability
+4. Concurrency throughput and observability improvements on the existing worker-pool + deterministic `spawn` model
+5. Faster run/build iteration with hash-validated cache artifacts
+6. Tooling quality for multi-file projects (diagnostics, refactors, discoverability)
+7. Publishable VS Code distribution artifacts (`.vsix`)
 
 Likely future candidates (not committed MVP scope):
 

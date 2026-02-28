@@ -393,6 +393,18 @@ Compile-time sugar affecting HTML builtins:
 - bare string literals in HTML blocks lower to `html.text(...)`
 - attribute shorthand (`div(class="hero")`) lowers to attrs maps
 
+### Compile-time capability requirements
+
+Static capability checks are enforced by semantic analysis (see `fls.md`) and have no runtime
+fallback behavior.
+
+- modules declare capabilities with top-level `requires` declarations
+- `db.exec/query/one/from` calls require `requires db`
+- `serve(...)` calls require `requires network`
+- `time(...)` / `time.*` calls require `requires time`
+- `crypto.*` calls require `requires crypto`
+- calls to imported module functions require the caller to declare the callee module's capabilities
+
 ### Database (SQLite only)
 
 Database access is intentionally minimal and currently uses SQLite via a pooled set of

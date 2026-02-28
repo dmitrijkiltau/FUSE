@@ -62,6 +62,8 @@ fn send_http_request_with_retry(port: u16, request: &str) -> (u16, String) {
 fn run_decode_request(backend: &str, payload: &str) -> (u16, String) {
     let port = find_free_port();
     let program = r#"
+requires network
+
 config App:
   port: Int = 0
 

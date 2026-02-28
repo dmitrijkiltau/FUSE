@@ -334,6 +334,8 @@ app "asset":
 #[test]
 fn vite_proxy_fallback_routes_unknown_paths_across_backends() {
     let program = r#"
+requires network
+
 config App:
   port: Int = 3000
 
@@ -429,6 +431,8 @@ app "svg":
 #[test]
 fn html_http_response_sets_text_html_content_type() {
     let program = r#"
+requires network
+
 config App:
   port: Int = 3000
 
@@ -464,6 +468,8 @@ app "docs":
 #[test]
 fn html_http_injects_live_reload_script_when_enabled() {
     let program = r#"
+requires network
+
 config App:
   port: Int = 3000
 
@@ -496,6 +502,8 @@ app "docs":
 #[test]
 fn openapi_ui_routes_are_served_when_enabled() {
     let program = r#"
+requires network
+
 config App:
   port: Int = 3000
 
@@ -550,6 +558,8 @@ app "docs":
 #[test]
 fn html_fragment_post_route_supports_server_driven_swaps() {
     let program = r#"
+requires network
+
 config App:
   port: Int = 3000
 

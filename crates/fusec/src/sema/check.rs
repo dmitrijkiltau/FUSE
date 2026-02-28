@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    Block, CallArg, Expr, ExprKind, Item, Literal, Pattern, PatternKind, Program, RouteDecl, Stmt,
-    StmtKind,
+    Block, CallArg, Capability, Expr, ExprKind, Item, Literal, Pattern, PatternKind, Program,
+    RouteDecl, Stmt, StmtKind,
 };
 use crate::diag::Diagnostics;
 use crate::frontend::html_shorthand::{CanonicalizationPhase, validate_named_args_for_phase};
@@ -23,6 +23,7 @@ pub struct Checker<'a> {
     modules: &'a ModuleMap,
     module_maps: &'a HashMap<ModuleId, ModuleMap>,
     import_items: &'a HashMap<String, ModuleLink>,
+    module_capabilities: &'a HashMap<ModuleId, HashSet<Capability>>,
     module_symbols: &'a HashMap<ModuleId, ModuleSymbols>,
     module_import_items: &'a HashMap<ModuleId, HashMap<String, ModuleLink>>,
     diags: &'a mut Diagnostics,
@@ -30,6 +31,7 @@ pub struct Checker<'a> {
     fn_cache: HashMap<(ModuleId, String), FnSig>,
     current_return: Option<Ty>,
     spawn_scope_markers: Vec<usize>,
+    declared_capabilities: HashSet<Capability>,
 }
 
 impl<'a> Checker<'a> {
@@ -41,6 +43,7 @@ impl<'a> Checker<'a> {
         import_items: &'a HashMap<String, ModuleLink>,
         module_symbols: &'a HashMap<ModuleId, ModuleSymbols>,
         module_import_items: &'a HashMap<ModuleId, HashMap<String, ModuleLink>>,
+        module_capabilities: &'a HashMap<ModuleId, HashSet<Capability>>,
         diags: &'a mut Diagnostics,
     ) -> Self {
         let mut env = TypeEnv::new();
@@ -74,16 +77,22 @@ impl<'a> Checker<'a> {
             }),
         );
         env.insert_builtin("serve");
+        env.insert_builtin("crypto");
         env.insert_builtin_with_ty("task", Ty::External("task".to_string()));
         env.insert_builtin_with_ty("html", Ty::External("html".to_string()));
         env.insert_builtin_with_ty("svg", Ty::External("svg".to_string()));
         env.insert_builtin("errors");
+        let declared_capabilities = module_capabilities
+            .get(&module_id)
+            .cloned()
+            .unwrap_or_default();
         Self {
             module_id,
             symbols,
             modules,
             module_maps,
             import_items,
+            module_capabilities,
             module_symbols,
             module_import_items,
             diags,
@@ -91,6 +100,7 @@ impl<'a> Checker<'a> {
             fn_cache: HashMap::new(),
             current_return: None,
             spawn_scope_markers: Vec::new(),
+            declared_capabilities,
         }
     }
 
@@ -226,6 +236,92 @@ impl<'a> Checker<'a> {
         self.fn_cache
             .insert((module_id, name.to_string()), sig.clone());
         Some(sig)
+    }
+
+    fn require_capability(&mut self, span: Span, capability: Capability, detail: &str) {
+        if self.declared_capabilities.contains(&capability) {
+            return;
+        }
+        let name = capability.as_str();
+        self.diags.error(
+            span,
+            format!(
+                "{detail} requires capability {name}; add `requires {name}` at module top-level"
+            ),
+        );
+    }
+
+    fn require_module_capabilities_for_call(
+        &mut self,
+        span: Span,
+        callee_module_id: ModuleId,
+        callee_label: &str,
+    ) {
+        let Some(required_caps) = self.module_capabilities.get(&callee_module_id) else {
+            return;
+        };
+        let mut caps: Vec<_> = required_caps.iter().copied().collect();
+        caps.sort_by_key(|cap| cap.as_str());
+        for capability in caps {
+            if self.declared_capabilities.contains(&capability) {
+                continue;
+            }
+            let name = capability.as_str();
+            self.diags.error(
+                span,
+                format!(
+                    "call to {callee_label} leaks capability {name}; add `requires {name}` at module top-level"
+                ),
+            );
+        }
+    }
+
+    fn enforce_call_capabilities(&mut self, callee: &Expr, span: Span) {
+        match &callee.kind {
+            ExprKind::Ident(ident) => {
+                if let Some(capability) = capability_for_ident_call(&ident.name) {
+                    self.require_capability(span, capability, &format!("call {}", ident.name));
+                }
+                let imported_fn_module = self.import_items.get(&ident.name).and_then(|link| {
+                    if link.exports.functions.contains(&ident.name) {
+                        Some(link.id)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(module_id) = imported_fn_module {
+                    self.require_module_capabilities_for_call(span, module_id, &ident.name);
+                }
+            }
+            ExprKind::Member { base, name } => {
+                let ExprKind::Ident(base_ident) = &base.kind else {
+                    return;
+                };
+                match base_ident.name.as_str() {
+                    "db" if matches!(name.name.as_str(), "exec" | "query" | "one" | "from") => {
+                        self.require_capability(span, Capability::Db, "db call")
+                    }
+                    "time" => self.require_capability(span, Capability::Time, "time call"),
+                    "crypto" => self.require_capability(span, Capability::Crypto, "crypto call"),
+                    _ => {}
+                }
+                let imported_module_fn = self.modules.get(&base_ident.name).and_then(|link| {
+                    if link.exports.functions.contains(&name.name) {
+                        Some(link.id)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(module_id) = imported_module_fn {
+                    self.require_module_capabilities_for_call(
+                        span,
+                        module_id,
+                        &format!("{}.{}", base_ident.name, name.name),
+                    );
+                }
+            }
+            _ => {}
+        }
     }
 
     fn check_block(&mut self, block: &Block) -> Ty {
@@ -418,6 +514,7 @@ impl<'a> Checker<'a> {
                         );
                     }
                 }
+                self.enforce_call_capabilities(callee, expr.span);
                 if let ExprKind::Member { base, name } = &callee.kind {
                     if let ExprKind::Ident(ident) = &base.kind {
                         if ident.name == "db"
@@ -2196,6 +2293,14 @@ fn force_html_input_tag_call(name: &str, args: &[CallArg]) -> bool {
             args.first().map(|arg| &arg.value.kind),
             Some(ExprKind::MapLit(_))
         )
+}
+
+fn capability_for_ident_call(name: &str) -> Option<Capability> {
+    match name {
+        "serve" => Some(Capability::Network),
+        "time" => Some(Capability::Time),
+        _ => None,
+    }
 }
 
 fn spawn_forbidden_builtin(callee: &Expr) -> Option<&'static str> {

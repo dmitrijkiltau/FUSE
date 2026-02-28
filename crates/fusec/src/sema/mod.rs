@@ -4,7 +4,7 @@ pub mod types;
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{FieldDecl, Item, Program, TypeDecl, TypeDerive};
+use crate::ast::{Capability, FieldDecl, Item, Program, TypeDecl, TypeDerive};
 use crate::diag::{Diag, Diagnostics};
 use crate::loader::{ModuleId, ModuleRegistry};
 use crate::span::Span;
@@ -18,10 +18,16 @@ pub fn analyze_program(program: &Program) -> (Analysis, Vec<Diag>) {
     let mut expanded = program.clone();
     expand_type_derivations(&mut expanded, &mut diags);
     crate::frontend::canonicalize::canonicalize_program(&mut expanded);
+    let declared_caps = collect_declared_capabilities(&expanded, &mut diags);
     let symbols = symbols::collect(&expanded, &mut diags);
     let mut symbols_by_id: std::collections::HashMap<ModuleId, symbols::ModuleSymbols> =
         std::collections::HashMap::new();
     symbols_by_id.insert(0, symbols.clone());
+    let mut module_caps_by_id: std::collections::HashMap<
+        ModuleId,
+        std::collections::HashSet<Capability>,
+    > = std::collections::HashMap::new();
+    module_caps_by_id.insert(0, declared_caps);
     let empty_items: std::collections::HashMap<String, crate::loader::ModuleLink> =
         std::collections::HashMap::new();
     let mut import_items_by_id: std::collections::HashMap<
@@ -41,6 +47,7 @@ pub fn analyze_program(program: &Program) -> (Analysis, Vec<Diag>) {
         &empty_items,
         &symbols_by_id,
         &import_items_by_id,
+        &module_caps_by_id,
         &mut diags,
     );
     checker.check_program(&expanded);
@@ -51,6 +58,10 @@ pub fn analyze_registry(registry: &ModuleRegistry) -> (Analysis, Vec<Diag>) {
     let mut diags = Diagnostics::default();
     let mut symbols_by_id: std::collections::HashMap<ModuleId, symbols::ModuleSymbols> =
         std::collections::HashMap::new();
+    let mut module_caps_by_id: std::collections::HashMap<
+        ModuleId,
+        std::collections::HashSet<Capability>,
+    > = std::collections::HashMap::new();
     let mut import_items_by_id: std::collections::HashMap<
         ModuleId,
         std::collections::HashMap<String, crate::loader::ModuleLink>,
@@ -60,6 +71,7 @@ pub fn analyze_registry(registry: &ModuleRegistry) -> (Analysis, Vec<Diag>) {
     for (id, unit) in &registry.modules {
         let symbols = symbols::collect(&unit.program, &mut diags);
         symbols_by_id.insert(*id, symbols);
+        module_caps_by_id.insert(*id, collect_declared_capabilities(&unit.program, &mut diags));
         import_items_by_id.insert(*id, unit.import_items.clone());
         module_maps_by_id.insert(*id, unit.modules.clone());
     }
@@ -76,6 +88,7 @@ pub fn analyze_registry(registry: &ModuleRegistry) -> (Analysis, Vec<Diag>) {
             &unit.import_items,
             &symbols_by_id,
             &import_items_by_id,
+            &module_caps_by_id,
             &mut diags,
         );
         checker.check_program(&unit.program);
@@ -97,6 +110,10 @@ pub fn analyze_module(registry: &ModuleRegistry, module_id: ModuleId) -> (Analys
     let mut diags = Diagnostics::default();
     let mut symbols_by_id: std::collections::HashMap<ModuleId, symbols::ModuleSymbols> =
         std::collections::HashMap::new();
+    let mut module_caps_by_id: std::collections::HashMap<
+        ModuleId,
+        std::collections::HashSet<Capability>,
+    > = std::collections::HashMap::new();
     let mut import_items_by_id: std::collections::HashMap<
         ModuleId,
         std::collections::HashMap<String, crate::loader::ModuleLink>,
@@ -107,6 +124,7 @@ pub fn analyze_module(registry: &ModuleRegistry, module_id: ModuleId) -> (Analys
     for (id, unit) in &registry.modules {
         let symbols = symbols::collect(&unit.program, &mut diags);
         symbols_by_id.insert(*id, symbols);
+        module_caps_by_id.insert(*id, collect_declared_capabilities(&unit.program, &mut diags));
         import_items_by_id.insert(*id, unit.import_items.clone());
         module_maps_by_id.insert(*id, unit.modules.clone());
     }
@@ -124,6 +142,7 @@ pub fn analyze_module(registry: &ModuleRegistry, module_id: ModuleId) -> (Analys
             &unit.import_items,
             &symbols_by_id,
             &import_items_by_id,
+            &module_caps_by_id,
             &mut diags,
         );
         checker.check_program(&unit.program);
@@ -243,4 +262,23 @@ fn find_type_decl(program: &Program, name: &str) -> Option<TypeDecl> {
         Item::Type(decl) if decl.name.name == name => Some(decl.clone()),
         _ => None,
     })
+}
+
+fn collect_declared_capabilities(
+    program: &Program,
+    diags: &mut Diagnostics,
+) -> std::collections::HashSet<Capability> {
+    let mut out = std::collections::HashSet::new();
+    let mut seen: HashMap<Capability, Span> = HashMap::new();
+    for require in &program.requires {
+        if let Some(prev_span) = seen.get(&require.capability).copied() {
+            let name = require.capability.as_str();
+            diags.error(require.span, format!("duplicate requires declaration for {name}"));
+            diags.error(prev_span, format!("previous requires {name} here"));
+            continue;
+        }
+        seen.insert(require.capability, require.span);
+        out.insert(require.capability);
+    }
+    out
 }

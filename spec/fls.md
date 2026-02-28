@@ -30,7 +30,7 @@ Normative terms in this document:
 - Identifiers: `[A-Za-z_][A-Za-z0-9_]*`
 - Keywords:
   `app, service, at, get, post, put, patch, delete, fn, type, enum, let, var, return, if, else,
-  match, for, in, while, break, continue, import, from, as, config, migration, test,
+  match, for, in, while, break, continue, requires, import, from, as, config, migration, test,
   body, and, or, without, spawn, await, box`
 - Literals:
   - integers (`123`)
@@ -84,7 +84,9 @@ See also: [Grammar (EBNF approximation)](#grammar-ebnf-approximation), [AST mode
 Top level:
 
 ```ebnf
-Program        := { TopDecl }
+Program        := { RequiresDecl } { TopDecl }
+RequiresDecl   := "requires" Capability { "," Capability } NEWLINE
+Capability     := "db" | "crypto" | "network" | "time"
 
 TopDecl        := ImportDecl
                 | AppDecl
@@ -253,7 +255,8 @@ The AST shape matches `crates/fusec/src/ast.rs`.
 
 Program:
 
-- `Program { items: Vec<Item> }`
+- `Program { requires: Vec<RequireDecl>, items: Vec<Item> }`
+- `RequireDecl { capability }`
 
 Items:
 
@@ -443,6 +446,16 @@ Notes:
 - module-qualified type references are valid in type positions (`Foo.User`, `Foo.Config`)
 - dependency modules use `dep:` import paths (for example, `dep:Auth/lib`)
 - root-qualified modules use `root:` import paths (for example, `root:lib/auth`)
+
+Module capabilities:
+
+- modules may declare capability requirements with top-level `requires` declarations
+- allowed capabilities are `db`, `crypto`, `network`, and `time`
+- duplicate capability declarations in one module are semantic errors
+- capability checks are compile-time only (no runtime capability guard)
+- calls requiring capabilities are rejected when the current module does not declare them
+- call sites to imported module functions must declare every capability required by the callee module
+  (capability leakage across module boundaries is rejected)
 
 See also: [Services and declaration syntax](#services-and-declaration-syntax), [README](../README.md), [FUSE overview companion](../guides/fuse.md).
 

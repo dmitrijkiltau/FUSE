@@ -42,7 +42,9 @@ fn lsp_member_completion_supports_builtin_chains_and_alias_exports() {
 fn greet(user: Person) -> String:
   return user.name
 "#;
-    let main_src = r#"import util from "./util"
+    let main_src = r#"requires db
+
+import util from "./util"
 
 fn main():
   let _query = db.from("notes").se

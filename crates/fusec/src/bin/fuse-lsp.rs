@@ -43,7 +43,7 @@ const SEM_KEYWORD: usize = 8;
 const SEM_STRING: usize = 9;
 const SEM_NUMBER: usize = 10;
 const SEM_COMMENT: usize = 11;
-const COMPLETION_KEYWORDS: [&str; 34] = [
+const COMPLETION_KEYWORDS: [&str; 35] = [
     "app",
     "service",
     "at",
@@ -66,6 +66,7 @@ const COMPLETION_KEYWORDS: [&str; 34] = [
     "while",
     "break",
     "continue",
+    "requires",
     "import",
     "from",
     "as",

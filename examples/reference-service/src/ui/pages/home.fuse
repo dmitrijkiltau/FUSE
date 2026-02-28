@@ -1,3 +1,5 @@
+requires db
+
 import Auth from "../components/auth"
 import Create from "../components/create"
 import Notes from "../components/notes"

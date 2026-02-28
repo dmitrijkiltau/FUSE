@@ -2193,6 +2193,8 @@ app = "Docs"
     fs::write(
         dir.join("main.fuse"),
         r#"
+requires network
+
 config App:
   port: String = env("PORT") ?? "3000"
 

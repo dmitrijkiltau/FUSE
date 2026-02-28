@@ -1,4 +1,4 @@
-use fusec::ast::{ExprKind, Item, Literal, StmtKind};
+use fusec::ast::{Capability, ExprKind, Item, Literal, StmtKind};
 use fusec::parse_source;
 
 fn assert_parse_ok(src: &str) {
@@ -256,6 +256,22 @@ fn page() -> Html:
   )
 "#;
     assert_parse_ok(src);
+}
+
+#[test]
+fn parses_module_requires_capabilities() {
+    let src = r#"
+requires db
+requires network, time
+
+fn main():
+  0
+"#;
+    let program = parse_ok(src);
+    assert_eq!(program.requires.len(), 3);
+    assert_eq!(program.requires[0].capability, Capability::Db);
+    assert_eq!(program.requires[1].capability, Capability::Network);
+    assert_eq!(program.requires[2].capability, Capability::Time);
 }
 
 #[test]

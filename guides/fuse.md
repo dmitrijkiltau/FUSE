@@ -91,6 +91,8 @@ app "hello":
 ### HTTP service
 
 ```fuse
+requires network
+
 config App:
   port: Int = env("PORT") ?? 3000
 
@@ -121,6 +123,7 @@ FUSE currently ships with:
 - native backend (Cranelift JIT)
 - semantic parity gates across AST/native backends
 - module imports (relative, `root:`, and `dep:` paths)
+- compile-time module capability declarations (`requires db|crypto|network|time`)
 - package tooling via `fuse.toml` and `fuse` commands
 
 Detailed capability matrices and caveats live in:

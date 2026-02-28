@@ -6,6 +6,11 @@ This page is generated from FUSE source comments + code blocks.
 _Generated from `docs/src/guides/onboarding.fuse` by `scripts/generate_guide_docs.sh`._
 
 
+```fuse
+requires network
+
+```
+
 ## 1) Declare typed config
 `config` gives one place for runtime settings and environment overrides.
 ```fuse

@@ -240,3 +240,82 @@ fn main() -> String:
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn capability_leakage_across_module_boundaries_is_reported() {
+    let dir = temp_project_dir("capability_leak");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let main_path = dir.join("main.fuse");
+    write_file(
+        &dir.join("auth.fuse"),
+        r#"
+requires db
+
+fn lookup() -> Int:
+  db.exec("create table if not exists users (id int)")
+  return 1
+"#,
+    );
+    write_file(
+        &main_path,
+        r#"
+import Auth from "./auth"
+
+fn main() -> Int:
+  return Auth.lookup()
+"#,
+    );
+
+    let src = fs::read_to_string(&main_path).expect("read root source");
+    let (registry, diags) = fusec::load_program_with_modules(&main_path, &src);
+    assert!(diags.is_empty(), "unexpected loader diagnostics: {diags:?}");
+    let (_analysis, sema_diags) = fusec::sema::analyze_registry(&registry);
+    let messages: Vec<String> = sema_diags.into_iter().map(|diag| diag.message).collect();
+    assert!(
+        messages
+            .iter()
+            .any(|msg| msg == "call to Auth.lookup leaks capability db; add `requires db` at module top-level"),
+        "missing capability leakage diagnostic: {messages:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn module_calls_with_declared_capability_pass() {
+    let dir = temp_project_dir("capability_ok");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let main_path = dir.join("main.fuse");
+    write_file(
+        &dir.join("auth.fuse"),
+        r#"
+requires db
+
+fn lookup() -> Int:
+  db.exec("create table if not exists users (id int)")
+  return 1
+"#,
+    );
+    write_file(
+        &main_path,
+        r#"
+requires db
+
+import Auth from "./auth"
+
+fn main() -> Int:
+  return Auth.lookup()
+"#,
+    );
+
+    let src = fs::read_to_string(&main_path).expect("read root source");
+    let (registry, diags) = fusec::load_program_with_modules(&main_path, &src);
+    assert!(diags.is_empty(), "unexpected loader diagnostics: {diags:?}");
+    let (_analysis, sema_diags) = fusec::sema::analyze_registry(&registry);
+    assert!(
+        sema_diags.is_empty(),
+        "unexpected sema diagnostics: {sema_diags:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

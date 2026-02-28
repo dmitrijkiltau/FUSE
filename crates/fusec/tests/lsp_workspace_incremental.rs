@@ -563,7 +563,7 @@ fn lsp_uses_nearest_manifest_for_nested_docs_workspace() {
     );
     write_project_file(
         &docs_dir.join("src").join("main.fuse"),
-        "import DocsApi from \"./api\"\n\napp \"Docs\":\n  serve(\"4000\")\n",
+        "requires network\n\nimport DocsApi from \"./api\"\n\napp \"Docs\":\n  serve(\"4000\")\n",
     );
     write_project_file(
         &docs_dir.join("src").join("components").join("page.fuse"),
@@ -601,7 +601,7 @@ fn lsp_reports_module_aware_diagnostics_for_standalone_non_entry_files() {
     );
     write_project_file(
         &dir.join("src").join("main.fuse"),
-        "app \"Docs\":\n  serve(\"4000\")\n",
+        "requires network\n\napp \"Docs\":\n  serve(\"4000\")\n",
     );
 
     let guide_src = r#"import { NotFound } from "std.Error"

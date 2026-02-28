@@ -248,7 +248,9 @@ fn lsp_hover_semantic_tokens_and_inlay_hints() {
 fn greet(user: Person, times: Int) -> String:
   return "${user.name} x ${times}"
 "#;
-    let main_src = r#"import { Person, greet } from "./util"
+    let main_src = r#"requires db
+
+import { Person, greet } from "./util"
 
 fn main():
   let user: Person = Person(name="Ada")
@@ -328,9 +330,13 @@ fn main():
 
     let mut hover_doc = BTreeMap::new();
     hover_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    let (call_line, call_greet_col) = line_col_of(main_src, "greet(user, 2)");
     let mut hover_pos = BTreeMap::new();
-    hover_pos.insert("line".to_string(), JsonValue::Number(4.0));
-    hover_pos.insert("character".to_string(), JsonValue::Number(14.0));
+    hover_pos.insert("line".to_string(), JsonValue::Number(call_line as f64));
+    hover_pos.insert(
+        "character".to_string(),
+        JsonValue::Number((call_greet_col + 1) as f64),
+    );
     let mut hover_params = BTreeMap::new();
     hover_params.insert("textDocument".to_string(), JsonValue::Object(hover_doc));
     hover_params.insert("position".to_string(), JsonValue::Object(hover_pos));
@@ -351,12 +357,10 @@ fn main():
         "hover missing range: {hover_text}"
     );
 
-    let call_line = main_src.lines().nth(4).expect("call line");
-    let call_greet_col = call_line.find("greet").expect("call greet");
     let mut completion_doc = BTreeMap::new();
     completion_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
     let mut completion_pos = BTreeMap::new();
-    completion_pos.insert("line".to_string(), JsonValue::Number(4.0));
+    completion_pos.insert("line".to_string(), JsonValue::Number(call_line as f64));
     completion_pos.insert(
         "character".to_string(),
         JsonValue::Number((call_greet_col + 2) as f64),
@@ -424,33 +428,29 @@ fn main():
         "semantic tokens unexpectedly empty: {sem_text}"
     );
     let rows = semantic_rows(&sem);
-    let import_line = main_src.lines().nth(0).expect("import line");
-    let annotate_line = main_src.lines().nth(3).expect("annotate line");
-    let call_line = main_src.lines().nth(4).expect("call line");
-    let from_line = main_src.lines().nth(6).expect("from line");
-    let select_line = main_src.lines().nth(7).expect("select line");
-    let typed_line = main_src.lines().nth(9).expect("typed line");
-    let import_person_col = import_line.find("Person").expect("import Person");
-    let annotate_person_col = annotate_line.find("Person").expect("annotation Person");
-    let import_greet_col = import_line.find("greet").expect("import greet");
-    let call_greet_col = call_line.find("greet").expect("call greet");
-    let from_col = from_line.find("from").expect("db from");
-    let select_col = select_line.find("select").expect("db select");
-    let list_col = typed_line.find("List").expect("typed List");
-    let map_col = typed_line.find("Map").expect("typed Map");
-    let string_col = typed_line.find("String").expect("typed String");
-    let import_person_ty =
-        token_type_at(&rows, 0, import_person_col).expect("token for import Person");
-    let annotate_person_ty =
-        token_type_at(&rows, 3, annotate_person_col).expect("token for annotation Person");
-    let import_greet_ty =
-        token_type_at(&rows, 0, import_greet_col).expect("token for import greet");
-    let call_greet_ty = token_type_at(&rows, 4, call_greet_col).expect("token for call greet");
-    let from_ty = token_type_at(&rows, 6, from_col).expect("token for from");
-    let select_ty = token_type_at(&rows, 7, select_col).expect("token for select");
-    let list_ty = token_type_at(&rows, 9, list_col).expect("token for List");
-    let map_ty = token_type_at(&rows, 9, map_col).expect("token for Map");
-    let string_ty = token_type_at(&rows, 9, string_col).expect("token for String");
+    let (import_person_line, import_person_col) = line_col_of(main_src, "Person, greet");
+    let (annotate_person_line, annotate_person_col) = line_col_of(main_src, "user: Person");
+    let (import_greet_line, import_greet_col) = line_col_of(main_src, "greet } from");
+    let (call_greet_line, call_greet_col) = line_col_of(main_src, "greet(user, 2)");
+    let (from_line, from_col) = line_col_of(main_src, ".from(\"notes\")");
+    let (select_line, select_col) = line_col_of(main_src, ".select([\"id\"])");
+    let (typed_line, typed_col) = line_col_of(main_src, "List<Map<String, String>>");
+    let list_col = typed_col;
+    let map_col = typed_col + "List<".len();
+    let string_col = typed_col + "List<Map<".len();
+    let import_person_ty = token_type_at(&rows, import_person_line, import_person_col)
+        .expect("token for import Person");
+    let annotate_person_ty = token_type_at(&rows, annotate_person_line, annotate_person_col + 6)
+        .expect("token for annotation Person");
+    let import_greet_ty = token_type_at(&rows, import_greet_line, import_greet_col)
+        .expect("token for import greet");
+    let call_greet_ty =
+        token_type_at(&rows, call_greet_line, call_greet_col).expect("token for call greet");
+    let from_ty = token_type_at(&rows, from_line, from_col + 1).expect("token for from");
+    let select_ty = token_type_at(&rows, select_line, select_col + 1).expect("token for select");
+    let list_ty = token_type_at(&rows, typed_line, list_col).expect("token for List");
+    let map_ty = token_type_at(&rows, typed_line, map_col).expect("token for Map");
+    let string_ty = token_type_at(&rows, typed_line, string_col).expect("token for String");
     assert_eq!(
         import_person_ty, annotate_person_ty,
         "imported type token mismatch"
@@ -467,11 +467,12 @@ fn main():
         "builtin String should be typed"
     );
 
+    let (main_decl_line, _) = line_col_of(main_src, "fn main():");
     let mut range_start = BTreeMap::new();
-    range_start.insert("line".to_string(), JsonValue::Number(2.0));
+    range_start.insert("line".to_string(), JsonValue::Number(main_decl_line as f64));
     range_start.insert("character".to_string(), JsonValue::Number(0.0));
     let mut range_end = BTreeMap::new();
-    range_end.insert("line".to_string(), JsonValue::Number(4.0));
+    range_end.insert("line".to_string(), JsonValue::Number((main_decl_line + 2) as f64));
     range_end.insert("character".to_string(), JsonValue::Number(0.0));
     let mut range = BTreeMap::new();
     range.insert("start".to_string(), JsonValue::Object(range_start));
@@ -538,8 +539,11 @@ fn main():
     let mut cancel_hover_doc = BTreeMap::new();
     cancel_hover_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
     let mut cancel_hover_pos = BTreeMap::new();
-    cancel_hover_pos.insert("line".to_string(), JsonValue::Number(4.0));
-    cancel_hover_pos.insert("character".to_string(), JsonValue::Number(14.0));
+    cancel_hover_pos.insert("line".to_string(), JsonValue::Number(call_line as f64));
+    cancel_hover_pos.insert(
+        "character".to_string(),
+        JsonValue::Number((call_greet_col + 1) as f64),
+    );
     let mut cancel_hover_params = BTreeMap::new();
     cancel_hover_params.insert(
         "textDocument".to_string(),
