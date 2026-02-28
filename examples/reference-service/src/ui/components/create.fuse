@@ -1,5 +1,7 @@
-fn render_create_section(token: String?) -> Html:
-  let session_token = token ?? ""
+import { RequestContext, request_context_session_token } from "../../domain"
+
+fn render_create_section(ctx: RequestContext) -> Html:
+  let session_token = request_context_session_token(ctx)
   if session_token == "":
     return html.raw("")
   let create_url = "/ui/sessions/${session_token}/notes"
