@@ -30,6 +30,26 @@ fn parse_ok(src: &str) -> fusec::ast::Program {
     program
 }
 
+fn parse_diags(src: &str) -> Vec<String> {
+    let (_program, diags) = parse_source(src);
+    diags
+        .into_iter()
+        .map(|diag| format!("{:?}: {}", diag.level, diag.message))
+        .collect()
+}
+
+fn assert_parse_err_contains(src: &str, expected: &str) {
+    let diags = parse_diags(src);
+    assert!(
+        !diags.is_empty(),
+        "expected parse diagnostics containing {expected:?}, got none"
+    );
+    assert!(
+        diags.iter().any(|diag| diag.contains(expected)),
+        "expected parse diagnostics containing {expected:?}, got {diags:?}"
+    );
+}
+
 #[test]
 fn parses_indentation_blocks() {
     let src = r#"
@@ -354,4 +374,69 @@ fn page() -> Html:
         ExprKind::Literal(Literal::String(value)) => assert_eq!(value, "Hello"),
         other => panic!("expected lowered html.text literal child, got {other:?}"),
     }
+}
+
+#[test]
+fn parser_html_block_rejects_non_call_target() {
+    let src = r#"
+fn page() -> Html:
+  return "hello":
+    "world"
+"#;
+    assert_parse_err_contains(src, "html block form requires a function call");
+}
+
+#[test]
+fn parser_html_block_rejects_non_expression_child_stmt() {
+    let src = r#"
+fn page() -> Html:
+  return div():
+    let x = "bad"
+"#;
+    assert_parse_err_contains(src, "html block children must be expressions");
+}
+
+#[test]
+fn parser_html_block_rejects_multiple_explicit_attrs_args() {
+    let src = r#"
+fn page() -> Html:
+  return div({"class": "hero"}, {"id": "main"}):
+    "hello"
+"#;
+    assert_parse_err_contains(
+        src,
+        "html block call accepts at most one explicit attrs argument",
+    );
+}
+
+#[test]
+fn parser_interpolation_rejects_empty_expression() {
+    let src = r#"
+fn main():
+  let msg = "hello ${}"
+"#;
+    assert_parse_err_contains(src, "empty interpolation expression");
+}
+
+#[test]
+fn parser_interpolation_rejects_unexpected_tokens() {
+    let src = r#"
+fn main():
+  let msg = "sum ${1 2}"
+"#;
+    assert_parse_err_contains(src, "unexpected tokens in interpolation");
+}
+
+#[test]
+fn parser_match_pattern_rejects_mixed_positional_named() {
+    let src = r#"
+type User:
+  name: String
+  age: Int
+
+fn main(user: User):
+  match user:
+    User(name=n, a) -> n
+"#;
+    assert_parse_err_contains(src, "cannot mix positional and named patterns");
 }
