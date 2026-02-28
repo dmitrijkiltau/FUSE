@@ -139,6 +139,13 @@ Module capabilities:
   (capability leakage across module boundaries is rejected)
 - `transaction` blocks are valid only in modules with `requires db` and no additional capabilities
 
+Strict architecture mode (`--strict-architecture`) adds compile-time architectural checks:
+
+- capability purity: modules must not declare unused capabilities
+- cross-layer cycle detection: import graphs that form cycles between logical layers are rejected
+- error-domain isolation: a module's function/service boundary signatures must not mix error
+  domains from multiple modules
+
 ---
 
 ## Services and HTTP Contracts

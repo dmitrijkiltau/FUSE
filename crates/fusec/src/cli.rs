@@ -10,7 +10,7 @@ use crate::diag::{Diag, Level};
 use crate::interp::{Interpreter, MigrationJob, TestJob, TestOutcome};
 use crate::{load_program_with_modules, load_program_with_modules_and_deps};
 
-const USAGE: &str = "usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--backend ast|native] [--app NAME] <file>";
+const USAGE: &str = "usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--strict-architecture] [--backend ast|native] [--app NAME] <file>";
 
 #[derive(Copy, Clone)]
 enum Backend {
@@ -41,6 +41,7 @@ where
     let mut app_name: Option<String> = None;
     let mut migrate = false;
     let mut test = false;
+    let mut strict_architecture = false;
     let mut path = None;
 
     while let Some(arg) = args.next() {
@@ -74,6 +75,10 @@ where
         }
         if arg == "--test" {
             test = true;
+            continue;
+        }
+        if arg == "--strict-architecture" {
+            strict_architecture = true;
             continue;
         }
         if arg == "--backend" {
@@ -155,6 +160,9 @@ where
         }
     };
     let program = &root.program;
+    let sema_options = crate::sema::AnalyzeOptions {
+        strict_architecture,
+    };
 
     if openapi {
         match crate::openapi::generate_openapi(&registry) {
@@ -170,7 +178,8 @@ where
     }
 
     if check {
-        let (_analysis, diags) = crate::sema::analyze_registry(&registry);
+        let (_analysis, diags) =
+            crate::sema::analyze_registry_with_options(&registry, sema_options);
         if !diags.is_empty() {
             emit_diags(&diags, Some(&src));
             return 1;
@@ -184,7 +193,8 @@ where
         if backend_forced && !matches!(backend, Backend::Ast) {
             eprintln!("note: --backend is ignored for --migrate (always uses AST interpreter)");
         }
-        let (_analysis, diags) = crate::sema::analyze_registry(&registry);
+        let (_analysis, diags) =
+            crate::sema::analyze_registry_with_options(&registry, sema_options);
         if !diags.is_empty() {
             emit_diags(&diags, Some(&src));
             return 1;
@@ -217,7 +227,8 @@ where
         if backend_forced && !matches!(backend, Backend::Ast) {
             eprintln!("note: --backend is ignored for --test (always uses AST interpreter)");
         }
-        let (_analysis, diags) = crate::sema::analyze_registry(&registry);
+        let (_analysis, diags) =
+            crate::sema::analyze_registry_with_options(&registry, sema_options);
         if !diags.is_empty() {
             emit_diags(&diags, Some(&src));
             return 1;

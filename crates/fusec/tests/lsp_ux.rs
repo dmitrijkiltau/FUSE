@@ -442,8 +442,8 @@ fn main():
         .expect("token for import Person");
     let annotate_person_ty = token_type_at(&rows, annotate_person_line, annotate_person_col + 6)
         .expect("token for annotation Person");
-    let import_greet_ty = token_type_at(&rows, import_greet_line, import_greet_col)
-        .expect("token for import greet");
+    let import_greet_ty =
+        token_type_at(&rows, import_greet_line, import_greet_col).expect("token for import greet");
     let call_greet_ty =
         token_type_at(&rows, call_greet_line, call_greet_col).expect("token for call greet");
     let from_ty = token_type_at(&rows, from_line, from_col + 1).expect("token for from");
@@ -472,7 +472,10 @@ fn main():
     range_start.insert("line".to_string(), JsonValue::Number(main_decl_line as f64));
     range_start.insert("character".to_string(), JsonValue::Number(0.0));
     let mut range_end = BTreeMap::new();
-    range_end.insert("line".to_string(), JsonValue::Number((main_decl_line + 2) as f64));
+    range_end.insert(
+        "line".to_string(),
+        JsonValue::Number((main_decl_line + 2) as f64),
+    );
     range_end.insert("character".to_string(), JsonValue::Number(0.0));
     let mut range = BTreeMap::new();
     range.insert("start".to_string(), JsonValue::Object(range_start));

@@ -33,6 +33,7 @@ pub struct Checker<'a> {
     spawn_scope_markers: Vec<usize>,
     transaction_scope_depth: usize,
     declared_capabilities: HashSet<Capability>,
+    used_capabilities: HashSet<Capability>,
 }
 
 impl<'a> Checker<'a> {
@@ -103,6 +104,7 @@ impl<'a> Checker<'a> {
             spawn_scope_markers: Vec::new(),
             transaction_scope_depth: 0,
             declared_capabilities,
+            used_capabilities: HashSet::new(),
         }
     }
 
@@ -122,11 +124,20 @@ impl<'a> Checker<'a> {
                     let _ = self.check_block(&decl.body);
                     self.env.pop();
                 }
+                Item::Migration(decl) => {
+                    self.env.push();
+                    let _ = self.check_block(&decl.body);
+                    self.env.pop();
+                }
                 Item::Type(decl) => self.check_type_decl(decl),
                 Item::Enum(decl) => self.check_enum_decl(decl),
-                Item::Import(_) | Item::Migration(_) => {}
+                Item::Import(_) => {}
             }
         }
+    }
+
+    pub fn used_capabilities(&self) -> &HashSet<Capability> {
+        &self.used_capabilities
     }
 
     fn check_type_decl(&mut self, decl: &crate::ast::TypeDecl) {
@@ -249,6 +260,7 @@ impl<'a> Checker<'a> {
     }
 
     fn require_capability(&mut self, span: Span, capability: Capability, detail: &str) {
+        self.used_capabilities.insert(capability);
         if self.transaction_scope_depth > 0 && capability != Capability::Db {
             let name = capability.as_str();
             self.diags.error(
@@ -281,6 +293,7 @@ impl<'a> Checker<'a> {
         let mut caps: Vec<_> = required_caps.iter().copied().collect();
         caps.sort_by_key(|cap| cap.as_str());
         for capability in caps {
+            self.used_capabilities.insert(capability);
             if self.transaction_scope_depth > 0 && capability != Capability::Db {
                 let name = capability.as_str();
                 self.diags.error(

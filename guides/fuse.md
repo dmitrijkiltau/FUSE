@@ -127,6 +127,7 @@ FUSE currently ships with:
 - typed error-domain boundaries on function/service returns (`T!Domain`, no implicit `T!`)
 - structured-concurrency checks for `spawn`/`await` task lifetimes (no detached/orphaned tasks)
 - deterministic `transaction:` blocks (commit on success, rollback on failure) with compile-time restrictions
+- strict architecture mode (`--strict-architecture`) for capability purity, cross-layer cycle rejection, and error-domain isolation
 - package tooling via `fuse.toml` and `fuse` commands
 
 Detailed capability matrices and caveats live in:
@@ -156,6 +157,7 @@ See also: [Runtime surface and ownership](../spec/runtime.md).
 Typical commands:
 
 - `fuse check`
+- `fuse check --strict-architecture`
 - `fuse run`
 - `fuse dev`
 - `fuse test`

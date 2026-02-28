@@ -105,6 +105,14 @@ Fallible boundaries require explicit error domains:
 - rejects `spawn`, `await`, early `return`, and `break`/`continue` inside the block
 - rejects non-`db` capability usage inside the block
 
+## Strict architecture mode
+
+`fuse check --strict-architecture` enables additional architecture validation:
+
+- capability purity (declared `requires` capabilities must be used)
+- cross-layer import-cycle rejection
+- error-domain isolation (boundary signatures in a module cannot mix domains from multiple modules)
+
 ## Package commands
 
 | Command | Description |
@@ -124,6 +132,8 @@ Global CLI output option:
   `auto` is default and respects `NO_COLOR`.
 - `fuse check|run|build|test` emit consistent stderr step markers:
   `[command] start`, `[command] ok|failed|validation failed`.
+- `--strict-architecture` enables strict architecture checks in semantic analysis
+  (primarily used with `fuse check` and `fuse build`).
 
 Build-specific options:
 
