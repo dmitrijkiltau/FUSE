@@ -1,6 +1,39 @@
 # syntax=docker/dockerfile:1.7
 
-FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421 AS runtime
+FROM rust:slim-trixie AS builder
+WORKDIR /workspace
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       bash \
+       ca-certificates \
+       curl \
+       libsqlite3-dev \
+       pkg-config \
+       tar \
+  && rm -rf /var/lib/apt/lists/*
+
+ARG FUSE_CLI_URL=https://github.com/dmitrijkiltau/FUSE/releases/download/v0.7.0/fuse-cli-linux-x64.tar.gz
+
+# Use prebuilt CLI artifact; do not build fuse from source in Docker.
+RUN curl -fsSL "$FUSE_CLI_URL" -o /tmp/fuse-cli-linux-x64.tar.gz \
+  && tar -xzf /tmp/fuse-cli-linux-x64.tar.gz -C /tmp fuse \
+  && install -m 0755 /tmp/fuse /usr/local/bin/fuse \
+  && rm -f /tmp/fuse /tmp/fuse-cli-linux-x64.tar.gz
+
+# Build docs assets + AOT inside container with prebuilt fuse CLI.
+COPY Cargo.toml Cargo.lock rust-toolchain.toml /workspace/
+COPY crates /workspace/crates
+COPY scripts/cargo_env.sh /workspace/scripts/cargo_env.sh
+COPY scripts/generate_guide_docs.sh /workspace/scripts/generate_guide_docs.sh
+COPY docs /workspace/docs
+COPY spec /workspace/spec
+COPY governance /workspace/governance
+RUN chmod +x /workspace/scripts/generate_guide_docs.sh /workspace/scripts/cargo_env.sh \
+  && /workspace/scripts/generate_guide_docs.sh \
+  && /workspace/scripts/cargo_env.sh fuse build --manifest-path docs --release
+
+FROM debian:trixie-slim@sha256:1d3c811171a08a5adaa4a163fbafd96b61b87aa871bbc7aa15431ac275d3d430 AS runtime
 WORKDIR /app/docs
 
 # Runtime deps: sqlite + curl for healthcheck.
@@ -11,12 +44,9 @@ RUN apt-get update \
        curl \
   && rm -rf /var/lib/apt/lists/*
 
-# Build inputs are prepared outside Docker:
-#   ./scripts/generate_guide_docs.sh
-#   ./scripts/fuse build --manifest-path docs --release
-COPY docs/.fuse/build/program.aot /app/docs/docs-aot
-COPY docs/site /app/docs/site
-COPY docs/assets /app/docs/assets
+COPY --from=builder /workspace/docs/.fuse/build/program.aot /app/docs/docs-aot
+COPY --from=builder /workspace/docs/site /app/docs/site
+COPY --from=builder /workspace/docs/assets /app/docs/assets
 
 # Run as non-root.
 RUN chmod +x /app/docs/docs-aot \
