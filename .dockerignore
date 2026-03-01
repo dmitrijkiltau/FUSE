@@ -7,5 +7,9 @@ dist
 .cargo-tmp
 **/.fuse/build
 **/.fuse/cache
+!docs/.fuse
+!docs/.fuse/build
+docs/.fuse/build/*
+!docs/.fuse/build/program.aot
 docs/runnables
 docs/downloads

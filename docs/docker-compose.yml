@@ -4,7 +4,6 @@ services:
     build:
       context: .
       dockerfile: docs/Dockerfile
-    command: ["./docs-aot"]
     ports:
       - "4080:4080"
     environment:
