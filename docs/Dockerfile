@@ -5,7 +5,6 @@ WORKDIR /workspace
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-       bash \
        ca-certificates \
        curl \
        libsqlite3-dev \
@@ -24,14 +23,19 @@ RUN curl -fsSL "$FUSE_CLI_URL" -o /tmp/fuse-cli-linux-x64.tar.gz \
 # Build docs assets + AOT inside container with prebuilt fuse CLI.
 COPY Cargo.toml Cargo.lock rust-toolchain.toml /workspace/
 COPY crates /workspace/crates
+# fuse build resolves repo root by checking scripts/cargo_env.sh presence.
 COPY scripts/cargo_env.sh /workspace/scripts/cargo_env.sh
-COPY scripts/generate_guide_docs.sh /workspace/scripts/generate_guide_docs.sh
 COPY docs /workspace/docs
-COPY spec /workspace/spec
-COPY governance /workspace/governance
-RUN chmod +x /workspace/scripts/generate_guide_docs.sh /workspace/scripts/cargo_env.sh \
-  && /workspace/scripts/generate_guide_docs.sh \
-  && /workspace/scripts/cargo_env.sh fuse build --manifest-path docs --release
+
+ENV CARGO_TARGET_DIR=/workspace/tmp/fuse-target
+ENV RUSTC_TMPDIR=/workspace/tmp/fuse-target/tmp
+ENV TMPDIR=/workspace/tmp/fuse-target/tmp
+ENV TMP=/workspace/tmp/fuse-target/tmp
+ENV TEMP=/workspace/tmp/fuse-target/tmp
+ENV CARGO_INCREMENTAL=0
+
+RUN mkdir -p /workspace/tmp/fuse-target /workspace/tmp/fuse-target/tmp \
+  && fuse build --manifest-path docs --release
 
 FROM debian:trixie-slim@sha256:1d3c811171a08a5adaa4a163fbafd96b61b87aa871bbc7aa15431ac275d3d430 AS runtime
 WORKDIR /app/docs
