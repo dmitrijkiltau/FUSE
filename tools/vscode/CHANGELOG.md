@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0 — 2026-02-28
+
+### Changed
+
+- Release metadata updated to `0.7.0`.
+- Packaging/docs align with the `v0.7.0` release artifact and verification flow.
+
 ## 0.4.0 — 2026-02-22
 
 ### Changed

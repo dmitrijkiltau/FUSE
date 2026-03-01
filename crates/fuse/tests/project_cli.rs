@@ -2,10 +2,10 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +23,7 @@ fn temp_project_dir() -> PathBuf {
     dir
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct TestIrMeta {
     #[serde(default)]
     version: u32,
@@ -43,7 +43,7 @@ struct TestIrMeta {
     cli_version: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct TestIrFileMeta {
     path: String,
     #[serde(default)]
@@ -78,6 +78,170 @@ fn run_build_project(dir: &Path) {
     if !build.status.success() {
         panic!("stderr: {}", String::from_utf8_lossy(&build.stderr));
     }
+}
+
+fn run_check_project(dir: &Path) -> std::process::Output {
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(dir)
+        .output()
+        .expect("run fuse check")
+}
+
+fn write_minimal_check_project(dir: &Path, dependencies_block: &str) {
+    fs::write(
+        dir.join("fuse.toml"),
+        format!(
+            r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+{dependencies_block}
+"#
+        ),
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    )
+    .expect("write main.fuse");
+}
+
+fn write_single_helper_dep_project(dir: &Path) -> String {
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[dependencies]
+Helper = { path = "./deps/helper" }
+"#,
+    )
+    .expect("write root fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    )
+    .expect("write main.fuse");
+
+    let helper_dir = dir.join("deps").join("helper");
+    fs::create_dir_all(&helper_dir).expect("create helper dep");
+    fs::write(
+        helper_dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "Helper"
+"#,
+    )
+    .expect("write helper manifest");
+    fs::write(
+        helper_dir.join("lib.fuse"),
+        "fn helper() -> Int:\n  return 1\n",
+    )
+    .expect("write helper lib");
+
+    let canonical = fs::canonicalize(&helper_dir).expect("canonicalize helper path");
+    format!("path:{}", canonical.display())
+}
+
+fn create_local_git_dep_repo(base_dir: &Path) -> (String, String) {
+    let repo_dir = base_dir.join("git_dep_repo");
+    fs::create_dir_all(&repo_dir).expect("create git dep repo");
+    fs::write(
+        repo_dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "GitHelper"
+"#,
+    )
+    .expect("write git dep manifest");
+    fs::write(
+        repo_dir.join("lib.fuse"),
+        "fn helper() -> Int:\n  return 1\n",
+    )
+    .expect("write git dep lib");
+
+    let init = Command::new("git")
+        .arg("init")
+        .arg(&repo_dir)
+        .output()
+        .expect("git init");
+    assert!(
+        init.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let add = Command::new("git")
+        .arg("-C")
+        .arg(&repo_dir)
+        .arg("add")
+        .arg(".")
+        .output()
+        .expect("git add");
+    assert!(
+        add.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let commit = Command::new("git")
+        .arg("-C")
+        .arg(&repo_dir)
+        .arg("-c")
+        .arg("user.name=Fuse Test")
+        .arg("-c")
+        .arg("user.email=fuse@example.test")
+        .arg("commit")
+        .arg("-m")
+        .arg("init")
+        .output()
+        .expect("git commit");
+    assert!(
+        commit.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+    let rev = Command::new("git")
+        .arg("-C")
+        .arg(&repo_dir)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()
+        .expect("git rev-parse");
+    assert!(
+        rev.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&rev.stderr)
+    );
+    let rev = String::from_utf8_lossy(&rev.stdout).trim().to_string();
+
+    (format!("file://{}", repo_dir.display()), rev)
+}
+
+fn extract_lock_string_field(lock_text: &str, key: &str) -> String {
+    let prefix = format!("{key} = \"");
+    for line in lock_text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix(&prefix) {
+            if let Some(value) = rest.strip_suffix('"') {
+                return value.to_string();
+            }
+        }
+    }
+    panic!("missing {key} in lockfile: {lock_text}");
 }
 
 fn run_with_named_arg(dir: &Path, arg: &str) -> std::process::Output {
@@ -200,14 +364,134 @@ fn reserve_local_port() -> u16 {
     listener.local_addr().expect("read local test addr").port()
 }
 
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("workspace root")
+        .to_path_buf()
+}
+
+fn resolve_target_dir_for_tests() -> PathBuf {
+    let root = workspace_root();
+    if let Some(raw) = std::env::var_os("CARGO_TARGET_DIR") {
+        let path = PathBuf::from(raw);
+        return if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        };
+    }
+    let tmp_target = root.join("tmp").join("fuse-target");
+    if tmp_target.exists() {
+        return tmp_target;
+    }
+    root.join("target")
+}
+
+fn find_latest_rlib_for_tests(dir: &Path, prefix: &str) -> PathBuf {
+    let entries = fs::read_dir(dir).expect("read deps dir");
+    let mut best: Option<(SystemTime, PathBuf)> = None;
+    for entry in entries {
+        let entry = entry.expect("read deps entry");
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rlib") {
+            continue;
+        }
+        let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        if !file_name.starts_with(prefix) {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .expect("deps metadata")
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        match best {
+            Some((best_time, _)) if modified <= best_time => {}
+            _ => best = Some((modified, path)),
+        }
+    }
+    best.expect("find latest rlib").1
+}
+
+fn native_link_search_paths_for_tests(target_dir: &Path, profile: &str) -> Vec<PathBuf> {
+    let build_dir = target_dir.join(profile).join("build");
+    if !build_dir.exists() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let entries = fs::read_dir(&build_dir).expect("read build dir");
+    for entry in entries {
+        let path = entry.expect("read build entry").path().join("output");
+        if !path.exists() {
+            continue;
+        }
+        let contents = fs::read_to_string(path).expect("read build output metadata");
+        for line in contents.lines() {
+            let Some(search) = line.strip_prefix("cargo:rustc-link-search=") else {
+                continue;
+            };
+            let search = search.trim();
+            if search.is_empty() {
+                continue;
+            }
+            out.push(PathBuf::from(search));
+        }
+    }
+    out
+}
+
+fn relink_aot_runner_for_tests(dir: &Path, release: bool) {
+    let profile = if release { "release" } else { "debug" };
+    let target_dir = resolve_target_dir_for_tests();
+    let deps_dir = target_dir.join(profile).join("deps");
+    let fusec_rlib = find_latest_rlib_for_tests(&deps_dir, "libfusec");
+    let bincode_rlib = find_latest_rlib_for_tests(&deps_dir, "libbincode");
+    let runner = dir.join(".fuse").join("build").join("native_main.rs");
+    let object = dir.join(".fuse").join("build").join("program.o");
+    let output = default_aot_binary_path(dir);
+
+    let mut rustc = Command::new("rustc");
+    rustc
+        .arg("--edition=2024")
+        .arg(&runner)
+        .arg("-o")
+        .arg(&output)
+        .arg("-L")
+        .arg(format!("dependency={}", deps_dir.display()))
+        .arg("--extern")
+        .arg(format!("fusec={}", fusec_rlib.display()))
+        .arg("--extern")
+        .arg(format!("bincode={}", bincode_rlib.display()))
+        .arg("-C")
+        .arg(format!("link-arg={}", object.display()));
+    for search in native_link_search_paths_for_tests(&target_dir, profile) {
+        rustc.arg("-L").arg(search);
+    }
+    if release {
+        rustc.arg("-C").arg("opt-level=3");
+    }
+    let output = rustc.output().expect("run rustc for relink");
+    assert!(
+        output.status.success(),
+        "relink stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn http_get_with_retry(port: u16, path: &str, attempts: usize) -> Option<String> {
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    http_request_with_retry(port, &request, attempts)
+}
+
+fn http_request_with_retry(port: u16, request: &str, attempts: usize) -> Option<String> {
     for _ in 0..attempts {
         if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) {
             let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
             let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-            let request = format!(
-                "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
-            );
             if stream.write_all(request.as_bytes()).is_ok() {
                 let mut response = String::new();
                 if stream.read_to_string(&mut response).is_ok() && !response.is_empty() {
@@ -218,6 +502,36 @@ fn http_get_with_retry(port: u16, path: &str, attempts: usize) -> Option<String>
         thread::sleep(Duration::from_millis(100));
     }
     None
+}
+
+fn wait_for_child_exit_status(child: &mut Child, timeout: Duration) -> ExitStatus {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status,
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    panic!("timed out waiting for child exit");
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(err) => panic!("failed to poll child status: {err}"),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn send_unix_signal(pid: u32, signal: &str) {
+    let status = Command::new("kill")
+        .arg(signal)
+        .arg(pid.to_string())
+        .status()
+        .expect("run kill");
+    assert!(
+        status.success(),
+        "kill {signal} {pid} failed with status {status}"
+    );
 }
 
 #[test]
@@ -1232,6 +1546,320 @@ app "Demo":
 }
 
 #[test]
+fn check_rejects_dependency_missing_source_required_code() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_minimal_check_project(
+        &dir,
+        r#"[dependencies]
+Bad = {}
+"#,
+    );
+
+    let output = run_check_project(&dir);
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[FUSE_DEP_SOURCE_REQUIRED]"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("dependency Bad must specify either path or git"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_rejects_dependency_refs_without_git_code() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_minimal_check_project(
+        &dir,
+        r#"[dependencies]
+Bad = { tag = "v1.2.3" }
+"#,
+    );
+
+    let output = run_check_project(&dir);
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[FUSE_DEP_GIT_REQUIRED_FOR_REFS]"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("dependency Bad must specify git when using rev/tag/branch/version/subdir"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_rejects_dependency_empty_path_code() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_minimal_check_project(
+        &dir,
+        r#"[dependencies]
+Bad = { path = "   " }
+"#,
+    );
+
+    let output = run_check_project(&dir);
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[FUSE_DEP_PATH_EMPTY]"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("dependency Bad path cannot be empty"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_rejects_dependency_empty_subdir_code() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_minimal_check_project(
+        &dir,
+        r#"[dependencies]
+Bad = { git = "https://example.com/demo.git", subdir = "   " }
+"#,
+    );
+
+    let output = run_check_project(&dir);
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[FUSE_DEP_SUBDIR_EMPTY]"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("dependency Bad subdir cannot be empty"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_rejects_path_dependency_with_git_fields_code() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_minimal_check_project(
+        &dir,
+        r#"[dependencies]
+Bad = { path = "./deps/bad", branch = "main" }
+"#,
+    );
+
+    let output = run_check_project(&dir);
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[FUSE_DEP_PATH_FIELDS_INVALID]"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("path dependencies cannot include git/rev/tag/branch/version/subdir fields"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_reports_dependency_path_not_found_code() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_minimal_check_project(
+        &dir,
+        r#"[dependencies]
+Bad = { path = "./deps/missing" }
+"#,
+    );
+
+    let output = run_check_project(&dir);
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[FUSE_DEP_PATH_NOT_FOUND]"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("dependency Bad path does not exist"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("fix the dependency path in fuse.toml"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_reports_dependency_git_subdir_not_found_code() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let git_src = dir.join("git_src");
+    fs::create_dir_all(&git_src).expect("create git source");
+    fs::write(
+        git_src.join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "GitDep"
+"#,
+    )
+    .expect("write git source manifest");
+    fs::write(
+        git_src.join("lib.fuse"),
+        "fn value() -> Int:\n  return 1\n",
+    )
+    .expect("write git source lib");
+    let init = Command::new("git")
+        .arg("init")
+        .arg(&git_src)
+        .output()
+        .expect("git init");
+    assert!(init.status.success(), "stderr: {}", String::from_utf8_lossy(&init.stderr));
+    let add = Command::new("git")
+        .arg("-C")
+        .arg(&git_src)
+        .arg("add")
+        .arg(".")
+        .output()
+        .expect("git add");
+    assert!(add.status.success(), "stderr: {}", String::from_utf8_lossy(&add.stderr));
+    let commit = Command::new("git")
+        .arg("-C")
+        .arg(&git_src)
+        .arg("-c")
+        .arg("user.name=Fuse Test")
+        .arg("-c")
+        .arg("user.email=fuse@example.test")
+        .arg("commit")
+        .arg("-m")
+        .arg("init")
+        .output()
+        .expect("git commit");
+    assert!(
+        commit.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    write_minimal_check_project(
+        &dir,
+        &format!(
+            r#"[dependencies]
+Bad = {{ git = "file://{}", subdir = "missing-subdir" }}
+"#,
+            git_src.display()
+        ),
+    );
+
+    let output = run_check_project(&dir);
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[FUSE_DEP_SUBDIR_NOT_FOUND]"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("dependency Bad subdir does not exist"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("fix the dependency subdir in fuse.toml"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_accepts_semantically_identical_dependency_specs_without_false_conflict() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[dependencies]
+AuthA = { path = "./deps/auth-a" }
+AuthB = { path = "./deps/auth-b" }
+"#,
+    )
+    .expect("write root fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    )
+    .expect("write main.fuse");
+
+    fs::create_dir_all(dir.join("deps").join("auth-a")).expect("create auth-a");
+    fs::write(
+        dir.join("deps").join("auth-a").join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "AuthA"
+
+[dependencies]
+Shared = { path = "../shared" }
+"#,
+    )
+    .expect("write auth-a manifest");
+    fs::write(
+        dir.join("deps").join("auth-a").join("lib.fuse"),
+        "fn value() -> Int:\n  return 1\n",
+    )
+    .expect("write auth-a lib");
+
+    fs::create_dir_all(dir.join("deps").join("auth-b")).expect("create auth-b");
+    fs::write(
+        dir.join("deps").join("auth-b").join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "AuthB"
+
+[dependencies]
+Shared = { path = "..\\shared" }
+"#,
+    )
+    .expect("write auth-b manifest");
+    fs::write(
+        dir.join("deps").join("auth-b").join("lib.fuse"),
+        "fn value() -> Int:\n  return 2\n",
+    )
+    .expect("write auth-b lib");
+
+    fs::create_dir_all(dir.join("deps").join("shared")).expect("create shared");
+    fs::write(
+        dir.join("deps").join("shared").join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "Shared"
+"#,
+    )
+    .expect("write shared manifest");
+    fs::write(
+        dir.join("deps").join("shared").join("lib.fuse"),
+        "fn shared() -> Int:\n  return 10\n",
+    )
+    .expect("write shared lib");
+
+    let output = run_check_project(&dir);
+    assert!(
+        output.status.success(),
+        "check stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn build_keeps_lockfile_stable_when_dependencies_are_unchanged() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");
@@ -1565,7 +2193,12 @@ app = "Helper"
     )
     .expect("write helper lib");
 
-    let requested = format!("path:{}", dir.join("./deps/helper").display());
+    let requested = format!(
+        "path:{}",
+        fs::canonicalize(dir.join("deps").join("helper"))
+            .expect("canonicalize helper path")
+            .display()
+    );
     fs::write(
         dir.join("fuse.lock"),
         format!(
@@ -1598,6 +2231,311 @@ requested = "{requested}"
         stderr.contains("delete fuse.lock and rerun 'fuse build'"),
         "stderr: {stderr}"
     );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_reports_lock_entry_missing_path_code() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let requested = write_single_helper_dep_project(&dir);
+
+    fs::write(
+        dir.join("fuse.lock"),
+        format!(
+            r#"
+version = 1
+
+[dependencies.Helper]
+source = "path"
+requested = "{requested}"
+"#
+        ),
+    )
+    .expect("write fuse.lock");
+
+    let output = run_check_project(&dir);
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[FUSE_LOCK_ENTRY_MISSING_PATH]"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_reports_lock_entry_unknown_source_code() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let requested = write_single_helper_dep_project(&dir);
+
+    fs::write(
+        dir.join("fuse.lock"),
+        format!(
+            r#"
+version = 1
+
+[dependencies.Helper]
+source = "archive"
+requested = "{requested}"
+"#
+        ),
+    )
+    .expect("write fuse.lock");
+
+    let output = run_check_project(&dir);
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[FUSE_LOCK_ENTRY_UNKNOWN_SOURCE]"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("unknown lock source"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_reports_lock_parse_failure_code() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_single_helper_dep_project(&dir);
+
+    fs::write(
+        dir.join("fuse.lock"),
+        r#"
+version = 1
+
+[dependencies.Helper
+source = "path"
+"#,
+    )
+    .expect("write invalid fuse.lock");
+
+    let output = run_check_project(&dir);
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[FUSE_LOCK_PARSE_FAILED]"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_reports_lock_entry_missing_rev_code() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let (git_url, _rev) = create_local_git_dep_repo(&dir);
+    write_minimal_check_project(
+        &dir,
+        &format!(
+            r#"[dependencies]
+Helper = {{ git = "{git_url}" }}
+"#
+        ),
+    );
+    run_build_project(&dir);
+    let lock_text = fs::read_to_string(dir.join("fuse.lock")).expect("read fuse.lock");
+    let requested = extract_lock_string_field(&lock_text, "requested");
+    let git = extract_lock_string_field(&lock_text, "git");
+
+    fs::write(
+        dir.join("fuse.lock"),
+        format!(
+            r#"
+version = 1
+
+[dependencies.Helper]
+source = "git"
+git = "{git}"
+requested = "{requested}"
+"#
+        ),
+    )
+    .expect("write fuse.lock");
+
+    let output = run_check_project(&dir);
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[FUSE_LOCK_ENTRY_MISSING_REV]"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_reports_lock_entry_missing_git_code() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let (git_url, _rev) = create_local_git_dep_repo(&dir);
+    write_minimal_check_project(
+        &dir,
+        &format!(
+            r#"[dependencies]
+Helper = {{ git = "{git_url}" }}
+"#
+        ),
+    );
+    run_build_project(&dir);
+    let lock_text = fs::read_to_string(dir.join("fuse.lock")).expect("read fuse.lock");
+    let requested = extract_lock_string_field(&lock_text, "requested");
+    let rev = extract_lock_string_field(&lock_text, "rev");
+
+    fs::write(
+        dir.join("fuse.lock"),
+        format!(
+            r#"
+version = 1
+
+[dependencies.Helper]
+source = "git"
+rev = "{rev}"
+requested = "{requested}"
+"#
+        ),
+    )
+    .expect("write fuse.lock");
+
+    let output = run_check_project(&dir);
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[FUSE_LOCK_ENTRY_MISSING_GIT]"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_reports_lock_entry_subdir_not_found_code() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let (git_url, _rev) = create_local_git_dep_repo(&dir);
+    write_minimal_check_project(
+        &dir,
+        &format!(
+            r#"[dependencies]
+Helper = {{ git = "{git_url}" }}
+"#
+        ),
+    );
+    run_build_project(&dir);
+    let lock_text = fs::read_to_string(dir.join("fuse.lock")).expect("read fuse.lock");
+    let requested = extract_lock_string_field(&lock_text, "requested");
+    let rev = extract_lock_string_field(&lock_text, "rev");
+    let git = extract_lock_string_field(&lock_text, "git");
+
+    fs::write(
+        dir.join("fuse.lock"),
+        format!(
+            r#"
+version = 1
+
+[dependencies.Helper]
+source = "git"
+git = "{git}"
+rev = "{rev}"
+subdir = "missing-subdir"
+requested = "{requested}"
+"#
+        ),
+    )
+    .expect("write fuse.lock");
+
+    let output = run_check_project(&dir);
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[FUSE_LOCK_ENTRY_SUBDIR_NOT_FOUND]"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_lockfile_ignores_non_spec_manifest_edits() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_single_helper_dep_project(&dir);
+    run_build_project(&dir);
+
+    let lock_path = dir.join("fuse.lock");
+    let first = fs::read_to_string(&lock_path).expect("read initial lockfile");
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+# formatting-only edit
+
+[dependencies]
+Helper = { path = "./deps/helper" }
+"#,
+    )
+    .expect("rewrite fuse.toml");
+
+    run_build_project(&dir);
+    let second = fs::read_to_string(&lock_path).expect("read rewritten lockfile");
+    assert_eq!(first, second, "lockfile should ignore non-spec edits");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_lockfile_refreshes_when_requested_spec_fingerprint_changes() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_single_helper_dep_project(&dir);
+    run_build_project(&dir);
+
+    let lock_path = dir.join("fuse.lock");
+    let first = fs::read_to_string(&lock_path).expect("read initial lockfile");
+
+    let helper_two = dir.join("deps").join("helper-two");
+    fs::create_dir_all(&helper_two).expect("create helper-two dep");
+    fs::write(
+        helper_two.join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "HelperTwo"
+"#,
+    )
+    .expect("write helper-two manifest");
+    fs::write(
+        helper_two.join("lib.fuse"),
+        "fn helper() -> Int:\n  return 2\n",
+    )
+    .expect("write helper-two lib");
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[dependencies]
+Helper = { path = "./deps/helper-two" }
+"#,
+    )
+    .expect("rewrite fuse.toml with updated dependency source");
+
+    run_build_project(&dir);
+    let second = fs::read_to_string(&lock_path).expect("read refreshed lockfile");
+    assert_ne!(
+        first, second,
+        "lockfile should refresh when requested spec fingerprint changes"
+    );
+    assert!(second.contains("helper-two"), "lockfile: {second}");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -1958,7 +2896,7 @@ app "Demo":
 }
 
 #[test]
-fn build_release_requires_aot_flag() {
+fn build_release_defaults_to_aot_output() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");
     write_basic_manifest_project(
@@ -1979,11 +2917,63 @@ app "Demo":
         .arg("never")
         .output()
         .expect("run fuse build --release");
-    assert!(!output.status.success(), "build unexpectedly succeeded");
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("--release requires --aot"),
-        "stderr: {stderr}"
+        output.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let aot_path = default_aot_binary_path(&dir);
+    assert!(aot_path.exists(), "expected {}", aot_path.display());
+    assert!(
+        dir.join(".fuse")
+            .join("build")
+            .join("program.native")
+            .exists(),
+        "expected cached native artifact"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_without_release_remains_explicit_non_aot_path() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse build");
+    assert!(
+        output.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let aot_path = default_aot_binary_path(&dir);
+    assert!(
+        !aot_path.exists(),
+        "did not expect AOT output for non-release build: {}",
+        aot_path.display()
+    );
+    assert!(
+        dir.join(".fuse")
+            .join("build")
+            .join("program.native")
+            .exists(),
+        "expected cached native artifact"
     );
 
     let _ = fs::remove_dir_all(&dir);
@@ -2081,6 +3071,211 @@ app "Demo":
 }
 
 #[test]
+fn build_aot_rebuild_keeps_metadata_stable_for_identical_inputs() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run first fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "first build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let first_meta = read_program_meta(&dir);
+    let aot = default_aot_binary_path(&dir);
+    let first_info = Command::new(&aot)
+        .env("FUSE_AOT_BUILD_INFO", "1")
+        .output()
+        .expect("run first aot build info");
+    assert!(
+        first_info.status.success(),
+        "first info stderr: {}",
+        String::from_utf8_lossy(&first_info.stderr)
+    );
+    let first_info_line = String::from_utf8_lossy(&first_info.stdout).trim().to_string();
+
+    fs::remove_dir_all(dir.join(".fuse").join("build")).expect("remove first build outputs");
+
+    let rebuild = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run second fuse build --aot --release");
+    assert!(
+        rebuild.status.success(),
+        "second build stderr: {}",
+        String::from_utf8_lossy(&rebuild.stderr)
+    );
+
+    let second_meta = read_program_meta(&dir);
+    let second_info = Command::new(&aot)
+        .env("FUSE_AOT_BUILD_INFO", "1")
+        .output()
+        .expect("run second aot build info");
+    assert!(
+        second_info.status.success(),
+        "second info stderr: {}",
+        String::from_utf8_lossy(&second_info.stderr)
+    );
+    let second_info_line = String::from_utf8_lossy(&second_info.stdout).trim().to_string();
+
+    assert_eq!(first_meta, second_meta);
+    assert_eq!(first_info_line, second_info_line);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_build_info_short_circuits_startup_and_runtime() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  assert(false, "should-not-run")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let aot = default_aot_binary_path(&dir);
+    let baseline = Command::new(&aot)
+        .output()
+        .expect("run aot baseline without build info");
+    assert_eq!(baseline.status.code(), Some(1), "status: {:?}", baseline.status);
+    let baseline_stderr = String::from_utf8_lossy(&baseline.stderr);
+    assert!(
+        baseline_stderr.contains("fatal: class=runtime_fatal"),
+        "stderr: {baseline_stderr}"
+    );
+
+    let info = Command::new(&aot)
+        .env("FUSE_AOT_BUILD_INFO", "1")
+        .env("FUSE_AOT_STARTUP_TRACE", "1")
+        .output()
+        .expect("run aot binary with build-info short-circuit");
+    assert!(
+        info.status.success(),
+        "info stderr: {}",
+        String::from_utf8_lossy(&info.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&info.stdout);
+    let stderr = String::from_utf8_lossy(&info.stderr);
+    assert!(stdout.contains("mode=aot"), "stdout: {stdout}");
+    assert!(!stderr.contains("startup: pid="), "stderr: {stderr}");
+    assert!(!stderr.contains("fatal:"), "stderr: {stderr}");
+    assert!(!stderr.contains("should-not-run"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_runtime_respects_config_env_file_default_precedence() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+config App:
+  greeting: String = "DefaultGreet"
+  who: String = "DefaultWho"
+  role: String = "DefaultRole"
+
+app "Demo":
+  print(App.greeting)
+  print(App.who)
+  print(App.role)
+"#,
+    )
+    .expect("write main.fuse");
+    fs::write(
+        dir.join("config.toml"),
+        r#"
+[App]
+greeting = "FileGreet"
+who = "FileWho"
+"#,
+    )
+    .expect("write config.toml");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let aot = default_aot_binary_path(&dir);
+    let run = Command::new(&aot)
+        .current_dir(&dir)
+        .env("FUSE_CONFIG", dir.join("config.toml"))
+        .env("APP_GREETING", "EnvGreet")
+        .output()
+        .expect("run aot config precedence check");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["EnvGreet", "FileWho", "DefaultRole"]);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn build_aot_runtime_error_uses_stable_fatal_envelope() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");
@@ -2126,6 +3321,109 @@ app "Demo":
 }
 
 #[test]
+fn build_aot_runtime_panic_uses_exit_101_and_panic_fatal_envelope() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let runner = dir.join(".fuse").join("build").join("native_main.rs");
+    let source = fs::read_to_string(&runner).expect("read native_main.rs");
+    let patched = source.replacen(
+        "fn run_program() -> Result<(), String> {\n",
+        "fn run_program() -> Result<(), String> {\n    panic!(\"aot-panic-contract-test\");\n",
+        1,
+    );
+    assert_ne!(
+        source, patched,
+        "failed to patch run_program in native_main.rs"
+    );
+    fs::write(&runner, patched).expect("write patched native_main.rs");
+    relink_aot_runner_for_tests(&dir, true);
+
+    let aot = default_aot_binary_path(&dir);
+    let run = Command::new(&aot).output().expect("run patched aot binary");
+    assert_eq!(run.status.code(), Some(101), "status: {:?}", run.status);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(stderr.contains("fatal: class=panic"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("panic_kind=panic_static_str aot-panic-contract-test"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("mode=aot"), "stderr: {stderr}");
+    assert!(stderr.contains("profile=release"), "stderr: {stderr}");
+    assert!(stderr.contains("target="), "stderr: {stderr}");
+    assert!(stderr.contains("contract="), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_runner_wires_deterministic_panic_taxonomy() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let runner = dir.join(".fuse").join("build").join("native_main.rs");
+    let source = fs::read_to_string(&runner).expect("read generated native_main.rs");
+    assert!(
+        source.contains("classify_panic_payload"),
+        "runner source: {source}"
+    );
+    assert!(
+        source.contains("format_panic_message"),
+        "runner source: {source}"
+    );
+    assert!(
+        source.contains("emit_fatal(\"panic\", &msg);"),
+        "runner source: {source}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn build_aot_startup_trace_env_emits_operability_header() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");
@@ -2163,10 +3461,43 @@ app "Demo":
         String::from_utf8_lossy(&run.stderr)
     );
     let stderr = String::from_utf8_lossy(&run.stderr);
-    assert!(stderr.contains("startup: pid="), "stderr: {stderr}");
-    assert!(stderr.contains("mode=aot"), "stderr: {stderr}");
-    assert!(stderr.contains("profile=release"), "stderr: {stderr}");
-    assert!(stderr.contains("contract="), "stderr: {stderr}");
+    let startup_line = stderr
+        .lines()
+        .find(|line| line.starts_with("startup: "))
+        .unwrap_or_else(|| panic!("missing startup line in stderr: {stderr}"));
+    let expected_markers = [
+        "startup: pid=",
+        " mode=",
+        " profile=",
+        " target=",
+        " rustc=",
+        " cli=",
+        " runtime_cache=",
+        " contract=",
+    ];
+    let mut offsets = Vec::with_capacity(expected_markers.len());
+    let mut search_from = 0usize;
+    for marker in expected_markers {
+        let rel = startup_line[search_from..]
+            .find(marker)
+            .unwrap_or_else(|| panic!("missing marker {marker} in startup line: {startup_line}"));
+        let absolute = search_from + rel;
+        offsets.push(absolute);
+        search_from = absolute + marker.len();
+    }
+    for window in offsets.windows(2) {
+        assert!(
+            window[0] < window[1],
+            "startup markers are out of order in {startup_line}"
+        );
+    }
+    let pid_start = "startup: pid=".len();
+    let mode_pos = offsets[1];
+    let pid = &startup_line[pid_start..mode_pos];
+    assert!(
+        !pid.is_empty() && pid.chars().all(|ch| ch.is_ascii_digit()),
+        "invalid pid segment in startup line: {startup_line}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -2253,6 +3584,297 @@ app "Docs":
         "aot stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_service_request_id_and_structured_logs_are_consistent() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Docs"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+requires network
+
+config App:
+  port: String = env("PORT") ?? "3000"
+
+service DocsApi at "/api":
+  get "/id" -> Map<String, String>:
+    let req_id = request.header("x-request-id") ?? "missing"
+    return {"id": req_id}
+
+app "Docs":
+  serve(App.port)
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let port = reserve_local_port();
+    let aot = default_aot_binary_path(&dir);
+    let child = Command::new(&aot)
+        .env("PORT", port.to_string())
+        .env("FUSE_HOST", "127.0.0.1")
+        .env("FUSE_MAX_REQUESTS", "1")
+        .env("FUSE_REQUEST_LOG", "structured")
+        .env("FUSE_METRICS_HOOK", "stderr")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn aot service");
+
+    let request = format!(
+        "GET /api/id HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Request-Id: aot-obs-1\r\nConnection: close\r\n\r\n"
+    );
+    let response = match http_request_with_retry(port, &request, 60) {
+        Some(response) => response,
+        None => {
+            let output = child
+                .wait_with_output()
+                .expect("wait aot child after timeout");
+            panic!(
+                "failed to query aot id endpoint; stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    };
+    assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
+    let response_lower = response.to_ascii_lowercase();
+    assert!(
+        response_lower.contains("x-request-id: aot-obs-1"),
+        "response: {response}"
+    );
+    assert!(response.contains(r#"{"id":"aot-obs-1"}"#), "response: {response}");
+
+    let output = child.wait_with_output().expect("wait aot child");
+    assert!(
+        output.status.success(),
+        "aot stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("\"event\":\"http.request\""), "stderr: {stderr}");
+    assert!(stderr.contains("\"runtime\":\"native\""), "stderr: {stderr}");
+    assert!(stderr.contains("\"request_id\":\"aot-obs-1\""), "stderr: {stderr}");
+    assert!(
+        stderr.contains("\"metric\":\"http.server.request\""),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_release_can_optionally_default_to_structured_request_logs() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Docs"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+requires network
+
+config App:
+  port: String = env("PORT") ?? "3000"
+
+service DocsApi at "/api":
+  get "/id" -> Map<String, String>:
+    let req_id = request.header("x-request-id") ?? "missing"
+    return {"id": req_id}
+
+app "Docs":
+  serve(App.port)
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let port = reserve_local_port();
+    let aot = default_aot_binary_path(&dir);
+    let child = Command::new(&aot)
+        .env("PORT", port.to_string())
+        .env("FUSE_HOST", "127.0.0.1")
+        .env("FUSE_MAX_REQUESTS", "1")
+        .env("FUSE_AOT_REQUEST_LOG_DEFAULT", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn aot service");
+
+    let request = format!(
+        "GET /api/id HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Request-Id: aot-default-log\r\nConnection: close\r\n\r\n"
+    );
+    let response = match http_request_with_retry(port, &request, 60) {
+        Some(response) => response,
+        None => {
+            let output = child
+                .wait_with_output()
+                .expect("wait aot child after timeout");
+            panic!(
+                "failed to query aot id endpoint; stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    };
+    assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
+    assert!(
+        response.contains(r#"{"id":"aot-default-log"}"#),
+        "response: {response}"
+    );
+
+    let output = child.wait_with_output().expect("wait aot child");
+    assert!(
+        output.status.success(),
+        "aot stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("\"event\":\"http.request\""), "stderr: {stderr}");
+    assert!(
+        stderr.contains("\"request_id\":\"aot-default-log\""),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn build_aot_signal_termination_is_graceful_and_deterministic() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Docs"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+requires network
+
+config App:
+  port: String = env("PORT") ?? "3000"
+
+service DocsApi at "/api":
+  get "/health" -> Map<String, String>:
+    return {"status": "ok"}
+
+app "Docs":
+  serve(App.port)
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let aot = default_aot_binary_path(&dir);
+    for (signal, expected_name) in [("-TERM", "SIGTERM"), ("-INT", "SIGINT")] {
+        let port = reserve_local_port();
+        let mut child = Command::new(&aot)
+            .env("PORT", port.to_string())
+            .env("FUSE_HOST", "127.0.0.1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn aot service");
+        let mut stderr_pipe = child.stderr.take().expect("child stderr pipe");
+
+        let response = match http_get_with_retry(port, "/api/health", 60) {
+            Some(response) => response,
+            None => {
+                let _ = child.kill();
+                let _ = wait_for_child_exit_status(&mut child, Duration::from_secs(2));
+                let mut stderr = String::new();
+                let _ = stderr_pipe.read_to_string(&mut stderr);
+                panic!("failed to query aot health endpoint; stderr: {stderr}");
+            }
+        };
+        assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
+
+        send_unix_signal(child.id(), signal);
+        let status = wait_for_child_exit_status(&mut child, Duration::from_secs(5));
+        assert_eq!(status.code(), Some(0), "status: {status:?}");
+
+        let mut stderr = String::new();
+        stderr_pipe
+            .read_to_string(&mut stderr)
+            .expect("read child stderr");
+        assert!(!stderr.contains("fatal:"), "stderr: {stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "shutdown: runtime=native signal={expected_name}"
+            )),
+            "stderr: {stderr}"
+        );
+    }
 
     let _ = fs::remove_dir_all(&dir);
 }

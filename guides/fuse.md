@@ -39,6 +39,7 @@ Primary references while working in this codebase:
 - `../governance/scope.md` defines constraints, roadmap priorities, and explicit non-goals.
 - `../governance/EXTENSIBILITY_BOUNDARIES.md` defines allowed extension surfaces and stability boundaries.
 - `../ops/BENCHMARKS.md` defines real-world workload benchmarks and metric collection.
+- `../ops/DEPLOY.md` defines canonical AOT deployment patterns (VM, Docker, `systemd`, Kubernetes).
 - `../governance/VERSIONING_POLICY.md` defines language/runtime/tooling versioning and compatibility guarantees.
 
 If a detail appears in multiple docs, treat `../governance/IDENTITY_CHARTER.md` as authoritative
@@ -110,6 +111,13 @@ app "users":
 
 For detailed route binding and error/status behavior, see `../spec/runtime.md`.
 
+HTTP observability baseline:
+
+- request ID propagation (`x-request-id` / `x-correlation-id` / generated `req-<hex>`)
+- response emission of `X-Request-Id`
+- optional request JSON logs via `FUSE_REQUEST_LOG=structured`
+- optional metrics line hook via `FUSE_METRICS_HOOK=stderr`
+
 See also: [Runtime semantics](../spec/runtime.md), [Formal language specification](../spec/fls.md), [Package workflow (summary)](#package-workflow-summary).
 
 ---
@@ -121,7 +129,7 @@ FUSE currently ships with:
 - parser + semantic analysis + formatter
 - AST interpreter backend
 - native backend (Cranelift JIT)
-- semantic parity gates across AST/native backends
+- semantic authority gates across AST/native plus parity-lock coverage for AST/native/AOT observable behavior
 - module imports (relative, `root:`, and `dep:` paths)
 - compile-time module capability declarations (`requires db|crypto|network|time`)
 - typed error-domain boundaries on function/service returns (`T!Domain`, no implicit `T!`)
@@ -129,6 +137,7 @@ FUSE currently ships with:
 - deterministic `transaction:` blocks (commit on success, rollback on failure) with compile-time restrictions
 - strict architecture mode (`--strict-architecture`) for capability purity, cross-layer cycle rejection, and error-domain isolation
 - HTTP request/response primitives (`request.header/cookie`, `response.header/cookie/delete_cookie`)
+- HTTP observability baseline (request IDs, optional structured request logs, optional metrics hook)
 - package tooling via `fuse.toml` and `fuse` commands
 
 Detailed capability matrices and caveats live in:
@@ -153,6 +162,22 @@ See also: [Runtime surface and ownership](../spec/runtime.md).
 
 ---
 
+## AOT runtime posture (production)
+
+For deployable AOT binaries (`fuse build --release`, `fuse build --aot`), runtime guarantees are
+frozen in `../spec/runtime.md`:
+
+- deterministic startup order (`FUSE_AOT_BUILD_INFO` short-circuit, optional startup trace)
+- stable exit codes + fatal envelope taxonomy
+- deterministic config precedence (env -> config file -> defaults)
+- deterministic graceful signal shutdown (`SIGINT`/`SIGTERM`) for service loops
+- optional release default posture for structured request logs
+- sealed runtime posture (no dynamic backend fallback, no AOT runtime compilation fallback)
+
+See also: [Runtime semantics](../spec/runtime.md), [Package workflow (summary)](#package-workflow-summary).
+
+---
+
 ## Package workflow (summary)
 
 Typical commands:
@@ -163,6 +188,7 @@ Typical commands:
 - `fuse dev`
 - `fuse test`
 - `fuse build`
+- `fuse build --release`
 - `fuse build --aot`
 - `fuse build --aot --release`
 

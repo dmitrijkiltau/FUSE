@@ -35,7 +35,7 @@ options:
   --color <auto|always|never>  Colorized CLI output policy
   --clean                 Remove .fuse/build before building (build only)
   --aot                   Emit deployable AOT binary (build only)
-  --release               Use release profile for AOT output (build only; requires --aot)
+  --release               Use release profile for build output (build only; implies --aot)
 "#;
 
 const FUSE_ASSET_MAP_ENV: &str = "FUSE_ASSET_MAP";
@@ -1719,9 +1719,6 @@ fn parse_common_args(
         }
         return Err(format!("unexpected argument: {arg}"));
     }
-    if out.release && !out.aot {
-        return Err("--release requires --aot (use `fuse build --aot --release`)".to_string());
-    }
     Ok(out)
 }
 
@@ -1835,8 +1832,9 @@ fn run_build(
     }
     let configured_native_bin =
         manifest.and_then(|m| m.build.as_ref().and_then(|b| b.native_bin.clone()));
+    let aot_enabled = aot || release;
     let aot_out = configured_native_bin.or_else(|| {
-        if aot {
+        if aot_enabled {
             Some(default_aot_output_path())
         } else {
             None
@@ -2127,6 +2125,7 @@ fn write_native_runner(
         r#"use fusec::interp::format_error_value;
 use fusec::native::value::{{NativeHeap, NativeValue}};
 use fusec::native::{{load_configs_for_binary, load_types_for_binary}};
+use fusec::observability::{{classify_panic_payload, format_panic_message}};
 
 type EntryFn = unsafe extern "C" fn(*const NativeValue, *mut NativeValue, *mut std::ffi::c_void) -> u8;
 
@@ -2186,14 +2185,27 @@ fn emit_startup_trace() {{
     }}
 }}
 
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {{
-    if let Some(msg) = payload.downcast_ref::<&str>() {{
-        return (*msg).to_string();
+fn env_truthy(key: &str) -> bool {{
+    let Ok(raw) = std::env::var(key) else {{
+        return false;
+    }};
+    let value = raw.trim().to_ascii_lowercase();
+    value == "1" || value == "true" || value == "structured" || value == "json"
+}}
+
+fn apply_release_structured_log_default() {{
+    if AOT_BUILD_PROFILE != "release" {{
+        return;
     }}
-    if let Some(msg) = payload.downcast_ref::<String>() {{
-        return msg.clone();
+    if std::env::var_os("FUSE_REQUEST_LOG").is_some() {{
+        return;
     }}
-    "panic".to_string()
+    if !env_truthy("FUSE_AOT_REQUEST_LOG_DEFAULT") {{
+        return;
+    }}
+    unsafe {{
+        std::env::set_var("FUSE_REQUEST_LOG", "structured");
+    }}
 }}
 
 fn call_native(entry: EntryFn, heap: &mut NativeHeap) -> Result<fusec::interp::Value, String> {{
@@ -2267,6 +2279,7 @@ fn main() {{
         println!("{{}}", build_info_line());
         return;
     }}
+    apply_release_structured_log_default();
     emit_startup_trace();
     let status = match std::panic::catch_unwind(run_program) {{
         Ok(Ok(())) => 0,
@@ -2275,7 +2288,8 @@ fn main() {{
             1
         }}
         Err(payload) => {{
-            let msg = panic_message(payload.as_ref());
+            let details = classify_panic_payload(payload.as_ref());
+            let msg = format_panic_message(&details);
             emit_fatal("panic", &msg);
             101
         }}
@@ -3390,10 +3404,13 @@ fn normalize_dependency_spec(
             ));
         }
         let path = resolve_path(base_dir, &normalize_dependency_path_input(&path));
-        let requested = format!("path:{}", path.display());
+        let normalized_path = canonicalize_dependency_path_for_requested(&path);
+        let requested = format!("path:{}", normalized_path.display());
         return Ok(NormalizedDependency {
             requested,
-            kind: NormalizedKind::Path { path },
+            kind: NormalizedKind::Path {
+                path: normalized_path,
+            },
         });
     }
 
@@ -3602,6 +3619,14 @@ fn normalize_dependency_path_input(raw: &str) -> String {
     #[cfg(not(target_os = "windows"))]
     {
         raw.replace('\\', "/")
+    }
+}
+
+fn canonicalize_dependency_path_for_requested(path: &Path) -> PathBuf {
+    if path.exists() {
+        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    } else {
+        path.to_path_buf()
     }
 }
 

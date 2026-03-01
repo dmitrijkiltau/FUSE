@@ -140,6 +140,69 @@ fn load() -> Int!Missing:
 }
 
 #[test]
+fn rejects_bang_chain_outside_function_scope() {
+    let src = r#"
+type Missing:
+  message: String
+
+type ConfigShape:
+  value: Int = null ?! Missing(message="missing")
+"#;
+    assert_diags(src, &["Error: ?! used outside of a function"]);
+}
+
+#[test]
+fn rejects_bang_chain_in_non_fallible_function() {
+    let src = r#"
+type Missing:
+  message: String
+
+fn load() -> Int:
+  let value = null ?! Missing(message="missing")
+  return 1
+"#;
+    assert_diags(
+        src,
+        &["Error: ?! used in non-fallible function returning Int"],
+    );
+}
+
+#[test]
+fn rejects_catch_all_error_domain_in_boundary_signature() {
+    let src = r#"
+fn load() -> Int!Error:
+  return 1
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: function return type cannot use catch-all Error; declare a module error domain type or enum",
+        ],
+    );
+}
+
+#[test]
+fn rejects_bang_chain_with_non_domain_err_rebinding_in_nested_scope() {
+    let src = r#"
+type Missing:
+  message: String
+
+fn fetch() -> Int?:
+  return null
+
+fn load() -> Int!Missing:
+  if true:
+    let err = "missing"
+    let _ = fetch() ?! err
+  return 1
+"#;
+    assert_diags(
+        src,
+        &["Error: ?! error value must be a declared error domain type or enum, found String"],
+    );
+}
+
+#[test]
 fn checks_pattern_matching() {
     let src = r#"
 enum Color:

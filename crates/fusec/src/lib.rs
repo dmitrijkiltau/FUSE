@@ -11,6 +11,7 @@ pub mod ir;
 pub mod lexer;
 pub mod loader;
 pub mod native;
+pub mod observability;
 pub mod openapi;
 pub mod parser;
 pub mod refinement;

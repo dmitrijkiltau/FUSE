@@ -10,7 +10,8 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
   - `governance/scope.md`
   - `spec/runtime.md`
   - `guides/fuse.md` (overview companion context)
-- For AOT production rollout (`v0.4.0` line), enforce the contract and SLO targets in `AOT_RELEASE_CONTRACT.md`.
+  - `DEPLOY.md` (deployment patterns and official image path)
+- For AOT production rollout (`v0.7.0` line), enforce the contract and SLO targets in `AOT_RELEASE_CONTRACT.md`.
 - Enforce rollback preparedness from `AOT_ROLLBACK_PLAYBOOK.md`.
 - Enforce version bump and compatibility rules from `governance/VERSIONING_POLICY.md`.
 - Features marked planned/unsupported stay out of release criteria.
@@ -48,6 +49,7 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
 6. Build host release artifacts and metadata:
    - `./scripts/package_cli_artifacts.sh --release` (emits `dist/fuse-cli-<platform>.tar.gz|.zip`)
    - `./scripts/package_aot_artifact.sh --release --manifest-path .` (emits `dist/fuse-aot-<platform>.tar.gz|.zip`)
+   - `./scripts/package_aot_container_image.sh --archive dist/fuse-aot-linux-x64.tar.gz --image ghcr.io/dmitrijkiltau/fuse-aot-demo --tag vX.Y.Z --tag <git-sha>` (builds container image from release artifact)
    - `./scripts/package_vscode_extension.sh --platform <platform> --release`
    - `SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" ./scripts/generate_release_checksums.sh` (emits `dist/SHA256SUMS` and `dist/release-artifacts.json`)
 7. Validate rollback posture:
@@ -56,6 +58,8 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
 8. Run the release artifact matrix workflow (`.github/workflows/release-artifacts.yml`):
    - Trigger on tag push (`v*`) or run manually via `workflow_dispatch`.
    - Produces verified per-platform CLI, AOT, and VSIX artifacts for `linux-x64`, `macos-arm64`, `windows-x64`.
+   - On tagged releases, also publishes the official reference container image:
+     `ghcr.io/dmitrijkiltau/fuse-aot-demo:<tag>` built from `fuse-aot-linux-x64.tar.gz`.
    - On tag refs, publishes GitHub release assets automatically and runs post-publish checksum/package verification.
 9. Commit release metadata:
    - `git add CHANGELOG.md ops/RELEASE.md governance/VERSIONING_POLICY.md README.md crates/*/Cargo.toml Cargo.lock tools/vscode/package*.json tools/vscode/CHANGELOG.md`

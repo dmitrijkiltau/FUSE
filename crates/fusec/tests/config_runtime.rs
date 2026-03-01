@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fuse_rt::json::{self, JsonValue};
@@ -14,6 +14,19 @@ fn write_temp_file(name: &str, ext: &str, contents: &str) -> PathBuf {
     path.push(format!("{name}_{stamp}.{ext}"));
     fs::write(&path, contents).expect("failed to write temp file");
     path
+}
+
+fn run_program_backend(backend: &str, program_path: &PathBuf, envs: &[(&str, &str)]) -> Output {
+    let exe = env!("CARGO_BIN_EXE_fusec");
+    let mut cmd = Command::new(exe);
+    cmd.arg("--run")
+        .arg("--backend")
+        .arg(backend)
+        .arg(program_path);
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    cmd.output().expect("failed to run fusec")
 }
 
 #[test]
@@ -58,6 +71,60 @@ who = "FileWho"
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines, vec!["EnvGreet", "FileWho", "DefaultRole"]);
+}
+
+#[test]
+fn config_defaults_apply_before_validation_all_backends() {
+    let program = r#"
+config TestCfg:
+  code: String(3..3) = "abc"
+
+app "demo":
+  print(TestCfg.code)
+"#;
+    let program_path = write_temp_file("fuse_config_default_validation_order", "fuse", program);
+    for backend in ["ast", "native"] {
+        let output = run_program_backend(backend, &program_path, &[]);
+        assert!(
+            output.status.success(),
+            "backend={backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "abc",
+            "backend={backend}"
+        );
+    }
+}
+
+#[test]
+fn config_explicit_null_preserves_null_even_with_default_all_backends() {
+    let program = r#"
+config TestCfg:
+  alias: String? = "anon"
+
+app "demo":
+  print(TestCfg.alias ?? "null")
+"#;
+    let program_path = write_temp_file("fuse_config_null_default_precedence", "fuse", program);
+    for backend in ["ast", "native"] {
+        let output = run_program_backend(
+            backend,
+            &program_path,
+            &[("TEST_CFG_ALIAS", "null")],
+        );
+        assert!(
+            output.status.success(),
+            "backend={backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "null",
+            "backend={backend}"
+        );
+    }
 }
 
 #[test]

@@ -15,10 +15,9 @@ RUN apt-get update \
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 COPY scripts/cargo_env.sh ./scripts/cargo_env.sh
-COPY scripts/generate_guide_docs.sh ./scripts/generate_guide_docs.sh
 COPY docs ./docs
 
-RUN chmod +x scripts/cargo_env.sh scripts/generate_guide_docs.sh
+RUN chmod +x scripts/cargo_env.sh
 
 # 2) Build the fuse CLI from source (multi-arch safe)
 #    Use BuildKit cache mounts to speed up rebuilds.
@@ -26,15 +25,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/workspace/target \
     scripts/cargo_env.sh cargo build -p fuse --release --locked \
- && cp -f tmp/fuse-target/release/fuse /usr/local/bin/fuse \
- && /usr/local/bin/fuse --version || true
+ && cp -f tmp/fuse-target/release/fuse /usr/local/bin/fuse
 
-# 3) Build docs AOT
-ENV FUSE_SKIP_GUIDE_DOCS=1
+# 3) Build docs AOT (guide docs are committed; no runtime/build hook regeneration)
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/workspace/target \
-    fuse build --manifest-path docs --aot --release
+    fuse build --manifest-path docs --release
 
 
 FROM debian:bookworm-slim AS runtime

@@ -1,8 +1,10 @@
+use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fuse_rt::json;
 mod support;
@@ -157,6 +159,142 @@ where
     let (status, body) = send_http_request_with_retry(port, &request);
     let _ = child.wait();
     (status, body)
+}
+
+fn write_temp_program(name: &str, contents: &str) -> PathBuf {
+    let mut path = std::env::temp_dir();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    path.push(format!("{name}_{stamp}.fuse"));
+    fs::write(&path, contents).expect("failed to write temp program");
+    path
+}
+
+fn run_http_program_request(
+    backend: &str,
+    program: &str,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> (u16, String) {
+    let port = find_free_port();
+    let program_path = write_temp_program("fuse_parity_http_status", program);
+    let exe = env!("CARGO_BIN_EXE_fusec");
+    let mut child = Command::new(exe)
+        .arg("--run")
+        .arg("--backend")
+        .arg(backend)
+        .arg(&program_path)
+        .env("APP_PORT", port.to_string())
+        .env("FUSE_MAX_REQUESTS", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start server");
+    let request = if let Some(body) = body {
+        format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+    } else {
+        format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n")
+    };
+    let start = Instant::now();
+    let (status, response_body) = loop {
+        if let Some(_) = child.try_wait().expect("failed to poll child status") {
+            let output = child
+                .wait_with_output()
+                .expect("failed to collect child output");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            panic!("server exited before readiness (backend={backend}): {stderr}");
+        }
+        match TcpStream::connect(format!("127.0.0.1:{port}")) {
+            Ok(mut stream) => {
+                stream
+                    .write_all(request.as_bytes())
+                    .expect("failed to write request");
+                stream.shutdown(std::net::Shutdown::Write).ok();
+                let mut response = String::new();
+                stream
+                    .read_to_string(&mut response)
+                    .expect("failed to read response");
+                let mut lines = response.split("\r\n");
+                let status_line = lines.next().unwrap_or("");
+                let status = status_line
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("500")
+                    .parse::<u16>()
+                    .unwrap_or(500);
+                let body = response
+                    .split("\r\n\r\n")
+                    .nth(1)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                break (status, body);
+            }
+            Err(_) => {
+                if start.elapsed() > Duration::from_secs(4) {
+                    panic!(
+                        "server did not start on 127.0.0.1:{port} within timeout (backend={backend})"
+                    );
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+        }
+    };
+    let _ = child.wait();
+    let _ = fs::remove_file(&program_path);
+    (status, response_body)
+}
+
+fn assert_http_error_status_case(
+    case_name: &str,
+    return_ty: &str,
+    err_expr: &str,
+    expected_status: u16,
+    expected_code: &str,
+    expected_message: Option<&str>,
+) {
+    let program = format!(
+        r#"
+requires network
+
+import {{ BadRequest, Unauthorized, Forbidden, Conflict }} from "std.Error"
+
+config App:
+  port: Int = 0
+
+type CustomErr:
+  message: String
+
+service Api at "":
+  get "/case" -> {return_ty}:
+    return null ?! {err_expr}
+
+app "demo":
+  serve(App.port)
+"#
+    );
+    let ast = run_http_program_request("ast", &program, "GET", "/case", None);
+    let native = run_http_program_request("native", &program, "GET", "/case", None);
+    assert_eq!(ast, native, "case={case_name}");
+    let (status, body) = ast;
+    assert_eq!(status, expected_status, "case={case_name} body={body}");
+    assert!(
+        body.contains(&format!("\"code\":\"{expected_code}\"")),
+        "case={case_name} body={body}"
+    );
+    if let Some(expected_message) = expected_message {
+        assert!(
+            body.contains(expected_message),
+            "case={case_name} body={body}"
+        );
+    }
 }
 
 fn normalize_error(stderr: &str) -> String {
@@ -549,4 +687,70 @@ fn parity_http_users_post_ok() {
         )
     });
     assert_eq!(ast, native);
+}
+
+#[test]
+fn parity_http_error_status_matrix() {
+    if skip_if_loopback_unavailable("parity_http_error_status_matrix") {
+        return;
+    }
+    for (case_name, return_ty, err_expr, expected_status, expected_code, expected_message) in [
+        (
+            "bad_request",
+            "String!BadRequest",
+            "BadRequest(message=\"bad request\")",
+            400,
+            "bad_request",
+            Some("bad request"),
+        ),
+        (
+            "unauthorized",
+            "String!Unauthorized",
+            "Unauthorized(message=\"unauthorized\")",
+            401,
+            "unauthorized",
+            Some("unauthorized"),
+        ),
+        (
+            "forbidden",
+            "String!Forbidden",
+            "Forbidden(message=\"forbidden\")",
+            403,
+            "forbidden",
+            Some("forbidden"),
+        ),
+        (
+            "conflict",
+            "String!Conflict",
+            "Conflict(message=\"conflict\")",
+            409,
+            "conflict",
+            Some("conflict"),
+        ),
+        (
+            "std_error_override",
+            "String!Error",
+            "Error(code=\"teapot\", message=\"brew\", status=418)",
+            418,
+            "teapot",
+            Some("brew"),
+        ),
+        (
+            "unknown_error",
+            "String!CustomErr",
+            "CustomErr(message=\"boom\")",
+            500,
+            "internal_error",
+            Some("internal error"),
+        ),
+    ] {
+        assert_http_error_status_case(
+            case_name,
+            return_ty,
+            err_expr,
+            expected_status,
+            expected_code,
+            expected_message,
+        );
+    }
 }

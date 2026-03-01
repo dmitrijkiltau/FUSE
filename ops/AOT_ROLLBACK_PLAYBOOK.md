@@ -1,7 +1,7 @@
 # AOT Rollback Playbook
 
 Status: Active  
-Scope: production incidents on the `v0.4.0` AOT rollout line.
+Scope: production incidents on the `v0.7.0` AOT rollout line.
 
 ## Document contract
 

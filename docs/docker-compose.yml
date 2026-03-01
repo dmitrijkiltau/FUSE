@@ -1,12 +1,19 @@
 services:
   docs:
-    image: fuse-docs:0.6.0
+    image: fuse-docs:0.7.0
     build:
       context: .
       dockerfile: docs/Dockerfile
+    command: ["./docs-aot"]
     ports:
       - "4080:4080"
     environment:
       PORT: "4080"
       FUSE_HOST: "0.0.0.0"
       FUSE_STATIC_DIR: "/app/docs"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:4080/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3

@@ -53,13 +53,80 @@ Source -> Parser -> AST -> Lowering passes -> Canonical program
 Native backend note:
 
 - If native compilation/execution fails for a function, the run fails (no automatic backend fallback).
-- `fuse build --aot` emits a standalone native executable wrapper over compiled native artifacts.
+- `fuse build --release` emits a standalone native executable wrapper over compiled native artifacts.
+  `fuse build --aot` also emits AOT output (debug profile).
   The wrapper embeds build metadata (`mode`, `profile`, `target`, `rustc`, `cli`, `runtime_cache`, `contract`),
   exposes it via `FUSE_AOT_BUILD_INFO=1`, supports startup tracing via `FUSE_AOT_STARTUP_TRACE=1`,
   and emits fatal envelopes as:
   `fatal: class=<runtime_fatal|panic> pid=<...> message=<...> <build-info>`.
+  For `class=panic`, `message` starts with
+  `panic_kind=<panic_static_str|panic_string|panic_non_string>`.
 - AOT fallback is an operational decision (not automatic); incident fallback guidance is tracked in
   `../ops/AOT_ROLLBACK_PLAYBOOK.md`.
+
+### AOT runtime contract (`v0.7.0` baseline)
+
+This section freezes runtime guarantees for binaries emitted by
+`fuse build --release` and `fuse build --aot`.
+
+Startup order guarantees:
+
+1. If `FUSE_AOT_BUILD_INFO=1`, the binary must print exactly one build-info line to stdout and
+   exit with code `0`.
+2. In build-info mode, startup tracing and program execution must not run.
+3. Otherwise, if `FUSE_AOT_STARTUP_TRACE=1`, the binary must emit one startup line on stderr
+   before loading configs/types and before executing app logic.
+   Startup line format is stable:
+   `startup: pid=<pid> mode=<...> profile=<...> target=<...> rustc=<...> cli=<...> runtime_cache=<...> contract=<...>`.
+4. Runtime then loads embedded type metadata, resolves config values, and executes the compiled app
+   entrypoint.
+
+Signal handling semantics:
+
+- service runtime installs deterministic graceful handlers for `SIGINT` and `SIGTERM` on Unix.
+- on signal, service loops stop accepting new requests and exit cleanly with status `0`.
+- graceful signal shutdown is logged as:
+  `shutdown: runtime=<ast|native> signal=<SIGINT|SIGTERM|unknown> handled_requests=<n>`.
+- graceful signal shutdown is not emitted as a fatal envelope.
+
+Shutdown and exit-code contract:
+
+- success exit: `0`
+- handled runtime failure (`class=runtime_fatal`): `1`
+- process panic (`class=panic`): `101`
+- AOT build/link failures are CLI build-time failures, not runtime exits from the produced binary.
+
+Fatal envelope invariants:
+
+- fatal lines must use:
+  `fatal: class=<runtime_fatal|panic> pid=<...> message=<...> mode=<...> profile=<...> target=<...> rustc=<...> cli=<...> runtime_cache=<...> contract=<...>`
+- `message` is single-line sanitized text (`\n`/`\r` escaped).
+- `class=panic` messages must start with
+  `panic_kind=<panic_static_str|panic_string|panic_non_string>`.
+
+Observability consistency guarantees:
+
+- HTTP request ID propagation and structured request logging semantics are identical to
+  [Observability baseline](#observability-baseline).
+- release AOT binaries may default request logging to structured mode when
+  `FUSE_AOT_REQUEST_LOG_DEFAULT` is truthy and `FUSE_REQUEST_LOG` is unset.
+- Startup trace and fatal envelopes must include the same build-info key set
+  (`mode`, `profile`, `target`, `rustc`, `cli`, `runtime_cache`, `contract`).
+
+Deterministic config resolution order in AOT binaries:
+
+1. process environment variable override
+2. config file (`FUSE_CONFIG`; default `config.toml` in process working directory)
+3. config field default expression
+
+AOT runtime does not implicitly load `.env`; only the invoking environment is observed.
+
+Backend/runtime sealing guarantees:
+
+- no dynamic backend fallback in AOT runtime
+- no JIT compilation for app execution in AOT runtime
+- no source-level runtime compilation in AOT binaries
+- no runtime reinterpretation of source syntax by backend-specific fallback logic
 
 ### Function symbol resolution
 
@@ -354,18 +421,62 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 - `FUSE_ASSET_MAP` provides logical-path -> public-URL mappings for `asset(path)`
 - `FUSE_VITE_PROXY_URL` enables fallback proxying of unknown routes to Vite dev server
 - `FUSE_SVG_DIR` overrides SVG base directory for `svg.inline`
+- `FUSE_AOT_REQUEST_LOG_DEFAULT` (AOT release only) enables structured request logging default
+  when `FUSE_REQUEST_LOG` is unset
 
-#### Observability baseline (current implementation)
+#### Observability baseline
 
-- request ID propagation is not currently implemented:
-  - responses do not include a runtime-generated request ID header
-- there is no dedicated structured request logging mode yet:
-  - request-level access logs are not emitted automatically
-  - runtime `log(...)` remains the explicit logging mechanism
-- panic classification is currently binary in fatal envelopes:
-  - `runtime_fatal` for handled runtime failures
-  - `panic` for process-level panic paths
-- no metrics hook extension point is currently exposed by the runtime
+Request ID propagation:
+
+- each HTTP request resolves one request ID with precedence:
+  1. inbound `x-request-id` (if valid)
+  2. inbound `x-correlation-id` (if valid)
+  3. runtime-generated ID (`req-<hex>`)
+- runtime normalizes the resolved value into request headers, so
+  `request.header("x-request-id")` returns the lifecycle request ID inside route handlers
+- runtime emits `X-Request-Id` on HTTP responses for runtime-owned handlers and runtime-generated
+  status/error responses
+- Vite proxy fallback forwards `X-Request-Id` upstream and injects it into the proxied response
+
+Structured request logging mode:
+
+- opt-in via `FUSE_REQUEST_LOG=structured` (`1`/`true` are also accepted)
+- emits one JSON line to stderr per handled request with stable fields:
+  `event`, `runtime`, `request_id`, `method`, `path`, `status`, `duration_ms`, `response_bytes`
+- disabled by default; does not change runtime semantics
+- release AOT binaries support optional default posture:
+  if `FUSE_AOT_REQUEST_LOG_DEFAULT` is truthy and `FUSE_REQUEST_LOG` is unset,
+  runtime sets `FUSE_REQUEST_LOG=structured` before startup
+
+Metrics hook extension point (non-semantic):
+
+- opt-in via `FUSE_METRICS_HOOK=stderr`
+- emits one line per handled request on stderr as:
+  `metrics: <json>`
+- stable JSON fields:
+  `metric` (`http.server.request`), `runtime`, `request_id`, `method`, `path`, `status`,
+  `duration_ms`
+- unsupported/empty hook values are treated as no-op
+- hook emission is best-effort and must not change request/response behavior
+
+Deterministic panic taxonomy:
+
+- fatal envelope class remains `runtime_fatal` for handled runtime errors and `panic` for
+  process-level panics
+- `panic` envelope messages include `panic_kind=<panic_static_str|panic_string|panic_non_string>`
+  for deterministic panic payload classification
+
+Production health route convention (non-built-in):
+
+- runtime does not auto-register `/health`.
+- canonical minimal route pattern is:
+  `get "/health" -> Map<String, String>: return {"status": "ok"}`
+- production guidance should treat this pattern as the default liveness/readiness contract unless a
+  service-specific contract is documented.
+
+Explicit non-goal:
+
+- no runtime plugin extension system (no runtime-loaded plugin/module capability).
 
 See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [Services and declaration syntax](fls.md#services-and-declaration-syntax).
 

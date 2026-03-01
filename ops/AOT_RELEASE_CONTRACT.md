@@ -1,7 +1,7 @@
 # AOT Release Contract
 
 Status: Accepted
-Scope: production AOT backend and release reproducibility contract for the active `v0.4.x` line.
+Scope: production AOT backend and release reproducibility contract for the active `v0.7.x` line.
 
 ## Document contract
 
@@ -32,8 +32,10 @@ Scope: production AOT backend and release reproducibility contract for the activ
    `runtime_cache`, `contract`), expose build metadata (`FUSE_AOT_BUILD_INFO=1`), support startup
    trace diagnostics (`FUSE_AOT_STARTUP_TRACE=1`), and emit stable fatal envelopes
    (`runtime_fatal` / `panic`) including `pid` and build metadata.
+6. Tagged releases publish a Linux reference container image built from
+   `fuse-aot-linux-x64.tar.gz` at `ghcr.io/dmitrijkiltau/fuse-aot-demo:<tag|sha>`.
 
-## SLO targets for v0.4.0
+## SLO targets for v0.7.0
 
 These targets are enforced as release-go/no-go criteria for the AOT rollout.
 
@@ -78,7 +80,8 @@ These targets are enforced as release-go/no-go criteria for the AOT rollout.
 ## Mitigations
 
 1. Build each target on native CI runners in the official matrix.
-2. Keep artifact naming fixed (`fuse-cli-*`, `fuse-aot-*`, `fuse-vscode-*`).
+2. Keep artifact/image naming fixed (`fuse-cli-*`, `fuse-aot-*`, `fuse-vscode-*`,
+   `ghcr.io/dmitrijkiltau/fuse-aot-demo:*`).
 3. Verify archive integrity for CLI/AOT/VSIX payloads before publish.
 4. Publish SHA-256 checksums + metadata manifest for every release bundle.
 5. Evaluate reproducibility per target class; do not compare checksums across unlike targets.

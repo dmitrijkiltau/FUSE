@@ -32,9 +32,9 @@ app "users":
 
 ## Status
 
-FUSE v0.6.0 is released. This is a breaking minor focused on deterministic architecture:
-compile-time capabilities, typed error domains, structured concurrency enforcement,
-deterministic transaction blocks, immutable request context patterns, and strict architecture checks.
+FUSE `v0.7.0` release prep is active. This minor hardens AOT as production posture:
+explicit runtime contract guarantees, production ergonomics defaults, deployment-surface formalization,
+and AST/native/AOT parity-lock gates.
 
 Compatibility is defined by documented behavior in `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, and
 `governance/VERSIONING_POLICY.md`.
@@ -115,6 +115,18 @@ Service routes can directly access HTTP headers/cookies without custom runtime g
 - `response.cookie(name: String, value: String)` appends `Set-Cookie` headers
 - `response.delete_cookie(name: String)` emits cookie-expiration `Set-Cookie` headers
 
+Observability baseline for HTTP runtime:
+
+- request ID precedence: inbound `x-request-id`, then `x-correlation-id`, otherwise generated
+  `req-<hex>`
+- runtime emits `X-Request-Id` on runtime-owned HTTP responses
+- `request.header("x-request-id")` returns the resolved lifecycle request ID inside route handlers
+- `FUSE_REQUEST_LOG=structured` enables one JSON request log line per handled request on stderr
+- `FUSE_METRICS_HOOK=stderr` enables one metrics line (`metrics: <json>`) per handled request
+- canonical production health route pattern (non-built-in):
+  `get "/health" -> Map<String, String>: return {"status": "ok"}`
+- no runtime plugin extension system (explicit non-goal)
+
 ## Strict architecture mode
 
 `fuse check --strict-architecture` enables additional architecture validation:
@@ -147,11 +159,11 @@ Global CLI output option:
 
 Build-specific options:
 
-- `fuse build --aot` emits a deployable AOT binary using the default output path
+- `fuse build --release` emits a deployable AOT binary using the default output path
   `.fuse/build/program.aot` (`.fuse/build/program.aot.exe` on Windows) unless
   `[build].native_bin` is configured.
-- `fuse build --aot --release` uses the release profile for AOT binary generation.
-- `fuse build --release` without `--aot` is rejected.
+- `fuse build --aot` forces AOT output in debug profile.
+- `fuse build` remains the explicit non-AOT local development path (cache artifacts only).
 
 Packages use a `fuse.toml` manifest. Minimal example:
 
@@ -220,16 +232,31 @@ Native/IR cache reuse also requires matching build fingerprints (target triple, 
 
 Deployable AOT output:
 
-- `fuse build --aot` emits `.fuse/build/program.aot` (`.exe` on Windows) by default.
+- `fuse build --release` emits `.fuse/build/program.aot` (`.exe` on Windows) by default.
+- `fuse build --aot` also emits AOT output (debug profile).
 - `[build].native_bin` overrides the AOT output path and remains supported.
 - AOT binaries embed build metadata:
   `mode`, `profile`, `target`, `rustc`, `cli`, `runtime_cache`, and `contract`.
   Use `FUSE_AOT_BUILD_INFO=1 <aot-binary>` to print this metadata and exit.
 - `FUSE_AOT_STARTUP_TRACE=1 <aot-binary>` emits a startup diagnostic line with PID + build metadata.
+- Startup order contract:
+  `FUSE_AOT_BUILD_INFO=1` short-circuits before startup trace and before app execution.
 - AOT build/link failures are deterministic command failures with `error:` diagnostics and
   `[build] failed` step footer.
 - Runtime failures in AOT binaries emit a stable fatal envelope:
   `fatal: class=<runtime_fatal|panic> pid=<...> message=<...> <build-info>`.
+  For `class=panic`, message starts with
+  `panic_kind=<panic_static_str|panic_string|panic_non_string>`.
+- AOT runtime exit codes are stable: `0` success, `1` runtime failure, `101` panic.
+- Unix `SIGINT`/`SIGTERM` use deterministic graceful shutdown for service loops
+  (`shutdown: runtime=<ast|native> signal=<...> handled_requests=<n>`) with clean exit.
+- AOT runtime config resolution is deterministic: env -> config file (`FUSE_CONFIG` or
+  `config.toml` in process cwd) -> config defaults.
+- AOT runtime does not auto-load `.env`; only process environment is observed.
+- Optional release logging posture: if `FUSE_AOT_REQUEST_LOG_DEFAULT=1` and `FUSE_REQUEST_LOG` is
+  unset, AOT runtime defaults to structured request logs.
+- AOT runtime is sealed: no dynamic backend fallback, no JIT compilation for app execution, and no
+  runtime source compilation.
 
 Use `fuse build --clean` to clear the cache.
 
@@ -262,7 +289,7 @@ Always run Cargo through `scripts/cargo_env.sh` to avoid cross-device link error
 | Gate | Command | Purpose |
 |---|---|---|
 | Semantic suite | `./scripts/semantic_suite.sh` | Parser, type system, and boundary contract tests |
-| Authority parity | `./scripts/authority_parity.sh` | AST/native semantic equivalence |
+| Authority parity | `./scripts/authority_parity.sh` | AST/native semantic authority plus AST/native/AOT observable parity lock (errors/JSON/logging/panic taxonomy/transaction/spawn) |
 | LSP suite | `./scripts/lsp_suite.sh` | LSP contracts, navigation, completions, code actions |
 | LSP performance | `./scripts/lsp_perf_reliability.sh` | Cancellation handling and responsiveness budgets |
 | LSP incremental | `./scripts/lsp_workspace_incremental.sh` | Workspace cache correctness |
@@ -285,6 +312,7 @@ Canonical artifact names:
 | CLI bundle (Windows) | `dist/fuse-cli-<platform>.zip` |
 | AOT reference bundle (Linux/macOS) | `dist/fuse-aot-<platform>.tar.gz` |
 | AOT reference bundle (Windows) | `dist/fuse-aot-<platform>.zip` |
+| Official reference image (release tags) | `ghcr.io/dmitrijkiltau/fuse-aot-demo:<tag>` |
 | VS Code extension | `dist/fuse-vscode-<platform>.vsix` |
 | Release checksums | `dist/SHA256SUMS` |
 | Release metadata | `dist/release-artifacts.json` |
@@ -303,6 +331,9 @@ Reproducibility + static profile policy: `ops/AOT_RELEASE_CONTRACT.md`.
 
 # Package host AOT reference bundle (archive + integrity check)
 ./scripts/package_aot_artifact.sh --release --manifest-path .
+
+# Build official reference container image from release archive
+./scripts/package_aot_container_image.sh --archive dist/fuse-aot-linux-x64.tar.gz --tag v0.7.0
 
 # Package VS Code extension with bundled LSP (.vsix + integrity check)
 ./scripts/package_vscode_extension.sh --release
@@ -361,6 +392,7 @@ If two documents disagree, defer to the owning document listed for that tier.
 |---|---|
 | `ops/AOT_RELEASE_CONTRACT.md` | AOT production release contract, SLO thresholds, and reproducibility policy |
 | `ops/AOT_ROLLBACK_PLAYBOOK.md` | Incident rollback plan (AOT primary, JIT-native fallback) |
+| `ops/DEPLOY.md` | Canonical deployment guide (VM, Docker, systemd, Kubernetes) |
 | `ops/RELEASE.md` | Release checklist and publication workflow |
 | `ops/FLAKE_TRIAGE.md` | Checklist for diagnosing and closing intermittent CI/test failures |
 | `ops/BENCHMARKS.md` | Workload matrix and benchmark definitions |

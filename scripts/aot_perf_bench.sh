@@ -277,7 +277,7 @@ echo "Throughput burst runs/sample: $BURST_RUNS"
 mkdir -p "$OUT_DIR"
 
 echo "Building AOT binary fixture (release)..."
-"$ROOT/scripts/fuse" build --manifest-path "$FIXTURE_DIR" --aot --release >/dev/null
+"$ROOT/scripts/fuse" build --manifest-path "$FIXTURE_DIR" --release >/dev/null
 AOT_BIN="$FIXTURE_DIR/.fuse/build/program.aot"
 if [[ ! -f "$AOT_BIN" && -f "${AOT_BIN}.exe" ]]; then
   AOT_BIN="${AOT_BIN}.exe"

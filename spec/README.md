@@ -2,12 +2,12 @@
 
 This directory is the documentation-tier index for normative language/runtime contracts.
 
-Canonical spec documents for the current pre-`1.0.0` line:
+Canonical spec documents for the current release line:
 
 - [`fls.md`](fls.md) - syntax, grammar, AST, and static semantics
 - [`runtime.md`](runtime.md) - runtime and boundary semantics
+- [`../governance/VERSIONING_POLICY.md`](../governance/VERSIONING_POLICY.md) - compatibility/versioning rules
 - [`../ops/AOT_RELEASE_CONTRACT.md`](../ops/AOT_RELEASE_CONTRACT.md) - AOT production release contract and SLO gates
-- [`1.0.0_STABILITY_CONTRACT.md`](1.0.0_STABILITY_CONTRACT.md) - proposed `1.x` stability contract and entry criteria
-- [`../governance/1.0.0_PLAN.md`](../governance/1.0.0_PLAN.md) - execution milestones for satisfying the `1.0.0` contract
+- [`../ops/RELEASE.md`](../ops/RELEASE.md) - release execution checklist and gates
 
 Conflict rule: for semantic behavior, `fls.md` and `runtime.md` are authoritative.
