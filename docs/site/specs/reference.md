@@ -648,6 +648,11 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 - emits stderr step markers: `[command] start` and `[command] ok|failed|validation failed`
 - when AOT output is requested, `fuse build` emits deterministic progress stages:
   `[build] aot [n/6] ...`
+- `--diagnostics json` switches diagnostics on stderr to JSON Lines:
+  - diagnostic entries:
+    `{"kind":"diagnostic","level":"error|warning","message":"...","path":"...","line":N,"column":N,"span_start":N,"span_end":N}`
+  - command-step entries:
+    `{"kind":"command_step","command":"check|run|build|test","message":"start|ok|failed|validation failed|..."}`
 - keeps JSON validation payloads uncolored/machine-readable
 - `run` CLI argument validation failures exit with code `2`
 

@@ -3,8 +3,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -561,8 +561,8 @@ fn connect_reload_websocket(ws_url: &str) -> Result<TcpStream, String> {
     stream
         .write_all(request.as_bytes())
         .map_err(|err| format!("write websocket handshake: {err}"))?;
-    let header =
-        read_http_response_header(&mut stream).map_err(|err| format!("read ws handshake: {err}"))?;
+    let header = read_http_response_header(&mut stream)
+        .map_err(|err| format!("read ws handshake: {err}"))?;
     if !header.starts_with("HTTP/1.1 101") {
         return Err(format!("websocket handshake failed: {header}"));
     }
@@ -869,8 +869,9 @@ app "Demo"
     )
     .expect("write invalid main.fuse");
 
-    let payload = read_websocket_text_frame(&mut ws)
-        .unwrap_or_else(|err| panic!("read websocket payload failed: {err}; stderr:\n{stderr_log}"));
+    let payload = read_websocket_text_frame(&mut ws).unwrap_or_else(|err| {
+        panic!("read websocket payload failed: {err}; stderr:\n{stderr_log}")
+    });
     assert!(
         payload.contains("\"type\":\"compile_error\""),
         "payload: {payload}"
@@ -3237,7 +3238,9 @@ app "Demo":
     ];
     let mut last = 0usize;
     for step in steps {
-        let pos = stderr.find(step).unwrap_or_else(|| panic!("missing step {step}; stderr: {stderr}"));
+        let pos = stderr
+            .find(step)
+            .unwrap_or_else(|| panic!("missing step {step}; stderr: {stderr}"));
         assert!(pos >= last, "out-of-order step {step}; stderr: {stderr}");
         last = pos;
     }
@@ -4595,6 +4598,162 @@ app "Demo":
         stderr.contains("strict architecture: capability purity violation"),
         "stderr: {stderr}"
     );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_diagnostics_json_emits_structured_output_for_project_mode() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let manifest = r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#;
+    fs::write(dir.join("fuse.toml"), manifest).expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+import { broken } from "./util"
+
+app "Demo":
+  broken()
+"#,
+    )
+    .expect("write main.fuse");
+    fs::write(
+        dir.join("util.fuse"),
+        r#"
+fn broken():
+  let value: Missing = 1
+"#,
+    )
+    .expect("write util.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--diagnostics")
+        .arg("json")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse check --diagnostics json");
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("\"kind\":\"command_step\"") && stderr.contains("\"command\":\"check\""),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("\"message\":\"start\""), "stderr: {stderr}");
+    assert!(
+        stderr.contains("\"message\":\"failed\""),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"kind\":\"diagnostic\""),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("\"level\":\"error\""), "stderr: {stderr}");
+    assert!(stderr.contains("util.fuse"), "stderr: {stderr}");
+    assert!(!stderr.contains("error:"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_diagnostics_json_emits_structured_output_for_delegated_mode() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let entry = dir.join("main.fuse");
+    fs::write(
+        &entry,
+        r#"
+app "Demo":
+  let value: Missing = 1
+  print(value)
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--diagnostics")
+        .arg("json")
+        .arg("--color")
+        .arg("never")
+        .arg(&entry)
+        .output()
+        .expect("run delegated fuse check --diagnostics json");
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("\"kind\":\"command_step\"") && stderr.contains("\"command\":\"check\""),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"kind\":\"diagnostic\""),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("\"level\":\"error\""), "stderr: {stderr}");
+    assert!(stderr.contains("main.fuse"), "stderr: {stderr}");
+    assert!(!stderr.contains("error:"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_validation_errors_emit_json_step_events_when_diagnostics_json_enabled() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+fn main(name: String):
+  print("hello " + name)
+
+app "Demo":
+  main("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--diagnostics")
+        .arg("json")
+        .arg("--color")
+        .arg("never")
+        .arg("--")
+        .arg("--unknown=1")
+        .output()
+        .expect("run fuse run --diagnostics json");
+    assert_eq!(output.status.code(), Some(2), "status: {:?}", output.status);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("\"kind\":\"command_step\"") && stderr.contains("\"command\":\"run\""),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("\"message\":\"start\""), "stderr: {stderr}");
+    assert!(
+        stderr.contains("\"message\":\"validation failed\""),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"code\":\"unknown_flag\""),
+        "stderr: {stderr}"
+    );
+    assert!(!stderr.contains("[run]"), "stderr: {stderr}");
 
     let _ = fs::remove_dir_all(&dir);
 }

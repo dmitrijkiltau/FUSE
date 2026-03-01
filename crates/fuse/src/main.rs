@@ -33,6 +33,7 @@ options:
   --filter <pattern>      Run only tests matching substring pattern (test only)
   --backend <ast|native>  Backend override (run only)
   --strict-architecture   Enable strict architectural checks during semantic analysis
+  --diagnostics <json|text>  Emit structured JSON diagnostics or force text mode
   --color <auto|always|never>  Colorized CLI output policy
   --clean                 Remove .fuse/build before building (build only)
   --aot                   Emit deployable AOT binary (build only)
@@ -178,6 +179,7 @@ struct CommonArgs {
     app: Option<String>,
     backend: Option<String>,
     test_filter: Option<String>,
+    diagnostics: Option<DiagnosticsFormat>,
     color: Option<ColorChoice>,
     program_args: Vec<String>,
     clean: bool,
@@ -217,6 +219,12 @@ enum ColorChoice {
     Never,
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum DiagnosticsFormat {
+    Text,
+    Json,
+}
+
 impl ColorChoice {
     fn parse(raw: &str) -> Option<Self> {
         match raw {
@@ -236,7 +244,25 @@ impl ColorChoice {
     }
 }
 
+impl DiagnosticsFormat {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "json" => Some(Self::Json),
+            "text" => Some(Self::Text),
+            _ => None,
+        }
+    }
+
+    fn as_env_value(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Json => "json",
+        }
+    }
+}
+
 static COLOR_MODE: AtomicU8 = AtomicU8::new(0);
+static DIAGNOSTIC_MODE: AtomicU8 = AtomicU8::new(0);
 
 fn apply_color_choice(choice: ColorChoice) {
     let mode = match choice {
@@ -256,6 +282,26 @@ fn apply_color_choice(choice: ColorChoice) {
     unsafe {
         env::set_var("FUSE_COLOR", choice.as_env_value());
     }
+}
+
+fn apply_diagnostics_format(format: DiagnosticsFormat) {
+    let mode = match format {
+        DiagnosticsFormat::Text => 0,
+        DiagnosticsFormat::Json => 1,
+    };
+    DIAGNOSTIC_MODE.store(mode, Ordering::Relaxed);
+    match format {
+        DiagnosticsFormat::Text => unsafe {
+            env::remove_var("FUSE_DIAGNOSTICS");
+        },
+        DiagnosticsFormat::Json => unsafe {
+            env::set_var("FUSE_DIAGNOSTICS", format.as_env_value());
+        },
+    }
+}
+
+fn diagnostics_json_enabled() -> bool {
+    DIAGNOSTIC_MODE.load(Ordering::Relaxed) == 1
 }
 
 fn color_auto_is_tty() -> bool {
@@ -290,10 +336,18 @@ fn style_header(text: &str) -> String {
 }
 
 fn emit_cli_error(message: &str) {
+    if diagnostics_json_enabled() {
+        emit_json_line(cli_message_json("error", message));
+        return;
+    }
     eprintln!("{}", style_error(&format!("error: {message}")));
 }
 
 fn emit_cli_warning(message: &str) {
+    if diagnostics_json_enabled() {
+        emit_json_line(cli_message_json("warning", message));
+        return;
+    }
     eprintln!("{}", style_warning(&format!("warning: {message}")));
 }
 
@@ -316,6 +370,12 @@ fn command_prefix(command: Command) -> Option<String> {
 }
 
 fn emit_command_step(command: Command, message: &str) {
+    if let Some(tag) = command_tag(command) {
+        if diagnostics_json_enabled() {
+            emit_json_line(command_step_json(tag, message));
+            return;
+        }
+    }
     if let Some(prefix) = command_prefix(command) {
         eprintln!("{prefix} {message}");
     }
@@ -363,13 +423,62 @@ fn main() {
     std::process::exit(code);
 }
 
+fn emit_usage() {
+    if diagnostics_json_enabled() {
+        return;
+    }
+    eprintln!("{}", style_header(USAGE));
+}
+
+fn emit_json_line(value: rt_json::JsonValue) {
+    eprintln!("{}", rt_json::encode(&value));
+}
+
+fn cli_message_json(level: &str, message: &str) -> rt_json::JsonValue {
+    let mut object = BTreeMap::new();
+    object.insert(
+        "kind".to_string(),
+        rt_json::JsonValue::String("cli_message".to_string()),
+    );
+    object.insert(
+        "level".to_string(),
+        rt_json::JsonValue::String(level.to_string()),
+    );
+    object.insert(
+        "message".to_string(),
+        rt_json::JsonValue::String(message.to_string()),
+    );
+    rt_json::JsonValue::Object(object)
+}
+
+fn command_step_json(command: &str, message: &str) -> rt_json::JsonValue {
+    let mut object = BTreeMap::new();
+    object.insert(
+        "kind".to_string(),
+        rt_json::JsonValue::String("command_step".to_string()),
+    );
+    object.insert(
+        "command".to_string(),
+        rt_json::JsonValue::String(command.to_string()),
+    );
+    object.insert(
+        "message".to_string(),
+        rt_json::JsonValue::String(message.to_string()),
+    );
+    rt_json::JsonValue::Object(object)
+}
+
 fn run(args: Vec<String>) -> i32 {
     apply_color_choice(ColorChoice::Auto);
+    apply_diagnostics_format(DiagnosticsFormat::Text);
     if args.is_empty() {
-        eprintln!("{}", style_header(USAGE));
+        emit_usage();
         return 1;
     }
     let (cmd, rest) = args.split_first().unwrap();
+    if let Some(format) = discover_diagnostics_format(rest) {
+        apply_diagnostics_format(format);
+    }
     let command = match cmd.as_str() {
         "dev" => Command::Dev,
         "run" => Command::Run,
@@ -381,7 +490,7 @@ fn run(args: Vec<String>) -> i32 {
         "migrate" => Command::Migrate,
         _ => {
             emit_cli_error(&format!("unknown command: {cmd}"));
-            eprintln!("{}", style_header(USAGE));
+            emit_usage();
             return 1;
         }
     };
@@ -402,10 +511,11 @@ fn run(args: Vec<String>) -> i32 {
         Ok(args) => args,
         Err(err) => {
             emit_cli_error(&err);
-            eprintln!("{}", style_header(USAGE));
+            emit_usage();
             return 1;
         }
     };
+    apply_diagnostics_format(common.diagnostics.unwrap_or(DiagnosticsFormat::Text));
     apply_color_choice(common.color.unwrap_or(ColorChoice::Auto));
 
     let (manifest, manifest_dir) = match load_manifest(common.manifest_path.as_deref()) {
@@ -622,6 +732,26 @@ fn discover_color_choice(args: &[String]) -> Option<ColorChoice> {
         }
         if let Some(value) = arg.strip_prefix("--color=") {
             return ColorChoice::parse(value);
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn discover_diagnostics_format(args: &[String]) -> Option<DiagnosticsFormat> {
+    let mut idx = 0usize;
+    while idx < args.len() {
+        let arg = &args[idx];
+        if arg == "--" {
+            break;
+        }
+        if arg == "--diagnostics" {
+            idx += 1;
+            let value = args.get(idx)?;
+            return DiagnosticsFormat::parse(value);
+        }
+        if let Some(value) = arg.strip_prefix("--diagnostics=") {
+            return DiagnosticsFormat::parse(value);
         }
         idx += 1;
     }
@@ -1809,6 +1939,30 @@ fn parse_common_args(
             idx += 1;
             continue;
         }
+        if arg == "--diagnostics" {
+            idx += 1;
+            let Some(mode) = args.get(idx) else {
+                return Err("--diagnostics expects json|text".to_string());
+            };
+            let Some(parsed) = DiagnosticsFormat::parse(mode) else {
+                return Err(format!(
+                    "invalid --diagnostics value: {mode} (expected json|text)"
+                ));
+            };
+            out.diagnostics = Some(parsed);
+            idx += 1;
+            continue;
+        }
+        if let Some(mode) = arg.strip_prefix("--diagnostics=") {
+            let Some(parsed) = DiagnosticsFormat::parse(mode) else {
+                return Err(format!(
+                    "invalid --diagnostics value: {mode} (expected json|text)"
+                ));
+            };
+            out.diagnostics = Some(parsed);
+            idx += 1;
+            continue;
+        }
         if arg == "--color" {
             idx += 1;
             let Some(choice) = args.get(idx) else {
@@ -2075,12 +2229,8 @@ fn run_project_check(
             return 1;
         }
     };
-    let changed = changed_modules_since_meta(
-        &registry,
-        &current_meta,
-        cache_meta.as_ref(),
-        manifest_dir,
-    );
+    let changed =
+        changed_modules_since_meta(&registry, &current_meta, cache_meta.as_ref(), manifest_dir);
     let affected = affected_modules_for_incremental_check(&registry, &changed);
 
     let mut files = Vec::new();
@@ -3347,6 +3497,10 @@ fn styled_diag_level(level: &fusec::diag::Level) -> String {
 }
 
 fn emit_diag(diag: &fusec::diag::Diag, fallback: Option<(&Path, &str)>) {
+    if diagnostics_json_enabled() {
+        emit_json_line(diag_json_value(diag, fallback));
+        return;
+    }
     let level = styled_diag_level(&diag.level);
     if let Some(path) = &diag.path {
         if let Ok(src) = fs::read_to_string(path) {
@@ -3390,6 +3544,61 @@ fn emit_diag(diag: &fusec::diag::Diag, fallback: Option<(&Path, &str)>) {
         "{level}: {} ({}..{})",
         diag.message, diag.span.start, diag.span.end
     );
+}
+
+fn diag_json_value(
+    diag: &fusec::diag::Diag,
+    fallback: Option<(&Path, &str)>,
+) -> rt_json::JsonValue {
+    let mut object = BTreeMap::new();
+    object.insert(
+        "kind".to_string(),
+        rt_json::JsonValue::String("diagnostic".to_string()),
+    );
+    object.insert(
+        "level".to_string(),
+        rt_json::JsonValue::String(match diag.level {
+            fusec::diag::Level::Error => "error".to_string(),
+            fusec::diag::Level::Warning => "warning".to_string(),
+        }),
+    );
+    object.insert(
+        "message".to_string(),
+        rt_json::JsonValue::String(diag.message.clone()),
+    );
+    object.insert(
+        "span_start".to_string(),
+        rt_json::JsonValue::Number(diag.span.start as f64),
+    );
+    object.insert(
+        "span_end".to_string(),
+        rt_json::JsonValue::Number(diag.span.end as f64),
+    );
+
+    if let Some(path) = &diag.path {
+        object.insert(
+            "path".to_string(),
+            rt_json::JsonValue::String(path.display().to_string()),
+        );
+        if let Ok(src) = fs::read_to_string(path) {
+            let (line, col, _) = line_info(&src, diag.span.start);
+            object.insert("line".to_string(), rt_json::JsonValue::Number(line as f64));
+            object.insert("column".to_string(), rt_json::JsonValue::Number(col as f64));
+        }
+        return rt_json::JsonValue::Object(object);
+    }
+
+    if let Some((path, src)) = fallback {
+        let (line, col, _) = line_info(src, diag.span.start);
+        object.insert(
+            "path".to_string(),
+            rt_json::JsonValue::String(path.display().to_string()),
+        );
+        object.insert("line".to_string(), rt_json::JsonValue::Number(line as f64));
+        object.insert("column".to_string(), rt_json::JsonValue::Number(col as f64));
+    }
+
+    rt_json::JsonValue::Object(object)
 }
 
 fn line_info(src: &str, offset: usize) -> (usize, usize, &str) {

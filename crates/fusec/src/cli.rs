@@ -10,12 +10,28 @@ use crate::diag::{Diag, Level};
 use crate::interp::{Interpreter, MigrationJob, TestJob, TestOutcome};
 use crate::{load_program_with_modules, load_program_with_modules_and_deps};
 
-const USAGE: &str = "usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--filter PATTERN] [--strict-architecture] [--backend ast|native] [--app NAME] <file>";
+const USAGE: &str = "usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--filter PATTERN] [--strict-architecture] [--diagnostics json|text] [--backend ast|native] [--app NAME] <file>";
 
 #[derive(Copy, Clone)]
 enum Backend {
     Ast,
     Native,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum DiagnosticFormat {
+    Text,
+    Json,
+}
+
+impl DiagnosticFormat {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "json" => Some(Self::Json),
+            "text" => Some(Self::Text),
+            _ => None,
+        }
+    }
 }
 
 pub fn run<I>(args: I) -> i32
@@ -43,6 +59,7 @@ where
     let mut test = false;
     let mut test_filter: Option<String> = None;
     let mut strict_architecture = false;
+    let mut diagnostics_format = diagnostics_format_from_env();
     let mut path = None;
 
     while let Some(arg) = args.next() {
@@ -94,6 +111,34 @@ where
         }
         if arg == "--strict-architecture" {
             strict_architecture = true;
+            continue;
+        }
+        if arg == "--diagnostics" {
+            if let Some(mode) = args.next() {
+                diagnostics_format = match DiagnosticFormat::parse(&mode) {
+                    Some(mode) => mode,
+                    None => {
+                        eprintln!("invalid --diagnostics value: {mode} (expected json|text)");
+                        eprintln!("{USAGE}");
+                        return 1;
+                    }
+                };
+            } else {
+                eprintln!("--diagnostics expects json|text");
+                eprintln!("{USAGE}");
+                return 1;
+            }
+            continue;
+        }
+        if let Some(mode) = arg.strip_prefix("--diagnostics=") {
+            diagnostics_format = match DiagnosticFormat::parse(mode) {
+                Some(mode) => mode,
+                None => {
+                    eprintln!("invalid --diagnostics value: {mode} (expected json|text)");
+                    eprintln!("{USAGE}");
+                    return 1;
+                }
+            };
             continue;
         }
         if arg == "--backend" {
@@ -170,7 +215,7 @@ where
         None => load_program_with_modules(Path::new(&path), &src),
     };
     if !diags.is_empty() {
-        emit_diags(&diags, Some(&src));
+        emit_diags(&diags, diagnostics_format, Some((Path::new(&path), &src)));
         return 1;
     }
     let root = match registry.root() {
@@ -202,7 +247,7 @@ where
         let (_analysis, diags) =
             crate::sema::analyze_registry_with_options(&registry, sema_options);
         if !diags.is_empty() {
-            emit_diags(&diags, Some(&src));
+            emit_diags(&diags, diagnostics_format, Some((Path::new(&path), &src)));
             return 1;
         }
     }
@@ -217,7 +262,7 @@ where
         let (_analysis, diags) =
             crate::sema::analyze_registry_with_options(&registry, sema_options);
         if !diags.is_empty() {
-            emit_diags(&diags, Some(&src));
+            emit_diags(&diags, diagnostics_format, Some((Path::new(&path), &src)));
             return 1;
         }
         let migrations = match collect_migrations(&registry) {
@@ -251,7 +296,7 @@ where
         let (_analysis, diags) =
             crate::sema::analyze_registry_with_options(&registry, sema_options);
         if !diags.is_empty() {
-            emit_diags(&diags, Some(&src));
+            emit_diags(&diags, diagnostics_format, Some((Path::new(&path), &src)));
             return 1;
         }
         let mut tests = match collect_tests(&registry) {
@@ -638,13 +683,24 @@ fn emit_error_json(message: &str) {
     emit_validation_error("$", "runtime_error", message);
 }
 
-fn emit_diags(diags: &[Diag], fallback_src: Option<&str>) {
-    for diag in diags {
-        emit_diag(diag, fallback_src);
+fn diagnostics_format_from_env() -> DiagnosticFormat {
+    match std::env::var("FUSE_DIAGNOSTICS").ok().as_deref() {
+        Some("json") => DiagnosticFormat::Json,
+        _ => DiagnosticFormat::Text,
     }
 }
 
-fn emit_diag(diag: &Diag, fallback_src: Option<&str>) {
+fn emit_diags(diags: &[Diag], format: DiagnosticFormat, fallback: Option<(&Path, &str)>) {
+    for diag in diags {
+        emit_diag(diag, format, fallback);
+    }
+}
+
+fn emit_diag(diag: &Diag, format: DiagnosticFormat, fallback: Option<(&Path, &str)>) {
+    if matches!(format, DiagnosticFormat::Json) {
+        emit_diag_json(diag, fallback);
+        return;
+    }
     let level = match diag.level {
         Level::Error => "error",
         Level::Warning => "warning",
@@ -666,7 +722,7 @@ fn emit_diag(diag: &Diag, fallback_src: Option<&str>) {
         eprintln!("{level}: {} ({})", diag.message, path.display());
         return;
     }
-    if let Some(src) = fallback_src {
+    if let Some((_, src)) = fallback {
         let (line, col, line_text) = line_info(src, diag.span.start);
         eprintln!("{level}: {} ({}:{})", diag.message, line, col);
         eprintln!("  {line_text}");
@@ -677,6 +733,59 @@ fn emit_diag(diag: &Diag, fallback_src: Option<&str>) {
         "{level}: {} ({}..{})",
         diag.message, diag.span.start, diag.span.end
     );
+}
+
+fn emit_diag_json(diag: &Diag, fallback: Option<(&Path, &str)>) {
+    let mut object = std::collections::BTreeMap::new();
+    object.insert(
+        "kind".to_string(),
+        json::JsonValue::String("diagnostic".to_string()),
+    );
+    object.insert(
+        "level".to_string(),
+        json::JsonValue::String(match diag.level {
+            Level::Error => "error".to_string(),
+            Level::Warning => "warning".to_string(),
+        }),
+    );
+    object.insert(
+        "message".to_string(),
+        json::JsonValue::String(diag.message.clone()),
+    );
+    object.insert(
+        "span_start".to_string(),
+        json::JsonValue::Number(diag.span.start as f64),
+    );
+    object.insert(
+        "span_end".to_string(),
+        json::JsonValue::Number(diag.span.end as f64),
+    );
+
+    if let Some(path) = &diag.path {
+        object.insert(
+            "path".to_string(),
+            json::JsonValue::String(path.display().to_string()),
+        );
+        if let Ok(src) = fs::read_to_string(path) {
+            let (line, col, _) = line_info(&src, diag.span.start);
+            object.insert("line".to_string(), json::JsonValue::Number(line as f64));
+            object.insert("column".to_string(), json::JsonValue::Number(col as f64));
+        }
+        eprintln!("{}", json::encode(&json::JsonValue::Object(object)));
+        return;
+    }
+
+    if let Some((path, src)) = fallback {
+        let (line, col, _) = line_info(src, diag.span.start);
+        object.insert(
+            "path".to_string(),
+            json::JsonValue::String(path.display().to_string()),
+        );
+        object.insert("line".to_string(), json::JsonValue::Number(line as f64));
+        object.insert("column".to_string(), json::JsonValue::Number(col as f64));
+    }
+
+    eprintln!("{}", json::encode(&json::JsonValue::Object(object)));
 }
 
 fn line_info(src: &str, offset: usize) -> (usize, usize, &str) {

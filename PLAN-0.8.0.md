@@ -291,15 +291,15 @@ Config:
 - [x] `fuse dev` diagnostic overlay — show first compilation error in browser (injected via existing `__reload` WebSocket)
 - [x] `fuse test --filter "pattern"` — run subset of test blocks matching a name pattern
 - [x] `fuse build` progress indicator for AOT compilation steps
-- [ ] Structured JSON diagnostic output mode (`--diagnostics json`) for CI/editor consumption
+- [x] Structured JSON diagnostic output mode (`--diagnostics json`) for CI/editor consumption
 
 **Deliverables:**
 
 - [x] Incremental check validated with module-edit-recheck benchmarks
 - [x] `fuse dev` overlay tested with intentional syntax errors
 - [x] `fuse test --filter` documented in README and reference
-- [ ] JSON diagnostics schema documented
-- [ ] `use_case_bench.sh` updated with incremental check metric
+- [x] JSON diagnostics schema documented
+- [x] `use_case_bench.sh` updated with incremental check metric
 
 **Progress update (2026-03-01):**
 
@@ -325,6 +325,15 @@ Config:
 - Implemented deterministic AOT build progress stages in `fuse build`:
   - AOT-emitting builds now print `[build] aot [n/6] ...` checkpoints across compile/cache/object/runner/link stages
   - non-AOT `fuse build` output remains unchanged except standard start/ok|failed step markers
+- Implemented structured JSON diagnostics mode:
+  - new `--diagnostics json` option for `fuse` commands switches stderr diagnostic output to JSON Lines
+  - wrapper emits machine-readable command-step events (`kind=command_step`) and structured compiler diagnostics (`kind=diagnostic`)
+  - delegated `fusec` execution paths (`fuse check|run|test` fallback) now honor the same mode for parse/sema diagnostics via shared diagnostics formatting
+- Documented JSON diagnostics schema in `spec/runtime.md` and propagated to `docs/site/specs/reference.md`
+- Added JSON diagnostics regression coverage:
+  - `crates/fuse/tests/project_cli.rs::check_diagnostics_json_emits_structured_output_for_project_mode`
+  - `crates/fuse/tests/project_cli.rs::check_diagnostics_json_emits_structured_output_for_delegated_mode`
+  - `crates/fuse/tests/project_cli.rs::run_validation_errors_emit_json_step_events_when_diagnostics_json_enabled`
 - Added AOT progress regression coverage:
   - `crates/fuse/tests/project_cli.rs::build_aot_emits_progress_indicator`
 - Added `fuse dev` overlay regression coverage:
@@ -333,9 +342,14 @@ Config:
 - Added CLI regression coverage for incremental behavior in `crates/fuse/tests/project_cli.rs`:
   - `check_incremental_cache_hit_skips_unchanged_modules`
   - `check_incremental_rechecks_importers_when_dependency_changes`
-- Cold vs warm reference-service measurement confirms expected speedup:
-  - cold: `0.18s`
-  - warm: `0.12s`
+- Updated `scripts/use_case_bench.sh` for incremental-check benchmarking:
+  - benchmark runs against a per-iteration temp copy of `examples/reference-service` to safely apply synthetic module edits
+  - new metric `reference_service.check_incremental_edit_ms` measures `fuse check --manifest-path ...` immediately after editing `src/errors.fuse`
+  - benchmark outputs now include the new metric in both Markdown and JSON (`schema_version: 3`)
+- Cold/warm/incremental check measurement confirms expected incremental behavior:
+  - cold: `113.380 ms`
+  - warm: `112.120 ms`
+  - incremental edit re-check: `115.257 ms`
 - Validation runs green:
   - `scripts/cargo_env.sh cargo test -p fusec --test html_runtime`
   - `scripts/cargo_env.sh cargo test -p fusec --test result_decode_runtime`
@@ -345,10 +359,14 @@ Config:
   - `scripts/cargo_env.sh cargo check -p fuse -p fusec`
   - `scripts/cargo_env.sh cargo test -p fuse --test project_cli check_incremental_cache_hit_skips_unchanged_modules`
   - `scripts/cargo_env.sh cargo test -p fuse --test project_cli check_incremental_rechecks_importers_when_dependency_changes`
-  - `scripts/cargo_env.sh cargo test -p fuse --test project_cli check_`
   - `scripts/cargo_env.sh cargo test -p fuse --test project_cli dev_emits_compile_error_overlay_event_for_syntax_error`
   - `scripts/cargo_env.sh cargo test -p fusec --test html_runtime html_http_injects_live_reload_script_when_enabled`
   - `scripts/cargo_env.sh cargo test -p fuse --test project_cli build_aot_emits_progress_indicator`
+  - `scripts/cargo_env.sh cargo test -p fuse --test project_cli check_diagnostics_json_emits_structured_output_for_project_mode`
+  - `scripts/cargo_env.sh cargo test -p fuse --test project_cli check_diagnostics_json_emits_structured_output_for_delegated_mode`
+  - `scripts/cargo_env.sh cargo test -p fuse --test project_cli run_validation_errors_emit_json_step_events_when_diagnostics_json_enabled`
+  - `./scripts/use_case_bench.sh`
+  - `./scripts/check_use_case_bench_regression.sh`
 
 **Exit criteria:** Warm `fuse check` on reference-service measurably faster than cold check.
 

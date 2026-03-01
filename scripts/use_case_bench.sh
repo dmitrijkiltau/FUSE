@@ -16,12 +16,14 @@ TMP_DIR=""
 LOG_FILE=""
 PORT=""
 DB_URL=""
+BENCH_REFERENCE_MANIFEST=""
 
 declare -a cli_check_samples=()
 declare -a cli_run_ok_samples=()
 declare -a cli_run_invalid_samples=()
 declare -a notes_check_cold_samples=()
 declare -a notes_check_warm_samples=()
+declare -a notes_check_incremental_edit_samples=()
 declare -a notes_migrate_samples=()
 declare -a notes_get_list_samples=()
 declare -a notes_post_ok_samples=()
@@ -163,12 +165,17 @@ start_reference_service_runtime() {
   local probe_code
   local attempt
 
+  if [[ -z "$BENCH_REFERENCE_MANIFEST" ]]; then
+    echo "benchmark manifest path was not initialized before runtime startup" >&2
+    return 1
+  fi
+
   for ((attempt = 1; attempt <= attempts; attempt++)); do
     PORT="$((39000 + RANDOM % 1000))"
     echo "Using reference-service benchmark port (attempt $attempt/$attempts): $PORT"
     : >"$LOG_FILE"
     env APP_PORT="$PORT" PORT="$PORT" FUSE_DB_URL="$DB_URL" \
-      "$ROOT/scripts/fuse" run --manifest-path "$REFERENCE_SERVICE_DIR" >"$LOG_FILE" 2>&1 &
+      "$ROOT/scripts/fuse" run --manifest-path "$BENCH_REFERENCE_MANIFEST" >"$LOG_FILE" 2>&1 &
     SERVER_PID="$!"
     probe_code=0
     wait_for_http "http://127.0.0.1:${PORT}/api/public/notes" "$SERVER_PID" "$timeout_secs" || probe_code=$?
@@ -231,15 +238,19 @@ collect_environment_metadata() {
 run_single_iteration() {
   local iteration="$1"
   local cli_check_ms cli_run_ok_ms cli_run_invalid_ms cli_run_invalid_status
-  local notes_check_cold_ms notes_check_warm_ms notes_migrate_ms
+  local notes_check_cold_ms notes_check_warm_ms notes_check_incremental_edit_ms notes_migrate_ms
   local status_list status_post_ok status_post_invalid status_root
   local notes_get_list_ms notes_post_ok_ms notes_post_invalid_ms notes_frontend_get_ms
   local notes_validation_error_overhead_ms
+  local incremental_edit_target
 
   TMP_DIR="$TMP_ROOT/iter_${iteration}"
   mkdir -p "$TMP_DIR"
   LOG_FILE="$TMP_DIR/reference-service.log"
   SERVER_PID=""
+  BENCH_REFERENCE_MANIFEST="$TMP_DIR/reference-service"
+  mkdir -p "$BENCH_REFERENCE_MANIFEST"
+  cp -R "$REFERENCE_SERVICE_DIR/." "$BENCH_REFERENCE_MANIFEST"
 
   echo "Running CLI workload metrics..."
   measure_cmd_ms cli_check_ms "$ROOT/scripts/fuse" check "$ROOT/examples/project_demo.fuse"
@@ -259,11 +270,15 @@ run_single_iteration() {
   echo "Using reference-service benchmark DB: $DB_URL"
 
   measure_cmd_ms notes_check_cold_ms env APP_PORT="$PORT" PORT="$PORT" FUSE_DB_URL="$DB_URL" \
-    "$ROOT/scripts/fuse" check --manifest-path "$REFERENCE_SERVICE_DIR"
+    "$ROOT/scripts/fuse" check --manifest-path "$BENCH_REFERENCE_MANIFEST"
   measure_cmd_ms notes_check_warm_ms env APP_PORT="$PORT" PORT="$PORT" FUSE_DB_URL="$DB_URL" \
-    "$ROOT/scripts/fuse" check --manifest-path "$REFERENCE_SERVICE_DIR"
+    "$ROOT/scripts/fuse" check --manifest-path "$BENCH_REFERENCE_MANIFEST"
+  incremental_edit_target="$BENCH_REFERENCE_MANIFEST/src/errors.fuse"
+  printf "\n" >>"$incremental_edit_target"
+  measure_cmd_ms notes_check_incremental_edit_ms env APP_PORT="$PORT" PORT="$PORT" FUSE_DB_URL="$DB_URL" \
+    "$ROOT/scripts/fuse" check --manifest-path "$BENCH_REFERENCE_MANIFEST"
   measure_cmd_ms notes_migrate_ms env APP_PORT="$PORT" PORT="$PORT" FUSE_DB_URL="$DB_URL" \
-    "$ROOT/scripts/fuse" migrate --manifest-path "$REFERENCE_SERVICE_DIR"
+    "$ROOT/scripts/fuse" migrate --manifest-path "$BENCH_REFERENCE_MANIFEST"
 
   echo "Running reference-service runtime/request metrics..."
   echo "Waiting for reference-service HTTP readiness (timeout ~12s, with deterministic retry)..."
@@ -338,6 +353,7 @@ run_single_iteration() {
   cli_run_invalid_samples+=("$cli_run_invalid_ms")
   notes_check_cold_samples+=("$notes_check_cold_ms")
   notes_check_warm_samples+=("$notes_check_warm_ms")
+  notes_check_incremental_edit_samples+=("$notes_check_incremental_edit_ms")
   notes_migrate_samples+=("$notes_migrate_ms")
   notes_get_list_samples+=("$notes_get_list_ms")
   notes_post_ok_samples+=("$notes_post_ok_ms")
@@ -353,6 +369,7 @@ aggregate_final_metrics() {
     cli_run_invalid_ms="${cli_run_invalid_samples[0]}"
     notes_check_cold_ms="${notes_check_cold_samples[0]}"
     notes_check_warm_ms="${notes_check_warm_samples[0]}"
+    notes_check_incremental_edit_ms="${notes_check_incremental_edit_samples[0]}"
     notes_migrate_ms="${notes_migrate_samples[0]}"
     notes_get_list_ms="${notes_get_list_samples[0]}"
     notes_post_ok_ms="${notes_post_ok_samples[0]}"
@@ -367,6 +384,7 @@ aggregate_final_metrics() {
   cli_run_invalid_ms="$(median_of_three "${cli_run_invalid_samples[0]}" "${cli_run_invalid_samples[1]}" "${cli_run_invalid_samples[2]}")"
   notes_check_cold_ms="$(median_of_three "${notes_check_cold_samples[0]}" "${notes_check_cold_samples[1]}" "${notes_check_cold_samples[2]}")"
   notes_check_warm_ms="$(median_of_three "${notes_check_warm_samples[0]}" "${notes_check_warm_samples[1]}" "${notes_check_warm_samples[2]}")"
+  notes_check_incremental_edit_ms="$(median_of_three "${notes_check_incremental_edit_samples[0]}" "${notes_check_incremental_edit_samples[1]}" "${notes_check_incremental_edit_samples[2]}")"
   notes_migrate_ms="$(median_of_three "${notes_migrate_samples[0]}" "${notes_migrate_samples[1]}" "${notes_migrate_samples[2]}")"
   notes_get_list_ms="$(median_of_three "${notes_get_list_samples[0]}" "${notes_get_list_samples[1]}" "${notes_get_list_samples[2]}")"
   notes_post_ok_ms="$(median_of_three "${notes_post_ok_samples[0]}" "${notes_post_ok_samples[1]}" "${notes_post_ok_samples[2]}")"
@@ -400,7 +418,7 @@ timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 cat >"$METRICS_JSON" <<EOF
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "timestamp_utc": "$timestamp",
   "benchmark_context": {
     "mode": "$BENCH_MODE",
@@ -424,6 +442,7 @@ cat >"$METRICS_JSON" <<EOF
   "reference_service": {
     "check_cold_ms": $notes_check_cold_ms,
     "check_warm_ms": $notes_check_warm_ms,
+    "check_incremental_edit_ms": $notes_check_incremental_edit_ms,
     "migrate_ms": $notes_migrate_ms,
     "request_get_notes_ms": $notes_get_list_ms,
     "request_post_valid_ms": $notes_post_ok_ms,
@@ -448,6 +467,7 @@ EOF
   print_row "CLI: project_demo" "run (contract failure)" "${cli_run_invalid_ms} ms"
   print_row "Package: reference-service" "check (cold)" "${notes_check_cold_ms} ms"
   print_row "Package: reference-service" "check (warm)" "${notes_check_warm_ms} ms"
+  print_row "Package: reference-service" "check (incremental edit)" "${notes_check_incremental_edit_ms} ms"
   print_row "Package: reference-service" "migrate" "${notes_migrate_ms} ms"
   print_row "Runtime: reference-service" "GET /api/notes" "${notes_get_list_ms} ms"
   print_row "Runtime: reference-service" "POST /api/notes (valid body)" "${notes_post_ok_ms} ms"

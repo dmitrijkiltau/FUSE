@@ -178,6 +178,11 @@ Global CLI output option:
 - `--color auto|always|never` controls ANSI colors for diagnostics/status output and runtime
   `log(...)` level tags.
   `auto` is default and respects `NO_COLOR`.
+- `--diagnostics json` switches CLI diagnostics on stderr to JSON Lines suitable for editor/CI
+  consumers. Diagnostic entries use fields:
+  `kind="diagnostic"`, `level`, `message`, `path?`, `line?`, `column?`, `span_start`, `span_end`.
+  Command-step entries use:
+  `kind="command_step"`, `command`, `message`.
 - `fuse check|run|build|test` emit consistent stderr step markers:
   `[command] start`, `[command] ok|failed|validation failed`.
 - `fuse test --filter <pattern>` runs only test blocks whose names contain `<pattern>`
