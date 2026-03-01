@@ -296,6 +296,35 @@ Config values are resolved in order:
 
 The CLI loads `.env` from the package directory and sets only missing variables.
 
+## Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `FUSE_DB_URL` | — | Database connection URL (`sqlite://path`) |
+| `DATABASE_URL` | — | Fallback DB URL when `FUSE_DB_URL` is unset |
+| `FUSE_DB_POOL_SIZE` | `1` | SQLite connection pool size |
+| `FUSE_CONFIG` | `config.toml` | Config file path |
+| `FUSE_HOST` | `127.0.0.1` | HTTP server bind host |
+| `FUSE_SERVICE` | — | Selects service when multiple are declared |
+| `FUSE_MAX_REQUESTS` | — | Stop server after N requests (useful for tests) |
+| `FUSE_LOG` | `info` | Minimum log level (`trace`/`debug`/`info`/`warn`/`error`) |
+| `FUSE_COLOR` | `auto` | ANSI color mode (`auto`/`always`/`never`) |
+| `NO_COLOR` | — | Disables ANSI color when set |
+| `FUSE_REQUEST_LOG` | — | `structured` for JSON request logging on stderr |
+| `FUSE_METRICS_HOOK` | — | `stderr` for per-request metrics lines |
+| `FUSE_DEV_RELOAD_WS_URL` | — | Dev HTML script injection (`/__reload` client) |
+| `FUSE_OPENAPI_JSON_PATH` | — | Built-in OpenAPI JSON endpoint path |
+| `FUSE_OPENAPI_UI_PATH` | — | Built-in OpenAPI UI path |
+| `FUSE_ASSET_MAP` | — | Logical-path to public-URL mappings for `asset()` |
+| `FUSE_VITE_PROXY_URL` | — | Fallback proxy for unknown routes to Vite dev server |
+| `FUSE_SVG_DIR` | — | Override SVG base directory for `svg.inline` |
+| `FUSE_STATIC_DIR` | — | Serve static files from this directory |
+| `FUSE_STATIC_INDEX` | `index.html` | Fallback file for directory requests |
+| `FUSE_DEV_MODE` | — | Enables development-mode runtime behavior |
+| `FUSE_AOT_BUILD_INFO` | — | Print AOT build metadata and exit (AOT only) |
+| `FUSE_AOT_STARTUP_TRACE` | — | Emit startup diagnostic line (AOT only) |
+| `FUSE_AOT_REQUEST_LOG_DEFAULT` | — | Default to structured request logging (AOT release) |
+
 ## Development
 
 ### Build and test

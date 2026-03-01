@@ -138,9 +138,35 @@ HEADER
     echo
     extract_section "$fls" "### Refined types" "### Type inference"
     echo
+    echo "### Type inference"
+    echo
+    extract_section "$fls" "### Type inference" "### Comparison operators"
+    echo
+    echo "### Comparison operators"
+    echo
+    extract_section "$fls" "### Comparison operators" "### Structural vs nominal"
+    echo
     echo "Type derivation:"
     echo
     extract_section "$fls" '### Type derivations (`without`)'
+    echo
+    echo "---"
+    echo
+
+    # --- Lexing and Strings (from spec/fls.md) ---
+    echo "## Strings, Interpolation, and Comments"
+    echo
+    extract_section "$fls" "### Strings + interpolation" "### Significant indentation"
+    echo
+    extract_section "$fls" "### Comments"
+    echo
+    echo "---"
+    echo
+
+    # --- Grammar (from spec/fls.md) ---
+    echo "## Grammar (EBNF approximation)"
+    echo
+    extract_section "$fls" "## Grammar (EBNF approximation)" "## AST model (structural spec)"
     echo
     echo "---"
     echo
@@ -161,8 +187,26 @@ HEADER
     echo "---"
     echo
 
+    # --- Spawn and Transaction Restrictions (from spec/fls.md) ---
+    echo "## Static Restrictions"
+    echo
+    echo "### Spawn static restrictions"
+    echo
+    extract_section "$fls" "### Spawn static restrictions (v0.2.0)" "### Transaction static restrictions (v0.6.0)"
+    echo
+    echo "### Transaction static restrictions"
+    echo
+    extract_section "$fls" "### Transaction static restrictions (v0.6.0)"
+    echo
+    echo "---"
+    echo
+
     # --- Runtime Behavior (from spec/runtime.md) ---
     echo "## Runtime Behavior"
+    echo
+    echo "### Expression operator behavior"
+    echo
+    extract_section "$rtm" "## Expression operator behavior" "## Error model"
     echo
     echo "### Validation and boundary enforcement"
     echo
@@ -174,7 +218,11 @@ HEADER
     echo
     echo "### Errors and HTTP status mapping"
     echo
-    extract_section "$rtm" "### Recognized error names" '### Result types + `?!`'
+    extract_section "$rtm" "### Recognized error names" "### Error JSON shape"
+    echo
+    echo "### Error JSON shape"
+    echo
+    extract_section "$rtm" "### Error JSON shape" "### HTTP status mapping"
     echo
     extract_section "$rtm" "### HTTP status mapping" '### Result types + `?!`'
     echo
@@ -193,17 +241,82 @@ HEADER
     echo "---"
     echo
 
+    # --- HTTP Runtime (from spec/runtime.md) ---
+    echo "## HTTP Runtime"
+    echo
+    echo "### Routing"
+    echo
+    extract_section "$rtm" "#### Routing" "#### Response"
+    echo
+    echo "### Response"
+    echo
+    extract_section "$rtm" "#### Response" "#### Request primitives"
+    echo
+    echo "### Request primitives"
+    echo
+    extract_section "$rtm" "#### Request primitives" "#### Environment knobs"
+    echo
+    echo "### Observability baseline"
+    echo
+    extract_section "$rtm" "#### Observability baseline"
+    echo
+    echo "---"
+    echo
+
     # --- Builtins (from spec/runtime.md) ---
     echo "## Builtins"
     echo
-    extract_section "$rtm" "### Builtins (current)" "### Database (SQLite only)"
+    extract_section "$rtm" "### Builtins (current)" "### Compile-time capability requirements"
     echo
-    echo "Database builtins:"
+    echo "---"
     echo
-    echo "- \`db.exec\`, \`db.query\`, \`db.one\`"
-    echo "- \`db.from\` + query builder methods"
+
+    # --- Database (from spec/runtime.md) ---
+    echo "## Database (SQLite)"
     echo
-    echo "Current DB mode is SQLite-focused."
+    extract_section "$rtm" "### Database (SQLite only)" "### Migrations"
+    echo
+    echo "### Migrations"
+    echo
+    extract_section "$rtm" "### Migrations" "### Tests"
+    echo
+    echo "### Tests"
+    echo
+    extract_section "$rtm" "### Tests" "### Concurrency"
+    echo
+    echo "---"
+    echo
+
+    # --- Concurrency (from spec/runtime.md) ---
+    echo "## Concurrency"
+    echo
+    extract_section "$rtm" "### Concurrency" "### Loops"
+    echo
+    echo "---"
+    echo
+
+    # --- Loops, Indexing, Ranges (from spec/runtime.md) ---
+    echo "## Loops, Indexing, and Ranges"
+    echo
+    echo "### Loops"
+    echo
+    extract_section "$rtm" "### Loops" "### Indexing"
+    echo
+    echo "### Indexing"
+    echo
+    extract_section "$rtm" "### Indexing" "### Ranges"
+    echo
+    echo "### Ranges"
+    echo
+    extract_section "$rtm" "### Ranges" "### Logging"
+    echo
+    echo "---"
+    echo
+
+    # --- Logging (from spec/runtime.md) ---
+    echo "## Logging"
+    echo
+    extract_section "$rtm" "### Logging"
     echo
     echo "---"
     echo
@@ -240,12 +353,39 @@ Compiler/runtime CLI operations include:
 ---
 TOOLING
 
-    # --- Environment Variables (from spec/runtime.md) ---
-    echo
-    echo "## Runtime Environment Variables"
-    echo
-    extract_section "$rtm" "#### Environment knobs"
-    echo
+    # --- Environment Variables ---
+    cat <<'ENVTABLE'
+
+## Runtime Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `FUSE_DB_URL` | — | Database connection URL (`sqlite://path`) |
+| `DATABASE_URL` | — | Fallback DB URL when `FUSE_DB_URL` is unset |
+| `FUSE_DB_POOL_SIZE` | `1` | SQLite connection pool size |
+| `FUSE_CONFIG` | `config.toml` | Config file path |
+| `FUSE_HOST` | `127.0.0.1` | HTTP server bind host |
+| `FUSE_SERVICE` | — | Selects service when multiple are declared |
+| `FUSE_MAX_REQUESTS` | — | Stop server after N requests (useful for tests) |
+| `FUSE_LOG` | `info` | Minimum log level (`trace`, `debug`, `info`, `warn`, `error`) |
+| `FUSE_COLOR` | `auto` | ANSI color mode (`auto`, `always`, `never`) |
+| `NO_COLOR` | — | Disables ANSI color when set (any value) |
+| `FUSE_REQUEST_LOG` | — | Set to `structured` (or `1`/`true`) for JSON request logging on stderr |
+| `FUSE_METRICS_HOOK` | — | Set to `stderr` for per-request metrics lines |
+| `FUSE_DEV_RELOAD_WS_URL` | — | Enables dev HTML script injection (`/__reload` client) |
+| `FUSE_OPENAPI_JSON_PATH` | — | Enables built-in OpenAPI JSON endpoint at this path |
+| `FUSE_OPENAPI_UI_PATH` | — | Enables built-in OpenAPI UI at this path |
+| `FUSE_ASSET_MAP` | — | Logical-path to public-URL mappings for `asset(path)` |
+| `FUSE_VITE_PROXY_URL` | — | Fallback proxy for unknown routes to Vite dev server |
+| `FUSE_SVG_DIR` | — | Override SVG base directory for `svg.inline` |
+| `FUSE_STATIC_DIR` | — | Serve static files from this directory |
+| `FUSE_STATIC_INDEX` | `index.html` | Fallback file for directory requests when `FUSE_STATIC_DIR` is set |
+| `FUSE_DEV_MODE` | — | Enables development-mode runtime behavior |
+| `FUSE_AOT_BUILD_INFO` | — | Print AOT build metadata and exit (AOT binaries only) |
+| `FUSE_AOT_STARTUP_TRACE` | — | Emit startup diagnostic line (AOT binaries only) |
+| `FUSE_AOT_REQUEST_LOG_DEFAULT` | — | Default to structured request logging in release AOT binaries |
+
+ENVTABLE
     echo "---"
     echo
 

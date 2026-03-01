@@ -421,6 +421,9 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 - `FUSE_ASSET_MAP` provides logical-path -> public-URL mappings for `asset(path)`
 - `FUSE_VITE_PROXY_URL` enables fallback proxying of unknown routes to Vite dev server
 - `FUSE_SVG_DIR` overrides SVG base directory for `svg.inline`
+- `FUSE_STATIC_DIR` serves static files from the given directory at the service base path
+- `FUSE_STATIC_INDEX` (default `index.html`) sets the fallback file served for directory requests
+  when `FUSE_STATIC_DIR` is configured
 - `FUSE_AOT_REQUEST_LOG_DEFAULT` (AOT release only) enables structured request logging default
   when `FUSE_REQUEST_LOG` is unset
 
@@ -504,6 +507,8 @@ See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [
 - HTML tag builtins (`html`, `head`, `body`, `div`, `meta`, `button`, ...)
 - `html.text`, `html.raw`, `html.node`, `html.render`
 - `svg.inline(path: String) -> Html`
+- `json.encode(value) -> String` serializes a value to a JSON string
+- `json.decode(text: String) -> Value` parses a JSON string into a runtime value
 
 `input` behavior notes:
 
@@ -528,8 +533,8 @@ fallback behavior.
 - modules declare capabilities with top-level `requires` declarations
 - `db.exec/query/one/from` calls require `requires db`
 - `serve(...)` calls require `requires network`
-- `time(...)` / `time.*` calls require `requires time`
-- `crypto.*` calls require `requires crypto`
+- `time(...)` / `time.*` calls require `requires time` (capability placeholder; no runtime API yet)
+- `crypto.*` calls require `requires crypto` (capability placeholder; no runtime API yet)
 - calls to imported module functions require the caller to declare the callee module's capabilities
 - `transaction:` blocks require `requires db`, forbid non-`db` module capabilities, and reject
   non-`db` capability usage inside the block

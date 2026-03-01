@@ -461,6 +461,7 @@ Resolution rules:
 - `import Foo` loads `Foo.fuse` from the current file directory.
 - `import X from "path"` loads `path` relative to current file; `.fuse` is added if missing.
 - `import {A, B} from "path"` loads module and imports listed names into local scope.
+- `import X as Y from "path"` loads `path` and registers the module under alias `Y` for qualified access.
 - `import X from "root:path/to/module"` loads from package root (`fuse.toml` directory); if no manifest is found, root falls back to the entry module directory.
 
 Notes:
