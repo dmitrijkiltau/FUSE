@@ -270,16 +270,8 @@ impl<'a> Lowerer<'a> {
             }
         }
         let builtin_names = [
-            "print",
-            "input",
-            "env",
-            "serve",
-            "log",
-            "assert",
-            "asset",
-            "svg",
-            "request",
-            "response",
+            "print", "input", "env", "serve", "log", "assert", "asset", "svg", "request",
+            "response", "time", "crypto",
         ]
         .into_iter()
         .map(|s| s.to_string())
@@ -1407,6 +1399,8 @@ impl FuncBuilder {
                             || ident.name == "svg"
                             || ident.name == "request"
                             || ident.name == "response"
+                            || ident.name == "time"
+                            || ident.name == "crypto"
                         {
                             for arg in args {
                                 self.lower_expr(&arg.value);
@@ -1432,10 +1426,9 @@ impl FuncBuilder {
                         return;
                     }
                     if let ExprKind::Ident(module_ident) = &base.kind {
-                        if let Some((target, decl)) = self.resolve_module_member_function_decl(
-                            &module_ident.name,
-                            &name.name,
-                        ) {
+                        if let Some((target, decl)) =
+                            self.resolve_module_member_function_decl(&module_ident.name, &name.name)
+                        {
                             self.lower_call_with_defaults(&target, &decl, args);
                             return;
                         }

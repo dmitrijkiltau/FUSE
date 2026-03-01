@@ -80,8 +80,9 @@ const COMPLETION_KEYWORDS: [&str; 35] = [
     "without",
     "spawn",
 ];
-const COMPLETION_BUILTIN_RECEIVERS: [&str; 6] =
-    ["db", "json", "html", "svg", "request", "response"];
+const COMPLETION_BUILTIN_RECEIVERS: [&str; 8] = [
+    "db", "json", "html", "svg", "request", "response", "time", "crypto",
+];
 const COMPLETION_BUILTIN_FUNCTIONS: [&str; 6] = ["print", "env", "serve", "log", "assert", "asset"];
 const COMPLETION_BUILTIN_TYPES: [&str; 14] = [
     "Unit", "Int", "Float", "Bool", "String", "Bytes", "Html", "Id", "Email", "Error", "List",
@@ -2135,6 +2136,18 @@ fn builtin_member_signature_info(base: &str) -> Option<SignatureInfo> {
                 "Appends an HTTP response header for the current route response.".to_string(),
             ),
         }),
+        "time" => Some(SignatureInfo {
+            label: "fn time.format(epoch: Int, fmt: String) -> String".to_string(),
+            params: vec!["epoch: Int".to_string(), "fmt: String".to_string()],
+            documentation: Some(
+                "Formats Unix epoch milliseconds using a strftime-style format string.".to_string(),
+            ),
+        }),
+        "crypto" => Some(SignatureInfo {
+            label: "fn crypto.hash(algo: String, data: Bytes) -> Bytes".to_string(),
+            params: vec!["algo: String".to_string(), "data: Bytes".to_string()],
+            documentation: Some("Computes a cryptographic digest (sha256/sha512).".to_string()),
+        }),
         _ => None,
     }
 }
@@ -2889,6 +2902,8 @@ fn builtin_receiver_methods(receiver: &str) -> &'static [&'static str] {
         "svg" => &["inline"],
         "request" => &["header", "cookie"],
         "response" => &["header", "cookie", "delete_cookie"],
+        "time" => &["now", "sleep", "format", "parse"],
+        "crypto" => &["hash", "hmac", "random_bytes", "constant_time_eq"],
         _ => &[],
     }
 }
@@ -3381,7 +3396,10 @@ fn is_type_context(tokens: &[fusec::token::Token], idx: usize) -> bool {
 }
 
 fn is_builtin_receiver(name: &str) -> bool {
-    matches!(name, "db" | "json" | "html" | "svg" | "request" | "response")
+    matches!(
+        name,
+        "db" | "json" | "html" | "svg" | "request" | "response" | "time" | "crypto"
+    )
 }
 
 fn is_builtin_function_name(name: &str) -> bool {

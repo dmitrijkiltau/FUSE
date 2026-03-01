@@ -398,7 +398,10 @@ fn find_latest_rlib_for_tests(dir: &Path, prefix: &str) -> PathBuf {
         if path.extension().and_then(|ext| ext.to_str()) != Some("rlib") {
             continue;
         }
-        let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
         if !file_name.starts_with(prefix) {
             continue;
         }
@@ -481,9 +484,8 @@ fn relink_aot_runner_for_tests(dir: &Path, release: bool) {
 }
 
 fn http_get_with_retry(port: u16, path: &str, attempts: usize) -> Option<String> {
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
-    );
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
     http_request_with_retry(port, &request, attempts)
 }
 
@@ -1559,7 +1561,10 @@ Bad = {}
     let output = run_check_project(&dir);
     assert!(!output.status.success(), "check unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("[FUSE_DEP_SOURCE_REQUIRED]"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("[FUSE_DEP_SOURCE_REQUIRED]"),
+        "stderr: {stderr}"
+    );
     assert!(
         stderr.contains("dependency Bad must specify either path or git"),
         "stderr: {stderr}"
@@ -1631,7 +1636,10 @@ Bad = { git = "https://example.com/demo.git", subdir = "   " }
     let output = run_check_project(&dir);
     assert!(!output.status.success(), "check unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("[FUSE_DEP_SUBDIR_EMPTY]"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("[FUSE_DEP_SUBDIR_EMPTY]"),
+        "stderr: {stderr}"
+    );
     assert!(
         stderr.contains("dependency Bad subdir cannot be empty"),
         "stderr: {stderr}"
@@ -1654,9 +1662,13 @@ Bad = { path = "./deps/bad", branch = "main" }
     let output = run_check_project(&dir);
     assert!(!output.status.success(), "check unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("[FUSE_DEP_PATH_FIELDS_INVALID]"), "stderr: {stderr}");
     assert!(
-        stderr.contains("path dependencies cannot include git/rev/tag/branch/version/subdir fields"),
+        stderr.contains("[FUSE_DEP_PATH_FIELDS_INVALID]"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr
+            .contains("path dependencies cannot include git/rev/tag/branch/version/subdir fields"),
         "stderr: {stderr}"
     );
 
@@ -1677,7 +1689,10 @@ Bad = { path = "./deps/missing" }
     let output = run_check_project(&dir);
     assert!(!output.status.success(), "check unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("[FUSE_DEP_PATH_NOT_FOUND]"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("[FUSE_DEP_PATH_NOT_FOUND]"),
+        "stderr: {stderr}"
+    );
     assert!(
         stderr.contains("dependency Bad path does not exist"),
         "stderr: {stderr}"
@@ -1706,17 +1721,18 @@ app = "GitDep"
 "#,
     )
     .expect("write git source manifest");
-    fs::write(
-        git_src.join("lib.fuse"),
-        "fn value() -> Int:\n  return 1\n",
-    )
-    .expect("write git source lib");
+    fs::write(git_src.join("lib.fuse"), "fn value() -> Int:\n  return 1\n")
+        .expect("write git source lib");
     let init = Command::new("git")
         .arg("init")
         .arg(&git_src)
         .output()
         .expect("git init");
-    assert!(init.status.success(), "stderr: {}", String::from_utf8_lossy(&init.stderr));
+    assert!(
+        init.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
     let add = Command::new("git")
         .arg("-C")
         .arg(&git_src)
@@ -1724,7 +1740,11 @@ app = "GitDep"
         .arg(".")
         .output()
         .expect("git add");
-    assert!(add.status.success(), "stderr: {}", String::from_utf8_lossy(&add.stderr));
+    assert!(
+        add.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
     let commit = Command::new("git")
         .arg("-C")
         .arg(&git_src)
@@ -1756,7 +1776,10 @@ Bad = {{ git = "file://{}", subdir = "missing-subdir" }}
     let output = run_check_project(&dir);
     assert!(!output.status.success(), "check unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("[FUSE_DEP_SUBDIR_NOT_FOUND]"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("[FUSE_DEP_SUBDIR_NOT_FOUND]"),
+        "stderr: {stderr}"
+    );
     assert!(
         stderr.contains("dependency Bad subdir does not exist"),
         "stderr: {stderr}"
@@ -2318,7 +2341,10 @@ source = "path"
     let output = run_check_project(&dir);
     assert!(!output.status.success(), "check unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("[FUSE_LOCK_PARSE_FAILED]"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("[FUSE_LOCK_PARSE_FAILED]"),
+        "stderr: {stderr}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -3108,7 +3134,9 @@ app "Demo":
         "first info stderr: {}",
         String::from_utf8_lossy(&first_info.stderr)
     );
-    let first_info_line = String::from_utf8_lossy(&first_info.stdout).trim().to_string();
+    let first_info_line = String::from_utf8_lossy(&first_info.stdout)
+        .trim()
+        .to_string();
 
     fs::remove_dir_all(dir.join(".fuse").join("build")).expect("remove first build outputs");
 
@@ -3136,7 +3164,9 @@ app "Demo":
         "second info stderr: {}",
         String::from_utf8_lossy(&second_info.stderr)
     );
-    let second_info_line = String::from_utf8_lossy(&second_info.stdout).trim().to_string();
+    let second_info_line = String::from_utf8_lossy(&second_info.stdout)
+        .trim()
+        .to_string();
 
     assert_eq!(first_meta, second_meta);
     assert_eq!(first_info_line, second_info_line);
@@ -3175,7 +3205,12 @@ app "Demo":
     let baseline = Command::new(&aot)
         .output()
         .expect("run aot baseline without build info");
-    assert_eq!(baseline.status.code(), Some(1), "status: {:?}", baseline.status);
+    assert_eq!(
+        baseline.status.code(),
+        Some(1),
+        "status: {:?}",
+        baseline.status
+    );
     let baseline_stderr = String::from_utf8_lossy(&baseline.stderr);
     assert!(
         baseline_stderr.contains("fatal: class=runtime_fatal"),
@@ -3670,7 +3705,10 @@ app "Docs":
         response_lower.contains("x-request-id: aot-obs-1"),
         "response: {response}"
     );
-    assert!(response.contains(r#"{"id":"aot-obs-1"}"#), "response: {response}");
+    assert!(
+        response.contains(r#"{"id":"aot-obs-1"}"#),
+        "response: {response}"
+    );
 
     let output = child.wait_with_output().expect("wait aot child");
     assert!(
@@ -3679,9 +3717,18 @@ app "Docs":
         String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("\"event\":\"http.request\""), "stderr: {stderr}");
-    assert!(stderr.contains("\"runtime\":\"native\""), "stderr: {stderr}");
-    assert!(stderr.contains("\"request_id\":\"aot-obs-1\""), "stderr: {stderr}");
+    assert!(
+        stderr.contains("\"event\":\"http.request\""),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"runtime\":\"native\""),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"request_id\":\"aot-obs-1\""),
+        "stderr: {stderr}"
+    );
     assert!(
         stderr.contains("\"metric\":\"http.server.request\""),
         "stderr: {stderr}"
@@ -3778,7 +3825,10 @@ app "Docs":
         String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("\"event\":\"http.request\""), "stderr: {stderr}");
+    assert!(
+        stderr.contains("\"event\":\"http.request\""),
+        "stderr: {stderr}"
+    );
     assert!(
         stderr.contains("\"request_id\":\"aot-default-log\""),
         "stderr: {stderr}"
@@ -3869,9 +3919,7 @@ app "Docs":
             .expect("read child stderr");
         assert!(!stderr.contains("fatal:"), "stderr: {stderr}");
         assert!(
-            stderr.contains(&format!(
-                "shutdown: runtime=native signal={expected_name}"
-            )),
+            stderr.contains(&format!("shutdown: runtime=native signal={expected_name}")),
             "stderr: {stderr}"
         );
     }

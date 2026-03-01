@@ -509,6 +509,14 @@ See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [
 - `svg.inline(path: String) -> Html`
 - `json.encode(value) -> String` serializes a value to a JSON string
 - `json.decode(text: String) -> Value` parses a JSON string into a runtime value
+- `time.now() -> Int` returns Unix epoch milliseconds
+- `time.sleep(ms: Int)` blocks the current execution for `ms` milliseconds
+- `time.format(epoch: Int, fmt: String) -> String` formats epoch milliseconds (UTC)
+- `time.parse(text: String, fmt: String) -> Int!Error` parses text to epoch milliseconds
+- `crypto.hash(algo: String, data: Bytes) -> Bytes` supports `sha256` / `sha512`
+- `crypto.hmac(algo: String, key: Bytes, data: Bytes) -> Bytes` supports `sha256` / `sha512`
+- `crypto.random_bytes(n: Int) -> Bytes` returns cryptographically secure random bytes
+- `crypto.constant_time_eq(a: Bytes, b: Bytes) -> Bool` compares bytes in constant-time form
 
 `input` behavior notes:
 
@@ -533,8 +541,8 @@ fallback behavior.
 - modules declare capabilities with top-level `requires` declarations
 - `db.exec/query/one/from` calls require `requires db`
 - `serve(...)` calls require `requires network`
-- `time(...)` / `time.*` calls require `requires time` (capability placeholder; no runtime API yet)
-- `crypto.*` calls require `requires crypto` (capability placeholder; no runtime API yet)
+- `time.*` calls require `requires time`
+- `crypto.*` calls require `requires crypto`
 - calls to imported module functions require the caller to declare the callee module's capabilities
 - `transaction:` blocks require `requires db`, forbid non-`db` module capabilities, and reject
   non-`db` capability usage inside the block

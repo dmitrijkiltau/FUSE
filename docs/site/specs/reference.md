@@ -333,6 +333,8 @@ Module capabilities:
 - duplicate capability declarations in one module are semantic errors
 - capability checks are compile-time only (no runtime capability guard)
 - calls requiring capabilities are rejected when the current module does not declare them
+- `requires time` gates access to runtime `time.*` builtins (`now`, `format`, `parse`, `sleep`)
+- `requires crypto` gates access to runtime `crypto.*` builtins (`hash`, `hmac`, `random_bytes`, `constant_time_eq`)
 - call sites to imported module functions must declare every capability required by the callee module
   (capability leakage across module boundaries is rejected)
 - `transaction` blocks are valid only in modules with `requires db` and no additional capabilities
@@ -752,6 +754,14 @@ Explicit non-goal:
 - `svg.inline(path: String) -> Html`
 - `json.encode(value) -> String` serializes a value to a JSON string
 - `json.decode(text: String) -> Value` parses a JSON string into a runtime value
+- `time.now() -> Int` returns Unix epoch milliseconds
+- `time.sleep(ms: Int)` blocks the current execution for `ms` milliseconds
+- `time.format(epoch: Int, fmt: String) -> String` formats epoch milliseconds (UTC)
+- `time.parse(text: String, fmt: String) -> Int!Error` parses text to epoch milliseconds
+- `crypto.hash(algo: String, data: Bytes) -> Bytes` supports `sha256` / `sha512`
+- `crypto.hmac(algo: String, key: Bytes, data: Bytes) -> Bytes` supports `sha256` / `sha512`
+- `crypto.random_bytes(n: Int) -> Bytes` returns cryptographically secure random bytes
+- `crypto.constant_time_eq(a: Bytes, b: Bytes) -> Bool` compares bytes in constant-time form
 
 `input` behavior notes:
 

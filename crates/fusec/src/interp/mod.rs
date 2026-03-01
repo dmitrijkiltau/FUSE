@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::thread;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use fuse_rt::{
@@ -1682,7 +1682,9 @@ impl Interpreter {
         }
         match name {
             "print" | "input" | "env" | "serve" | "log" | "db" | "assert" | "asset" | "json"
-            | "html" | "svg" | "request" | "response" => Ok(Value::Builtin(name.to_string())),
+            | "html" | "svg" | "request" | "response" | "time" | "crypto" => {
+                Ok(Value::Builtin(name.to_string()))
+            }
             _ if html_tags::is_html_tag(name) => Ok(Value::Builtin(name.to_string())),
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),
         }
@@ -1830,6 +1832,191 @@ impl Interpreter {
                 let json = rt_json::decode(&text)
                     .map_err(|msg| ExecError::Runtime(format!("invalid json: {msg}")))?;
                 Ok(self.json_to_value(&json))
+            }
+            "time.now" => {
+                if !args.is_empty() {
+                    return Err(ExecError::Runtime(
+                        "time.now expects 0 arguments".to_string(),
+                    ));
+                }
+                let now =
+                    crate::runtime_capabilities::time_now_unix_ms().map_err(ExecError::Runtime)?;
+                Ok(Value::Int(now))
+            }
+            "time.sleep" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "time.sleep expects 1 argument".to_string(),
+                    ));
+                }
+                let ms = match args.first() {
+                    Some(Value::Int(value)) => *value,
+                    Some(Value::Float(value)) => *value as i64,
+                    _ => return Err(ExecError::Runtime("time.sleep expects an Int".to_string())),
+                };
+                crate::runtime_capabilities::time_sleep_ms(ms).map_err(ExecError::Runtime)?;
+                Ok(Value::Unit)
+            }
+            "time.format" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "time.format expects 2 arguments".to_string(),
+                    ));
+                }
+                let epoch_ms = match args.first() {
+                    Some(Value::Int(value)) => *value,
+                    Some(Value::Float(value)) => *value as i64,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "time.format expects epoch as Int".to_string(),
+                        ));
+                    }
+                };
+                let fmt = match args.get(1) {
+                    Some(Value::String(value)) => value.as_str(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "time.format expects format as String".to_string(),
+                        ));
+                    }
+                };
+                let out = crate::runtime_capabilities::time_format_epoch_ms(epoch_ms, fmt)
+                    .map_err(ExecError::Runtime)?;
+                Ok(Value::String(out))
+            }
+            "time.parse" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "time.parse expects 2 arguments".to_string(),
+                    ));
+                }
+                let text = match args.first() {
+                    Some(Value::String(value)) => value.as_str(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "time.parse expects text as String".to_string(),
+                        ));
+                    }
+                };
+                let fmt = match args.get(1) {
+                    Some(Value::String(value)) => value.as_str(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "time.parse expects format as String".to_string(),
+                        ));
+                    }
+                };
+                match crate::runtime_capabilities::time_parse_epoch_ms(text, fmt) {
+                    Ok(epoch_ms) => Ok(Value::ResultOk(Box::new(Value::Int(epoch_ms)))),
+                    Err(message) => Ok(Value::ResultErr(Box::new(
+                        self.default_error_value(message),
+                    ))),
+                }
+            }
+            "crypto.hash" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "crypto.hash expects 2 arguments".to_string(),
+                    ));
+                }
+                let algo = match args.first() {
+                    Some(Value::String(algo)) => algo.as_str(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "crypto.hash expects algorithm as String".to_string(),
+                        ));
+                    }
+                };
+                let data = match args.get(1) {
+                    Some(Value::Bytes(data)) => data.as_slice(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "crypto.hash expects data as Bytes".to_string(),
+                        ));
+                    }
+                };
+                let digest = crate::runtime_capabilities::crypto_hash(algo, data)
+                    .map_err(ExecError::Runtime)?;
+                Ok(Value::Bytes(digest))
+            }
+            "crypto.hmac" => {
+                if args.len() != 3 {
+                    return Err(ExecError::Runtime(
+                        "crypto.hmac expects 3 arguments".to_string(),
+                    ));
+                }
+                let algo = match args.first() {
+                    Some(Value::String(algo)) => algo.as_str(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "crypto.hmac expects algorithm as String".to_string(),
+                        ));
+                    }
+                };
+                let key = match args.get(1) {
+                    Some(Value::Bytes(key)) => key.as_slice(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "crypto.hmac expects key as Bytes".to_string(),
+                        ));
+                    }
+                };
+                let data = match args.get(2) {
+                    Some(Value::Bytes(data)) => data.as_slice(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "crypto.hmac expects data as Bytes".to_string(),
+                        ));
+                    }
+                };
+                let digest = crate::runtime_capabilities::crypto_hmac(algo, key, data)
+                    .map_err(ExecError::Runtime)?;
+                Ok(Value::Bytes(digest))
+            }
+            "crypto.random_bytes" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "crypto.random_bytes expects 1 argument".to_string(),
+                    ));
+                }
+                let len = match args.first() {
+                    Some(Value::Int(value)) => *value,
+                    Some(Value::Float(value)) => *value as i64,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "crypto.random_bytes expects an Int".to_string(),
+                        ));
+                    }
+                };
+                let bytes = crate::runtime_capabilities::crypto_random_bytes(len)
+                    .map_err(ExecError::Runtime)?;
+                Ok(Value::Bytes(bytes))
+            }
+            "crypto.constant_time_eq" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "crypto.constant_time_eq expects 2 arguments".to_string(),
+                    ));
+                }
+                let left = match args.first() {
+                    Some(Value::Bytes(bytes)) => bytes.as_slice(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "crypto.constant_time_eq expects Bytes arguments".to_string(),
+                        ));
+                    }
+                };
+                let right = match args.get(1) {
+                    Some(Value::Bytes(bytes)) => bytes.as_slice(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "crypto.constant_time_eq expects Bytes arguments".to_string(),
+                        ));
+                    }
+                };
+                Ok(Value::Bool(
+                    crate::runtime_capabilities::crypto_constant_time_eq(left, right),
+                ))
             }
             "asset" => {
                 if args.len() != 1 {
@@ -2638,9 +2825,7 @@ impl Interpreter {
         loop {
             if observability::graceful_shutdown_requested() {
                 let signal = observability::take_shutdown_signal_name().unwrap_or("unknown");
-                eprintln!(
-                    "shutdown: runtime=ast signal={signal} handled_requests={handled}"
-                );
+                eprintln!("shutdown: runtime=ast signal={signal} handled_requests={handled}");
                 break;
             }
             let mut stream = match listener.accept() {
@@ -2655,7 +2840,7 @@ impl Interpreter {
                             "failed to accept connection: {err}"
                         )));
                     }
-                }
+                },
             };
             let request = match self.read_http_request(&mut stream) {
                 Ok(request) => request,
@@ -3386,6 +3571,16 @@ impl Interpreter {
                 _ => Err(ExecError::Runtime(format!(
                     "unknown response method {field}"
                 ))),
+            },
+            Value::Builtin(name) if name == "time" => match field {
+                "now" | "sleep" | "format" | "parse" => Ok(Value::Builtin(format!("time.{field}"))),
+                _ => Err(ExecError::Runtime(format!("unknown time method {field}"))),
+            },
+            Value::Builtin(name) if name == "crypto" => match field {
+                "hash" | "hmac" | "random_bytes" | "constant_time_eq" => {
+                    Ok(Value::Builtin(format!("crypto.{field}")))
+                }
+                _ => Err(ExecError::Runtime(format!("unknown crypto method {field}"))),
             },
             Value::Config(name) => {
                 let map = self

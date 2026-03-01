@@ -172,6 +172,22 @@ fn write_temp_program(name: &str, contents: &str) -> PathBuf {
     path
 }
 
+fn run_temp_program(backend: &str, source: &str, envs: &[(&str, &str)]) -> std::process::Output {
+    let program_path = write_temp_program("fuse_parity_temp", source);
+    let exe = env!("CARGO_BIN_EXE_fusec");
+    let mut cmd = Command::new(exe);
+    cmd.arg("--run")
+        .arg("--backend")
+        .arg(backend)
+        .arg(&program_path);
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    let output = cmd.output().expect("failed to run fusec");
+    let _ = fs::remove_file(&program_path);
+    output
+}
+
 fn run_http_program_request(
     backend: &str,
     program: &str,
@@ -649,6 +665,151 @@ fn parity_db_query_builder() {
     assert_eq!(
         String::from_utf8_lossy(&ast.stdout),
         String::from_utf8_lossy(&native.stdout)
+    );
+}
+
+#[test]
+fn parity_time_and_crypto_runtime_slice() {
+    let program = r#"
+requires time
+requires crypto
+
+app "demo":
+  let now = time.now()
+  assert(now > 0, "time.now should return positive unix ms")
+  time.sleep(1)
+
+  let payload = crypto.random_bytes(8)
+  let key = crypto.random_bytes(4)
+  let sha256 = crypto.hash("sha256", payload)
+  let sha512 = crypto.hash("sha512", payload)
+  let hmac512 = crypto.hmac("sha512", key, payload)
+  let random = crypto.random_bytes(16)
+
+  assert(crypto.constant_time_eq(sha256, sha256), "hash self-equality failed")
+  assert(!crypto.constant_time_eq(sha256, sha512), "different digest lengths should differ")
+  assert(!crypto.constant_time_eq(sha256, hmac512), "different digest lengths should differ")
+  assert(crypto.constant_time_eq(random, random), "random self-equality failed")
+  assert(!crypto.constant_time_eq(random, payload), "different lengths should differ")
+
+  print("ok")
+"#;
+    let ast = run_temp_program("ast", program, &[]);
+    let native = run_temp_program("native", program, &[]);
+
+    assert!(
+        ast.status.success(),
+        "ast stderr: {}",
+        String::from_utf8_lossy(&ast.stderr)
+    );
+    assert!(
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stdout),
+        String::from_utf8_lossy(&native.stdout)
+    );
+    assert_eq!(String::from_utf8_lossy(&ast.stdout), "ok\n");
+}
+
+#[test]
+fn parity_crypto_hash_invalid_algorithm_error() {
+    let program = r#"
+requires crypto
+
+app "demo":
+  let payload = crypto.random_bytes(8)
+  crypto.hash("md5", payload)
+"#;
+    let ast = run_temp_program("ast", program, &[]);
+    let native = run_temp_program("native", program, &[]);
+
+    assert!(!ast.status.success(), "expected ast failure");
+    assert!(!native.status.success(), "expected native failure");
+
+    let ast_err = normalize_error(&String::from_utf8_lossy(&ast.stderr));
+    let native_err = normalize_error(&String::from_utf8_lossy(&native.stderr));
+    assert_eq!(ast_err, native_err);
+    assert!(
+        ast_err.contains("crypto.hash unsupported algorithm md5"),
+        "stderr: {ast_err}"
+    );
+}
+
+#[test]
+fn parity_time_format_parse_roundtrip() {
+    let program = r#"
+requires time
+
+app "demo":
+  let epoch = 1704067200123
+  let formatted = time.format(epoch, "%Y-%m-%d %H:%M:%S")
+  print(formatted)
+  let parsed = time.parse(formatted, "%Y-%m-%d %H:%M:%S")
+  match parsed:
+    Ok(v) -> print(v)
+    Err(e) -> print(e.message)
+"#;
+    let ast = run_temp_program("ast", program, &[]);
+    let native = run_temp_program("native", program, &[]);
+
+    assert!(
+        ast.status.success(),
+        "ast stderr: {}",
+        String::from_utf8_lossy(&ast.stderr)
+    );
+    assert!(
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stdout),
+        String::from_utf8_lossy(&native.stdout)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stdout),
+        "2024-01-01 00:00:00\n1704067200000\n"
+    );
+}
+
+#[test]
+fn parity_time_parse_invalid_returns_error_result() {
+    let program = r#"
+requires time
+
+app "demo":
+  let parsed = time.parse("not-a-date", "%Y-%m-%d")
+  match parsed:
+    Ok(v) -> print("unexpected")
+    Err(e) -> print(e.message)
+"#;
+    let ast = run_temp_program("ast", program, &[]);
+    let native = run_temp_program("native", program, &[]);
+
+    assert!(
+        ast.status.success(),
+        "ast stderr: {}",
+        String::from_utf8_lossy(&ast.stderr)
+    );
+    assert!(
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stdout),
+        String::from_utf8_lossy(&native.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&ast.stdout).contains("time.parse failed for format"),
+        "stdout: {}",
+        String::from_utf8_lossy(&ast.stdout)
     );
 }
 

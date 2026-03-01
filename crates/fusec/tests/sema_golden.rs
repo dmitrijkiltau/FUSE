@@ -289,12 +289,43 @@ fn main():
 }
 
 #[test]
+fn spawn_rejects_time_sleep_builtin() {
+    let src = r#"
+requires time
+
+fn main():
+  let t = spawn:
+    time.sleep(1)
+  await t
+"#;
+    assert_diags(
+        src,
+        &["Error: spawn blocks cannot call side-effect builtin time.sleep"],
+    );
+}
+
+#[test]
 fn input_builtin_supports_optional_prompt() {
     let src = r#"
 fn main():
   let a = input()
   let b = input("name: ")
   print(a + b)
+"#;
+    assert_diags(src, &[]);
+}
+
+#[test]
+fn time_builtins_typecheck_with_result_parse() {
+    let src = r#"
+requires time
+
+fn main():
+  let text = time.format(1704067200123, "%Y-%m-%d %H:%M:%S")
+  let parsed = time.parse(text, "%Y-%m-%d %H:%M:%S")
+  match parsed:
+    Ok(v) -> print(v)
+    Err(e) -> print(e)
 "#;
     assert_diags(src, &[]);
 }

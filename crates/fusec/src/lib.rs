@@ -16,6 +16,7 @@ pub mod openapi;
 pub mod parser;
 pub mod refinement;
 mod runtime_assets;
+mod runtime_capabilities;
 mod runtime_io;
 mod runtime_svg;
 pub mod runtime_types;

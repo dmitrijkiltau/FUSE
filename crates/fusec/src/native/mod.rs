@@ -3,10 +3,10 @@ pub mod value;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::thread;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -762,9 +762,7 @@ impl<'a> NativeVm<'a> {
         loop {
             if observability::graceful_shutdown_requested() {
                 let signal = observability::take_shutdown_signal_name().unwrap_or("unknown");
-                eprintln!(
-                    "shutdown: runtime=native signal={signal} handled_requests={handled}"
-                );
+                eprintln!("shutdown: runtime=native signal={signal} handled_requests={handled}");
                 break;
             }
             let mut stream = match listener.accept() {
@@ -779,7 +777,7 @@ impl<'a> NativeVm<'a> {
                             "failed to accept connection: {err}"
                         )));
                     }
-                }
+                },
             };
             let request = match self.read_http_request(&mut stream) {
                 Ok(request) => request,

@@ -109,11 +109,7 @@ app "demo":
 "#;
     let program_path = write_temp_file("fuse_config_null_default_precedence", "fuse", program);
     for backend in ["ast", "native"] {
-        let output = run_program_backend(
-            backend,
-            &program_path,
-            &[("TEST_CFG_ALIAS", "null")],
-        );
+        let output = run_program_backend(backend, &program_path, &[("TEST_CFG_ALIAS", "null")]);
         assert!(
             output.status.success(),
             "backend={backend} stderr: {}",
