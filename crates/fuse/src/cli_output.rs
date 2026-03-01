@@ -1,0 +1,342 @@
+use std::collections::BTreeMap;
+use std::env;
+use std::fs;
+use std::io::IsTerminal;
+use std::path::Path;
+use std::sync::atomic::{AtomicU8, Ordering};
+
+use fuse_rt::json as rt_json;
+
+use super::{ColorChoice, Command, DiagnosticsFormat};
+
+static COLOR_MODE: AtomicU8 = AtomicU8::new(0);
+static DIAGNOSTIC_MODE: AtomicU8 = AtomicU8::new(0);
+
+pub(crate) fn apply_color_choice(choice: ColorChoice) {
+    let mode = match choice {
+        ColorChoice::Always => 2,
+        ColorChoice::Never => 0,
+        ColorChoice::Auto => {
+            if env::var_os("NO_COLOR").is_some() {
+                0
+            } else if color_auto_is_tty() {
+                1
+            } else {
+                0
+            }
+        }
+    };
+    COLOR_MODE.store(mode, Ordering::Relaxed);
+    unsafe {
+        env::set_var("FUSE_COLOR", choice.as_env_value());
+    }
+}
+
+pub(crate) fn apply_diagnostics_format(format: DiagnosticsFormat) {
+    let mode = match format {
+        DiagnosticsFormat::Text => 0,
+        DiagnosticsFormat::Json => 1,
+    };
+    DIAGNOSTIC_MODE.store(mode, Ordering::Relaxed);
+    match format {
+        DiagnosticsFormat::Text => unsafe {
+            env::remove_var("FUSE_DIAGNOSTICS");
+        },
+        DiagnosticsFormat::Json => unsafe {
+            env::set_var("FUSE_DIAGNOSTICS", format.as_env_value());
+        },
+    }
+}
+
+pub(crate) fn diagnostics_json_enabled() -> bool {
+    DIAGNOSTIC_MODE.load(Ordering::Relaxed) == 1
+}
+
+fn color_auto_is_tty() -> bool {
+    if let Some(force) = env::var_os("FUSE_COLOR_FORCE_TTY") {
+        return force == "1";
+    }
+    std::io::stderr().is_terminal()
+}
+
+fn color_enabled() -> bool {
+    COLOR_MODE.load(Ordering::Relaxed) != 0
+}
+
+fn ansi_paint(text: &str, code: &str) -> String {
+    if color_enabled() {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_string()
+    }
+}
+
+pub(crate) fn style_error(text: &str) -> String {
+    ansi_paint(text, "31;1")
+}
+
+pub(crate) fn style_warning(text: &str) -> String {
+    ansi_paint(text, "33;1")
+}
+
+pub(crate) fn style_header(text: &str) -> String {
+    ansi_paint(text, "36;1")
+}
+
+pub(crate) fn emit_cli_error(message: &str) {
+    if diagnostics_json_enabled() {
+        emit_json_line(cli_message_json("error", message));
+        return;
+    }
+    eprintln!("{}", style_error(&format!("error: {message}")));
+}
+
+pub(crate) fn emit_cli_warning(message: &str) {
+    if diagnostics_json_enabled() {
+        emit_json_line(cli_message_json("warning", message));
+        return;
+    }
+    eprintln!("{}", style_warning(&format!("warning: {message}")));
+}
+
+pub(crate) fn dev_prefix() -> String {
+    style_header("[dev]")
+}
+
+fn command_tag(command: Command) -> Option<&'static str> {
+    match command {
+        Command::Run => Some("run"),
+        Command::Check => Some("check"),
+        Command::Build => Some("build"),
+        Command::Test => Some("test"),
+        Command::Dev | Command::Fmt | Command::Openapi | Command::Migrate => None,
+    }
+}
+
+fn command_prefix(command: Command) -> Option<String> {
+    command_tag(command).map(|tag| style_header(&format!("[{tag}]")))
+}
+
+pub(crate) fn emit_command_step(command: Command, message: &str) {
+    if let Some(tag) = command_tag(command) {
+        if diagnostics_json_enabled() {
+            emit_json_line(command_step_json(tag, message));
+            return;
+        }
+    }
+    if let Some(prefix) = command_prefix(command) {
+        eprintln!("{prefix} {message}");
+    }
+}
+
+pub(crate) fn emit_build_progress(message: &str) {
+    emit_command_step(Command::Build, message);
+}
+
+pub(crate) fn emit_aot_build_progress(stage: usize, message: &str) {
+    emit_build_progress(&format!(
+        "aot [{stage}/{AOT_BUILD_PROGRESS_STAGES}] {message}",
+        AOT_BUILD_PROGRESS_STAGES = super::AOT_BUILD_PROGRESS_STAGES
+    ));
+}
+
+pub(crate) fn finalize_command(command: Command, code: i32) -> i32 {
+    match code {
+        0 => emit_command_step(command, "ok"),
+        2 => emit_command_step(command, "validation failed"),
+        _ => emit_command_step(command, "failed"),
+    }
+    code
+}
+
+pub(crate) fn emit_usage() {
+    if diagnostics_json_enabled() {
+        return;
+    }
+    eprintln!("{}", style_header(super::USAGE));
+}
+
+pub(crate) fn emit_json_line(value: rt_json::JsonValue) {
+    eprintln!("{}", rt_json::encode(&value));
+}
+
+fn cli_message_json(level: &str, message: &str) -> rt_json::JsonValue {
+    let mut object = BTreeMap::new();
+    object.insert(
+        "kind".to_string(),
+        rt_json::JsonValue::String("cli_message".to_string()),
+    );
+    object.insert(
+        "level".to_string(),
+        rt_json::JsonValue::String(level.to_string()),
+    );
+    object.insert(
+        "message".to_string(),
+        rt_json::JsonValue::String(message.to_string()),
+    );
+    rt_json::JsonValue::Object(object)
+}
+
+fn command_step_json(command: &str, message: &str) -> rt_json::JsonValue {
+    let mut object = BTreeMap::new();
+    object.insert(
+        "kind".to_string(),
+        rt_json::JsonValue::String("command_step".to_string()),
+    );
+    object.insert(
+        "command".to_string(),
+        rt_json::JsonValue::String(command.to_string()),
+    );
+    object.insert(
+        "message".to_string(),
+        rt_json::JsonValue::String(message.to_string()),
+    );
+    rt_json::JsonValue::Object(object)
+}
+
+pub(crate) fn emit_diags(diags: &[fusec::diag::Diag]) {
+    emit_diags_with_fallback(diags, None);
+}
+
+pub(crate) fn emit_diags_with_fallback(
+    diags: &[fusec::diag::Diag],
+    fallback: Option<(&Path, &str)>,
+) {
+    for diag in diags {
+        emit_diag(diag, fallback);
+    }
+}
+
+fn styled_diag_level(level: &fusec::diag::Level) -> String {
+    match level {
+        fusec::diag::Level::Error => style_error("error"),
+        fusec::diag::Level::Warning => style_warning("warning"),
+    }
+}
+
+fn emit_diag(diag: &fusec::diag::Diag, fallback: Option<(&Path, &str)>) {
+    if diagnostics_json_enabled() {
+        emit_json_line(diag_json_value(diag, fallback));
+        return;
+    }
+    let level = styled_diag_level(&diag.level);
+    if let Some(path) = &diag.path {
+        if let Ok(src) = fs::read_to_string(path) {
+            let (line, col, line_text) = line_info(&src, diag.span.start);
+            eprintln!(
+                "{level}: {} ({}:{}:{})",
+                diag.message,
+                path.display(),
+                line,
+                col
+            );
+            eprintln!("  {line_text}");
+            eprintln!(
+                "  {}{}",
+                " ".repeat(col.saturating_sub(1)),
+                style_error("^")
+            );
+            return;
+        }
+        eprintln!("{level}: {} ({})", diag.message, path.display());
+        return;
+    }
+    if let Some((path, src)) = fallback {
+        let (line, col, line_text) = line_info(src, diag.span.start);
+        eprintln!(
+            "{level}: {} ({}:{}:{})",
+            diag.message,
+            path.display(),
+            line,
+            col
+        );
+        eprintln!("  {line_text}");
+        eprintln!(
+            "  {}{}",
+            " ".repeat(col.saturating_sub(1)),
+            style_error("^")
+        );
+        return;
+    }
+    eprintln!(
+        "{level}: {} ({}..{})",
+        diag.message, diag.span.start, diag.span.end
+    );
+}
+
+fn diag_json_value(
+    diag: &fusec::diag::Diag,
+    fallback: Option<(&Path, &str)>,
+) -> rt_json::JsonValue {
+    let mut object = BTreeMap::new();
+    object.insert(
+        "kind".to_string(),
+        rt_json::JsonValue::String("diagnostic".to_string()),
+    );
+    object.insert(
+        "level".to_string(),
+        rt_json::JsonValue::String(match diag.level {
+            fusec::diag::Level::Error => "error".to_string(),
+            fusec::diag::Level::Warning => "warning".to_string(),
+        }),
+    );
+    object.insert(
+        "message".to_string(),
+        rt_json::JsonValue::String(diag.message.clone()),
+    );
+    object.insert(
+        "span_start".to_string(),
+        rt_json::JsonValue::Number(diag.span.start as f64),
+    );
+    object.insert(
+        "span_end".to_string(),
+        rt_json::JsonValue::Number(diag.span.end as f64),
+    );
+
+    if let Some(path) = &diag.path {
+        object.insert(
+            "path".to_string(),
+            rt_json::JsonValue::String(path.display().to_string()),
+        );
+        if let Ok(src) = fs::read_to_string(path) {
+            let (line, col, _) = line_info(&src, diag.span.start);
+            object.insert("line".to_string(), rt_json::JsonValue::Number(line as f64));
+            object.insert("column".to_string(), rt_json::JsonValue::Number(col as f64));
+        }
+        return rt_json::JsonValue::Object(object);
+    }
+
+    if let Some((path, src)) = fallback {
+        let (line, col, _) = line_info(src, diag.span.start);
+        object.insert(
+            "path".to_string(),
+            rt_json::JsonValue::String(path.display().to_string()),
+        );
+        object.insert("line".to_string(), rt_json::JsonValue::Number(line as f64));
+        object.insert("column".to_string(), rt_json::JsonValue::Number(col as f64));
+    }
+
+    rt_json::JsonValue::Object(object)
+}
+
+pub(crate) fn line_info(src: &str, offset: usize) -> (usize, usize, &str) {
+    let offset = offset.min(src.len());
+    let mut line = 1usize;
+    let mut line_start = 0usize;
+    for (idx, byte) in src.bytes().enumerate() {
+        if idx >= offset {
+            break;
+        }
+        if byte == b'\n' {
+            line += 1;
+            line_start = idx + 1;
+        }
+    }
+    let line_end = src[line_start..]
+        .find('\n')
+        .map(|rel| line_start + rel)
+        .unwrap_or(src.len());
+    let col = offset.saturating_sub(line_start) + 1;
+    let line_text = &src[line_start..line_end];
+    (line, col, line_text)
+}

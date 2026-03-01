@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static PORT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn temp_project_dir() -> PathBuf {
     let mut dir = std::env::temp_dir();
@@ -361,6 +362,17 @@ fn default_aot_binary_path(dir: &Path) -> PathBuf {
 }
 
 fn reserve_local_port() -> u16 {
+    const PORT_START: u16 = 20_000;
+    const PORT_SPAN: u16 = 30_000;
+    let pid_offset = (std::process::id() as u16) % PORT_SPAN;
+    for _ in 0..PORT_SPAN {
+        let seq = PORT_COUNTER.fetch_add(1, Ordering::Relaxed) as u16;
+        let candidate = PORT_START + (pid_offset.wrapping_add(seq) % PORT_SPAN);
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", candidate)) {
+            drop(listener);
+            return candidate;
+        }
+    }
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test port");
     listener.local_addr().expect("read local test addr").port()
 }
@@ -497,7 +509,10 @@ fn http_request_with_retry(port: u16, request: &str, attempts: usize) -> Option<
             let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
             if stream.write_all(request.as_bytes()).is_ok() {
                 let mut response = String::new();
-                if stream.read_to_string(&mut response).is_ok() && !response.is_empty() {
+                if stream.read_to_string(&mut response).is_ok()
+                    && !response.is_empty()
+                    && response_is_success(&response)
+                {
                     return Some(response);
                 }
             }
@@ -505,6 +520,19 @@ fn http_request_with_retry(port: u16, request: &str, attempts: usize) -> Option<
         thread::sleep(Duration::from_millis(100));
     }
     None
+}
+
+fn response_is_success(response: &str) -> bool {
+    let Some(line) = response.lines().next() else {
+        return false;
+    };
+    let Some(code) = line.split_whitespace().nth(1) else {
+        return false;
+    };
+    let Ok(code) = code.parse::<u16>() else {
+        return false;
+    };
+    (200..300).contains(&code)
 }
 
 fn wait_for_child_exit_status(child: &mut Child, timeout: Duration) -> ExitStatus {

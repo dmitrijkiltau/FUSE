@@ -407,6 +407,110 @@ scripts/check_examples.sh
 
 ---
 
+### Milestone 7A — Code cleanup and redundancy removal (pre-tag)
+
+**Goal:** Reduce maintenance cost and duplicated logic before the 0.8.0 tag
+without changing language/runtime behavior.
+
+**Scope:**
+
+- [x] Split `crates/fuse/src/main.rs` into focused `crates/fuse/src/` modules (args, diagnostics, run/dev/build, deps/lock, AOT helpers)
+- [ ] Remove diagnostics formatting duplication between `fuse` and `fusec` (`--diagnostics json|text` surface stays identical)
+- [ ] Extract shared HTTP/runtime integration harness helpers for `fusec` tests
+- [ ] Split `crates/fuse/tests/project_cli.rs` into domain-focused files with shared fixture/process helpers
+- [ ] Remove redundant script/report glue where equivalent helpers already exist
+
+**Deliverables:**
+
+- [x] `crates/fuse/src/main.rs` reduced to dispatch/lifecycle oriented surface (<1500 lines target)
+- [ ] One canonical diagnostics JSON/text renderer path used by both CLIs
+- [ ] No duplicated `send_http_request_with_retry` helper implementations across runtime parity tests
+- [ ] `project_cli` coverage preserved after file split (`build`, `run/dev`, `deps/lock`, `diagnostics/format`)
+- [ ] Release gates still pass after cleanup refactors (`release_smoke.sh`, `use_case_bench.sh`, `check_use_case_bench_regression.sh`)
+
+**Execution slices (recommended order):**
+
+1. `fuse` CLI modularization pass:
+   - extract `main.rs` command-specific blocks into dedicated modules with zero behavior changes
+   - keep root `main.rs` as argument entrypoint + dispatch only
+2. Diagnostics dedup pass:
+   - move JSON/text diagnostic rendering helpers into shared code consumed by both `fuse` and `fusec`
+   - keep existing JSON schema contract unchanged
+3. Runtime test harness dedup pass:
+   - add shared helpers under `crates/fusec/tests/support/` for port allocation, server readiness, and retryable HTTP requests
+   - migrate `html_runtime.rs`, `parity_ast_native.rs`, and `result_decode_runtime.rs`
+4. `project_cli` split pass:
+   - create `crates/fuse/tests/support/` helpers
+   - split monolithic test file into feature-grouped test files while preserving test names/coverage
+5. Script cleanup pass:
+   - remove redundant local helper logic in scripts where already centralized
+   - re-run bench/regression scripts and update baseline only if metrics changed
+
+**Progress update (2026-03-01):**
+
+- Slice 1 started with low-risk CLI decomposition:
+  - extracted argument discovery/parsing into `crates/fuse/src/cli_args.rs` (`discover_color_choice`, `discover_diagnostics_format`, `parse_common_args`)
+  - extracted manifest loading/entry resolution into `crates/fuse/src/manifest.rs` (`load_manifest`, `find_manifest`, `resolve_entry`)
+  - rewired `run()` in `crates/fuse/src/main.rs` to call the new modules without behavior changes
+- continued Slice 1 command-surface extraction:
+  - extracted project command operations into `crates/fuse/src/command_ops.rs` (`run_build`, `run_project_check`, `run_project_fmt` + local OpenAPI/project-file helpers)
+  - rewired command dispatch in `run()` to call `command_ops` module functions
+- continued Slice 1 dev-loop extraction:
+  - extracted dev watch/restart workflow into `crates/fuse/src/dev.rs` (`run_dev`, compile-error probe, reload websocket hub, watch snapshot helpers)
+  - rewired `Command::Dev` dispatch in `run()` to call `dev::run_dev`
+- continued Slice 1 dependency/lock extraction:
+  - extracted dependency resolver + lockfile/git internals into `crates/fuse/src/deps.rs` (`resolve_dependencies`, lockfile read/write, git checkout/reference helpers, dependency normalization)
+  - rewired dependency loading in `run()` to call `deps::resolve_dependencies`
+- continued Slice 1 asset-pipeline extraction:
+  - extracted asset/static helper internals into `crates/fuse/src/assets.rs` (`collect_files_by_extension`, `resolve_manifest_relative_path`, asset hook + hashing/manifest helpers, `run_asset_pipeline`, `apply_asset_manifest_env`)
+  - rewired build/dev paths to call `assets::*` (`command_ops::run_build`, `dev::run_dev`) and kept serve env integration via `apply_asset_manifest_env`
+- continued Slice 1 runtime-env/bootstrap extraction:
+  - extracted run/dev serve environment + OpenAPI UI + dotenv/bootstrap helpers into `crates/fuse/src/runtime_env.rs` (`configure_openapi_ui_env`, `apply_serve_env`, `apply_dotenv`, `apply_default_config_path`)
+  - rewired `run()` in `crates/fuse/src/main.rs` to call `runtime_env::*`
+- continued Slice 1 CLI output/diagnostics extraction:
+  - extracted CLI color/output/step + diagnostic emit helpers into `crates/fuse/src/cli_output.rs` (`apply_color_choice`, `apply_diagnostics_format`, `emit_cli_error`, `emit_command_step`, `emit_diags_with_fallback`, `line_info`, etc.)
+  - rewired root/child-module access via `main.rs` re-export surface without behavior changes
+- continued Slice 1 AOT/native compile+link extraction:
+  - extracted AOT/native compile-link/cache/runtime helpers into `crates/fuse/src/aot.rs` (`compile_artifacts`, `write_compiled_artifacts`, `write_native_binary`, native runner generation + link helpers, `try_load_native`, `run_native_program`)
+  - rewired `run()` + `command_ops::run_build` to call `aot::*`
+- continued Slice 1 build-cache/meta extraction:
+  - extracted SHA1 + build dir + IR meta/check metadata helpers into `crates/fuse/src/cache.rs` (`sha1_digest`, `build_dir`, `clean_build_dir`, `build_ir_meta`, `load/write_ir_meta`, incremental-check delta helpers, `file_stamp`)
+  - rewired shared usage through `main.rs` re-export surface consumed by `aot`, `assets`, `command_ops`, and `dev`
+- continued Slice 1 model/type extraction:
+  - extracted manifest/dependency + IR metadata structs into `crates/fuse/src/model.rs` (`Manifest`, `DependencySpec`, `DependencyDetail`, `IrMeta`, `IrFileMeta`, serve/build/assets/vite config structs)
+  - rewired shared usage through `main.rs` re-export surface consumed by `manifest`, `deps`, `assets`, `runtime_env`, `command_ops`, `cache`, and `aot`
+- post-extraction stabilization:
+  - hardened `project_cli` HTTP service test harness port selection to avoid cross-test port reuse races (`reserve_local_port` now uses deterministic process-local port cycling with bind checks)
+  - hardened HTTP request retries for AOT service tests to wait for successful 2xx responses instead of accepting transient non-success responses
+  - optimized AOT link dependency resolution in `crates/fuse/src/aot.rs` to reuse existing `fusec`/`bincode` rlibs when already present (fallback still runs `cargo build -p fusec` when needed)
+- `crates/fuse/src/main.rs` line count reduced from `4254` to `418` across the first ten cuts
+- Validation runs green:
+  - `./scripts/cargo_env.sh cargo fmt`
+  - `./scripts/cargo_env.sh cargo check -p fuse`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli check_manifest_path_reports_cross_file_location`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli check_diagnostics_json_emits_structured_output_for_project_mode`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli unknown_command_uses_error_prefix`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli filter_option_is_rejected_for_non_test_commands`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli dev_emits_compile_error_overlay_event_for_syntax_error`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli check_reports_transitive_dependency_conflicts_with_origin_paths`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli check_rejects_dependency_with_multiple_git_reference_fields`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli check_reports_lock_entry_unknown_source_code`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli check_reports_lock_entry_subdir_not_found_code`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli run_with_program_args_uses_cached_ir_when_valid`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli build_runs_before_build_hook_when_configured`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli run_validation_errors_emit_json_step_events_when_diagnostics_json_enabled`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli build_aot_emits_progress_indicator`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli run_invalidates_cached_ir_when_meta_target_fingerprint_changes`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli build_aot_build_info_env_prints_embedded_metadata`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli build_aot_startup_trace_env_emits_operability_header`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli build_aot_service_request_id_and_structured_logs_are_consistent`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli build_aot_` (`16 passed`, runtime dropped from ~`65s` to ~`12s`)
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli` (`78 passed`)
+
+**Exit criteria:** Refactor-only changes merged with no observable CLI/runtime behavior regression and full release gates green.
+
+---
+
 ## Milestone dependency graph
 
 ```
@@ -418,8 +522,10 @@ M3 (LSP modularization)        ──→ M7
 M4 (examples + docs)           ──→ M7
 M5 (DB/config ergonomics)      ──→ M7
 M6 (workflow improvements)     ──→ M7
+M7A (cleanup + dedupe)         ──→ M7
 
 M1, M2, M3, M5, M6 are independent of each other and can be parallelized.
+M7A runs as refactor-only hardening before tagging.
 M7 is the integration/release gate and depends on all others.
 ```
 
