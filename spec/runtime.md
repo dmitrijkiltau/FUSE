@@ -658,6 +658,11 @@ Rules:
 - tests execute via AST interpreter
 - failures report non-zero exit
 
+Project check incremental mode:
+
+- `fuse check` writes `.fuse/build/check.meta` (or `.fuse/build/check.strict.meta` with `--strict-architecture`)
+- warm checks reuse module content hashes from this metadata and skip unchanged-module rechecks
+
 ### Concurrency
 
 `spawn:` creates a task and returns `Task<T>` where `T` is block result.

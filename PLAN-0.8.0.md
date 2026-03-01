@@ -287,7 +287,7 @@ Config:
 
 **Scope:**
 
-- [ ] `fuse check` incremental mode — skip re-checking unchanged modules (use module content hashes from `program.meta`)
+- [x] `fuse check` incremental mode — skip re-checking unchanged modules (use module content hashes from incremental check metadata)
 - [ ] `fuse dev` diagnostic overlay — show first compilation error in browser (injected via existing `__reload` WebSocket)
 - [x] `fuse test --filter "pattern"` — run subset of test blocks matching a name pattern
 - [ ] `fuse build` progress indicator for AOT compilation steps
@@ -295,7 +295,7 @@ Config:
 
 **Deliverables:**
 
-- [ ] Incremental check validated with module-edit-recheck benchmarks
+- [x] Incremental check validated with module-edit-recheck benchmarks
 - [ ] `fuse dev` overlay tested with intentional syntax errors
 - [x] `fuse test --filter` documented in README and reference
 - [ ] JSON diagnostics schema documented
@@ -313,12 +313,27 @@ Config:
   - `fuse test --filter <pattern>` implemented in CLI argument plumbing (`fuse` -> `fusec`)
   - `fusec --test --filter <pattern>` filters test jobs by case-sensitive substring match on test name
   - docs updated in `README.md` and `spec/runtime.md`; regenerated `docs/site/specs/reference.md`
+- Implemented project-level incremental `fuse check` caching:
+  - warm-cache fast path returns immediately when `.fuse/build/check.meta` (or `check.strict.meta`) remains valid
+  - cache invalidation keys include module content hashes plus manifest/lock/build fingerprints
+  - incremental re-check computes changed modules and transitive importers, then sema-checks only affected roots
+  - check cache metadata is refreshed on successful runs
+- Added CLI regression coverage for incremental behavior in `crates/fuse/tests/project_cli.rs`:
+  - `check_incremental_cache_hit_skips_unchanged_modules`
+  - `check_incremental_rechecks_importers_when_dependency_changes`
+- Cold vs warm reference-service measurement confirms expected speedup:
+  - cold: `0.18s`
+  - warm: `0.12s`
 - Validation runs green:
   - `scripts/cargo_env.sh cargo test -p fusec --test html_runtime`
   - `scripts/cargo_env.sh cargo test -p fusec --test result_decode_runtime`
   - `scripts/cargo_env.sh cargo test -p fusec --test parity_ast_native`
   - `scripts/cargo_env.sh cargo test -p fuse --test project_cli test_filter_runs_matching_tests_only`
   - `scripts/cargo_env.sh cargo test -p fuse --test project_cli filter_option_is_rejected_for_non_test_commands`
+  - `scripts/cargo_env.sh cargo check -p fuse -p fusec`
+  - `scripts/cargo_env.sh cargo test -p fuse --test project_cli check_incremental_cache_hit_skips_unchanged_modules`
+  - `scripts/cargo_env.sh cargo test -p fuse --test project_cli check_incremental_rechecks_importers_when_dependency_changes`
+  - `scripts/cargo_env.sh cargo test -p fuse --test project_cli check_`
 
 **Exit criteria:** Warm `fuse check` on reference-service measurably faster than cold check.
 

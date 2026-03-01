@@ -257,6 +257,8 @@ Lockfile semantics (`fuse.lock`):
 Cache outputs are stored in `.fuse/build/` (`program.native`).
 Cache validity uses content hashes (module graph + `fuse.toml` + `fuse.lock`) in `program.meta` v3.
 Native/IR cache reuse also requires matching build fingerprints (target triple, Rust toolchain, CLI version).
+`fuse check` also writes incremental metadata (`check.meta` / `check.strict.meta`) and skips
+unchanged modules by hash on warm runs.
 
 Deployable AOT output:
 

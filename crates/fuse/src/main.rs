@@ -547,7 +547,12 @@ fn run(args: Vec<String>) -> i32 {
         ),
         Command::Check => {
             if common.entry.is_none() && manifest.is_some() {
-                run_project_check(&entry, &deps, common.strict_architecture)
+                run_project_check(
+                    &entry,
+                    manifest_dir.as_deref(),
+                    &deps,
+                    common.strict_architecture,
+                )
             } else {
                 let mut args = Vec::new();
                 args.push("--check".to_string());
@@ -1911,16 +1916,54 @@ fn run_build(
 
 fn run_project_check(
     entry: &Path,
+    manifest_dir: Option<&Path>,
     deps: &HashMap<String, PathBuf>,
     strict_architecture: bool,
 ) -> i32 {
-    let files = match collect_project_files(entry, deps) {
-        Ok(files) => files,
+    let cache_meta = load_check_ir_meta(manifest_dir, strict_architecture);
+    if let Some(meta) = cache_meta.as_ref() {
+        if ir_meta_base_is_valid(meta, manifest_dir) && check_meta_files_unchanged(meta) {
+            return 0;
+        }
+    }
+
+    let src = match fs::read_to_string(entry) {
+        Ok(src) => src,
+        Err(err) => {
+            emit_cli_error(&format!("failed to read {}: {err}", entry.display()));
+            return 1;
+        }
+    };
+    let (registry, diags) = fusec::load_program_with_modules_and_deps(entry, &src, deps);
+    if !diags.is_empty() {
+        emit_diags_with_fallback(&diags, Some((entry, &src)));
+        return 1;
+    }
+
+    let current_meta = match build_ir_meta(&registry, manifest_dir) {
+        Ok(meta) => meta,
         Err(err) => {
             emit_cli_error(&err);
             return 1;
         }
     };
+    let changed = changed_modules_since_meta(
+        &registry,
+        &current_meta,
+        cache_meta.as_ref(),
+        manifest_dir,
+    );
+    let affected = affected_modules_for_incremental_check(&registry, &changed);
+
+    let mut files = Vec::new();
+    for id in affected {
+        if let Some(unit) = registry.modules.get(&id) {
+            files.push(unit.path.clone());
+        }
+    }
+    files.sort();
+    files.dedup();
+
     let mut had_errors = false;
     for file in files {
         let src = match fs::read_to_string(&file) {
@@ -1947,6 +1990,13 @@ fn run_project_check(
             had_errors = true;
         }
     }
+
+    if !had_errors {
+        if let Err(err) = write_check_ir_meta(manifest_dir, strict_architecture, &current_meta) {
+            emit_cli_warning(&format!("failed to update check cache: {err}"));
+        }
+    }
+
     if had_errors { 1 } else { 0 }
 }
 
@@ -2611,10 +2661,7 @@ fn write_compiled_artifacts(
         .map_err(|err| format!("failed to write {}: {err}", native_path.display()))?;
 
     let meta_path = build_dir.join("program.meta");
-    let meta_bytes = bincode::serialize(&artifacts.meta)
-        .map_err(|err| format!("ir meta encode failed: {err}"))?;
-    fs::write(&meta_path, meta_bytes)
-        .map_err(|err| format!("failed to write {}: {err}", meta_path.display()))?;
+    write_ir_meta(&meta_path, &artifacts.meta)?;
     Ok(())
 }
 
@@ -2930,21 +2977,24 @@ fn load_ir_meta(path: &Path) -> Option<IrMeta> {
     bincode::deserialize(&bytes).ok()
 }
 
-fn ir_meta_is_valid(meta: &IrMeta, manifest_dir: Option<&Path>) -> bool {
+fn write_ir_meta(path: &Path, meta: &IrMeta) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+        }
+    }
+    let bytes = bincode::serialize(meta).map_err(|err| format!("ir meta encode failed: {err}"))?;
+    fs::write(path, bytes).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    Ok(())
+}
+
+fn ir_meta_base_is_valid(meta: &IrMeta, manifest_dir: Option<&Path>) -> bool {
     if meta.version != 3 || meta.files.is_empty() {
         return false;
     }
     if meta.native_cache_version != fusec::native::CACHE_VERSION {
         return false;
-    }
-    for file in &meta.files {
-        let hash = match file_hash_hex(Path::new(&file.path)) {
-            Ok(hash) => hash,
-            Err(_) => return false,
-        };
-        if hash != file.hash {
-            return false;
-        }
     }
     let current_manifest_hash = manifest_dir
         .map(|dir| dir.join("fuse.toml"))
@@ -2974,6 +3024,133 @@ fn ir_meta_is_valid(meta: &IrMeta, manifest_dir: Option<&Path>) -> bool {
         return false;
     }
     true
+}
+
+fn ir_meta_is_valid(meta: &IrMeta, manifest_dir: Option<&Path>) -> bool {
+    if !ir_meta_base_is_valid(meta, manifest_dir) {
+        return false;
+    }
+    for file in &meta.files {
+        let hash = match file_hash_hex(Path::new(&file.path)) {
+            Ok(hash) => hash,
+            Err(_) => return false,
+        };
+        if hash != file.hash {
+            return false;
+        }
+    }
+    true
+}
+
+fn check_meta_path(
+    manifest_dir: Option<&Path>,
+    strict_architecture: bool,
+) -> Result<PathBuf, String> {
+    let build = build_dir(manifest_dir)?;
+    let name = if strict_architecture {
+        "check.strict.meta"
+    } else {
+        "check.meta"
+    };
+    Ok(build.join(name))
+}
+
+fn load_check_ir_meta(manifest_dir: Option<&Path>, strict_architecture: bool) -> Option<IrMeta> {
+    let path = check_meta_path(manifest_dir, strict_architecture).ok()?;
+    load_ir_meta(&path)
+}
+
+fn write_check_ir_meta(
+    manifest_dir: Option<&Path>,
+    strict_architecture: bool,
+    meta: &IrMeta,
+) -> Result<(), String> {
+    let path = check_meta_path(manifest_dir, strict_architecture)?;
+    write_ir_meta(&path, meta)
+}
+
+fn check_meta_files_unchanged(meta: &IrMeta) -> bool {
+    for file in &meta.files {
+        let hash = match file_hash_hex(Path::new(&file.path)) {
+            Ok(hash) => hash,
+            Err(_) => return false,
+        };
+        if hash != file.hash {
+            return false;
+        }
+    }
+    true
+}
+
+fn changed_modules_since_meta(
+    registry: &fusec::ModuleRegistry,
+    current_meta: &IrMeta,
+    cached_meta: Option<&IrMeta>,
+    manifest_dir: Option<&Path>,
+) -> HashSet<usize> {
+    let Some(cached_meta) = cached_meta else {
+        return registry.modules.keys().copied().collect();
+    };
+    if !ir_meta_base_is_valid(cached_meta, manifest_dir) {
+        return registry.modules.keys().copied().collect();
+    }
+
+    let mut changed = HashSet::new();
+    let current_hashes: HashMap<&str, &str> = current_meta
+        .files
+        .iter()
+        .map(|file| (file.path.as_str(), file.hash.as_str()))
+        .collect();
+    let cached_hashes: HashMap<&str, &str> = cached_meta
+        .files
+        .iter()
+        .map(|file| (file.path.as_str(), file.hash.as_str()))
+        .collect();
+
+    for (id, unit) in &registry.modules {
+        let path = unit.path.to_string_lossy();
+        let current = current_hashes.get(path.as_ref()).copied();
+        let cached = cached_hashes.get(path.as_ref()).copied();
+        if current.is_none() || cached.is_none() || current != cached {
+            changed.insert(*id);
+        }
+    }
+
+    if changed.is_empty() && current_hashes.len() != cached_hashes.len() {
+        return registry.modules.keys().copied().collect();
+    }
+
+    changed
+}
+
+fn affected_modules_for_incremental_check(
+    registry: &fusec::ModuleRegistry,
+    changed: &HashSet<usize>,
+) -> HashSet<usize> {
+    if changed.is_empty() {
+        return registry.modules.keys().copied().collect();
+    }
+
+    let mut reverse: HashMap<usize, HashSet<usize>> = HashMap::new();
+    for (id, unit) in &registry.modules {
+        for link in unit.modules.modules.values() {
+            reverse.entry(link.id).or_default().insert(*id);
+        }
+    }
+
+    let mut affected = changed.clone();
+    let mut stack: Vec<usize> = changed.iter().copied().collect();
+    while let Some(module_id) = stack.pop() {
+        let Some(importers) = reverse.get(&module_id) else {
+            continue;
+        };
+        for importer in importers {
+            if affected.insert(*importer) {
+                stack.push(*importer);
+            }
+        }
+    }
+    affected
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
