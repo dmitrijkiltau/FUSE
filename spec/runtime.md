@@ -418,7 +418,8 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 - `FUSE_HOST` (default `127.0.0.1`) controls bind host
 - `FUSE_SERVICE` selects service when multiple are declared
 - `FUSE_MAX_REQUESTS` stops server after N requests (useful for tests)
-- `FUSE_DEV_RELOAD_WS_URL` enables dev HTML script injection (`/__reload` client)
+- `FUSE_DEV_RELOAD_WS_URL` enables dev HTML script injection (`/__reload` client) and websocket-driven
+  page reload/compile-error overlay events in `fuse dev`
 - `FUSE_OPENAPI_JSON_PATH` + `FUSE_OPENAPI_UI_PATH` enable built-in OpenAPI UI serving
 - `FUSE_ASSET_MAP` provides logical-path -> public-URL mappings for `asset(path)`
 - `FUSE_VITE_PROXY_URL` enables fallback proxying of unknown routes to Vite dev server

@@ -288,7 +288,7 @@ Config:
 **Scope:**
 
 - [x] `fuse check` incremental mode — skip re-checking unchanged modules (use module content hashes from incremental check metadata)
-- [ ] `fuse dev` diagnostic overlay — show first compilation error in browser (injected via existing `__reload` WebSocket)
+- [x] `fuse dev` diagnostic overlay — show first compilation error in browser (injected via existing `__reload` WebSocket)
 - [x] `fuse test --filter "pattern"` — run subset of test blocks matching a name pattern
 - [ ] `fuse build` progress indicator for AOT compilation steps
 - [ ] Structured JSON diagnostic output mode (`--diagnostics json`) for CI/editor consumption
@@ -296,7 +296,7 @@ Config:
 **Deliverables:**
 
 - [x] Incremental check validated with module-edit-recheck benchmarks
-- [ ] `fuse dev` overlay tested with intentional syntax errors
+- [x] `fuse dev` overlay tested with intentional syntax errors
 - [x] `fuse test --filter` documented in README and reference
 - [ ] JSON diagnostics schema documented
 - [ ] `use_case_bench.sh` updated with incremental check metric
@@ -318,6 +318,13 @@ Config:
   - cache invalidation keys include module content hashes plus manifest/lock/build fingerprints
   - incremental re-check computes changed modules and transitive importers, then sema-checks only affected roots
   - check cache metadata is refreshed on successful runs
+- Implemented `fuse dev` browser diagnostic overlay via the existing reload websocket:
+  - `fuse dev` now performs a compile gate (parse + sema) before each restart and emits the first compile error as a websocket event payload
+  - runtime live-reload script (AST/native) now handles websocket event types (`reload`, `clear_error`, `compile_error`) and renders an in-browser overlay for compile failures
+  - successful restarts clear overlays and trigger the existing reload flow
+- Added `fuse dev` overlay regression coverage:
+  - `crates/fuse/tests/project_cli.rs::dev_emits_compile_error_overlay_event_for_syntax_error`
+  - `crates/fusec/tests/html_runtime.rs::html_http_injects_live_reload_script_when_enabled` now asserts overlay marker/event wiring
 - Added CLI regression coverage for incremental behavior in `crates/fuse/tests/project_cli.rs`:
   - `check_incremental_cache_hit_skips_unchanged_modules`
   - `check_incremental_rechecks_importers_when_dependency_changes`
@@ -334,6 +341,8 @@ Config:
   - `scripts/cargo_env.sh cargo test -p fuse --test project_cli check_incremental_cache_hit_skips_unchanged_modules`
   - `scripts/cargo_env.sh cargo test -p fuse --test project_cli check_incremental_rechecks_importers_when_dependency_changes`
   - `scripts/cargo_env.sh cargo test -p fuse --test project_cli check_`
+  - `scripts/cargo_env.sh cargo test -p fuse --test project_cli dev_emits_compile_error_overlay_event_for_syntax_error`
+  - `scripts/cargo_env.sh cargo test -p fusec --test html_runtime html_http_injects_live_reload_script_when_enabled`
 
 **Exit criteria:** Warm `fuse check` on reference-service measurably faster than cold check.
 

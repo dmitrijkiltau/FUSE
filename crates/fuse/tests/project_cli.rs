@@ -1,8 +1,9 @@
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -523,6 +524,108 @@ fn wait_for_child_exit_status(child: &mut Child, timeout: Duration) -> ExitStatu
     }
 }
 
+fn wait_for_dev_ws_url(
+    lines: &mpsc::Receiver<String>,
+    timeout: Duration,
+    stderr_log: &mut String,
+) -> Option<String> {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        let line = match lines.recv_timeout(Duration::from_millis(200)) {
+            Ok(line) => line,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+        };
+        stderr_log.push_str(&line);
+        stderr_log.push('\n');
+        if let Some((_, ws_url)) = line.split_once("live reload websocket: ") {
+            return Some(ws_url.trim().to_string());
+        }
+    }
+    None
+}
+
+fn connect_reload_websocket(ws_url: &str) -> Result<TcpStream, String> {
+    let raw = ws_url
+        .strip_prefix("ws://")
+        .ok_or_else(|| format!("invalid ws url: {ws_url}"))?;
+    let (addr, path_tail) = raw
+        .split_once('/')
+        .ok_or_else(|| format!("invalid ws url path: {ws_url}"))?;
+    let path = format!("/{}", path_tail);
+    let mut stream =
+        TcpStream::connect(addr).map_err(|err| format!("connect websocket {addr}: {err}"))?;
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGVzdC1mdXNlLWRldi1rZXk=\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|err| format!("write websocket handshake: {err}"))?;
+    let header =
+        read_http_response_header(&mut stream).map_err(|err| format!("read ws handshake: {err}"))?;
+    if !header.starts_with("HTTP/1.1 101") {
+        return Err(format!("websocket handshake failed: {header}"));
+    }
+    Ok(stream)
+}
+
+fn read_http_response_header(stream: &mut TcpStream) -> std::io::Result<String> {
+    let mut buffer = Vec::new();
+    let mut temp = [0u8; 1024];
+    loop {
+        let read = stream.read(&mut temp)?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&temp[..read]);
+        if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+        if buffer.len() >= 16 * 1024 {
+            break;
+        }
+    }
+    Ok(String::from_utf8_lossy(&buffer).to_string())
+}
+
+fn read_websocket_text_frame(stream: &mut TcpStream) -> Result<String, String> {
+    let mut header = [0u8; 2];
+    stream
+        .read_exact(&mut header)
+        .map_err(|err| format!("read ws header: {err}"))?;
+    let masked = (header[1] & 0x80) != 0;
+    let mut len = (header[1] & 0x7f) as usize;
+    if len == 126 {
+        let mut ext = [0u8; 2];
+        stream
+            .read_exact(&mut ext)
+            .map_err(|err| format!("read ws ext16: {err}"))?;
+        len = u16::from_be_bytes(ext) as usize;
+    } else if len == 127 {
+        let mut ext = [0u8; 8];
+        stream
+            .read_exact(&mut ext)
+            .map_err(|err| format!("read ws ext64: {err}"))?;
+        len = u64::from_be_bytes(ext) as usize;
+    }
+    let mut mask = [0u8; 4];
+    if masked {
+        stream
+            .read_exact(&mut mask)
+            .map_err(|err| format!("read ws mask: {err}"))?;
+    }
+    let mut payload = vec![0u8; len];
+    stream
+        .read_exact(&mut payload)
+        .map_err(|err| format!("read ws payload: {err}"))?;
+    if masked {
+        for (idx, byte) in payload.iter_mut().enumerate() {
+            *byte ^= mask[idx % 4];
+        }
+    }
+    String::from_utf8(payload).map_err(|err| format!("ws payload utf8: {err}"))
+}
+
 #[cfg(unix)]
 fn send_unix_signal(pid: u32, signal: &str) {
     let status = Command::new("kill")
@@ -704,6 +807,79 @@ fn other() -> String:
     let stderr = String::from_utf8_lossy(&second.stderr);
     assert!(stderr.contains("main.fuse"), "stderr: {stderr}");
 
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn dev_emits_compile_error_overlay_event_for_syntax_error() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let mut child = Command::new(exe)
+        .arg("dev")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .env("FUSE_COLOR", "never")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn fuse dev");
+    let stderr_pipe = child.stderr.take().expect("take dev stderr");
+    let (line_tx, line_rx) = mpsc::channel();
+    let reader_thread = thread::spawn(move || {
+        let mut reader = BufReader::new(stderr_pipe);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let trimmed = line.trim_end_matches(['\r', '\n']).to_string();
+                    if line_tx.send(trimmed).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let mut stderr_log = String::new();
+    let ws_url = wait_for_dev_ws_url(&line_rx, Duration::from_secs(10), &mut stderr_log)
+        .unwrap_or_else(|| panic!("missing dev websocket url; stderr:\n{stderr_log}"));
+    let mut ws = connect_reload_websocket(&ws_url)
+        .unwrap_or_else(|err| panic!("connect websocket failed: {err}; stderr:\n{stderr_log}"));
+    ws.set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("set ws read timeout");
+
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo"
+  print("broken")
+"#,
+    )
+    .expect("write invalid main.fuse");
+
+    let payload = read_websocket_text_frame(&mut ws)
+        .unwrap_or_else(|err| panic!("read websocket payload failed: {err}; stderr:\n{stderr_log}"));
+    assert!(
+        payload.contains("\"type\":\"compile_error\""),
+        "payload: {payload}"
+    );
+    assert!(payload.contains("main.fuse"), "payload: {payload}");
+
+    let _ = child.kill();
+    let _ = wait_for_child_exit_status(&mut child, Duration::from_secs(2));
+    let _ = reader_thread.join();
     let _ = fs::remove_dir_all(&dir);
 }
 

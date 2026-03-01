@@ -316,7 +316,7 @@ The CLI loads `.env` from the package directory and sets only missing variables.
 | `NO_COLOR` | — | Disables ANSI color when set |
 | `FUSE_REQUEST_LOG` | — | `structured` for JSON request logging on stderr |
 | `FUSE_METRICS_HOOK` | — | `stderr` for per-request metrics lines |
-| `FUSE_DEV_RELOAD_WS_URL` | — | Dev HTML script injection (`/__reload` client) |
+| `FUSE_DEV_RELOAD_WS_URL` | — | Dev HTML script injection (`/__reload` client) with reload + compile-error overlay events |
 | `FUSE_OPENAPI_JSON_PATH` | — | Built-in OpenAPI JSON endpoint path |
 | `FUSE_OPENAPI_UI_PATH` | — | Built-in OpenAPI UI path |
 | `FUSE_ASSET_MAP` | — | Logical-path to public-URL mappings for `asset()` |

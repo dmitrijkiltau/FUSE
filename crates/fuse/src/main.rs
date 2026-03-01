@@ -498,6 +498,7 @@ fn run(args: Vec<String>) -> i32 {
             &deps,
             app.as_deref(),
             backend,
+            common.strict_architecture,
         ),
         Command::Run => {
             apply_serve_env(manifest.as_ref(), manifest_dir.as_deref());
@@ -700,6 +701,7 @@ fn run_dev(
     deps: &HashMap<String, PathBuf>,
     app: Option<&str>,
     backend: Option<RunBackend>,
+    strict_architecture: bool,
 ) -> i32 {
     let reload = match ReloadHub::start() {
         Ok(reload) => reload,
@@ -716,12 +718,26 @@ fn run_dev(
     }
 
     let mut snapshot = build_dev_snapshot(entry, manifest, manifest_dir, deps);
-    let mut child = match spawn_dev_child(entry, manifest_dir, app, backend, &ws_url) {
-        Ok(child) => Some(child),
-        Err(err) => {
-            emit_cli_error(&err);
+    let mut child = match first_dev_compile_error(entry, deps, strict_architecture) {
+        Some(message) => {
+            reload.broadcast_compile_error(&message);
+            eprintln!("{} compile error; waiting for changes...", dev_prefix());
             None
         }
+        None => match spawn_dev_child(
+            entry,
+            manifest_dir,
+            app,
+            backend,
+            strict_architecture,
+            &ws_url,
+        ) {
+            Ok(child) => Some(child),
+            Err(err) => {
+                emit_cli_error(&err);
+                None
+            }
+        },
     };
     let mut child_exit_reported = false;
 
@@ -766,14 +782,28 @@ fn run_dev(
             let _ = proc.kill();
             let _ = proc.wait();
         }
-        match spawn_dev_child(entry, manifest_dir, app, backend, &ws_url) {
-            Ok(proc) => {
-                child = Some(proc);
-                reload.broadcast_reload();
+        match first_dev_compile_error(entry, deps, strict_architecture) {
+            Some(message) => {
+                reload.broadcast_compile_error(&message);
+                eprintln!("{} compile error; waiting for changes...", dev_prefix());
             }
-            Err(err) => {
-                emit_cli_error(&err);
-            }
+            None => match spawn_dev_child(
+                entry,
+                manifest_dir,
+                app,
+                backend,
+                strict_architecture,
+                &ws_url,
+            ) {
+                Ok(proc) => {
+                    child = Some(proc);
+                    reload.broadcast_clear_error();
+                    reload.broadcast_reload();
+                }
+                Err(err) => {
+                    emit_cli_error(&err);
+                }
+            },
         }
     }
 }
@@ -783,6 +813,7 @@ fn spawn_dev_child(
     manifest_dir: Option<&Path>,
     app: Option<&str>,
     backend: Option<RunBackend>,
+    strict_architecture: bool,
     ws_url: &str,
 ) -> Result<Child, String> {
     let exe = env::current_exe().map_err(|err| format!("dev error: current exe: {err}"))?;
@@ -802,10 +833,61 @@ fn spawn_dev_child(
         cmd.arg("--backend");
         cmd.arg(backend.as_str());
     }
+    if strict_architecture {
+        cmd.arg("--strict-architecture");
+    }
     cmd.env("FUSE_DEV_MODE", "1");
     cmd.env("FUSE_DEV_RELOAD_WS_URL", ws_url);
     cmd.spawn()
         .map_err(|err| format!("dev error: failed to start app: {err}"))
+}
+
+fn first_dev_compile_error(
+    entry: &Path,
+    deps: &HashMap<String, PathBuf>,
+    strict_architecture: bool,
+) -> Option<String> {
+    let src = match fs::read_to_string(entry) {
+        Ok(src) => src,
+        Err(err) => {
+            let message = format!("failed to read {}: {err}", entry.display());
+            emit_cli_error(&message);
+            return Some(message);
+        }
+    };
+    let (registry, load_diags) = fusec::load_program_with_modules_and_deps(entry, &src, deps);
+    if !load_diags.is_empty() {
+        let first = format_diag_summary(&load_diags[0], Some((entry, &src)));
+        emit_diags_with_fallback(&load_diags, Some((entry, &src)));
+        return Some(first);
+    }
+    let (_analysis, sema_diags) = fusec::sema::analyze_registry_with_options(
+        &registry,
+        fusec::sema::AnalyzeOptions {
+            strict_architecture,
+        },
+    );
+    if !sema_diags.is_empty() {
+        let first = format_diag_summary(&sema_diags[0], Some((entry, &src)));
+        emit_diags_with_fallback(&sema_diags, Some((entry, &src)));
+        return Some(first);
+    }
+    None
+}
+
+fn format_diag_summary(diag: &fusec::diag::Diag, fallback: Option<(&Path, &str)>) -> String {
+    if let Some(path) = &diag.path {
+        if let Ok(src) = fs::read_to_string(path) {
+            let (line, col, _) = line_info(&src, diag.span.start);
+            return format!("{}:{}:{}: {}", path.display(), line, col, diag.message);
+        }
+        return format!("{}: {}", path.display(), diag.message);
+    }
+    if let Some((path, src)) = fallback {
+        let (line, col, _) = line_info(src, diag.span.start);
+        return format!("{}:{}:{}: {}", path.display(), line, col, diag.message);
+    }
+    diag.message.clone()
 }
 
 #[derive(Clone, Default, Eq, PartialEq)]
@@ -1239,7 +1321,21 @@ impl ReloadHub {
     }
 
     fn broadcast_reload(&self) {
-        let frame = websocket_text_frame("reload");
+        self.broadcast_message("reload");
+    }
+
+    fn broadcast_clear_error(&self) {
+        let payload = websocket_reload_event_payload("clear_error", None);
+        self.broadcast_message(&payload);
+    }
+
+    fn broadcast_compile_error(&self, message: &str) {
+        let payload = websocket_reload_event_payload("compile_error", Some(message));
+        self.broadcast_message(&payload);
+    }
+
+    fn broadcast_message(&self, payload: &str) {
+        let frame = websocket_text_frame(payload);
         let mut clients = match self.clients.lock() {
             Ok(clients) => clients,
             Err(_) => return,
@@ -1253,6 +1349,21 @@ impl ReloadHub {
             }
         }
     }
+}
+
+fn websocket_reload_event_payload(kind: &str, message: Option<&str>) -> String {
+    let mut payload = BTreeMap::new();
+    payload.insert(
+        "type".to_string(),
+        rt_json::JsonValue::String(kind.to_string()),
+    );
+    if let Some(message) = message {
+        payload.insert(
+            "message".to_string(),
+            rt_json::JsonValue::String(message.to_string()),
+        );
+    }
+    rt_json::encode(&rt_json::JsonValue::Object(payload))
 }
 
 fn handle_reload_client(mut stream: TcpStream, clients: &Arc<Mutex<Vec<TcpStream>>>) {

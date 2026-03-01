@@ -372,7 +372,7 @@ TOOLING
 | `NO_COLOR` | — | Disables ANSI color when set (any value) |
 | `FUSE_REQUEST_LOG` | — | Set to `structured` (or `1`/`true`) for JSON request logging on stderr |
 | `FUSE_METRICS_HOOK` | — | Set to `stderr` for per-request metrics lines |
-| `FUSE_DEV_RELOAD_WS_URL` | — | Enables dev HTML script injection (`/__reload` client) |
+| `FUSE_DEV_RELOAD_WS_URL` | — | Enables dev HTML script injection (`/__reload` client) with reload + compile-error overlay events |
 | `FUSE_OPENAPI_JSON_PATH` | — | Enables built-in OpenAPI JSON endpoint at this path |
 | `FUSE_OPENAPI_UI_PATH` | — | Enables built-in OpenAPI UI at this path |
 | `FUSE_ASSET_MAP` | — | Logical-path to public-URL mappings for `asset(path)` |

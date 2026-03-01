@@ -508,6 +508,16 @@ app "docs":
             "{backend} body: {}",
             response.body
         );
+        assert!(
+            response.body.contains("data-fuse-dev-overlay"),
+            "{backend} body: {}",
+            response.body
+        );
+        assert!(
+            response.body.contains("compile_error"),
+            "{backend} body: {}",
+            response.body
+        );
     }
 }
 
