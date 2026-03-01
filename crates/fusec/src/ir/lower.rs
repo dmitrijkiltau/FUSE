@@ -1485,17 +1485,14 @@ impl FuncBuilder {
                                 argc: args.len(),
                             });
                         } else {
-                            self.errors
-                                .push("call target not supported in IR yet".to_string());
+                            self.lower_non_callable_target(callee, args);
                         }
                     } else {
-                        self.errors
-                            .push("call target not supported in IR yet".to_string());
+                        self.lower_non_callable_target(callee, args);
                     }
                 }
                 _ => {
-                    self.errors
-                        .push("call target not supported in IR yet".to_string());
+                    self.lower_non_callable_target(callee, args);
                 }
             },
             ExprKind::Member { base, name } => {
@@ -1786,6 +1783,18 @@ impl FuncBuilder {
 
     fn validate_html_tag_named_args(&self, args: &[crate::ast::CallArg]) -> Option<&'static str> {
         validate_named_args_for_phase(args, CanonicalizationPhase::Lowering)
+    }
+
+    fn lower_non_callable_target(&mut self, callee: &Expr, args: &[crate::ast::CallArg]) {
+        // Preserve call evaluation order (callee first, then arguments) and emit
+        // a deterministic runtime failure instead of lowering-time placeholder errors.
+        self.lower_expr(callee);
+        self.emit(Instr::Pop);
+        for arg in args {
+            self.lower_expr(&arg.value);
+            self.emit(Instr::Pop);
+        }
+        self.emit(Instr::RuntimeError("call target is not callable".to_string()));
     }
 
     fn lower_call_with_defaults(
