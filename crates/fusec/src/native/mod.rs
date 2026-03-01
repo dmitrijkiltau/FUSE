@@ -16,7 +16,9 @@ use fuse_rt::{config as rt_config, error as rt_error, json as rt_json, validate 
 use crate::ast::{Expr, HttpVerb, Ident, TypeRef, TypeRefKind};
 use crate::callbind::{ParamBinding, ParamSpec, bind_positional_args};
 use crate::interp::{Task, TaskResult, Value, format_error_value};
-use crate::ir::{Config, Function, Program as IrProgram, Service, ServiceRoute};
+use crate::ir::{
+    Config, EnumInfo, Function, Program as IrProgram, Service, ServiceRoute, TypeInfo,
+};
 use crate::loader::ModuleRegistry;
 use crate::native::value::NativeHeap;
 use crate::observability;
@@ -135,6 +137,25 @@ pub fn emit_object_for_app(
             }
         }
     }
+    for ty in program.ir.types.values() {
+        for field in &ty.fields {
+            let Some(fn_name) = &field.default_fn else {
+                continue;
+            };
+            config_defaults.push(ConfigDefaultSymbol {
+                name: fn_name.clone(),
+                symbol: symbol_for_function(fn_name),
+            });
+            if seen.insert(fn_name.clone()) {
+                let func = program
+                    .ir
+                    .functions
+                    .get(fn_name)
+                    .ok_or_else(|| format!("missing type default {fn_name}"))?;
+                extra_funcs.push(func);
+            }
+        }
+    }
     let mut funcs = Vec::with_capacity(1 + extra_funcs.len());
     funcs.push(app);
     funcs.extend(extra_funcs);
@@ -182,16 +203,16 @@ pub fn emit_object_for_function(
 
 pub fn load_configs_for_binary<'a, I>(
     configs: I,
+    types: &HashMap<String, TypeInfo>,
+    enums: &HashMap<String, EnumInfo>,
     heap: &mut NativeHeap,
     mut default_fn: impl FnMut(&str, &mut NativeHeap) -> Result<Value, String>,
 ) -> Result<(), String>
 where
     I: IntoIterator<Item = &'a Config>,
 {
-    let mut evaluator = ConfigEvaluator::default();
-    evaluator
-        .eval_configs(configs, heap, &mut default_fn)
-        .map_err(render_native_error)
+    let mut evaluator = ConfigEvaluator::new(types, enums, heap, &mut default_fn);
+    evaluator.eval_configs(configs).map_err(render_native_error)
 }
 
 pub fn load_types_for_binary<'a, I>(types: I, heap: &mut NativeHeap) -> Result<(), String>
@@ -418,6 +439,12 @@ impl<'a> NativeVm<'a> {
         let mut configs: Vec<Config> = self.program.ir.configs.values().cloned().collect();
         configs.sort_by(|a, b| a.name.cmp(&b.name));
         for config in configs {
+            let field_names: Vec<String> = config
+                .fields
+                .iter()
+                .map(|field| field.name.clone())
+                .collect();
+            crate::runtime_types::emit_config_env_name_hints(&config.name, &field_names);
             self.heap.ensure_config(&config.name);
             let section = file_values.get(&config.name);
             for field in &config.fields {
@@ -1902,12 +1929,41 @@ fn is_result_type(ty: Option<&crate::ast::TypeRef>) -> bool {
     }
 }
 
-#[derive(Default)]
-struct ConfigEvaluator {
+struct ConfigEvaluator<'a, F>
+where
+    F: FnMut(&str, &mut NativeHeap) -> Result<Value, String>,
+{
     regex_cache: HashMap<String, regex::Regex>,
+    types: &'a HashMap<String, TypeInfo>,
+    enums: &'a HashMap<String, EnumInfo>,
+    heap: &'a mut NativeHeap,
+    default_fn: &'a mut F,
 }
 
-impl crate::runtime_types::RuntimeTypeHost for ConfigEvaluator {
+impl<'a, F> ConfigEvaluator<'a, F>
+where
+    F: FnMut(&str, &mut NativeHeap) -> Result<Value, String>,
+{
+    fn new(
+        types: &'a HashMap<String, TypeInfo>,
+        enums: &'a HashMap<String, EnumInfo>,
+        heap: &'a mut NativeHeap,
+        default_fn: &'a mut F,
+    ) -> Self {
+        Self {
+            regex_cache: HashMap::new(),
+            types,
+            enums,
+            heap,
+            default_fn,
+        }
+    }
+}
+
+impl<F> crate::runtime_types::RuntimeTypeHost for ConfigEvaluator<'_, F>
+where
+    F: FnMut(&str, &mut NativeHeap) -> Result<Value, String>,
+{
     type Error = NativeError;
 
     fn runtime_error(&self, message: String) -> Self::Error {
@@ -1920,38 +1976,30 @@ impl crate::runtime_types::RuntimeTypeHost for ConfigEvaluator {
         ))
     }
 
-    fn has_struct_type(&self, _name: &str) -> bool {
-        false
+    fn has_struct_type(&self, name: &str) -> bool {
+        self.types.contains_key(name)
     }
 
-    fn has_enum_type(&self, _name: &str) -> bool {
-        false
+    fn has_enum_type(&self, name: &str) -> bool {
+        self.enums.contains_key(name)
     }
 
     fn decode_struct_type_json(
         &mut self,
-        _json: &rt_json::JsonValue,
-        _name: &str,
+        json: &rt_json::JsonValue,
+        name: &str,
         path: &str,
     ) -> Result<Value, Self::Error> {
-        Err(self.validation_error(
-            path,
-            "invalid_value",
-            "user-defined types are not supported for config env overrides".to_string(),
-        ))
+        ConfigEvaluator::decode_struct_json(self, json, name, path)
     }
 
     fn decode_enum_type_json(
         &mut self,
-        _json: &rt_json::JsonValue,
-        _name: &str,
+        json: &rt_json::JsonValue,
+        name: &str,
         path: &str,
     ) -> Result<Value, Self::Error> {
-        Err(self.validation_error(
-            path,
-            "invalid_value",
-            "user-defined types are not supported for config env overrides".to_string(),
-        ))
+        ConfigEvaluator::decode_enum_json(self, json, name, path)
     }
 
     fn check_refined_value(
@@ -1965,13 +2013,11 @@ impl crate::runtime_types::RuntimeTypeHost for ConfigEvaluator {
     }
 }
 
-impl ConfigEvaluator {
-    fn eval_configs<'a, I>(
-        &mut self,
-        configs: I,
-        heap: &mut NativeHeap,
-        default_fn: &mut dyn FnMut(&str, &mut NativeHeap) -> Result<Value, String>,
-    ) -> NativeResult<()>
+impl<F> ConfigEvaluator<'_, F>
+where
+    F: FnMut(&str, &mut NativeHeap) -> Result<Value, String>,
+{
+    fn eval_configs<'a, I>(&mut self, configs: I) -> NativeResult<()>
     where
         I: IntoIterator<Item = &'a Config>,
     {
@@ -1980,7 +2026,14 @@ impl ConfigEvaluator {
         let file_values =
             rt_config::load_config_file(&config_path).map_err(NativeError::Runtime)?;
         for config in configs {
-            heap.ensure_config(&config.name);
+            let field_names: Vec<String> = config
+                .fields
+                .iter()
+                .map(|field| field.name.clone())
+                .collect();
+            crate::runtime_types::emit_config_env_name_hints(&config.name, &field_names);
+
+            self.heap.ensure_config(&config.name);
             let section = file_values.get(&config.name);
             for field in &config.fields {
                 let key = rt_config::env_key(&config.name, &field.name);
@@ -1999,12 +2052,13 @@ impl ConfigEvaluator {
                                 self.parse_env_value(&field.ty, raw)
                                     .map_err(|err| self.map_parse_error(err, &path))?
                             } else if let Some(fn_name) = &field.default_fn {
-                                default_fn(fn_name, heap).map_err(NativeError::Runtime)?
+                                (self.default_fn)(fn_name, self.heap)
+                                    .map_err(NativeError::Runtime)?
                             } else {
                                 Value::Null
                             }
                         } else if let Some(fn_name) = &field.default_fn {
-                            default_fn(fn_name, heap).map_err(NativeError::Runtime)?
+                            (self.default_fn)(fn_name, self.heap).map_err(NativeError::Runtime)?
                         } else {
                             Value::Null
                         };
@@ -2012,7 +2066,7 @@ impl ConfigEvaluator {
                         value
                     }
                 };
-                heap.set_config_field(&config.name, &field.name, value);
+                self.heap.set_config_field(&config.name, &field.name, value);
             }
         }
         Ok(())
@@ -2037,6 +2091,159 @@ impl ConfigEvaluator {
 
     fn validation_error_value(&self, path: &str, code: &str, message: impl Into<String>) -> Value {
         crate::runtime_types::validation_error_value(path, code, message)
+    }
+
+    fn is_optional_type(&self, ty: &TypeRef) -> bool {
+        crate::runtime_types::is_optional_type(ty)
+    }
+
+    fn decode_json_value(
+        &mut self,
+        json: &rt_json::JsonValue,
+        ty: &TypeRef,
+        path: &str,
+    ) -> NativeResult<Value> {
+        crate::runtime_types::decode_json_value(self, json, ty, path)
+    }
+
+    fn decode_struct_json(
+        &mut self,
+        json: &rt_json::JsonValue,
+        name: &str,
+        path: &str,
+    ) -> NativeResult<Value> {
+        let rt_json::JsonValue::Object(map) = json else {
+            return Err(NativeError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                format!("expected {name}"),
+            )));
+        };
+        let decl = self.types.get(name).ok_or_else(|| {
+            NativeError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                format!("unknown type {name}"),
+            ))
+        })?;
+        let fields = decl.fields.clone();
+        let mut values = HashMap::new();
+        for (key, value) in map {
+            let field = fields.iter().find(|f| f.name == *key);
+            let Some(field_decl) = field else {
+                return Err(NativeError::Error(self.validation_error_value(
+                    &format!("{path}.{key}"),
+                    "unknown_field",
+                    "unknown field",
+                )));
+            };
+            let field_path = format!("{path}.{key}");
+            let decoded = self.decode_json_value(value, &field_decl.ty, &field_path)?;
+            values.insert(key.clone(), decoded);
+        }
+        for field_decl in &fields {
+            if values.contains_key(&field_decl.name) {
+                continue;
+            }
+            let field_path = format!("{path}.{}", field_decl.name);
+            if let Some(default_fn_name) = &field_decl.default_fn {
+                let value =
+                    (self.default_fn)(default_fn_name, self.heap).map_err(NativeError::Runtime)?;
+                self.validate_value(&value, &field_decl.ty, &field_path)?;
+                values.insert(field_decl.name.clone(), value);
+            } else if self.is_optional_type(&field_decl.ty) {
+                values.insert(field_decl.name.clone(), Value::Null);
+            } else {
+                return Err(NativeError::Error(self.validation_error_value(
+                    &field_path,
+                    "missing_field",
+                    "missing field",
+                )));
+            }
+        }
+        Ok(Value::Struct {
+            name: name.to_string(),
+            fields: values,
+        })
+    }
+
+    fn decode_enum_json(
+        &mut self,
+        json: &rt_json::JsonValue,
+        name: &str,
+        path: &str,
+    ) -> NativeResult<Value> {
+        let rt_json::JsonValue::Object(map) = json else {
+            return Err(NativeError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                format!("expected {name}"),
+            )));
+        };
+        let Some(rt_json::JsonValue::String(variant_name)) = map.get("type") else {
+            return Err(NativeError::Error(self.validation_error_value(
+                path,
+                "missing_field",
+                "missing enum type",
+            )));
+        };
+        let decl = self.enums.get(name).ok_or_else(|| {
+            NativeError::Error(self.validation_error_value(
+                path,
+                "type_mismatch",
+                format!("unknown enum {name}"),
+            ))
+        })?;
+        let variants = decl.variants.clone();
+        let variant = variants
+            .iter()
+            .find(|v| v.name == *variant_name)
+            .ok_or_else(|| {
+                NativeError::Error(self.validation_error_value(
+                    path,
+                    "invalid_value",
+                    format!("unknown variant {variant_name}"),
+                ))
+            })?;
+        let payload = if variant.payload.is_empty() {
+            Vec::new()
+        } else {
+            let data = map.get("data").ok_or_else(|| {
+                NativeError::Error(self.validation_error_value(
+                    path,
+                    "missing_field",
+                    "missing enum data",
+                ))
+            })?;
+            if variant.payload.len() == 1 {
+                vec![self.decode_json_value(data, &variant.payload[0], &format!("{path}.data"))?]
+            } else {
+                let rt_json::JsonValue::Array(items) = data else {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        &format!("{path}.data"),
+                        "type_mismatch",
+                        "expected enum payload array",
+                    )));
+                };
+                if items.len() != variant.payload.len() {
+                    return Err(NativeError::Error(self.validation_error_value(
+                        &format!("{path}.data"),
+                        "invalid_value",
+                        "enum payload length mismatch",
+                    )));
+                }
+                let mut out = Vec::new();
+                for (idx, (item, ty)) in items.iter().zip(variant.payload.iter()).enumerate() {
+                    out.push(self.decode_json_value(item, ty, &format!("{path}.data[{idx}]"))?);
+                }
+                out
+            }
+        };
+        Ok(Value::Enum {
+            name: name.to_string(),
+            variant: variant_name.clone(),
+            payload,
+        })
     }
 
     fn check_refined(

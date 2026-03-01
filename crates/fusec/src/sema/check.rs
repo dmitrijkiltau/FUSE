@@ -1381,6 +1381,37 @@ impl<'a> Checker<'a> {
                 }],
                 ret: Box::new(Ty::External("query".to_string())),
             }),
+            "insert" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "value".to_string(),
+                    ty: Ty::Unknown,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::External("query".to_string())),
+            }),
+            "update" => Ty::Fn(FnSig {
+                params: vec![
+                    ParamSig {
+                        name: "column".to_string(),
+                        ty: Ty::String,
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "value".to_string(),
+                        ty: Ty::Unknown,
+                        has_default: false,
+                    },
+                ],
+                ret: Box::new(Ty::External("query".to_string())),
+            }),
+            "delete" => Ty::Fn(FnSig {
+                params: vec![],
+                ret: Box::new(Ty::External("query".to_string())),
+            }),
+            "count" => Ty::Fn(FnSig {
+                params: vec![],
+                ret: Box::new(Ty::Int),
+            }),
             "one" => Ty::Fn(FnSig {
                 params: vec![],
                 ret: Box::new(Ty::Option(Box::new(row_ty.clone()))),

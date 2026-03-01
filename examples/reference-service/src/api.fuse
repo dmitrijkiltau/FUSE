@@ -126,10 +126,12 @@ service ReferenceService at "/":
         .where("id", "=", id)
         .one()
         ?! NotFound(message="not found")
-      db.exec(
-        "update notes set is_public = ? where id = ? and owner_id = ?",
-        [is_public, id, request_context_user_id(ctx)]
-      )
+      db
+        .from("notes")
+        .update("is_public", is_public)
+        .where("id", "=", id)
+        .where("owner_id", "=", request_context_user_id(ctx))
+        .exec()
     return Note(
       id=NoteId(value=row["id"]),
       title=row["title"],
@@ -141,7 +143,12 @@ service ReferenceService at "/":
   delete "/api/sessions/{token: String}/notes/{id: String}" -> Unit!Unauthorized!Forbidden:
     let ctx = scoped_context(token, "notes:write") ?!
     transaction:
-      db.exec("delete from notes where id = ? and owner_id = ?", [id, request_context_user_id(ctx)])
+      db
+        .from("notes")
+        .delete()
+        .where("id", "=", id)
+        .where("owner_id", "=", request_context_user_id(ctx))
+        .exec()
 
   # Leave an idempotent like on a published note (must not be own note).
   post "/api/sessions/{token: String}/public/notes/{id: String}/likes" -> Unit!NotFound!Unauthorized!Forbidden:
@@ -213,7 +220,7 @@ service ReferenceService at "/":
     let token = request_session_token()
     if token != "":
       transaction:
-        db.exec("delete from sessions where token = ?", [token])
+        db.from("sessions").delete().where("token", "=", token).exec()
     response.delete_cookie("sid")
     return Home.render_shell(anonymous_context())
 
@@ -241,10 +248,13 @@ service ReferenceService at "/":
         .where("id", "=", id)
         .one()
         ?! NotFound(message="not found")
-      db.exec(
-        "update notes set title = ?, content = ? where id = ? and owner_id = ?",
-        [body.title, body.content, id, request_context_user_id(ctx)]
-      )
+      db
+        .from("notes")
+        .update("title", body.title)
+        .update("content", body.content)
+        .where("id", "=", id)
+        .where("owner_id", "=", request_context_user_id(ctx))
+        .exec()
     return Home.render_shell(ctx)
 
   put "/ui/notes/{id: String}/visibility" body NoteVisibilityUpdate -> Html!NotFound!Unauthorized!Forbidden!BadRequest:
@@ -263,16 +273,23 @@ service ReferenceService at "/":
         .where("id", "=", id)
         .one()
         ?! NotFound(message="not found")
-      db.exec(
-        "update notes set is_public = ? where id = ? and owner_id = ?",
-        [is_public, id, request_context_user_id(ctx)]
-      )
+      db
+        .from("notes")
+        .update("is_public", is_public)
+        .where("id", "=", id)
+        .where("owner_id", "=", request_context_user_id(ctx))
+        .exec()
     return Home.render_shell(ctx)
 
   delete "/ui/notes/{id: String}" -> Html!Unauthorized!Forbidden:
     let ctx = scoped_request_context("notes:write") ?!
     transaction:
-      db.exec("delete from notes where id = ? and owner_id = ?", [id, request_context_user_id(ctx)])
+      db
+        .from("notes")
+        .delete()
+        .where("id", "=", id)
+        .where("owner_id", "=", request_context_user_id(ctx))
+        .exec()
     return Home.render_shell(ctx)
 
   post "/ui/public/notes/{id: String}/likes" -> Html!NotFound!Unauthorized!Forbidden:

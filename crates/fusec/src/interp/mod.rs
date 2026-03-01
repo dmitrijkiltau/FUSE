@@ -459,7 +459,19 @@ fn parse_log_level(raw: &str) -> Option<LogLevel> {
 fn is_query_method(name: &str) -> bool {
     matches!(
         name,
-        "select" | "where" | "order_by" | "limit" | "one" | "all" | "exec" | "sql" | "params"
+        "select"
+            | "where"
+            | "order_by"
+            | "limit"
+            | "insert"
+            | "update"
+            | "delete"
+            | "count"
+            | "one"
+            | "all"
+            | "exec"
+            | "sql"
+            | "params"
     )
 }
 
@@ -1217,6 +1229,12 @@ impl Interpreter {
             if let Some(owner) = self.config_owner.get(&name) {
                 self.current_module = *owner;
             }
+            let field_names: Vec<String> = decl
+                .fields
+                .iter()
+                .map(|field| field.name.name.clone())
+                .collect();
+            crate::runtime_types::emit_config_env_name_hints(&name, &field_names);
             self.configs.insert(name.clone(), HashMap::new());
             let section = file_values.get(&name);
             for field in &decl.fields {
@@ -2424,6 +2442,101 @@ impl Interpreter {
                 };
                 let next = query.limit(limit).map_err(ExecError::Runtime)?;
                 Ok(Value::Query(next))
+            }
+            "query.insert" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "query.insert expects 2 arguments".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.insert expects a Query".to_string(),
+                        ));
+                    }
+                };
+                let value = args.get(1).cloned().ok_or_else(|| {
+                    ExecError::Runtime("query.insert expects a struct".to_string())
+                })?;
+                let next = query.insert_struct(value).map_err(ExecError::Runtime)?;
+                Ok(Value::Query(next))
+            }
+            "query.update" => {
+                if args.len() != 3 {
+                    return Err(ExecError::Runtime(
+                        "query.update expects 3 arguments".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.update expects a Query".to_string(),
+                        ));
+                    }
+                };
+                let column = match args.get(1) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.update expects a column string".to_string(),
+                        ));
+                    }
+                };
+                let value = args.get(2).cloned().ok_or_else(|| {
+                    ExecError::Runtime("query.update expects a value".to_string())
+                })?;
+                let next = query
+                    .update_set(column, value)
+                    .map_err(ExecError::Runtime)?;
+                Ok(Value::Query(next))
+            }
+            "query.delete" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "query.delete expects 1 argument".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.delete expects a Query".to_string(),
+                        ));
+                    }
+                };
+                let next = query.delete_rows().map_err(ExecError::Runtime)?;
+                Ok(Value::Query(next))
+            }
+            "query.count" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "query.count expects 1 argument".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.count expects a Query".to_string(),
+                        ));
+                    }
+                };
+                let count_query = query.count().map_err(ExecError::Runtime)?;
+                let (sql, params) = count_query.build_sql(None).map_err(ExecError::Runtime)?;
+                let db = self.db_mut()?;
+                let rows = db.query_params(&sql, &params).map_err(ExecError::Runtime)?;
+                let count = rows
+                    .first()
+                    .and_then(|row| row.get("c"))
+                    .and_then(|value| match value {
+                        Value::Int(v) => Some(*v),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                Ok(Value::Int(count))
             }
             "query.one" => {
                 if args.len() != 1 {

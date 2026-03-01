@@ -257,6 +257,10 @@ pub(crate) struct HostCalls {
     query_where: FuncId,
     query_order_by: FuncId,
     query_limit: FuncId,
+    query_insert: FuncId,
+    query_update: FuncId,
+    query_delete: FuncId,
+    query_count: FuncId,
     query_one: FuncId,
     query_all: FuncId,
     query_exec: FuncId,
@@ -476,6 +480,22 @@ impl JitRuntime {
         builder.symbol(
             "fuse_native_query_limit",
             fuse_native_query_limit as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_query_insert",
+            fuse_native_query_insert as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_query_update",
+            fuse_native_query_update as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_query_delete",
+            fuse_native_query_delete as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_query_count",
+            fuse_native_query_count as *const u8,
         );
         builder.symbol("fuse_native_query_one", fuse_native_query_one as *const u8);
         builder.symbol("fuse_native_query_all", fuse_native_query_all as *const u8);
@@ -1007,6 +1027,18 @@ impl HostCalls {
         let query_limit = module
             .declare_function("fuse_native_query_limit", Linkage::Import, &builtin_sig)
             .expect("declare query limit hostcall");
+        let query_insert = module
+            .declare_function("fuse_native_query_insert", Linkage::Import, &builtin_sig)
+            .expect("declare query insert hostcall");
+        let query_update = module
+            .declare_function("fuse_native_query_update", Linkage::Import, &builtin_sig)
+            .expect("declare query update hostcall");
+        let query_delete = module
+            .declare_function("fuse_native_query_delete", Linkage::Import, &builtin_sig)
+            .expect("declare query delete hostcall");
+        let query_count = module
+            .declare_function("fuse_native_query_count", Linkage::Import, &builtin_sig)
+            .expect("declare query count hostcall");
         let query_one = module
             .declare_function("fuse_native_query_one", Linkage::Import, &builtin_sig)
             .expect("declare query one hostcall");
@@ -1111,6 +1143,10 @@ impl HostCalls {
             query_where,
             query_order_by,
             query_limit,
+            query_insert,
+            query_update,
+            query_delete,
+            query_count,
             query_one,
             query_all,
             query_exec,
@@ -4559,6 +4595,190 @@ extern "C" fn fuse_native_query_limit(
 }
 
 #[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_insert(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "query.insert expects 2 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.insert expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.insert expects a Query");
+    };
+    let Some(value) = args.get(1).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.insert expects a struct");
+    };
+    let next = match query.insert_struct(value) {
+        Ok(next) => next,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let value = Value::Query(next);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "query.insert result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_update(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 3 {
+        return builtin_runtime_error(out, heap, "query.update expects 3 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.update expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.update expects a Query");
+    };
+    let Some(column_val) = args.get(1).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.update expects a column string");
+    };
+    let Value::String(column) = column_val else {
+        return builtin_runtime_error(out, heap, "query.update expects a column string");
+    };
+    let Some(value) = args.get(2).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.update expects a value");
+    };
+    let next = match query.update_set(column, value) {
+        Ok(next) => next,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let value = Value::Query(next);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "query.update result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_delete(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "query.delete expects 1 argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.delete expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.delete expects a Query");
+    };
+    let next = match query.delete_rows() {
+        Ok(next) => next,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let value = Value::Query(next);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "query.delete result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_count(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "query.count expects 1 argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.count expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.count expects a Query");
+    };
+    let count_query = match query.count() {
+        Ok(next) => next,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let (sql, params) = match count_query.build_sql(None) {
+        Ok(result) => result,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let pool_size = match db_pool_size(heap) {
+        Ok(size) => size,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let url = match db_url() {
+        Ok(url) => url,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let db = match heap.db_mut(url, pool_size) {
+        Ok(db) => db,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let rows = match db.query_params(&sql, &params) {
+        Ok(rows) => rows,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let count = rows
+        .first()
+        .and_then(|row| row.get("c"))
+        .and_then(|value| match value {
+            Value::Int(v) => Some(*v),
+            _ => None,
+        })
+        .unwrap_or(0);
+    *out = NativeValue::int(count);
+    0
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn fuse_native_query_one(
     heap: *mut NativeHeap,
     args: *const NativeValue,
@@ -6167,6 +6387,10 @@ fn compile_function<M: Module>(
                                 "query.where" => hostcalls.query_where,
                                 "query.order_by" => hostcalls.query_order_by,
                                 "query.limit" => hostcalls.query_limit,
+                                "query.insert" => hostcalls.query_insert,
+                                "query.update" => hostcalls.query_update,
+                                "query.delete" => hostcalls.query_delete,
+                                "query.count" => hostcalls.query_count,
                                 "query.one" => hostcalls.query_one,
                                 "query.all" => hostcalls.query_all,
                                 "query.exec" => hostcalls.query_exec,
@@ -7096,6 +7320,10 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     | "query.where"
                     | "query.order_by"
                     | "query.limit"
+                    | "query.insert"
+                    | "query.update"
+                    | "query.delete"
+                    | "query.count"
                     | "query.one"
                     | "query.all"
                     | "query.exec"
@@ -7328,6 +7556,7 @@ fn return_jit_kind(ret: Option<&TypeRef>, program: &IrProgram) -> Option<JitType
 fn builtin_result_kind(name: &str) -> JitType {
     match name {
         "time.now" => JitType::Int,
+        "query.count" => JitType::Int,
         "crypto.constant_time_eq" => JitType::Bool,
         _ => JitType::Value,
     }
@@ -7666,6 +7895,10 @@ fn analyze_types(
                                 | "query.where"
                                 | "query.order_by"
                                 | "query.limit"
+                                | "query.insert"
+                                | "query.update"
+                                | "query.delete"
+                                | "query.count"
                                 | "query.one"
                                 | "query.all"
                                 | "query.exec"

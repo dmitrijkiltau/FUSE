@@ -2238,13 +2238,19 @@ fn call_default(name: &str, heap: &mut NativeHeap) -> Result<fusec::interp::Valu
 {default_matches}    }}
 }}
 
-fn load_configs(heap: &mut NativeHeap) -> Result<(), String> {{
+fn load_configs(program: &fusec::native::NativeProgram, heap: &mut NativeHeap) -> Result<(), String> {{
     if CONFIG_BYTES.is_empty() {{
         return Ok(());
     }}
     let configs: Vec<fusec::ir::Config> =
         bincode::deserialize(CONFIG_BYTES).map_err(|err| format!("config decode failed: {{err}}"))?;
-    load_configs_for_binary(configs.iter(), heap, |name, heap| call_default(name, heap))
+    load_configs_for_binary(
+        configs.iter(),
+        &program.ir.types,
+        &program.ir.enums,
+        heap,
+        |name, heap| call_default(name, heap),
+    )
 }}
 
 fn load_types(heap: &mut NativeHeap) -> Result<(), String> {{
@@ -2269,7 +2275,7 @@ fn run_program() -> Result<(), String> {{
         heap.intern_string((*value).to_string());
     }}
     load_types(&mut heap)?;
-    load_configs(&mut heap)?;
+    load_configs(&program, &mut heap)?;
     call_native(fuse_entry, &mut heap)?;
     Ok(())
 }}

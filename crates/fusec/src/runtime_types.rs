@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use fuse_rt::{bytes as rt_bytes, json as rt_json, validate as rt_validate};
+use fuse_rt::{bytes as rt_bytes, config as rt_config, json as rt_json, validate as rt_validate};
 
 use crate::ast::{Expr, TypeRef, TypeRefKind};
 use crate::interp::Value;
@@ -81,6 +81,15 @@ pub fn is_optional_type(ty: &TypeRef) -> bool {
     }
 }
 
+pub fn emit_config_env_name_hints(config_name: &str, field_names: &[String]) {
+    for hint in config_env_name_hints(config_name, field_names) {
+        eprintln!(
+            "config hint: env var {} is ignored; did you mean {} for {}?",
+            hint.provided, hint.expected, hint.path
+        );
+    }
+}
+
 pub fn parse_simple_env(name: &str, raw: &str) -> Result<Value, String> {
     match name {
         "Int" => raw
@@ -104,6 +113,60 @@ pub fn parse_simple_env(name: &str, raw: &str) -> Result<Value, String> {
         }
         _ => Err(format!("env override not supported for type {name}")),
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct ConfigEnvHint {
+    provided: String,
+    expected: String,
+    path: String,
+}
+
+fn config_env_name_hints(config_name: &str, field_names: &[String]) -> Vec<ConfigEnvHint> {
+    if field_names.is_empty() {
+        return Vec::new();
+    }
+    let mut expected: HashMap<String, String> = HashMap::new();
+    let mut normalized: HashMap<String, (String, String)> = HashMap::new();
+    for field in field_names {
+        let key = rt_config::env_key(config_name, field);
+        let path = format!("{config_name}.{field}");
+        expected.insert(key.clone(), path.clone());
+        normalized
+            .entry(normalize_env_key(&key))
+            .or_insert_with(|| (key, path));
+    }
+
+    let prefix = rt_config::env_prefix(config_name);
+    let mut hints = Vec::new();
+    for (provided, _) in std::env::vars() {
+        if !provided.starts_with(&prefix) || expected.contains_key(&provided) {
+            continue;
+        }
+        let normalized_key = normalize_env_key(&provided);
+        let Some((expected_key, path)) = normalized.get(&normalized_key) else {
+            continue;
+        };
+        hints.push(ConfigEnvHint {
+            provided,
+            expected: expected_key.clone(),
+            path: path.clone(),
+        });
+    }
+    hints.sort();
+    hints.dedup();
+    hints
+}
+
+fn normalize_env_key(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    for ch in key.chars() {
+        if ch == '_' {
+            continue;
+        }
+        out.push(ch.to_ascii_uppercase());
+    }
+    out
 }
 
 pub(crate) fn parse_env_value<H: RuntimeTypeHost>(

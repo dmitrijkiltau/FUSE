@@ -21,7 +21,19 @@ use super::{
 fn is_query_method(name: &str) -> bool {
     matches!(
         name,
-        "select" | "where" | "order_by" | "limit" | "one" | "all" | "exec" | "sql" | "params"
+        "select"
+            | "where"
+            | "order_by"
+            | "limit"
+            | "insert"
+            | "update"
+            | "delete"
+            | "count"
+            | "one"
+            | "all"
+            | "exec"
+            | "sql"
+            | "params"
     )
 }
 
@@ -1794,7 +1806,9 @@ impl FuncBuilder {
             self.lower_expr(&arg.value);
             self.emit(Instr::Pop);
         }
-        self.emit(Instr::RuntimeError("call target is not callable".to_string()));
+        self.emit(Instr::RuntimeError(
+            "call target is not callable".to_string(),
+        ));
     }
 
     fn lower_call_with_defaults(

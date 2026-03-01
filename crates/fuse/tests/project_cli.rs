@@ -3311,6 +3311,144 @@ who = "FileWho"
 }
 
 #[test]
+fn build_aot_runtime_supports_user_defined_config_env_overrides() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+type Profile:
+  name: String
+  level: Int = 1
+
+enum Mode:
+  Auto
+  Manual(Int)
+
+config App:
+  profile: Profile = Profile(name="default")
+  mode: Mode = Mode.Auto
+
+app "Demo":
+  print(App.profile.name)
+  print(App.profile.level)
+  match App.mode:
+    Auto -> print("auto")
+    Manual(v) -> print(v)
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let aot = default_aot_binary_path(&dir);
+    let run = Command::new(&aot)
+        .current_dir(&dir)
+        .env("APP_PROFILE", r#"{"name":"EnvUser"}"#)
+        .env("APP_MODE", r#"{"type":"Manual","data":7}"#)
+        .output()
+        .expect("run aot config structured env overrides");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["EnvUser", "1", "7"]);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_runtime_emits_config_env_name_hint_for_mismatch() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+config App:
+  dbUrl: String = "sqlite::memory:"
+
+app "Demo":
+  print(App.dbUrl)
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let aot = default_aot_binary_path(&dir);
+    let run = Command::new(&aot)
+        .current_dir(&dir)
+        .env("APP_DBURL", "sqlite://ignored.db")
+        .output()
+        .expect("run aot config mismatch hint check");
+    assert!(
+        run.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).trim(),
+        "sqlite::memory:"
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("APP_DBURL") && stderr.contains("APP_DB_URL"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn build_aot_runtime_error_uses_stable_fatal_envelope() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");

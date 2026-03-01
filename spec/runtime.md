@@ -338,6 +338,8 @@ Env override naming derives from config and field names:
 - `App.port` -> `APP_PORT`
 - `dbUrl` -> `DB_URL`
 - hyphens become underscores; camelCase splits to `SNAKE_CASE`
+- runtime prints a hint when it detects a likely env-name typo
+  (for example `APP_DBURL` vs expected `APP_DB_URL`)
 
 Type support levels for config values (env and file values):
 
@@ -582,6 +584,10 @@ Query builder methods (immutable style; each returns a new `Query`):
 - `Query.where(column, op, value)`
 - `Query.order_by(column, dir)` where `dir` is `asc`/`desc`
 - `Query.limit(n)` where `n >= 0`
+- `Query.insert(structValue)` builds `insert into ...` from struct fields
+- `Query.update(column, value)` builds/extends `set` clauses
+- `Query.delete()` builds `delete from ...`
+- `Query.count()` executes a `count(*)` query and returns `Int`
 - `Query.one()`
 - `Query.all()`
 - `Query.exec()`
@@ -593,6 +599,7 @@ Parameter binding:
 - supported param types: `null`, `Int`, `Float`, `Bool`, `String`, `Bytes`
   (boxed/results are unwrapped)
 - `in` expects non-empty list and expands to `IN (?, ?, ...)`
+- runtime DB failures include SQL text and a parameter summary
 
 Identifier constraints:
 

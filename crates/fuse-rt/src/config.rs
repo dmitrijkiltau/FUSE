@@ -4,6 +4,10 @@ pub fn env_key(config: &str, field: &str) -> String {
     format!("{}_{}", to_env_key(config), to_env_key(field))
 }
 
+pub fn env_prefix(config: &str) -> String {
+    format!("{}_", to_env_key(config))
+}
+
 fn to_env_key(name: &str) -> String {
     let mut out = String::new();
     let mut prev_lower = false;

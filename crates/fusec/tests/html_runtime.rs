@@ -119,6 +119,9 @@ fn spawn_one_shot_http_server(
     expected_request_line: &'static str,
     response: &'static str,
 ) -> (u16, thread::JoinHandle<()>) {
+    let _lock = http_runtime_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind upstream server");
     let port = listener.local_addr().expect("upstream addr").port();
     let handle = thread::spawn(move || {
@@ -145,20 +148,18 @@ fn spawn_one_shot_http_server(
     (port, handle)
 }
 
-fn run_http_program(backend: &str, source: &str, port: u16) -> HttpResponse {
-    run_http_program_with_env(backend, source, port, &[])
+fn run_http_program(backend: &str, source: &str) -> HttpResponse {
+    run_http_program_with_env(backend, source, &[])
 }
 
 fn run_http_program_with_env(
     backend: &str,
     source: &str,
-    port: u16,
     extra_env: &[(String, String)],
 ) -> HttpResponse {
     let mut responses = run_http_program_with_env_requests(
         backend,
         source,
-        port,
         extra_env,
         &["GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"],
     );
@@ -168,25 +169,24 @@ fn run_http_program_with_env(
 fn run_http_program_with_env_requests(
     backend: &str,
     source: &str,
-    port: u16,
     extra_env: &[(String, String)],
     requests: &[&str],
 ) -> Vec<HttpResponse> {
     let (responses, _stderr) =
-        run_http_program_with_env_requests_capture(backend, source, port, extra_env, requests);
+        run_http_program_with_env_requests_capture(backend, source, extra_env, requests);
     responses
 }
 
 fn run_http_program_with_env_requests_capture(
     backend: &str,
     source: &str,
-    port: u16,
     extra_env: &[(String, String)],
     requests: &[&str],
 ) -> (Vec<HttpResponse>, String) {
     let _lock = http_runtime_test_lock()
         .lock()
-        .expect("http runtime test lock");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let port = find_free_port();
     let program_path = write_temp_file("fuse_html_http", "fuse", source);
     let exe = env!("CARGO_BIN_EXE_fusec");
     let mut cmd = Command::new(exe);
@@ -367,7 +367,6 @@ app "api":
             "GET /vite/app.js?x=1 HTTP/1.1",
             "HTTP/1.1 200 OK\r\nContent-Type: application/javascript; charset=utf-8\r\nContent-Length: 19\r\n\r\nconsole.log('vite')\n",
         );
-        let port = find_free_port();
         let env = vec![(
             "FUSE_VITE_PROXY_URL".to_string(),
             format!("http://127.0.0.1:{upstream_port}/vite"),
@@ -376,7 +375,7 @@ app "api":
             "GET /api/ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
             "GET /app.js?x=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
         ];
-        let responses = run_http_program_with_env_requests(backend, program, port, &env, &requests);
+        let responses = run_http_program_with_env_requests(backend, program, &env, &requests);
         assert_eq!(responses[0].status, 200, "{backend} route status");
         assert_eq!(responses[0].body.trim(), "\"pong\"", "{backend} route body");
         assert_eq!(responses[1].status, 200, "{backend} proxy status");
@@ -460,8 +459,7 @@ app "docs":
 "#;
 
     for backend in ["ast", "native"] {
-        let port = find_free_port();
-        let response = run_http_program(backend, program, port);
+        let response = run_http_program(backend, program);
         assert_eq!(
             response.status, 200,
             "{backend} status, body: {}",
@@ -499,8 +497,7 @@ app "docs":
     let ws_url = "ws://127.0.0.1:35555/__reload".to_string();
     let extra_env = vec![("FUSE_DEV_RELOAD_WS_URL".to_string(), ws_url.clone())];
     for backend in ["ast", "native"] {
-        let port = find_free_port();
-        let response = run_http_program_with_env(backend, program, port, &extra_env);
+        let response = run_http_program_with_env(backend, program, &extra_env);
         assert!(
             response.body.contains("data-fuse-live-reload"),
             "{backend} body: {}",
@@ -551,8 +548,7 @@ app "docs":
     ];
 
     for backend in ["ast", "native"] {
-        let port = find_free_port();
-        let responses = run_http_program_with_env_requests(backend, program, port, &env, &requests);
+        let responses = run_http_program_with_env_requests(backend, program, &env, &requests);
         assert_eq!(responses[0].status, 200, "{backend} docs status");
         assert!(
             responses[0].body.contains("FUSE OpenAPI"),
@@ -596,9 +592,7 @@ app "notes":
     );
 
     for backend in ["ast", "native"] {
-        let port = find_free_port();
-        let responses =
-            run_http_program_with_env_requests(backend, program, port, &[], &[&request]);
+        let responses = run_http_program_with_env_requests(backend, program, &[], &[&request]);
         let response = &responses[0];
         assert_eq!(response.status, 200, "{backend} status");
         let content_type = response
@@ -640,8 +634,7 @@ app "echo":
 
     let request = "GET / HTTP/1.1\r\nHost: localhost\r\nX-Auth: Bearer demo\r\nCookie: sid=old-token; theme=dark\r\nConnection: close\r\n\r\n";
     for backend in ["ast", "native"] {
-        let port = find_free_port();
-        let responses = run_http_program_with_env_requests(backend, program, port, &[], &[request]);
+        let responses = run_http_program_with_env_requests(backend, program, &[], &[request]);
         let response = &responses[0];
         assert_eq!(response.status, 200, "{backend} status");
         assert_eq!(
@@ -696,8 +689,7 @@ app "echo":
         "GET /missing HTTP/1.1\r\nHost: localhost\r\nX-Request-Id: client-missing\r\nConnection: close\r\n\r\n",
     ];
     for backend in ["ast", "native"] {
-        let port = find_free_port();
-        let responses = run_http_program_with_env_requests(backend, program, port, &[], &requests);
+        let responses = run_http_program_with_env_requests(backend, program, &[], &requests);
 
         let explicit = &responses[0];
         assert_eq!(explicit.status, 200, "{backend} explicit status");
@@ -769,9 +761,8 @@ app "echo":
         ("FUSE_METRICS_HOOK".to_string(), "stderr".to_string()),
     ];
     for backend in ["ast", "native"] {
-        let port = find_free_port();
         let (responses, stderr) =
-            run_http_program_with_env_requests_capture(backend, program, port, &env, &[request]);
+            run_http_program_with_env_requests_capture(backend, program, &env, &[request]);
         let response = &responses[0];
         assert_eq!(response.status, 200, "{backend} status");
         assert_eq!(
@@ -833,8 +824,7 @@ app "echo":
 "#;
 
     for backend in ["ast", "native"] {
-        let port = find_free_port();
-        let response = run_http_program(backend, program, port);
+        let response = run_http_program(backend, program);
         assert_eq!(response.status, 200, "{backend} status");
         assert_eq!(response.body.trim(), "ok", "{backend} body");
         let set_cookie = response
