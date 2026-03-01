@@ -4104,6 +4104,86 @@ test "smoke":
 }
 
 #[test]
+fn test_filter_runs_matching_tests_only() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+
+test "smoke-fast":
+  assert(1 == 1)
+
+test "slow-fail":
+  assert(1 == 2)
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("test")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--filter")
+        .arg("smoke")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse test with filter");
+    assert!(
+        output.status.success(),
+        "test stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[test] start"), "stderr: {stderr}");
+    assert!(stderr.contains("[test] ok"), "stderr: {stderr}");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("ok smoke-fast"), "stdout: {stdout}");
+    assert!(!stdout.contains("slow-fail"), "stdout: {stdout}");
+    assert!(stdout.contains("ok (1 tests)"), "stdout: {stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn filter_option_is_rejected_for_non_test_commands() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--filter")
+        .arg("smoke")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse run with --filter");
+    assert!(!output.status.success(), "run unexpectedly succeeded");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("error: --filter is only supported for fuse test"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn run_validation_errors_use_exit_code_2_and_consistent_step_footer() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");

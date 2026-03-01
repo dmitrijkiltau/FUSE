@@ -289,7 +289,7 @@ Config:
 
 - [ ] `fuse check` incremental mode — skip re-checking unchanged modules (use module content hashes from `program.meta`)
 - [ ] `fuse dev` diagnostic overlay — show first compilation error in browser (injected via existing `__reload` WebSocket)
-- [ ] `fuse test --filter "pattern"` — run subset of test blocks matching a name pattern
+- [x] `fuse test --filter "pattern"` — run subset of test blocks matching a name pattern
 - [ ] `fuse build` progress indicator for AOT compilation steps
 - [ ] Structured JSON diagnostic output mode (`--diagnostics json`) for CI/editor consumption
 
@@ -297,7 +297,7 @@ Config:
 
 - [ ] Incremental check validated with module-edit-recheck benchmarks
 - [ ] `fuse dev` overlay tested with intentional syntax errors
-- [ ] `fuse test --filter` documented in README and reference
+- [x] `fuse test --filter` documented in README and reference
 - [ ] JSON diagnostics schema documented
 - [ ] `use_case_bench.sh` updated with incremental check metric
 
@@ -309,10 +309,16 @@ Config:
   - upstream one-shot bind in vite proxy tests is coordinated by the same lock to prevent cross-test socket collisions
   - `crates/fusec/tests/parity_ast_native.rs` HTTP harness now uses the same serialized lock strategy, retries bind collisions, and retries transient connect/read/write reset paths before failing
   - `crates/fusec/tests/result_decode_runtime.rs` now serializes HTTP harness setup, retries bind collisions, and treats transient connect/write/read reset paths as retryable until timeout
+- Added test filtering for project test runs:
+  - `fuse test --filter <pattern>` implemented in CLI argument plumbing (`fuse` -> `fusec`)
+  - `fusec --test --filter <pattern>` filters test jobs by case-sensitive substring match on test name
+  - docs updated in `README.md` and `spec/runtime.md`; regenerated `docs/site/specs/reference.md`
 - Validation runs green:
   - `scripts/cargo_env.sh cargo test -p fusec --test html_runtime`
   - `scripts/cargo_env.sh cargo test -p fusec --test result_decode_runtime`
   - `scripts/cargo_env.sh cargo test -p fusec --test parity_ast_native`
+  - `scripts/cargo_env.sh cargo test -p fuse --test project_cli test_filter_runs_matching_tests_only`
+  - `scripts/cargo_env.sh cargo test -p fuse --test project_cli filter_option_is_rejected_for_non_test_commands`
 
 **Exit criteria:** Warm `fuse check` on reference-service measurably faster than cold check.
 

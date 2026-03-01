@@ -180,6 +180,8 @@ Global CLI output option:
   `auto` is default and respects `NO_COLOR`.
 - `fuse check|run|build|test` emit consistent stderr step markers:
   `[command] start`, `[command] ok|failed|validation failed`.
+- `fuse test --filter <pattern>` runs only test blocks whose names contain `<pattern>`
+  (case-sensitive substring match).
 - `--strict-architecture` enables strict architecture checks in semantic analysis
   (primarily used with `fuse check` and `fuse build`).
 

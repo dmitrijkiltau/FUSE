@@ -876,12 +876,14 @@ Run tests with:
 
 ```bash
 fusec --test path/to/file.fuse
+fusec --test --filter smoke path/to/file.fuse
 ```
 
 Rules:
 
 - tests are collected from all loaded modules
 - run order is ascending by test name
+- `--filter <pattern>` runs only tests whose names contain the pattern (case-sensitive substring match)
 - tests execute via AST interpreter
 - failures report non-zero exit
 

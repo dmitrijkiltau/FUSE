@@ -30,6 +30,7 @@ options:
   --manifest-path <path>  Path to fuse.toml (defaults to nearest parent)
   --file <path>           Entry file override
   --app <name>            App name override
+  --filter <pattern>      Run only tests matching substring pattern (test only)
   --backend <ast|native>  Backend override (run only)
   --strict-architecture   Enable strict architectural checks during semantic analysis
   --color <auto|always|never>  Colorized CLI output policy
@@ -175,6 +176,7 @@ struct CommonArgs {
     entry: Option<String>,
     app: Option<String>,
     backend: Option<String>,
+    test_filter: Option<String>,
     color: Option<ColorChoice>,
     program_args: Vec<String>,
     clean: bool,
@@ -378,7 +380,14 @@ fn run(args: Vec<String>) -> i32 {
     let allow_program_args = matches!(command, Command::Run);
     let allow_clean = matches!(command, Command::Build);
     let allow_build_mode = matches!(command, Command::Build);
-    let common = match parse_common_args(rest, allow_program_args, allow_clean, allow_build_mode) {
+    let allow_test_filter = matches!(command, Command::Test);
+    let common = match parse_common_args(
+        rest,
+        allow_program_args,
+        allow_clean,
+        allow_build_mode,
+        allow_test_filter,
+    ) {
         Ok(args) => args,
         Err(err) => {
             emit_cli_error(&err);
@@ -515,6 +524,10 @@ fn run(args: Vec<String>) -> i32 {
         Command::Test => {
             let mut args = Vec::new();
             args.push("--test".to_string());
+            if let Some(filter) = common.test_filter {
+                args.push("--filter".to_string());
+                args.push(filter);
+            }
             if common.strict_architecture {
                 args.push("--strict-architecture".to_string());
             }
@@ -1599,6 +1612,7 @@ fn parse_common_args(
     allow_program_args: bool,
     allow_clean: bool,
     allow_build_mode: bool,
+    allow_test_filter: bool,
 ) -> Result<CommonArgs, String> {
     let mut out = CommonArgs::default();
     let mut idx = 0;
@@ -1645,6 +1659,26 @@ fn parse_common_args(
                 return Err("--backend expects a name".to_string());
             };
             out.backend = Some(name.clone());
+            idx += 1;
+            continue;
+        }
+        if arg == "--filter" {
+            if !allow_test_filter {
+                return Err("--filter is only supported for fuse test".to_string());
+            }
+            idx += 1;
+            let Some(pattern) = args.get(idx) else {
+                return Err("--filter expects a pattern".to_string());
+            };
+            out.test_filter = Some(pattern.clone());
+            idx += 1;
+            continue;
+        }
+        if let Some(pattern) = arg.strip_prefix("--filter=") {
+            if !allow_test_filter {
+                return Err("--filter is only supported for fuse test".to_string());
+            }
+            out.test_filter = Some(pattern.to_string());
             idx += 1;
             continue;
         }

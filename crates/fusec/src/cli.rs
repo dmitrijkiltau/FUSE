@@ -10,7 +10,7 @@ use crate::diag::{Diag, Level};
 use crate::interp::{Interpreter, MigrationJob, TestJob, TestOutcome};
 use crate::{load_program_with_modules, load_program_with_modules_and_deps};
 
-const USAGE: &str = "usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--strict-architecture] [--backend ast|native] [--app NAME] <file>";
+const USAGE: &str = "usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--filter PATTERN] [--strict-architecture] [--backend ast|native] [--app NAME] <file>";
 
 #[derive(Copy, Clone)]
 enum Backend {
@@ -41,6 +41,7 @@ where
     let mut app_name: Option<String> = None;
     let mut migrate = false;
     let mut test = false;
+    let mut test_filter: Option<String> = None;
     let mut strict_architecture = false;
     let mut path = None;
 
@@ -75,6 +76,20 @@ where
         }
         if arg == "--test" {
             test = true;
+            continue;
+        }
+        if arg == "--filter" {
+            if let Some(pattern) = args.next() {
+                test_filter = Some(pattern);
+            } else {
+                eprintln!("--filter expects a pattern");
+                eprintln!("{USAGE}");
+                return 1;
+            }
+            continue;
+        }
+        if let Some(pattern) = arg.strip_prefix("--filter=") {
+            test_filter = Some(pattern.to_string());
             continue;
         }
         if arg == "--strict-architecture" {
@@ -124,6 +139,12 @@ where
             return 1;
         }
     };
+
+    if test_filter.is_some() && !test {
+        eprintln!("--filter is only supported with --test");
+        eprintln!("{USAGE}");
+        return 1;
+    }
 
     let src = match fs::read_to_string(&path) {
         Ok(s) => s,
@@ -233,13 +254,16 @@ where
             emit_diags(&diags, Some(&src));
             return 1;
         }
-        let tests = match collect_tests(&registry) {
+        let mut tests = match collect_tests(&registry) {
             Ok(tests) => tests,
             Err(err) => {
                 eprintln!("test error: {err}");
                 return 1;
             }
         };
+        if let Some(pattern) = test_filter.as_deref() {
+            tests.retain(|test| test.name.contains(pattern));
+        }
         let mut interp = Interpreter::with_registry(&registry);
         let outcomes = match interp.run_tests(&tests) {
             Ok(outcomes) => outcomes,
