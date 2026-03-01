@@ -15,8 +15,8 @@ owned by `../spec/fls.md` (syntax/static semantics) and `../spec/runtime.md` (ru
 - `Conflict policy`: syntax/static/runtime behavior defers to `../spec/fls.md` and `../spec/runtime.md`; identity
   constraints defer to `IDENTITY_CHARTER.md`.
 
-For a full cross-reference of project documents, see
-[Developer navigation](../guides/fuse.md#developer-navigation).
+For a full cross-reference of project documents, see the
+[Documentation map](../README.md#documentation-map).
 
 ---
 
@@ -55,7 +55,7 @@ Rationale:
 - strong ecosystem for compiler + tooling infrastructure
 - distributable single-binary tooling path
 
-See also: [Runtime semantics](../spec/runtime.md), [README](../README.md), [FUSE overview companion](../guides/fuse.md).
+See also: [Runtime semantics](../spec/runtime.md), [README](../README.md).
 
 ---
 
@@ -107,13 +107,14 @@ See also: [Backends](../spec/runtime.md#backends), [Builtins and runtime subsyst
 ---
 
 ## Non-goals (explicit)
+
+Identity-level non-goals (no generics, no macros, no reflection, no operator overloading,
+no inheritance model, no backend dialects) are defined authoritatively in
+[IDENTITY_CHARTER.md](IDENTITY_CHARTER.md#explicit-will-not-do-list).
+
+Additional scope non-goals:
+
 - full ORM / heavyweight query language
-- user macro/metaprogramming system
-- user-defined generics / polymorphism systems
-- runtime reflection/introspection features that alter language behavior
-- custom operator overloading
-- inheritance-heavy object model features
-- backend-specific semantic dialects
 - "everything async by default"
 
-See also: [FUSE identity charter](IDENTITY_CHARTER.md), [Guiding idea](../guides/fuse.md#guiding-idea), [README](../README.md).
+See also: [FUSE identity charter](IDENTITY_CHARTER.md), [README](../README.md).

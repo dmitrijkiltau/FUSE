@@ -2,12 +2,12 @@
 
 ## Supported versions
 
-Security fixes are provided on a best-effort basis for the latest `0.1.x` line.
+Security fixes are provided on a best-effort basis for the latest `0.7.x` line.
 
 | Version | Supported |
 | --- | --- |
-| latest `0.1.x` | yes |
-| older `0.1.x` patches | no |
+| latest `0.7.x` | yes |
+| older minor lines | no |
 | pre-`0.1.0` commits | no |
 
 ## Reporting a vulnerability

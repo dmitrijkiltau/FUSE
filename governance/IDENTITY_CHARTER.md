@@ -74,6 +74,6 @@ For identity/scope disputes:
 
 1. `IDENTITY_CHARTER.md` (this document)
 2. `scope.md`
-3. `../guides/fuse.md`
+3. `../README.md`
 
 For semantic/runtime details, `../spec/fls.md` and `../spec/runtime.md` remain authoritative.

@@ -41,7 +41,7 @@ Required for adding/changing a backend:
 1. No backend-local sugar lowering.
 2. No backend-specific semantic behavior.
 3. AST/native parity tests and release gates stay green.
-4. `../guides/fuse.md`, `../spec/runtime.md`, and tests are updated in the same change.
+4. `../spec/runtime.md`, and tests are updated in the same change.
 
 ### 3) Type-system extensions
 

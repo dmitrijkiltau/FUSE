@@ -10,9 +10,10 @@
 
 - Keep language specs/docs in sync when semantics or tooling change:
   - `README.md`
-  - `guides/fuse.md`
   - `spec/fls.md`
   - `governance/scope.md`
+  - `governance/IDENTITY_CHARTER.md`
+  - `governance/EXTENSIBILITY_BOUNDARIES.md`
   - `spec/runtime.md`
   - `docs/site/specs/reference.md` (auto-generated; run `scripts/generate_guide_docs.sh` after updating `spec/fls.md`, `spec/runtime.md`, or `governance/scope.md`)
 - Parser fixtures live in `crates/fusec/tests/parser_fixtures.rs`.

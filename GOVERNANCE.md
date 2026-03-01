@@ -18,6 +18,9 @@ This document defines how project decisions are made and how maintainership work
 
 ## Required quality gates for contract changes
 
+See the [Quality gates](README.md#quality-gates) table in README for the full list.
+Minimum required:
+
 1. `scripts/semantic_suite.sh`
 2. `scripts/authority_parity.sh`
 3. `scripts/release_smoke.sh`

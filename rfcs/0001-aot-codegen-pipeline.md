@@ -1,10 +1,10 @@
 # RFC 0001: AOT Codegen Pipeline
 
-- Status: Accepted
+- Status: Implemented
 - Authors: FUSE maintainers
 - Created: 2026-02-22
 - Updated: 2026-02-22
-- Related PRs: TBD
+- Related PRs: N/A (landed with v0.4.0 milestone)
 - Related issues: v0.4.0 AOT production rollout
 
 ## Summary

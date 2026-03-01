@@ -494,7 +494,7 @@ Strict architecture mode (`--strict-architecture`) adds compile-time architectur
 - error-domain isolation: a module's function/service boundary signatures must not mix error
   domains from multiple modules
 
-See also: [Services and declaration syntax](#services-and-declaration-syntax), [README](../README.md), [FUSE overview companion](../guides/fuse.md).
+See also: [Services and declaration syntax](#services-and-declaration-syntax), [README](../README.md).
 
 ---
 

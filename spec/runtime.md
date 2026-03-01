@@ -719,4 +719,4 @@ Structured logging:
   `{"level":"info","message":"message","data":<json>}`
 - if multiple data values are provided, `data` is a JSON array
 
-See also: [Boundary model](#boundary-model), [Scope + constraints](../governance/scope.md), [README](../README.md), [FUSE overview companion](../guides/fuse.md).
+See also: [Boundary model](#boundary-model), [Scope + constraints](../governance/scope.md), [README](../README.md).

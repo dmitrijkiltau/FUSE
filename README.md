@@ -4,6 +4,14 @@ FUSE is a small, strict language for building CLI apps and HTTP services with
 built-in config loading, validation, JSON binding, and OpenAPI generation.
 
 ```fuse
+fn main(name: String = "world"):
+  print("Hello, ${name}!")
+
+app "hello":
+  main()
+```
+
+```fuse
 requires network
 
 config App:
@@ -20,6 +28,24 @@ service Users at "/api":
 app "users":
   serve(App.port)
 ```
+
+## Guiding idea
+
+FUSE is not trying to invent new syntax. The differentiator is a consistent contract at
+boundaries: types, validation, and transport behavior are aligned by default.
+
+### What FUSE optimizes for
+
+**Small and strict.** The language intentionally keeps a narrow core: indentation-based blocks,
+explicit declarations (`fn`, `type`, `enum`, `config`, `service`, `app`), and strong types with
+minimal ceremony.
+
+**Boundaries as first-class language concerns.** Runtime surfaces are built in and consistent
+across backends: config loading, JSON encoding/decoding, validation, and HTTP request/response
+binding.
+
+**One source of truth per concern.** You describe contracts in FUSE types and route signatures.
+The runtime applies those contracts at boundaries instead of requiring repeated glue code.
 
 ## Document contract
 
@@ -226,7 +252,7 @@ Lockfile semantics (`fuse.lock`):
 
 ### Build artifacts
 
-Cache outputs are stored in `.fuse/build/` (`program.ir`, `program.native`).
+Cache outputs are stored in `.fuse/build/` (`program.native`).
 Cache validity uses content hashes (module graph + `fuse.toml` + `fuse.lock`) in `program.meta` v3.
 Native/IR cache reuse also requires matching build fingerprints (target triple, Rust toolchain, CLI version).
 
@@ -361,10 +387,9 @@ code --install-extension dist/fuse-vscode-linux-x64.vsix
 | `examples/` | Sample programs and packages |
 | `docs/` | Documentation site (source, assets, generated specs) |
 | `tools/vscode/` | VS Code extension (syntax highlighting + LSP client) |
-| `spec/` | Spec-tier navigation index (normative language/runtime contracts) |
-| `ops/` | Operations-tier navigation index (release/incident contracts) |
-| `governance/` | Governance-tier navigation index (identity/policy/process) |
-| `guides/` | Guide-tier navigation index (onboarding/migrations/how-tos) |
+| `spec/` | Normative language/runtime contracts |
+| `ops/` | Release/incident contracts |
+| `governance/` | Identity/policy/process |
 
 ## Documentation map
 
@@ -382,7 +407,6 @@ If two documents disagree, defer to the owning document listed for that tier.
 
 | Document | Scope |
 |---|---|
-| `guides/fuse.md` | Product overview narrative (companion context, not start-here) |
 | `docs/site/specs/onboarding.md` | Documentation-site onboarding walkthrough |
 | `docs/migrations/0.1-to-0.2.md` | Migration guide for `0.1.x -> 0.2.0` |
 

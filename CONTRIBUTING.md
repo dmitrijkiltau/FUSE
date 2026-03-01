@@ -28,7 +28,7 @@ Required commands and conventions:
 - default compiler test command:
   - `scripts/cargo_env.sh cargo test -p fusec`
 
-Recommended baseline before opening a PR:
+Recommended baseline before opening a PR (see [Quality gates](README.md#quality-gates) for the full table):
 
 1. `scripts/semantic_suite.sh`
 2. `scripts/authority_parity.sh`

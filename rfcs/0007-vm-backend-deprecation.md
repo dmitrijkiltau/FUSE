@@ -4,7 +4,7 @@
 - Authors: FUSE maintainers
 - Created: 2026-02-26
 - Updated: 2026-02-26
-- Related PRs: TBD
+- Related PRs: N/A (landed with v0.5.0 milestone)
 - Related issues: VM_ANALYSIS.md, EXTENSIBILITY_BOUNDARIES.md §2
 
 ## Summary
@@ -57,7 +57,6 @@ Maintaining the VM imposes concrete costs:
 2. **Documentation.** Mark VM as deprecated in:
    - `governance/EXTENSIBILITY_BOUNDARIES.md` §2 (backend set line)
    - `spec/runtime.md` (backend table)
-   - `guides/fuse.md` (backend reference)
    - `README.md` (if backend list is mentioned)
 3. **Governance update.** Change the fixed backend set from `ast | vm | native` to
    `ast | native` with a note that `vm` is deprecated and retained only for the
@@ -138,14 +137,12 @@ backend — it produces wrong results without warning. Either maintain full pari
 
 - `governance/EXTENSIBILITY_BOUNDARIES.md`: update §2 backend set line
 - `spec/runtime.md`: mark VM deprecated in backend table
-- `guides/fuse.md`: mark VM deprecated
 - `CHANGELOG.md`: deprecation entry
 - `README.md`: update if backend list is referenced
 
 ### Phase 2
 
 - All of the above: remove VM references entirely
-- `governance/VERSIONING_POLICY.md`: no change needed (process was followed)
 
 ## Risks
 
@@ -165,3 +162,5 @@ backend — it produces wrong results without warning. Either maintain full pari
 ## Decision log
 
 - 2026-02-26: Proposed
+- 2026-02-26: Accepted
+- 2026-02-28: Implemented (VM removed in v0.5.0)
