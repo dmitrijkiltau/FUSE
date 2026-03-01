@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fuse_rt::json;
 mod support;
+use support::http::send_http_request_status_body_with_retry;
 use support::net::{find_free_port, skip_if_loopback_unavailable};
 
 fn example_path(name: &str) -> String {
@@ -68,77 +69,6 @@ fn run_example_with_stdin(backend: &str, example: &str, stdin_text: &str) -> std
     child.wait_with_output().expect("failed to wait for fusec")
 }
 
-fn send_http_request_with_retry(port: u16, request: &str) -> (u16, String) {
-    let start = Instant::now();
-    loop {
-        match TcpStream::connect(format!("127.0.0.1:{port}")) {
-            Ok(mut stream) => {
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-                if let Err(err) = stream.write_all(request.as_bytes()) {
-                    let last_error = format!("write failed: {err}");
-                    if start.elapsed() > Duration::from_secs(2) {
-                        panic!(
-                            "server did not produce a stable response on 127.0.0.1:{port} (last error: {})",
-                            last_error
-                        );
-                    }
-                    thread::sleep(Duration::from_millis(25));
-                    continue;
-                }
-                stream.shutdown(std::net::Shutdown::Write).ok();
-                let mut buffer = String::new();
-                if let Err(err) = stream.read_to_string(&mut buffer) {
-                    let last_error = format!("read failed: {err}");
-                    if start.elapsed() > Duration::from_secs(2) {
-                        panic!(
-                            "server did not produce a stable response on 127.0.0.1:{port} (last error: {})",
-                            last_error
-                        );
-                    }
-                    thread::sleep(Duration::from_millis(25));
-                    continue;
-                }
-                if buffer.trim().is_empty() {
-                    let last_error = "empty response";
-                    if start.elapsed() > Duration::from_secs(2) {
-                        panic!(
-                            "server did not produce a stable response on 127.0.0.1:{port} (last error: {})",
-                            last_error
-                        );
-                    }
-                    thread::sleep(Duration::from_millis(25));
-                    continue;
-                }
-                let mut lines = buffer.split("\r\n");
-                let status_line = lines.next().unwrap_or("");
-                let status = status_line
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("500")
-                    .parse::<u16>()
-                    .unwrap_or(500);
-                let body = buffer
-                    .split("\r\n\r\n")
-                    .nth(1)
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                return (status, body);
-            }
-            Err(err) => {
-                let last_error = format!("connect failed: {err}");
-                if start.elapsed() > Duration::from_secs(2) {
-                    panic!(
-                        "server did not start on 127.0.0.1:{port} (last error: {})",
-                        last_error
-                    );
-                }
-                thread::sleep(Duration::from_millis(25));
-            }
-        }
-    }
-}
-
 fn parity_http_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -181,7 +111,7 @@ where
             panic!("server exited before readiness (backend={backend}): {stderr}");
         }
         let request = make_request(port);
-        let (status, body) = send_http_request_with_retry(port, &request);
+        let (status, body) = send_http_request_status_body_with_retry(port, &request);
         let output = child.wait_with_output().expect("failed to wait for server");
         assert!(
             output.status.success(),

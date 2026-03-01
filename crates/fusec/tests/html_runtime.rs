@@ -1,11 +1,14 @@
-use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+mod support;
+use support::http::{HttpResponse, send_http_request_with_retry};
+use support::net::find_free_port;
 
 fn write_temp_file(name: &str, ext: &str, contents: &str) -> std::path::PathBuf {
     let mut path = std::env::temp_dir();
@@ -51,68 +54,9 @@ fn run_program_with_env(
     cmd.output().expect("failed to run fusec")
 }
 
-fn find_free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test port");
-    listener.local_addr().expect("local addr").port()
-}
-
 fn http_runtime_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
-}
-
-struct HttpResponse {
-    status: u16,
-    headers: HashMap<String, String>,
-    body: String,
-}
-
-fn send_http_request_with_retry(port: u16, request: &str) -> HttpResponse {
-    let start = Instant::now();
-    loop {
-        match TcpStream::connect(format!("127.0.0.1:{port}")) {
-            Ok(mut stream) => {
-                stream
-                    .write_all(request.as_bytes())
-                    .expect("failed to write request");
-                let _ = stream.shutdown(std::net::Shutdown::Write);
-
-                let mut buffer = String::new();
-                stream
-                    .read_to_string(&mut buffer)
-                    .expect("failed to read response");
-
-                let mut parts = buffer.splitn(2, "\r\n\r\n");
-                let head = parts.next().unwrap_or("");
-                let body = parts.next().unwrap_or("").to_string();
-                let mut lines = head.split("\r\n");
-                let status_line = lines.next().unwrap_or("");
-                let status = status_line
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("500")
-                    .parse::<u16>()
-                    .unwrap_or(500);
-                let mut headers = HashMap::new();
-                for line in lines {
-                    if let Some((key, value)) = line.split_once(':') {
-                        headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
-                    }
-                }
-                return HttpResponse {
-                    status,
-                    headers,
-                    body,
-                };
-            }
-            Err(_) => {
-                if start.elapsed() > Duration::from_secs(3) {
-                    panic!("server did not start on 127.0.0.1:{port}");
-                }
-                thread::sleep(Duration::from_millis(25));
-            }
-        }
-    }
 }
 
 fn spawn_one_shot_http_server(

@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-step() {
-  printf "\n[%s] %s\n" "$1" "$2"
-}
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+ROOT="$(fuse_repo_root "${BASH_SOURCE[0]}")"
 
 step "1/23" "Run AST authority/parity gates"
 "$ROOT/scripts/authority_parity.sh"

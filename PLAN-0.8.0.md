@@ -416,17 +416,17 @@ without changing language/runtime behavior.
 
 - [x] Split `crates/fuse/src/main.rs` into focused `crates/fuse/src/` modules (args, diagnostics, run/dev/build, deps/lock, AOT helpers)
 - [x] Remove diagnostics formatting duplication between `fuse` and `fusec` (`--diagnostics json|text` surface stays identical)
-- [ ] Extract shared HTTP/runtime integration harness helpers for `fusec` tests
-- [ ] Split `crates/fuse/tests/project_cli.rs` into domain-focused files with shared fixture/process helpers
-- [ ] Remove redundant script/report glue where equivalent helpers already exist
+- [x] Extract shared HTTP/runtime integration harness helpers for `fusec` tests
+- [x] Split `crates/fuse/tests/project_cli.rs` into domain-focused files with shared fixture/process helpers
+- [x] Remove redundant script/report glue where equivalent helpers already exist
 
 **Deliverables:**
 
 - [x] `crates/fuse/src/main.rs` reduced to dispatch/lifecycle oriented surface (<1500 lines target)
 - [x] One canonical diagnostics JSON/text renderer path used by both CLIs
-- [ ] No duplicated `send_http_request_with_retry` helper implementations across runtime parity tests
-- [ ] `project_cli` coverage preserved after file split (`build`, `run/dev`, `deps/lock`, `diagnostics/format`)
-- [ ] Release gates still pass after cleanup refactors (`release_smoke.sh`, `use_case_bench.sh`, `check_use_case_bench_regression.sh`)
+- [x] No duplicated `send_http_request_with_retry` helper implementations across runtime parity tests
+- [x] `project_cli` coverage preserved after file split (`build`, `run/dev`, `deps/lock`, `diagnostics/format`)
+- [x] Release gates still pass after cleanup refactors (`release_smoke.sh`, `use_case_bench.sh`, `check_use_case_bench_regression.sh`)
 
 **Execution slices (recommended order):**
 
@@ -483,6 +483,25 @@ without changing language/runtime behavior.
   - added shared diagnostics renderer in `crates/fusec/src/diag_render.rs` (`line_info`, JSON diagnostic value builder, configurable text diagnostic emitter)
   - rewired `crates/fuse/src/cli_output.rs` and `crates/fusec/src/cli.rs` to use the shared renderer while preserving existing CLI-specific style behavior (`fuse` colored labels/caret and fallback path, `fusec` plain text style)
   - exported shared renderer via `crates/fusec/src/lib.rs`
+- continued Slice 3 runtime test harness dedup extraction:
+  - added shared HTTP runtime test helpers in `crates/fusec/tests/support/http.rs` (`HttpResponse`, retryable HTTP request + status/body helper) and exported via `crates/fusec/tests/support/mod.rs`
+  - migrated duplicated HTTP request helpers out of `html_runtime.rs`, `parity_ast_native.rs`, `result_decode_runtime.rs`, `golden_outputs.rs`, and `native_http_smoke.rs`
+  - upgraded shared `crates/fusec/tests/support/net.rs::find_free_port` to deterministic process-local port cycling with bind checks (fallback keeps `127.0.0.1:0`)
+- continued Slice 4 `project_cli` split extraction:
+  - reduced `crates/fuse/tests/project_cli.rs` to shared fixtures/helpers + module wiring
+  - moved test coverage into domain-focused modules under `crates/fuse/tests/project_cli/`:
+    - `run_dev_build.rs`
+    - `deps_lock.rs`
+    - `output_aot.rs`
+    - `test_diag.rs`
+  - preserved all existing test names/assertions while reusing shared helper surface from root module
+- continued Slice 5 script glue cleanup:
+  - added shared shell helper `scripts/lib/common.sh` (`fuse_repo_root`, `step`)
+  - removed duplicated root/step boilerplate from:
+    - `scripts/authority_parity.sh`
+    - `scripts/semantic_suite.sh`
+    - `scripts/lsp_suite.sh`
+    - `scripts/release_smoke.sh`
 - post-extraction stabilization:
   - hardened `project_cli` HTTP service test harness port selection to avoid cross-test port reuse races (`reserve_local_port` now uses deterministic process-local port cycling with bind checks)
   - hardened HTTP request retries for AOT service tests to wait for successful 2xx responses instead of accepting transient non-success responses
@@ -514,6 +533,15 @@ without changing language/runtime behavior.
   - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli check_diagnostics_json_emits_structured_output_for_project_mode`
   - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli check_diagnostics_json_emits_structured_output_for_delegated_mode`
   - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli run_validation_errors_emit_json_step_events_when_diagnostics_json_enabled`
+  - `./scripts/cargo_env.sh cargo check -p fusec --tests`
+  - `./scripts/cargo_env.sh cargo test -p fusec --test golden_outputs --test html_runtime --test native_http_smoke --test parity_ast_native --test result_decode_runtime`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli --no-run`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli` (`78 passed`)
+  - `bash -n scripts/lib/common.sh scripts/authority_parity.sh scripts/semantic_suite.sh scripts/lsp_suite.sh scripts/release_smoke.sh`
+  - `./scripts/authority_parity.sh`
+  - `./scripts/release_smoke.sh`
+  - `./scripts/use_case_bench.sh`
+  - `./scripts/check_use_case_bench_regression.sh`
 
 **Exit criteria:** Refactor-only changes merged with no observable CLI/runtime behavior regression and full release gates green.
 

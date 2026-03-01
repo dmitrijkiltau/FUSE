@@ -1,13 +1,12 @@
 use std::fs;
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod support;
+use support::http::send_http_request_status_body_with_retry;
 use support::net::{find_free_port, skip_if_loopback_unavailable};
 
 fn write_temp_file(name: &str, ext: &str, contents: &str) -> PathBuf {
@@ -19,67 +18,6 @@ fn write_temp_file(name: &str, ext: &str, contents: &str) -> PathBuf {
     path.push(format!("{name}_{stamp}.{ext}"));
     fs::write(&path, contents).expect("failed to write temp file");
     path
-}
-
-fn send_http_request_with_retry(port: u16, request: &str) -> (u16, String) {
-    let start = Instant::now();
-    loop {
-        match TcpStream::connect(format!("127.0.0.1:{port}")) {
-            Ok(mut stream) => {
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-                if let Err(err) = stream.write_all(request.as_bytes()) {
-                    if start.elapsed() > Duration::from_secs(3) {
-                        panic!(
-                            "server did not produce a stable response on 127.0.0.1:{port} (last error: write failed: {err})"
-                        );
-                    }
-                    thread::sleep(Duration::from_millis(25));
-                    continue;
-                }
-                stream.shutdown(std::net::Shutdown::Write).ok();
-                let mut response = String::new();
-                if let Err(err) = stream.read_to_string(&mut response) {
-                    if start.elapsed() > Duration::from_secs(3) {
-                        panic!(
-                            "server did not produce a stable response on 127.0.0.1:{port} (last error: read failed: {err})"
-                        );
-                    }
-                    thread::sleep(Duration::from_millis(25));
-                    continue;
-                }
-                if response.trim().is_empty() {
-                    if start.elapsed() > Duration::from_secs(3) {
-                        panic!(
-                            "server did not produce a stable response on 127.0.0.1:{port} (last error: empty response)"
-                        );
-                    }
-                    thread::sleep(Duration::from_millis(25));
-                    continue;
-                }
-                let mut lines = response.split("\r\n");
-                let status_line = lines.next().unwrap_or("");
-                let status = status_line
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("500")
-                    .parse::<u16>()
-                    .unwrap_or(500);
-                let body = response
-                    .split("\r\n\r\n")
-                    .nth(1)
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                return (status, body);
-            }
-            Err(err) => {
-                if start.elapsed() > Duration::from_secs(3) {
-                    panic!("server did not start on 127.0.0.1:{port} (last error: {err})");
-                }
-                thread::sleep(Duration::from_millis(25));
-            }
-        }
-    }
 }
 
 fn decode_http_test_lock() -> &'static Mutex<()> {
@@ -151,7 +89,7 @@ fn run_decode_request_with_program(backend: &str, program: &str, payload: &str) 
             payload.len(),
             payload
         );
-        let out = send_http_request_with_retry(port, &request);
+        let out = send_http_request_status_body_with_retry(port, &request);
         let output = child.wait_with_output().expect("failed to wait for server");
         assert!(
             output.status.success(),
