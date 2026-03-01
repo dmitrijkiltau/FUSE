@@ -44,6 +44,7 @@ const BUILD_TARGET_FINGERPRINT: &str = env!("FUSE_BUILD_TARGET");
 const BUILD_RUSTC_FINGERPRINT: &str = env!("FUSE_BUILD_RUSTC_VERSION");
 const BUILD_CLI_VERSION_FINGERPRINT: &str = env!("CARGO_PKG_VERSION");
 const AOT_SEMANTIC_CONTRACT_VERSION: &str = "aot-v1";
+const AOT_BUILD_PROGRESS_STAGES: usize = 6;
 
 #[derive(Debug, Deserialize)]
 struct Manifest {
@@ -318,6 +319,16 @@ fn emit_command_step(command: Command, message: &str) {
     if let Some(prefix) = command_prefix(command) {
         eprintln!("{prefix} {message}");
     }
+}
+
+fn emit_build_progress(message: &str) {
+    emit_command_step(Command::Build, message);
+}
+
+fn emit_aot_build_progress(stage: usize, message: &str) {
+    emit_build_progress(&format!(
+        "aot [{stage}/{AOT_BUILD_PROGRESS_STAGES}] {message}"
+    ));
 }
 
 fn finalize_command(command: Command, code: i32) -> i32 {
@@ -1969,17 +1980,6 @@ fn run_build(
         emit_cli_error(&err);
         return 1;
     }
-    let artifacts = match compile_artifacts(entry, manifest_dir, deps, strict_architecture) {
-        Ok(artifacts) => artifacts,
-        Err(err) => {
-            emit_cli_error(&err);
-            return 1;
-        }
-    };
-    if let Err(err) = write_compiled_artifacts(manifest_dir, &artifacts) {
-        emit_cli_error(&err);
-        return 1;
-    }
     let configured_native_bin =
         manifest.and_then(|m| m.build.as_ref().and_then(|b| b.native_bin.clone()));
     let aot_enabled = aot || release;
@@ -1990,6 +1990,23 @@ fn run_build(
             None
         }
     });
+    if aot_out.is_some() {
+        emit_aot_build_progress(1, "compile program");
+    }
+    let artifacts = match compile_artifacts(entry, manifest_dir, deps, strict_architecture) {
+        Ok(artifacts) => artifacts,
+        Err(err) => {
+            emit_cli_error(&err);
+            return 1;
+        }
+    };
+    if aot_out.is_some() {
+        emit_aot_build_progress(2, "write cache artifacts");
+    }
+    if let Err(err) = write_compiled_artifacts(manifest_dir, &artifacts) {
+        emit_cli_error(&err);
+        return 1;
+    }
     if let Some(native_bin) = aot_out {
         if let Err(err) =
             write_native_binary(manifest_dir, &artifacts.native, app, &native_bin, release)
@@ -2206,6 +2223,7 @@ fn write_native_binary(
         fs::create_dir_all(&build_dir)
             .map_err(|err| format!("failed to create {}: {err}", build_dir.display()))?;
     }
+    emit_aot_build_progress(3, "emit native object");
     let artifact = fusec::native::emit_object_for_app(program, app)?;
     let object_path = build_dir.join("program.o");
     fs::write(&object_path, &artifact.object)
@@ -2221,6 +2239,7 @@ fn write_native_binary(
     let type_bytes =
         bincode::serialize(&types).map_err(|err| format!("type encode failed: {err}"))?;
     let runner_path = build_dir.join("native_main.rs");
+    emit_aot_build_progress(4, "write runner source");
     write_native_runner(
         &runner_path,
         &artifact.entry_symbol,
@@ -2515,6 +2534,7 @@ fn link_native_binary(
             .ok_or_else(|| "runner path missing parent".to_string())?,
     )?;
     let (target_dir, rustc_tmpdir, cargo_incremental) = prepare_toolchain_env(&repo_root)?;
+    emit_aot_build_progress(5, "build link dependencies");
     let mut build_cmd = ProcessCommand::new("cargo");
     apply_toolchain_env(
         &mut build_cmd,
@@ -2545,6 +2565,7 @@ fn link_native_binary(
     let fusec_rlib = find_latest_rlib(&deps_dir, "libfusec")?;
     let bincode_rlib = find_latest_rlib(&deps_dir, "libbincode")?;
     let native_link_searches = collect_rustc_link_search_paths(&target_dir, profile)?;
+    emit_aot_build_progress(6, "link final binary");
     let mut rustc_cmd = ProcessCommand::new("rustc");
     apply_toolchain_env(
         &mut rustc_cmd,

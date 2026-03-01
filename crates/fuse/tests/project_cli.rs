@@ -3143,6 +3143,10 @@ app "Demo":
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("[build] start"), "stderr: {stderr}");
     assert!(stderr.contains("[build] ok"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("[build] aot ["),
+        "non-aot build unexpectedly emitted aot progress: {stderr}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -3187,6 +3191,56 @@ app "Demo":
             .exists(),
         "expected cached native artifact"
     );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_emits_progress_indicator() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse build --aot");
+    assert!(
+        output.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[build] start"), "stderr: {stderr}");
+    assert!(stderr.contains("[build] ok"), "stderr: {stderr}");
+
+    let steps = [
+        "[build] aot [1/6] compile program",
+        "[build] aot [2/6] write cache artifacts",
+        "[build] aot [3/6] emit native object",
+        "[build] aot [4/6] write runner source",
+        "[build] aot [5/6] build link dependencies",
+        "[build] aot [6/6] link final binary",
+    ];
+    let mut last = 0usize;
+    for step in steps {
+        let pos = stderr.find(step).unwrap_or_else(|| panic!("missing step {step}; stderr: {stderr}"));
+        assert!(pos >= last, "out-of-order step {step}; stderr: {stderr}");
+        last = pos;
+    }
 
     let _ = fs::remove_dir_all(&dir);
 }

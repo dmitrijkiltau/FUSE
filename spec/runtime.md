@@ -383,6 +383,8 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 `fuse` CLI wrapper output contract (`check|run|build|test`):
 
 - emits stderr step markers: `[command] start` and `[command] ok|failed|validation failed`
+- when AOT output is requested, `fuse build` emits deterministic progress stages:
+  `[build] aot [n/6] ...`
 - keeps JSON validation payloads uncolored/machine-readable
 - `run` CLI argument validation failures exit with code `2`
 

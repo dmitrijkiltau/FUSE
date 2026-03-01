@@ -191,6 +191,8 @@ Build-specific options:
   `.fuse/build/program.aot` (`.fuse/build/program.aot.exe` on Windows) unless
   `[build].native_bin` is configured.
 - `fuse build --aot` forces AOT output in debug profile.
+- AOT-emitting builds (`--aot`, `--release`, or `[build].native_bin`) print
+  `[build] aot [n/6] ...` progress stages for compile/link steps.
 - `fuse build` remains the explicit non-AOT local development path (cache artifacts only).
 
 Packages use a `fuse.toml` manifest. Minimal example:

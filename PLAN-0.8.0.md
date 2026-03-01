@@ -290,7 +290,7 @@ Config:
 - [x] `fuse check` incremental mode — skip re-checking unchanged modules (use module content hashes from incremental check metadata)
 - [x] `fuse dev` diagnostic overlay — show first compilation error in browser (injected via existing `__reload` WebSocket)
 - [x] `fuse test --filter "pattern"` — run subset of test blocks matching a name pattern
-- [ ] `fuse build` progress indicator for AOT compilation steps
+- [x] `fuse build` progress indicator for AOT compilation steps
 - [ ] Structured JSON diagnostic output mode (`--diagnostics json`) for CI/editor consumption
 
 **Deliverables:**
@@ -322,6 +322,11 @@ Config:
   - `fuse dev` now performs a compile gate (parse + sema) before each restart and emits the first compile error as a websocket event payload
   - runtime live-reload script (AST/native) now handles websocket event types (`reload`, `clear_error`, `compile_error`) and renders an in-browser overlay for compile failures
   - successful restarts clear overlays and trigger the existing reload flow
+- Implemented deterministic AOT build progress stages in `fuse build`:
+  - AOT-emitting builds now print `[build] aot [n/6] ...` checkpoints across compile/cache/object/runner/link stages
+  - non-AOT `fuse build` output remains unchanged except standard start/ok|failed step markers
+- Added AOT progress regression coverage:
+  - `crates/fuse/tests/project_cli.rs::build_aot_emits_progress_indicator`
 - Added `fuse dev` overlay regression coverage:
   - `crates/fuse/tests/project_cli.rs::dev_emits_compile_error_overlay_event_for_syntax_error`
   - `crates/fusec/tests/html_runtime.rs::html_http_injects_live_reload_script_when_enabled` now asserts overlay marker/event wiring
@@ -343,6 +348,7 @@ Config:
   - `scripts/cargo_env.sh cargo test -p fuse --test project_cli check_`
   - `scripts/cargo_env.sh cargo test -p fuse --test project_cli dev_emits_compile_error_overlay_event_for_syntax_error`
   - `scripts/cargo_env.sh cargo test -p fusec --test html_runtime html_http_injects_live_reload_script_when_enabled`
+  - `scripts/cargo_env.sh cargo test -p fuse --test project_cli build_aot_emits_progress_indicator`
 
 **Exit criteria:** Warm `fuse check` on reference-service measurably faster than cold check.
 
