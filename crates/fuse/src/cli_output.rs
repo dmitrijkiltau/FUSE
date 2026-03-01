@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::env;
-use std::fs;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -207,136 +206,20 @@ pub(crate) fn emit_diags_with_fallback(
     }
 }
 
-fn styled_diag_level(level: &fusec::diag::Level) -> String {
-    match level {
-        fusec::diag::Level::Error => style_error("error"),
-        fusec::diag::Level::Warning => style_warning("warning"),
-    }
-}
-
 fn emit_diag(diag: &fusec::diag::Diag, fallback: Option<(&Path, &str)>) {
     if diagnostics_json_enabled() {
-        emit_json_line(diag_json_value(diag, fallback));
+        emit_json_line(fusec::diag_render::diagnostic_json_value(diag, fallback));
         return;
     }
-    let level = styled_diag_level(&diag.level);
-    if let Some(path) = &diag.path {
-        if let Ok(src) = fs::read_to_string(path) {
-            let (line, col, line_text) = line_info(&src, diag.span.start);
-            eprintln!(
-                "{level}: {} ({}:{}:{})",
-                diag.message,
-                path.display(),
-                line,
-                col
-            );
-            eprintln!("  {line_text}");
-            eprintln!(
-                "  {}{}",
-                " ".repeat(col.saturating_sub(1)),
-                style_error("^")
-            );
-            return;
-        }
-        eprintln!("{level}: {} ({})", diag.message, path.display());
-        return;
-    }
-    if let Some((path, src)) = fallback {
-        let (line, col, line_text) = line_info(src, diag.span.start);
-        eprintln!(
-            "{level}: {} ({}:{}:{})",
-            diag.message,
-            path.display(),
-            line,
-            col
-        );
-        eprintln!("  {line_text}");
-        eprintln!(
-            "  {}{}",
-            " ".repeat(col.saturating_sub(1)),
-            style_error("^")
-        );
-        return;
-    }
-    eprintln!(
-        "{level}: {} ({}..{})",
-        diag.message, diag.span.start, diag.span.end
-    );
-}
-
-fn diag_json_value(
-    diag: &fusec::diag::Diag,
-    fallback: Option<(&Path, &str)>,
-) -> rt_json::JsonValue {
-    let mut object = BTreeMap::new();
-    object.insert(
-        "kind".to_string(),
-        rt_json::JsonValue::String("diagnostic".to_string()),
-    );
-    object.insert(
-        "level".to_string(),
-        rt_json::JsonValue::String(match diag.level {
-            fusec::diag::Level::Error => "error".to_string(),
-            fusec::diag::Level::Warning => "warning".to_string(),
-        }),
-    );
-    object.insert(
-        "message".to_string(),
-        rt_json::JsonValue::String(diag.message.clone()),
-    );
-    object.insert(
-        "span_start".to_string(),
-        rt_json::JsonValue::Number(diag.span.start as f64),
-    );
-    object.insert(
-        "span_end".to_string(),
-        rt_json::JsonValue::Number(diag.span.end as f64),
-    );
-
-    if let Some(path) = &diag.path {
-        object.insert(
-            "path".to_string(),
-            rt_json::JsonValue::String(path.display().to_string()),
-        );
-        if let Ok(src) = fs::read_to_string(path) {
-            let (line, col, _) = line_info(&src, diag.span.start);
-            object.insert("line".to_string(), rt_json::JsonValue::Number(line as f64));
-            object.insert("column".to_string(), rt_json::JsonValue::Number(col as f64));
-        }
-        return rt_json::JsonValue::Object(object);
-    }
-
-    if let Some((path, src)) = fallback {
-        let (line, col, _) = line_info(src, diag.span.start);
-        object.insert(
-            "path".to_string(),
-            rt_json::JsonValue::String(path.display().to_string()),
-        );
-        object.insert("line".to_string(), rt_json::JsonValue::Number(line as f64));
-        object.insert("column".to_string(), rt_json::JsonValue::Number(col as f64));
-    }
-
-    rt_json::JsonValue::Object(object)
+    let style = fusec::diag_render::TextDiagnosticStyle {
+        error_label: style_error("error"),
+        warning_label: style_warning("warning"),
+        caret: style_error("^"),
+        include_fallback_path: true,
+    };
+    fusec::diag_render::emit_diag_text(diag, fallback, &style);
 }
 
 pub(crate) fn line_info(src: &str, offset: usize) -> (usize, usize, &str) {
-    let offset = offset.min(src.len());
-    let mut line = 1usize;
-    let mut line_start = 0usize;
-    for (idx, byte) in src.bytes().enumerate() {
-        if idx >= offset {
-            break;
-        }
-        if byte == b'\n' {
-            line += 1;
-            line_start = idx + 1;
-        }
-    }
-    let line_end = src[line_start..]
-        .find('\n')
-        .map(|rel| line_start + rel)
-        .unwrap_or(src.len());
-    let col = offset.saturating_sub(line_start) + 1;
-    let line_text = &src[line_start..line_end];
-    (line, col, line_text)
+    fusec::diag_render::line_info(src, offset)
 }

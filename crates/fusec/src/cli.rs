@@ -6,7 +6,7 @@ use fuse_rt::error::{ValidationError, ValidationField};
 use fuse_rt::json;
 
 use crate::ast::{Item, TypeRefKind};
-use crate::diag::{Diag, Level};
+use crate::diag::Diag;
 use crate::interp::{Interpreter, MigrationJob, TestJob, TestOutcome};
 use crate::{load_program_with_modules, load_program_with_modules_and_deps};
 
@@ -698,114 +698,17 @@ fn emit_diags(diags: &[Diag], format: DiagnosticFormat, fallback: Option<(&Path,
 
 fn emit_diag(diag: &Diag, format: DiagnosticFormat, fallback: Option<(&Path, &str)>) {
     if matches!(format, DiagnosticFormat::Json) {
-        emit_diag_json(diag, fallback);
+        eprintln!(
+            "{}",
+            json::encode(&crate::diag_render::diagnostic_json_value(diag, fallback))
+        );
         return;
     }
-    let level = match diag.level {
-        Level::Error => "error",
-        Level::Warning => "warning",
+    let style = crate::diag_render::TextDiagnosticStyle {
+        error_label: "error".to_string(),
+        warning_label: "warning".to_string(),
+        caret: "^".to_string(),
+        include_fallback_path: false,
     };
-    if let Some(path) = &diag.path {
-        if let Ok(src) = fs::read_to_string(path) {
-            let (line, col, line_text) = line_info(&src, diag.span.start);
-            eprintln!(
-                "{level}: {} ({}:{}:{})",
-                diag.message,
-                path.display(),
-                line,
-                col
-            );
-            eprintln!("  {line_text}");
-            eprintln!("  {}^", " ".repeat(col.saturating_sub(1)));
-            return;
-        }
-        eprintln!("{level}: {} ({})", diag.message, path.display());
-        return;
-    }
-    if let Some((_, src)) = fallback {
-        let (line, col, line_text) = line_info(src, diag.span.start);
-        eprintln!("{level}: {} ({}:{})", diag.message, line, col);
-        eprintln!("  {line_text}");
-        eprintln!("  {}^", " ".repeat(col.saturating_sub(1)));
-        return;
-    }
-    eprintln!(
-        "{level}: {} ({}..{})",
-        diag.message, diag.span.start, diag.span.end
-    );
-}
-
-fn emit_diag_json(diag: &Diag, fallback: Option<(&Path, &str)>) {
-    let mut object = std::collections::BTreeMap::new();
-    object.insert(
-        "kind".to_string(),
-        json::JsonValue::String("diagnostic".to_string()),
-    );
-    object.insert(
-        "level".to_string(),
-        json::JsonValue::String(match diag.level {
-            Level::Error => "error".to_string(),
-            Level::Warning => "warning".to_string(),
-        }),
-    );
-    object.insert(
-        "message".to_string(),
-        json::JsonValue::String(diag.message.clone()),
-    );
-    object.insert(
-        "span_start".to_string(),
-        json::JsonValue::Number(diag.span.start as f64),
-    );
-    object.insert(
-        "span_end".to_string(),
-        json::JsonValue::Number(diag.span.end as f64),
-    );
-
-    if let Some(path) = &diag.path {
-        object.insert(
-            "path".to_string(),
-            json::JsonValue::String(path.display().to_string()),
-        );
-        if let Ok(src) = fs::read_to_string(path) {
-            let (line, col, _) = line_info(&src, diag.span.start);
-            object.insert("line".to_string(), json::JsonValue::Number(line as f64));
-            object.insert("column".to_string(), json::JsonValue::Number(col as f64));
-        }
-        eprintln!("{}", json::encode(&json::JsonValue::Object(object)));
-        return;
-    }
-
-    if let Some((path, src)) = fallback {
-        let (line, col, _) = line_info(src, diag.span.start);
-        object.insert(
-            "path".to_string(),
-            json::JsonValue::String(path.display().to_string()),
-        );
-        object.insert("line".to_string(), json::JsonValue::Number(line as f64));
-        object.insert("column".to_string(), json::JsonValue::Number(col as f64));
-    }
-
-    eprintln!("{}", json::encode(&json::JsonValue::Object(object)));
-}
-
-fn line_info(src: &str, offset: usize) -> (usize, usize, &str) {
-    let offset = offset.min(src.len());
-    let mut line = 1usize;
-    let mut line_start = 0usize;
-    for (idx, byte) in src.bytes().enumerate() {
-        if idx >= offset {
-            break;
-        }
-        if byte == b'\n' {
-            line += 1;
-            line_start = idx + 1;
-        }
-    }
-    let line_end = src[line_start..]
-        .find('\n')
-        .map(|rel| line_start + rel)
-        .unwrap_or(src.len());
-    let col = offset.saturating_sub(line_start) + 1;
-    let line_text = &src[line_start..line_end];
-    (line, col, line_text)
+    crate::diag_render::emit_diag_text(diag, fallback, &style);
 }

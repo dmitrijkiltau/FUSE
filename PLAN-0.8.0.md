@@ -415,7 +415,7 @@ without changing language/runtime behavior.
 **Scope:**
 
 - [x] Split `crates/fuse/src/main.rs` into focused `crates/fuse/src/` modules (args, diagnostics, run/dev/build, deps/lock, AOT helpers)
-- [ ] Remove diagnostics formatting duplication between `fuse` and `fusec` (`--diagnostics json|text` surface stays identical)
+- [x] Remove diagnostics formatting duplication between `fuse` and `fusec` (`--diagnostics json|text` surface stays identical)
 - [ ] Extract shared HTTP/runtime integration harness helpers for `fusec` tests
 - [ ] Split `crates/fuse/tests/project_cli.rs` into domain-focused files with shared fixture/process helpers
 - [ ] Remove redundant script/report glue where equivalent helpers already exist
@@ -423,7 +423,7 @@ without changing language/runtime behavior.
 **Deliverables:**
 
 - [x] `crates/fuse/src/main.rs` reduced to dispatch/lifecycle oriented surface (<1500 lines target)
-- [ ] One canonical diagnostics JSON/text renderer path used by both CLIs
+- [x] One canonical diagnostics JSON/text renderer path used by both CLIs
 - [ ] No duplicated `send_http_request_with_retry` helper implementations across runtime parity tests
 - [ ] `project_cli` coverage preserved after file split (`build`, `run/dev`, `deps/lock`, `diagnostics/format`)
 - [ ] Release gates still pass after cleanup refactors (`release_smoke.sh`, `use_case_bench.sh`, `check_use_case_bench_regression.sh`)
@@ -479,6 +479,10 @@ without changing language/runtime behavior.
 - continued Slice 1 model/type extraction:
   - extracted manifest/dependency + IR metadata structs into `crates/fuse/src/model.rs` (`Manifest`, `DependencySpec`, `DependencyDetail`, `IrMeta`, `IrFileMeta`, serve/build/assets/vite config structs)
   - rewired shared usage through `main.rs` re-export surface consumed by `manifest`, `deps`, `assets`, `runtime_env`, `command_ops`, `cache`, and `aot`
+- continued Slice 2 diagnostics dedup extraction:
+  - added shared diagnostics renderer in `crates/fusec/src/diag_render.rs` (`line_info`, JSON diagnostic value builder, configurable text diagnostic emitter)
+  - rewired `crates/fuse/src/cli_output.rs` and `crates/fusec/src/cli.rs` to use the shared renderer while preserving existing CLI-specific style behavior (`fuse` colored labels/caret and fallback path, `fusec` plain text style)
+  - exported shared renderer via `crates/fusec/src/lib.rs`
 - post-extraction stabilization:
   - hardened `project_cli` HTTP service test harness port selection to avoid cross-test port reuse races (`reserve_local_port` now uses deterministic process-local port cycling with bind checks)
   - hardened HTTP request retries for AOT service tests to wait for successful 2xx responses instead of accepting transient non-success responses
@@ -506,6 +510,10 @@ without changing language/runtime behavior.
   - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli build_aot_service_request_id_and_structured_logs_are_consistent`
   - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli build_aot_` (`16 passed`, runtime dropped from ~`65s` to ~`12s`)
   - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli` (`78 passed`)
+  - `./scripts/cargo_env.sh cargo check -p fuse -p fusec`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli check_diagnostics_json_emits_structured_output_for_project_mode`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli check_diagnostics_json_emits_structured_output_for_delegated_mode`
+  - `./scripts/cargo_env.sh cargo test -p fuse --test project_cli run_validation_errors_emit_json_step_events_when_diagnostics_json_enabled`
 
 **Exit criteria:** Refactor-only changes merged with no observable CLI/runtime behavior regression and full release gates green.
 
