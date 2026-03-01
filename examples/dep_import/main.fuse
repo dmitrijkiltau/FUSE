@@ -1,0 +1,7 @@
+import Auth from "dep:Auth/lib"
+import Math from "dep:Math/lib"
+
+app "DepImportDemo":
+  let seeded = Auth.decorate("fuse")
+  print(seeded)
+  print(Math.plus_one(41))

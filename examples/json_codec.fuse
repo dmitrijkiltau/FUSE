@@ -1,0 +1,13 @@
+type Note:
+  id: String
+  title: String
+  done: Bool = false
+
+fn round_trip(note: Note) -> Note:
+  let payload = json.encode(note)
+  return json.decode(payload)
+
+app "JsonCodecDemo":
+  let original = Note(id="n1", title="Write docs")
+  let decoded = round_trip(original)
+  print(json.encode(decoded))

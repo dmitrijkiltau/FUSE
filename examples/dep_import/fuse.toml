@@ -1,0 +1,7 @@
+[package]
+entry = "main.fuse"
+app = "DepImportDemo"
+
+[dependencies]
+Auth = { path = "./deps/auth" }
+Math = { path = "./deps/math" }

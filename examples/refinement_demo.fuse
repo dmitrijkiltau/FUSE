@@ -1,0 +1,11 @@
+fn is_slug(value: String) -> Bool:
+  return value == "release_2026"
+
+type ReleaseConfig:
+  slug: String(1..32, regex("^[a-z0-9_]+$"), predicate(is_slug))
+  owner: String(3..120)
+  retries: Int(0..5)
+
+app "RefinementDemo":
+  let cfg = ReleaseConfig(slug="release_2026", owner="ops@example.com", retries=3)
+  print(cfg.slug)

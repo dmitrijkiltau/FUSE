@@ -1,0 +1,4 @@
+import Api from "../api/entry"
+
+fn render() -> String:
+  return "ui->" + Api.message()

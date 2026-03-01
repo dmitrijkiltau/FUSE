@@ -1,0 +1,2 @@
+fn plus_one(value: Int) -> Int:
+  return value + 1

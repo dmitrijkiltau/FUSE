@@ -1,0 +1,4 @@
+import Core from "../core/message"
+
+fn message() -> String:
+  return Core.message()

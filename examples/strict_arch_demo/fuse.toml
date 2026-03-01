@@ -1,0 +1,3 @@
+[package]
+entry = "src/main.fuse"
+app = "StrictArchDemo"

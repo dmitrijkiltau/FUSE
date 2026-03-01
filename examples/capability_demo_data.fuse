@@ -1,0 +1,11 @@
+requires db
+
+fn ensure_schema():
+  db.exec("create table if not exists notes (id text primary key, title text not null)")
+
+fn seed_once():
+  db.exec("insert or ignore into notes (id, title) values (?, ?)", ["n1", "hello"])
+
+fn note_count() -> Int:
+  let rows = db.query("select count(*) as c from notes")
+  return rows[0]["c"]

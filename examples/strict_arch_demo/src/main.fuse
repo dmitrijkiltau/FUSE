@@ -1,0 +1,4 @@
+import Ui from "./ui/screen"
+
+app "StrictArchDemo":
+  print(Ui.render())
