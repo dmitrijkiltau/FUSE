@@ -1,10 +1,7 @@
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
 
 mod support;
+use support::http::send_http_request_status_body_with_retry;
 use support::net::{find_free_port, skip_if_loopback_unavailable};
 
 fn example_path(name: &str) -> String {
@@ -14,45 +11,6 @@ fn example_path(name: &str) -> String {
     path.push("examples");
     path.push(name);
     path.to_string_lossy().to_string()
-}
-
-fn send_http_request_with_retry(port: u16, request: &str) -> (u16, String) {
-    let start = Instant::now();
-    loop {
-        match TcpStream::connect(format!("127.0.0.1:{port}")) {
-            Ok(mut stream) => {
-                stream
-                    .write_all(request.as_bytes())
-                    .expect("failed to write request");
-                stream.shutdown(std::net::Shutdown::Write).ok();
-                let mut buffer = String::new();
-                stream
-                    .read_to_string(&mut buffer)
-                    .expect("failed to read response");
-                let mut lines = buffer.split("\r\n");
-                let status_line = lines.next().unwrap_or("");
-                let status = status_line
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("500")
-                    .parse::<u16>()
-                    .unwrap_or(500);
-                let body = buffer
-                    .split("\r\n\r\n")
-                    .nth(1)
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                return (status, body);
-            }
-            Err(_) => {
-                if start.elapsed() > Duration::from_secs(2) {
-                    panic!("server did not start on 127.0.0.1:{port}");
-                }
-                thread::sleep(Duration::from_millis(25));
-            }
-        }
-    }
 }
 
 fn run_http_example<F>(make_request: F) -> (u16, String)
@@ -73,7 +31,7 @@ where
         .spawn()
         .expect("failed to start server");
     let request = make_request(port);
-    let (status, body) = send_http_request_with_retry(port, &request);
+    let (status, body) = send_http_request_status_body_with_retry(port, &request);
     let _ = child.wait();
     (status, body)
 }

@@ -63,7 +63,7 @@ fn logout_session(token: String) -> Unit!Unauthorized:
   transaction:
     db.one("select token from sessions where token = ?", [token])
       ?! Unauthorized(message="invalid or expired session")
-    db.exec("delete from sessions where token = ?", [token])
+    db.from("sessions").delete().where("token", "=", token).exec()
 
 fn require_auth(token: String) -> Auth!Unauthorized:
   var session = {"user_id": ""}

@@ -3,11 +3,13 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fuse_rt::json;
 mod support;
+use support::http::send_http_request_status_body_with_retry;
 use support::net::{find_free_port, skip_if_loopback_unavailable};
 
 fn example_path(name: &str) -> String {
@@ -67,98 +69,58 @@ fn run_example_with_stdin(backend: &str, example: &str, stdin_text: &str) -> std
     child.wait_with_output().expect("failed to wait for fusec")
 }
 
-fn send_http_request_with_retry(port: u16, request: &str) -> (u16, String) {
-    let start = Instant::now();
-    loop {
-        match TcpStream::connect(format!("127.0.0.1:{port}")) {
-            Ok(mut stream) => {
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-                if let Err(err) = stream.write_all(request.as_bytes()) {
-                    let last_error = format!("write failed: {err}");
-                    if start.elapsed() > Duration::from_secs(2) {
-                        panic!(
-                            "server did not produce a stable response on 127.0.0.1:{port} (last error: {})",
-                            last_error
-                        );
-                    }
-                    thread::sleep(Duration::from_millis(25));
-                    continue;
-                }
-                stream.shutdown(std::net::Shutdown::Write).ok();
-                let mut buffer = String::new();
-                if let Err(err) = stream.read_to_string(&mut buffer) {
-                    let last_error = format!("read failed: {err}");
-                    if start.elapsed() > Duration::from_secs(2) {
-                        panic!(
-                            "server did not produce a stable response on 127.0.0.1:{port} (last error: {})",
-                            last_error
-                        );
-                    }
-                    thread::sleep(Duration::from_millis(25));
-                    continue;
-                }
-                if buffer.trim().is_empty() {
-                    let last_error = "empty response";
-                    if start.elapsed() > Duration::from_secs(2) {
-                        panic!(
-                            "server did not produce a stable response on 127.0.0.1:{port} (last error: {})",
-                            last_error
-                        );
-                    }
-                    thread::sleep(Duration::from_millis(25));
-                    continue;
-                }
-                let mut lines = buffer.split("\r\n");
-                let status_line = lines.next().unwrap_or("");
-                let status = status_line
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("500")
-                    .parse::<u16>()
-                    .unwrap_or(500);
-                let body = buffer
-                    .split("\r\n\r\n")
-                    .nth(1)
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                return (status, body);
-            }
-            Err(err) => {
-                let last_error = format!("connect failed: {err}");
-                if start.elapsed() > Duration::from_secs(2) {
-                    panic!(
-                        "server did not start on 127.0.0.1:{port} (last error: {})",
-                        last_error
-                    );
-                }
-                thread::sleep(Duration::from_millis(25));
-            }
-        }
-    }
+fn parity_http_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn run_http_example<F>(backend: &str, make_request: F) -> (u16, String)
 where
-    F: FnOnce(u16) -> String,
+    F: Fn(u16) -> String,
 {
-    let port = find_free_port();
+    let _lock = parity_http_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let exe = env!("CARGO_BIN_EXE_fusec");
-    let mut child = Command::new(exe)
-        .arg("--run")
-        .arg("--backend")
-        .arg(backend)
-        .arg(example_path("http_users.fuse"))
-        .env("APP_PORT", port.to_string())
-        .env("FUSE_MAX_REQUESTS", "1")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to start server");
-    let request = make_request(port);
-    let (status, body) = send_http_request_with_retry(port, &request);
-    let _ = child.wait();
-    (status, body)
+    for attempt in 0..8 {
+        let port = find_free_port();
+        let mut child = Command::new(exe)
+            .arg("--run")
+            .arg("--backend")
+            .arg(backend)
+            .arg(example_path("http_users.fuse"))
+            .env("APP_PORT", port.to_string())
+            .env("FUSE_MAX_REQUESTS", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to start server");
+        thread::sleep(Duration::from_millis(20));
+        if child
+            .try_wait()
+            .expect("failed to poll child status")
+            .is_some()
+        {
+            let output = child
+                .wait_with_output()
+                .expect("failed to collect child output");
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            if stderr.contains("Address already in use") && attempt < 7 {
+                continue;
+            }
+            panic!("server exited before readiness (backend={backend}): {stderr}");
+        }
+        let request = make_request(port);
+        let (status, body) = send_http_request_status_body_with_retry(port, &request);
+        let output = child.wait_with_output().expect("failed to wait for server");
+        assert!(
+            output.status.success(),
+            "server exited with failure (backend={backend}): {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return (status, body);
+    }
+    panic!("failed to start server after retries (backend={backend})");
 }
 
 fn write_temp_program(name: &str, contents: &str) -> PathBuf {
@@ -172,6 +134,22 @@ fn write_temp_program(name: &str, contents: &str) -> PathBuf {
     path
 }
 
+fn run_temp_program(backend: &str, source: &str, envs: &[(&str, &str)]) -> std::process::Output {
+    let program_path = write_temp_program("fuse_parity_temp", source);
+    let exe = env!("CARGO_BIN_EXE_fusec");
+    let mut cmd = Command::new(exe);
+    cmd.arg("--run")
+        .arg("--backend")
+        .arg(backend)
+        .arg(&program_path);
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    let output = cmd.output().expect("failed to run fusec");
+    let _ = fs::remove_file(&program_path);
+    output
+}
+
 fn run_http_program_request(
     backend: &str,
     program: &str,
@@ -179,77 +157,129 @@ fn run_http_program_request(
     path: &str,
     body: Option<&str>,
 ) -> (u16, String) {
-    let port = find_free_port();
+    let _lock = parity_http_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let program_path = write_temp_program("fuse_parity_http_status", program);
     let exe = env!("CARGO_BIN_EXE_fusec");
-    let mut child = Command::new(exe)
-        .arg("--run")
-        .arg("--backend")
-        .arg(backend)
-        .arg(&program_path)
-        .env("APP_PORT", port.to_string())
-        .env("FUSE_MAX_REQUESTS", "1")
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to start server");
-    let request = if let Some(body) = body {
-        format!(
-            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-            body.len(),
-            body
-        )
-    } else {
-        format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n")
-    };
-    let start = Instant::now();
-    let (status, response_body) = loop {
-        if let Some(_) = child.try_wait().expect("failed to poll child status") {
-            let output = child
-                .wait_with_output()
-                .expect("failed to collect child output");
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            panic!("server exited before readiness (backend={backend}): {stderr}");
-        }
-        match TcpStream::connect(format!("127.0.0.1:{port}")) {
-            Ok(mut stream) => {
-                stream
-                    .write_all(request.as_bytes())
-                    .expect("failed to write request");
-                stream.shutdown(std::net::Shutdown::Write).ok();
-                let mut response = String::new();
-                stream
-                    .read_to_string(&mut response)
-                    .expect("failed to read response");
-                let mut lines = response.split("\r\n");
-                let status_line = lines.next().unwrap_or("");
-                let status = status_line
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("500")
-                    .parse::<u16>()
-                    .unwrap_or(500);
-                let body = response
-                    .split("\r\n\r\n")
-                    .nth(1)
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                break (status, body);
-            }
-            Err(_) => {
-                if start.elapsed() > Duration::from_secs(4) {
-                    panic!(
-                        "server did not start on 127.0.0.1:{port} within timeout (backend={backend})"
-                    );
+    let mut last_error = String::from("unknown");
+    'attempts: for attempt in 0..8 {
+        let port = find_free_port();
+        let mut child = Command::new(exe)
+            .arg("--run")
+            .arg("--backend")
+            .arg(backend)
+            .arg(&program_path)
+            .env("APP_PORT", port.to_string())
+            .env("FUSE_MAX_REQUESTS", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to start server");
+        let request = if let Some(body) = body {
+            format!(
+                "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+        } else {
+            format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n")
+        };
+        let start = Instant::now();
+        loop {
+            if child
+                .try_wait()
+                .expect("failed to poll child status")
+                .is_some()
+            {
+                let output = child
+                    .wait_with_output()
+                    .expect("failed to collect child output");
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                if stderr.contains("Address already in use") && attempt < 7 {
+                    last_error = stderr;
+                    continue 'attempts;
                 }
-                thread::sleep(Duration::from_millis(25));
+                let _ = fs::remove_file(&program_path);
+                panic!("server exited before readiness (backend={backend}): {stderr}");
+            }
+            match TcpStream::connect(format!("127.0.0.1:{port}")) {
+                Ok(mut stream) => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                    if let Err(err) = stream.write_all(request.as_bytes()) {
+                        last_error = format!("write failed: {err}");
+                        if start.elapsed() > Duration::from_secs(4) {
+                            let _ = fs::remove_file(&program_path);
+                            panic!(
+                                "server did not produce a stable response on 127.0.0.1:{port} (backend={backend}, last error: {last_error})"
+                            );
+                        }
+                        thread::sleep(Duration::from_millis(25));
+                        continue;
+                    }
+                    stream.shutdown(std::net::Shutdown::Write).ok();
+                    let mut response = String::new();
+                    if let Err(err) = stream.read_to_string(&mut response) {
+                        last_error = format!("read failed: {err}");
+                        if start.elapsed() > Duration::from_secs(4) {
+                            let _ = fs::remove_file(&program_path);
+                            panic!(
+                                "server did not produce a stable response on 127.0.0.1:{port} (backend={backend}, last error: {last_error})"
+                            );
+                        }
+                        thread::sleep(Duration::from_millis(25));
+                        continue;
+                    }
+                    if response.trim().is_empty() {
+                        last_error = "empty response".to_string();
+                        if start.elapsed() > Duration::from_secs(4) {
+                            let _ = fs::remove_file(&program_path);
+                            panic!(
+                                "server did not produce a stable response on 127.0.0.1:{port} (backend={backend}, last error: {last_error})"
+                            );
+                        }
+                        thread::sleep(Duration::from_millis(25));
+                        continue;
+                    }
+                    let mut lines = response.split("\r\n");
+                    let status_line = lines.next().unwrap_or("");
+                    let status = status_line
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("500")
+                        .parse::<u16>()
+                        .unwrap_or(500);
+                    let body = response
+                        .split("\r\n\r\n")
+                        .nth(1)
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    let output = child.wait_with_output().expect("failed to wait for server");
+                    assert!(
+                        output.status.success(),
+                        "server exited with failure (backend={backend}): {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    let _ = fs::remove_file(&program_path);
+                    return (status, body);
+                }
+                Err(err) => {
+                    last_error = format!("connect failed: {err}");
+                    if start.elapsed() > Duration::from_secs(4) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(25));
+                }
             }
         }
-    };
-    let _ = child.wait();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
     let _ = fs::remove_file(&program_path);
-    (status, response_body)
+    panic!(
+        "server did not start within timeout after retries (backend={backend}, last error: {last_error})"
+    );
 }
 
 fn assert_http_error_status_case(
@@ -649,6 +679,151 @@ fn parity_db_query_builder() {
     assert_eq!(
         String::from_utf8_lossy(&ast.stdout),
         String::from_utf8_lossy(&native.stdout)
+    );
+}
+
+#[test]
+fn parity_time_and_crypto_runtime_slice() {
+    let program = r#"
+requires time
+requires crypto
+
+app "demo":
+  let now = time.now()
+  assert(now > 0, "time.now should return positive unix ms")
+  time.sleep(1)
+
+  let payload = crypto.random_bytes(8)
+  let key = crypto.random_bytes(4)
+  let sha256 = crypto.hash("sha256", payload)
+  let sha512 = crypto.hash("sha512", payload)
+  let hmac512 = crypto.hmac("sha512", key, payload)
+  let random = crypto.random_bytes(16)
+
+  assert(crypto.constant_time_eq(sha256, sha256), "hash self-equality failed")
+  assert(!crypto.constant_time_eq(sha256, sha512), "different digest lengths should differ")
+  assert(!crypto.constant_time_eq(sha256, hmac512), "different digest lengths should differ")
+  assert(crypto.constant_time_eq(random, random), "random self-equality failed")
+  assert(!crypto.constant_time_eq(random, payload), "different lengths should differ")
+
+  print("ok")
+"#;
+    let ast = run_temp_program("ast", program, &[]);
+    let native = run_temp_program("native", program, &[]);
+
+    assert!(
+        ast.status.success(),
+        "ast stderr: {}",
+        String::from_utf8_lossy(&ast.stderr)
+    );
+    assert!(
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stdout),
+        String::from_utf8_lossy(&native.stdout)
+    );
+    assert_eq!(String::from_utf8_lossy(&ast.stdout), "ok\n");
+}
+
+#[test]
+fn parity_crypto_hash_invalid_algorithm_error() {
+    let program = r#"
+requires crypto
+
+app "demo":
+  let payload = crypto.random_bytes(8)
+  crypto.hash("md5", payload)
+"#;
+    let ast = run_temp_program("ast", program, &[]);
+    let native = run_temp_program("native", program, &[]);
+
+    assert!(!ast.status.success(), "expected ast failure");
+    assert!(!native.status.success(), "expected native failure");
+
+    let ast_err = normalize_error(&String::from_utf8_lossy(&ast.stderr));
+    let native_err = normalize_error(&String::from_utf8_lossy(&native.stderr));
+    assert_eq!(ast_err, native_err);
+    assert!(
+        ast_err.contains("crypto.hash unsupported algorithm md5"),
+        "stderr: {ast_err}"
+    );
+}
+
+#[test]
+fn parity_time_format_parse_roundtrip() {
+    let program = r#"
+requires time
+
+app "demo":
+  let epoch = 1704067200123
+  let formatted = time.format(epoch, "%Y-%m-%d %H:%M:%S")
+  print(formatted)
+  let parsed = time.parse(formatted, "%Y-%m-%d %H:%M:%S")
+  match parsed:
+    Ok(v) -> print(v)
+    Err(e) -> print(e.message)
+"#;
+    let ast = run_temp_program("ast", program, &[]);
+    let native = run_temp_program("native", program, &[]);
+
+    assert!(
+        ast.status.success(),
+        "ast stderr: {}",
+        String::from_utf8_lossy(&ast.stderr)
+    );
+    assert!(
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stdout),
+        String::from_utf8_lossy(&native.stdout)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stdout),
+        "2024-01-01 00:00:00\n1704067200000\n"
+    );
+}
+
+#[test]
+fn parity_time_parse_invalid_returns_error_result() {
+    let program = r#"
+requires time
+
+app "demo":
+  let parsed = time.parse("not-a-date", "%Y-%m-%d")
+  match parsed:
+    Ok(v) -> print("unexpected")
+    Err(e) -> print(e.message)
+"#;
+    let ast = run_temp_program("ast", program, &[]);
+    let native = run_temp_program("native", program, &[]);
+
+    assert!(
+        ast.status.success(),
+        "ast stderr: {}",
+        String::from_utf8_lossy(&ast.stderr)
+    );
+    assert!(
+        native.status.success(),
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stdout),
+        String::from_utf8_lossy(&native.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&ast.stdout).contains("time.parse failed for format"),
+        "stdout: {}",
+        String::from_utf8_lossy(&ast.stdout)
     );
 }
 

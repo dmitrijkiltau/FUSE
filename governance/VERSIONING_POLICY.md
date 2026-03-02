@@ -66,6 +66,9 @@ Recent release-line notes:
 - `0.7.0` is an operational hardening minor focused on AOT production posture:
   runtime contract hardening, production ergonomics, deployment formalization, and
   AST/native/AOT parity-lock release gates.
+- `0.8.0` is a non-breaking ergonomics/runtime-depth minor focused on:
+  capability-runtime completion (`time`/`crypto`), native lowering completeness,
+  LSP maintainability, expanded examples/docs coverage, and workflow hardening.
 
 - semantic regressions across AST/native are release blockers on all active release lines. (VM removed per RFC 0007.)
 
@@ -80,6 +83,7 @@ Recent release-line notes:
   tooling-only break; language source compatibility is preserved).
 - Programs valid on `0.6.0` must remain valid and equivalent on `0.6.x`.
 - Programs valid on `0.7.0` must remain valid and equivalent on `0.7.x`.
+- Programs valid on `0.8.0` must remain valid and equivalent on `0.8.x`.
 - If behavior must change incompatibly, release must bump at least `MINOR` and include migration guidance.
 
 ### Runtime behavior compatibility
@@ -107,7 +111,7 @@ A contract-facing change must follow all steps:
      but must include:
      - explicit breaking notes in `CHANGELOG.md`
      - compiler/runtime diagnostics with migration hints where possible
-     - a concrete migration guide under `docs/migrations/`
+     - a concrete migration guide under `guides/migrations/`
 3. Removal:
    - allowed only on the next breaking release boundary
    - include migration notes and before/after examples

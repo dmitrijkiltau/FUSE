@@ -237,6 +237,14 @@ pub(crate) struct HostCalls {
     builtin_response_header: FuncId,
     builtin_response_cookie: FuncId,
     builtin_response_delete_cookie: FuncId,
+    builtin_time_now: FuncId,
+    builtin_time_sleep: FuncId,
+    builtin_time_format: FuncId,
+    builtin_time_parse: FuncId,
+    builtin_crypto_hash: FuncId,
+    builtin_crypto_hmac: FuncId,
+    builtin_crypto_random_bytes: FuncId,
+    builtin_crypto_constant_time_eq: FuncId,
     config_get: FuncId,
     db_exec: FuncId,
     db_query: FuncId,
@@ -249,6 +257,10 @@ pub(crate) struct HostCalls {
     query_where: FuncId,
     query_order_by: FuncId,
     query_limit: FuncId,
+    query_insert: FuncId,
+    query_update: FuncId,
+    query_delete: FuncId,
+    query_count: FuncId,
     query_one: FuncId,
     query_all: FuncId,
     query_exec: FuncId,
@@ -379,6 +391,38 @@ impl JitRuntime {
             fuse_native_builtin_response_delete_cookie as *const u8,
         );
         builder.symbol(
+            "fuse_native_builtin_time_now",
+            fuse_native_builtin_time_now as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_time_sleep",
+            fuse_native_builtin_time_sleep as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_time_format",
+            fuse_native_builtin_time_format as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_time_parse",
+            fuse_native_builtin_time_parse as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_crypto_hash",
+            fuse_native_builtin_crypto_hash as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_crypto_hmac",
+            fuse_native_builtin_crypto_hmac as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_crypto_random_bytes",
+            fuse_native_builtin_crypto_random_bytes as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_crypto_constant_time_eq",
+            fuse_native_builtin_crypto_constant_time_eq as *const u8,
+        );
+        builder.symbol(
             "fuse_native_config_get",
             fuse_native_config_get as *const u8,
         );
@@ -436,6 +480,22 @@ impl JitRuntime {
         builder.symbol(
             "fuse_native_query_limit",
             fuse_native_query_limit as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_query_insert",
+            fuse_native_query_insert as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_query_update",
+            fuse_native_query_update as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_query_delete",
+            fuse_native_query_delete as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_query_count",
+            fuse_native_query_count as *const u8,
         );
         builder.symbol("fuse_native_query_one", fuse_native_query_one as *const u8);
         builder.symbol("fuse_native_query_all", fuse_native_query_all as *const u8);
@@ -875,6 +935,62 @@ impl HostCalls {
                 &builtin_sig,
             )
             .expect("declare builtin response.delete_cookie hostcall");
+        let builtin_time_now = module
+            .declare_function(
+                "fuse_native_builtin_time_now",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin time.now hostcall");
+        let builtin_time_sleep = module
+            .declare_function(
+                "fuse_native_builtin_time_sleep",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin time.sleep hostcall");
+        let builtin_time_format = module
+            .declare_function(
+                "fuse_native_builtin_time_format",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin time.format hostcall");
+        let builtin_time_parse = module
+            .declare_function(
+                "fuse_native_builtin_time_parse",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin time.parse hostcall");
+        let builtin_crypto_hash = module
+            .declare_function(
+                "fuse_native_builtin_crypto_hash",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin crypto.hash hostcall");
+        let builtin_crypto_hmac = module
+            .declare_function(
+                "fuse_native_builtin_crypto_hmac",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin crypto.hmac hostcall");
+        let builtin_crypto_random_bytes = module
+            .declare_function(
+                "fuse_native_builtin_crypto_random_bytes",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin crypto.random_bytes hostcall");
+        let builtin_crypto_constant_time_eq = module
+            .declare_function(
+                "fuse_native_builtin_crypto_constant_time_eq",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin crypto.constant_time_eq hostcall");
         let config_get = module
             .declare_function("fuse_native_config_get", Linkage::Import, &builtin_sig)
             .expect("declare config get hostcall");
@@ -911,6 +1027,18 @@ impl HostCalls {
         let query_limit = module
             .declare_function("fuse_native_query_limit", Linkage::Import, &builtin_sig)
             .expect("declare query limit hostcall");
+        let query_insert = module
+            .declare_function("fuse_native_query_insert", Linkage::Import, &builtin_sig)
+            .expect("declare query insert hostcall");
+        let query_update = module
+            .declare_function("fuse_native_query_update", Linkage::Import, &builtin_sig)
+            .expect("declare query update hostcall");
+        let query_delete = module
+            .declare_function("fuse_native_query_delete", Linkage::Import, &builtin_sig)
+            .expect("declare query delete hostcall");
+        let query_count = module
+            .declare_function("fuse_native_query_count", Linkage::Import, &builtin_sig)
+            .expect("declare query count hostcall");
         let query_one = module
             .declare_function("fuse_native_query_one", Linkage::Import, &builtin_sig)
             .expect("declare query one hostcall");
@@ -995,6 +1123,14 @@ impl HostCalls {
             builtin_response_header,
             builtin_response_cookie,
             builtin_response_delete_cookie,
+            builtin_time_now,
+            builtin_time_sleep,
+            builtin_time_format,
+            builtin_time_parse,
+            builtin_crypto_hash,
+            builtin_crypto_hmac,
+            builtin_crypto_random_bytes,
+            builtin_crypto_constant_time_eq,
             config_get,
             db_exec,
             db_query,
@@ -1007,6 +1143,10 @@ impl HostCalls {
             query_where,
             query_order_by,
             query_limit,
+            query_insert,
+            query_update,
+            query_delete,
+            query_count,
             query_one,
             query_all,
             query_exec,
@@ -1359,6 +1499,15 @@ fn builtin_runtime_error(
         payload: handle,
     };
     2
+}
+
+fn native_default_error_value(message: impl Into<String>) -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("message".to_string(), Value::String(message.into()));
+    Value::Struct {
+        name: "std.Error".to_string(),
+        fields,
+    }
 }
 
 fn db_url() -> Result<String, String> {
@@ -2949,6 +3098,338 @@ extern "C" fn fuse_native_builtin_response_delete_cookie(
 }
 
 #[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_time_now(
+    heap: *mut NativeHeap,
+    _args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 0 {
+        return builtin_runtime_error(out, heap, "time.now expects 0 arguments");
+    }
+    match crate::runtime_capabilities::time_now_unix_ms() {
+        Ok(now) => {
+            *out = NativeValue::int(now);
+            0
+        }
+        Err(err) => builtin_runtime_error(out, heap, err),
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_time_sleep(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "time.sleep expects 1 argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = args.first().and_then(|arg| arg.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "time.sleep expects an Int");
+    };
+    let ms = match value {
+        Value::Int(v) => v,
+        Value::Float(v) => v as i64,
+        _ => return builtin_runtime_error(out, heap, "time.sleep expects an Int"),
+    };
+    match crate::runtime_capabilities::time_sleep_ms(ms) {
+        Ok(()) => {
+            *out = NativeValue::unit();
+            0
+        }
+        Err(err) => builtin_runtime_error(out, heap, err),
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_time_format(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "time.format expects 2 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(epoch_value) = args.first().and_then(|arg| arg.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "time.format expects epoch as Int");
+    };
+    let Some(fmt_value) = args.get(1).and_then(|arg| arg.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "time.format expects format as String");
+    };
+    let epoch_ms = match epoch_value {
+        Value::Int(v) => v,
+        Value::Float(v) => v as i64,
+        _ => return builtin_runtime_error(out, heap, "time.format expects epoch as Int"),
+    };
+    let fmt = match fmt_value {
+        Value::String(text) => text,
+        _ => return builtin_runtime_error(out, heap, "time.format expects format as String"),
+    };
+    match crate::runtime_capabilities::time_format_epoch_ms(epoch_ms, &fmt) {
+        Ok(formatted) => {
+            *out = NativeValue::string(formatted, heap);
+            0
+        }
+        Err(err) => builtin_runtime_error(out, heap, err),
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_time_parse(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "time.parse expects 2 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(text_value) = args.first().and_then(|arg| arg.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "time.parse expects text as String");
+    };
+    let Some(fmt_value) = args.get(1).and_then(|arg| arg.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "time.parse expects format as String");
+    };
+    let text = match text_value {
+        Value::String(text) => text,
+        _ => return builtin_runtime_error(out, heap, "time.parse expects text as String"),
+    };
+    let fmt = match fmt_value {
+        Value::String(text) => text,
+        _ => return builtin_runtime_error(out, heap, "time.parse expects format as String"),
+    };
+    match crate::runtime_capabilities::time_parse_epoch_ms(&text, &fmt) {
+        Ok(epoch_ms) => {
+            *out = NativeValue::result_ok(NativeValue::int(epoch_ms), heap);
+            0
+        }
+        Err(message) => {
+            let err_value = native_default_error_value(message);
+            let Some(err_native) = NativeValue::from_value(&err_value, heap) else {
+                return builtin_runtime_error(out, heap, "time.parse error value unsupported");
+            };
+            *out = NativeValue::result_err(err_native, heap);
+            0
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_crypto_hash(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "crypto.hash expects 2 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(algo_value) = args.first().and_then(|arg| arg.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "crypto.hash expects algorithm as String");
+    };
+    let Some(data_value) = args.get(1).and_then(|arg| arg.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "crypto.hash expects data as Bytes");
+    };
+    let algo = match algo_value {
+        Value::String(text) => text,
+        _ => return builtin_runtime_error(out, heap, "crypto.hash expects algorithm as String"),
+    };
+    let data = match data_value {
+        Value::Bytes(bytes) => bytes,
+        _ => return builtin_runtime_error(out, heap, "crypto.hash expects data as Bytes"),
+    };
+    match crate::runtime_capabilities::crypto_hash(&algo, &data) {
+        Ok(digest) => {
+            *out = NativeValue::bytes(digest, heap);
+            0
+        }
+        Err(err) => builtin_runtime_error(out, heap, err),
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_crypto_hmac(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 3 {
+        return builtin_runtime_error(out, heap, "crypto.hmac expects 3 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(algo_value) = args.first().and_then(|arg| arg.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "crypto.hmac expects algorithm as String");
+    };
+    let Some(key_value) = args.get(1).and_then(|arg| arg.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "crypto.hmac expects key as Bytes");
+    };
+    let Some(data_value) = args.get(2).and_then(|arg| arg.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "crypto.hmac expects data as Bytes");
+    };
+    let algo = match algo_value {
+        Value::String(text) => text,
+        _ => return builtin_runtime_error(out, heap, "crypto.hmac expects algorithm as String"),
+    };
+    let key = match key_value {
+        Value::Bytes(bytes) => bytes,
+        _ => return builtin_runtime_error(out, heap, "crypto.hmac expects key as Bytes"),
+    };
+    let data = match data_value {
+        Value::Bytes(bytes) => bytes,
+        _ => return builtin_runtime_error(out, heap, "crypto.hmac expects data as Bytes"),
+    };
+    match crate::runtime_capabilities::crypto_hmac(&algo, &key, &data) {
+        Ok(digest) => {
+            *out = NativeValue::bytes(digest, heap);
+            0
+        }
+        Err(err) => builtin_runtime_error(out, heap, err),
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_crypto_random_bytes(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "crypto.random_bytes expects 1 argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = args.first().and_then(|arg| arg.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "crypto.random_bytes expects an Int");
+    };
+    let len = match value {
+        Value::Int(v) => v,
+        Value::Float(v) => v as i64,
+        _ => return builtin_runtime_error(out, heap, "crypto.random_bytes expects an Int"),
+    };
+    match crate::runtime_capabilities::crypto_random_bytes(len) {
+        Ok(bytes) => {
+            *out = NativeValue::bytes(bytes, heap);
+            0
+        }
+        Err(err) => builtin_runtime_error(out, heap, err),
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_crypto_constant_time_eq(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "crypto.constant_time_eq expects 2 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(left_value) = args.first().and_then(|arg| arg.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "crypto.constant_time_eq expects Bytes arguments");
+    };
+    let Some(right_value) = args.get(1).and_then(|arg| arg.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "crypto.constant_time_eq expects Bytes arguments");
+    };
+    let left = match left_value {
+        Value::Bytes(bytes) => bytes,
+        _ => {
+            return builtin_runtime_error(
+                out,
+                heap,
+                "crypto.constant_time_eq expects Bytes arguments",
+            );
+        }
+    };
+    let right = match right_value {
+        Value::Bytes(bytes) => bytes,
+        _ => {
+            return builtin_runtime_error(
+                out,
+                heap,
+                "crypto.constant_time_eq expects Bytes arguments",
+            );
+        }
+    };
+    *out = NativeValue::bool(crate::runtime_capabilities::crypto_constant_time_eq(
+        &left, &right,
+    ));
+    0
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn fuse_native_builtin_serve(
     heap: *mut NativeHeap,
     args: *const NativeValue,
@@ -4110,6 +4591,190 @@ extern "C" fn fuse_native_query_limit(
         return builtin_runtime_error(out, heap, "query.limit result unsupported");
     };
     *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_insert(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "query.insert expects 2 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.insert expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.insert expects a Query");
+    };
+    let Some(value) = args.get(1).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.insert expects a struct");
+    };
+    let next = match query.insert_struct(value) {
+        Ok(next) => next,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let value = Value::Query(next);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "query.insert result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_update(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 3 {
+        return builtin_runtime_error(out, heap, "query.update expects 3 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.update expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.update expects a Query");
+    };
+    let Some(column_val) = args.get(1).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.update expects a column string");
+    };
+    let Value::String(column) = column_val else {
+        return builtin_runtime_error(out, heap, "query.update expects a column string");
+    };
+    let Some(value) = args.get(2).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.update expects a value");
+    };
+    let next = match query.update_set(column, value) {
+        Ok(next) => next,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let value = Value::Query(next);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "query.update result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_delete(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "query.delete expects 1 argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.delete expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.delete expects a Query");
+    };
+    let next = match query.delete_rows() {
+        Ok(next) => next,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let value = Value::Query(next);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "query.delete result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_count(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 1 {
+        return builtin_runtime_error(out, heap, "query.count expects 1 argument");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.count expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.count expects a Query");
+    };
+    let count_query = match query.count() {
+        Ok(next) => next,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let (sql, params) = match count_query.build_sql(None) {
+        Ok(result) => result,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let pool_size = match db_pool_size(heap) {
+        Ok(size) => size,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let url = match db_url() {
+        Ok(url) => url,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let db = match heap.db_mut(url, pool_size) {
+        Ok(db) => db,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let rows = match db.query_params(&sql, &params) {
+        Ok(rows) => rows,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let count = rows
+        .first()
+        .and_then(|row| row.get("c"))
+        .and_then(|value| match value {
+            Value::Int(v) => Some(*v),
+            _ => None,
+        })
+        .unwrap_or(0);
+    *out = NativeValue::int(count);
     0
 }
 
@@ -5700,6 +6365,16 @@ fn compile_function<M: Module>(
                                 "response.delete_cookie" => {
                                     hostcalls.builtin_response_delete_cookie
                                 }
+                                "time.now" => hostcalls.builtin_time_now,
+                                "time.sleep" => hostcalls.builtin_time_sleep,
+                                "time.format" => hostcalls.builtin_time_format,
+                                "time.parse" => hostcalls.builtin_time_parse,
+                                "crypto.hash" => hostcalls.builtin_crypto_hash,
+                                "crypto.hmac" => hostcalls.builtin_crypto_hmac,
+                                "crypto.random_bytes" => hostcalls.builtin_crypto_random_bytes,
+                                "crypto.constant_time_eq" => {
+                                    hostcalls.builtin_crypto_constant_time_eq
+                                }
                                 "range" => hostcalls.range,
                                 "db.exec" => hostcalls.db_exec,
                                 "db.query" => hostcalls.db_query,
@@ -5712,6 +6387,10 @@ fn compile_function<M: Module>(
                                 "query.where" => hostcalls.query_where,
                                 "query.order_by" => hostcalls.query_order_by,
                                 "query.limit" => hostcalls.query_limit,
+                                "query.insert" => hostcalls.query_insert,
+                                "query.update" => hostcalls.query_update,
+                                "query.delete" => hostcalls.query_delete,
+                                "query.count" => hostcalls.query_count,
                                 "query.one" => hostcalls.query_one,
                                 "query.all" => hostcalls.query_all,
                                 "query.exec" => hostcalls.query_exec,
@@ -5731,7 +6410,7 @@ fn compile_function<M: Module>(
                                     "unknown builtin"
                                 ),
                             };
-                            let result_kind = JitType::Value;
+                            let result_kind = builtin_result_kind(name);
                             let len_val = builder.ins().iconst(types::I64, count as i64);
                             let func_ref = module.declare_func_in_func(builtin, builder.func);
                             let call = builder
@@ -6621,6 +7300,14 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     | "response.header"
                     | "response.cookie"
                     | "response.delete_cookie"
+                    | "time.now"
+                    | "time.sleep"
+                    | "time.format"
+                    | "time.parse"
+                    | "crypto.hash"
+                    | "crypto.hmac"
+                    | "crypto.random_bytes"
+                    | "crypto.constant_time_eq"
                     | "range"
                     | "db.exec"
                     | "db.query"
@@ -6633,6 +7320,10 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     | "query.where"
                     | "query.order_by"
                     | "query.limit"
+                    | "query.insert"
+                    | "query.update"
+                    | "query.delete"
+                    | "query.count"
                     | "query.one"
                     | "query.all"
                     | "query.exec"
@@ -6860,6 +7551,15 @@ fn return_jit_kind(ret: Option<&TypeRef>, program: &IrProgram) -> Option<JitType
         None => return Some(JitType::Value),
     };
     Some(jit_kind_for_type_ref(ty, program))
+}
+
+fn builtin_result_kind(name: &str) -> JitType {
+    match name {
+        "time.now" => JitType::Int,
+        "query.count" => JitType::Int,
+        "crypto.constant_time_eq" => JitType::Bool,
+        _ => JitType::Value,
+    }
 }
 
 fn jit_kind_for_type_ref(ty: &TypeRef, program: &IrProgram) -> JitType {
@@ -7163,20 +7863,57 @@ fn analyze_types(
                     let result_kind = match kind {
                         CallKind::Builtin => {
                             match name.as_str() {
-                                "print" | "input" | "log" | "env" | "serve" | "assert"
-                                | "asset" | "request.header" | "request.cookie"
-                                | "response.header" | "response.cookie"
-                                | "response.delete_cookie" | "range" | "db.exec" | "db.query"
+                                "print"
+                                | "input"
+                                | "log"
+                                | "env"
+                                | "serve"
+                                | "assert"
+                                | "asset"
+                                | "request.header"
+                                | "request.cookie"
+                                | "response.header"
+                                | "response.cookie"
+                                | "response.delete_cookie"
+                                | "time.now"
+                                | "time.sleep"
+                                | "time.format"
+                                | "time.parse"
+                                | "crypto.hash"
+                                | "crypto.hmac"
+                                | "crypto.random_bytes"
+                                | "crypto.constant_time_eq"
+                                | "range"
+                                | "db.exec"
+                                | "db.query"
                                 | "db.one"
-                                | "db.from" | "db.tx_begin" | "db.tx_commit" | "db.tx_rollback"
-                                | "query.select" | "query.where" | "query.order_by"
-                                | "query.limit" | "query.one" | "query.all" | "query.exec"
-                                | "query.sql" | "query.params" | "json.encode" | "json.decode"
-                                | "html.text" | "html.raw" | "html.node" | "html.render"
+                                | "db.from"
+                                | "db.tx_begin"
+                                | "db.tx_commit"
+                                | "db.tx_rollback"
+                                | "query.select"
+                                | "query.where"
+                                | "query.order_by"
+                                | "query.limit"
+                                | "query.insert"
+                                | "query.update"
+                                | "query.delete"
+                                | "query.count"
+                                | "query.one"
+                                | "query.all"
+                                | "query.exec"
+                                | "query.sql"
+                                | "query.params"
+                                | "json.encode"
+                                | "json.decode"
+                                | "html.text"
+                                | "html.raw"
+                                | "html.node"
+                                | "html.render"
                                 | "svg.inline" => {}
                                 _ => return None,
                             }
-                            JitType::Value
+                            builtin_result_kind(name)
                         }
                         CallKind::Function => {
                             if let Some(callee) = program

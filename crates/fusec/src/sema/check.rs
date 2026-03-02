@@ -53,7 +53,7 @@ impl<'a> Checker<'a> {
         env.insert_builtin_with_ty("db", Ty::External("db".to_string()));
         env.insert_builtin("env");
         env.insert_builtin("json");
-        env.insert_builtin("time");
+        env.insert_builtin_with_ty("time", Ty::External("time".to_string()));
         env.insert_builtin("print");
         env.insert_builtin_with_ty(
             "input",
@@ -79,7 +79,7 @@ impl<'a> Checker<'a> {
             }),
         );
         env.insert_builtin("serve");
-        env.insert_builtin("crypto");
+        env.insert_builtin_with_ty("crypto", Ty::External("crypto".to_string()));
         env.insert_builtin_with_ty("task", Ty::External("task".to_string()));
         env.insert_builtin_with_ty("html", Ty::External("html".to_string()));
         env.insert_builtin_with_ty("svg", Ty::External("svg".to_string()));
@@ -1044,6 +1044,8 @@ impl<'a> Checker<'a> {
             "svg" => self.lookup_svg_member(name),
             "request" => self.lookup_request_member(name),
             "response" => self.lookup_response_member(name),
+            "time" => self.lookup_time_member(name),
+            "crypto" => self.lookup_crypto_member(name),
             _ => {
                 self.diags.error(
                     name.span,
@@ -1129,10 +1131,8 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::Option(Box::new(Ty::String))),
             }),
             _ => {
-                self.diags.error(
-                    name.span,
-                    format!("unknown request method {}", name.name),
-                );
+                self.diags
+                    .error(name.span, format!("unknown request method {}", name.name));
                 Ty::Unknown
             }
         }
@@ -1164,10 +1164,128 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::Unit),
             }),
             _ => {
-                self.diags.error(
-                    name.span,
-                    format!("unknown response method {}", name.name),
-                );
+                self.diags
+                    .error(name.span, format!("unknown response method {}", name.name));
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn lookup_time_member(&mut self, name: &crate::ast::Ident) -> Ty {
+        match name.name.as_str() {
+            "now" => Ty::Fn(FnSig {
+                params: vec![],
+                ret: Box::new(Ty::Int),
+            }),
+            "sleep" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "ms".to_string(),
+                    ty: Ty::Int,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::Unit),
+            }),
+            "format" => Ty::Fn(FnSig {
+                params: vec![
+                    ParamSig {
+                        name: "epoch".to_string(),
+                        ty: Ty::Int,
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "fmt".to_string(),
+                        ty: Ty::String,
+                        has_default: false,
+                    },
+                ],
+                ret: Box::new(Ty::String),
+            }),
+            "parse" => Ty::Fn(FnSig {
+                params: vec![
+                    ParamSig {
+                        name: "text".to_string(),
+                        ty: Ty::String,
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "fmt".to_string(),
+                        ty: Ty::String,
+                        has_default: false,
+                    },
+                ],
+                ret: Box::new(Ty::Result(Box::new(Ty::Int), Box::new(Ty::Error))),
+            }),
+            _ => {
+                self.diags
+                    .error(name.span, format!("unknown time method {}", name.name));
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn lookup_crypto_member(&mut self, name: &crate::ast::Ident) -> Ty {
+        match name.name.as_str() {
+            "hash" => Ty::Fn(FnSig {
+                params: vec![
+                    ParamSig {
+                        name: "algo".to_string(),
+                        ty: Ty::String,
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "data".to_string(),
+                        ty: Ty::Bytes,
+                        has_default: false,
+                    },
+                ],
+                ret: Box::new(Ty::Bytes),
+            }),
+            "hmac" => Ty::Fn(FnSig {
+                params: vec![
+                    ParamSig {
+                        name: "algo".to_string(),
+                        ty: Ty::String,
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "key".to_string(),
+                        ty: Ty::Bytes,
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "data".to_string(),
+                        ty: Ty::Bytes,
+                        has_default: false,
+                    },
+                ],
+                ret: Box::new(Ty::Bytes),
+            }),
+            "random_bytes" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "n".to_string(),
+                    ty: Ty::Int,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::Bytes),
+            }),
+            "constant_time_eq" => Ty::Fn(FnSig {
+                params: vec![
+                    ParamSig {
+                        name: "a".to_string(),
+                        ty: Ty::Bytes,
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "b".to_string(),
+                        ty: Ty::Bytes,
+                        has_default: false,
+                    },
+                ],
+                ret: Box::new(Ty::Bool),
+            }),
+            _ => {
+                self.diags
+                    .error(name.span, format!("unknown crypto method {}", name.name));
                 Ty::Unknown
             }
         }
@@ -1262,6 +1380,37 @@ impl<'a> Checker<'a> {
                     has_default: false,
                 }],
                 ret: Box::new(Ty::External("query".to_string())),
+            }),
+            "insert" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "value".to_string(),
+                    ty: Ty::Unknown,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::External("query".to_string())),
+            }),
+            "update" => Ty::Fn(FnSig {
+                params: vec![
+                    ParamSig {
+                        name: "column".to_string(),
+                        ty: Ty::String,
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "value".to_string(),
+                        ty: Ty::Unknown,
+                        has_default: false,
+                    },
+                ],
+                ret: Box::new(Ty::External("query".to_string())),
+            }),
+            "delete" => Ty::Fn(FnSig {
+                params: vec![],
+                ret: Box::new(Ty::External("query".to_string())),
+            }),
+            "count" => Ty::Fn(FnSig {
+                params: vec![],
+                ret: Box::new(Ty::Int),
             }),
             "one" => Ty::Fn(FnSig {
                 params: vec![],
@@ -2598,6 +2747,9 @@ fn spawn_forbidden_builtin(callee: &Expr) -> Option<&'static str> {
             },
             ExprKind::Ident(ident) if ident.name == "svg" && name.name == "inline" => {
                 Some("svg.inline")
+            }
+            ExprKind::Ident(ident) if ident.name == "time" && name.name == "sleep" => {
+                Some("time.sleep")
             }
             _ => None,
         },

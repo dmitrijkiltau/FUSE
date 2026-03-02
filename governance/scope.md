@@ -86,15 +86,23 @@ See also: [Formal language specification](../spec/fls.md), [Runtime semantics](.
 
 ## Priority roadmap
 
-Near-term priorities:
+Completed in `0.8.0`:
 
-1. Deterministic architecture enforcement (capabilities, error-domain boundaries, strict architecture mode)
-2. AOT production performance/operability hardening (startup SLOs, observability hooks, rollback readiness)
-3. Native backend maturity and predictability
-4. Concurrency throughput and observability improvements on the existing worker-pool + deterministic `spawn` model
-5. Faster run/build iteration with hash-validated cache artifacts
-6. Tooling quality for multi-file projects (diagnostics, refactors, discoverability)
-7. Publishable VS Code distribution artifacts (`.vsix`)
+1. Runtime capability parity for `time` and `crypto`
+2. Native IR call-target lowering completion for previously unsupported forms
+3. LSP modularization with stable behavior and preserved test contracts
+4. Example/reference coverage expansion for major language/runtime features
+5. DB/config ergonomics improvements (query-builder CRUD + structured config overrides)
+6. Developer workflow upgrades (`fuse check` incremental, `fuse dev` compile overlay, diagnostics JSON, AOT progress)
+7. Pre-tag cleanup and redundancy removal (`M7A`) plus docs-to-guides migration (`M7B`)
+
+Next priorities (post-`0.8.0`):
+
+1. Native backend performance work focused on hot-path lowering/runtime overhead reduction
+2. Concurrency throughput + observability improvements on the existing deterministic `spawn` model
+3. Dependency and package workflow hardening for larger multi-package repositories
+4. LSP UX refinement for very large workspaces (latency budgets + progressive indexing)
+5. Release automation simplification across packaging/verifier pipelines
 
 Likely future candidates (not committed MVP scope):
 

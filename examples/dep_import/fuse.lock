@@ -1,0 +1,11 @@
+version = 1
+
+[dependencies.Auth]
+source = "path"
+path = "deps/auth"
+requested = "path:/home/dima/Projects/fuse/examples/dep_import/deps/auth"
+
+[dependencies.Math]
+source = "path"
+path = "deps/math"
+requested = "path:/home/dima/Projects/fuse/examples/dep_import/deps/math"

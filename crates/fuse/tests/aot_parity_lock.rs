@@ -175,7 +175,12 @@ fn extract_log_line(stderr: &str, marker: &str, kind: RuntimeKind) -> String {
     stderr
         .lines()
         .find(|line| line.contains(marker))
-        .unwrap_or_else(|| panic!("backend={} missing marker {marker}; stderr={stderr}", kind.label()))
+        .unwrap_or_else(|| {
+            panic!(
+                "backend={} missing marker {marker}; stderr={stderr}",
+                kind.label()
+            )
+        })
         .to_string()
 }
 
@@ -183,7 +188,8 @@ fn assert_all_equal(label: &str, values: &[(RuntimeKind, String)]) {
     let baseline = &values[0].1;
     for (kind, value) in values.iter().skip(1) {
         assert_eq!(
-            value, baseline,
+            value,
+            baseline,
             "{label} diverged for backend={} baseline_backend={} baseline={baseline} actual={value}",
             kind.label(),
             values[0].0.label()
@@ -288,9 +294,17 @@ app "ParityLock":
     for kind in runtimes {
         let output = run_mode(&dir, kind, "log", None);
         let (stdout, stderr) = assert_success("log", kind, &output);
-        assert_eq!(stdout.trim(), "logged", "backend={} stdout={stdout}", kind.label());
+        assert_eq!(
+            stdout.trim(),
+            "logged",
+            "backend={} stdout={stdout}",
+            kind.label()
+        );
         log_text_lines.push((kind, extract_log_line(&stderr, "text parity", kind)));
-        log_json_lines.push((kind, extract_log_line(&stderr, "\"message\":\"json parity\"", kind)));
+        log_json_lines.push((
+            kind,
+            extract_log_line(&stderr, "\"message\":\"json parity\"", kind),
+        ));
     }
     assert_all_equal("log text line", &log_text_lines);
     assert_all_equal("log json line", &log_json_lines);

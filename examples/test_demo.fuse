@@ -1,0 +1,17 @@
+fn add(a: Int, b: Int) -> Int:
+  return a + b
+
+fn normalize(name: String) -> String:
+  if name == "Fuse":
+    return "fuse"
+  return "unknown"
+
+test "add":
+  assert(add(2, 3) == 5)
+
+test "normalize":
+  assert(normalize("Fuse") == "fuse")
+  assert(normalize("Other") == "unknown")
+
+app "TestDemo":
+  print("run scripts/fuse test examples/test_demo.fuse")

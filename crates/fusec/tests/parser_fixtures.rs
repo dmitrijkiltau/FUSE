@@ -198,6 +198,33 @@ fn get_note(id: Id) -> Map<String, String>!std.Error.NotFound:
 }
 
 #[test]
+fn parses_index_call_target() {
+    let src = r#"
+fn main():
+  [1][0]()
+"#;
+    assert_parse_ok(src);
+}
+
+#[test]
+fn parses_optional_index_call_target() {
+    let src = r#"
+fn main():
+  [1]?[0]()
+"#;
+    assert_parse_ok(src);
+}
+
+#[test]
+fn parses_optional_member_call_target() {
+    let src = r#"
+fn main():
+  {"f": 1}?.f()
+"#;
+    assert_parse_ok(src);
+}
+
+#[test]
 fn parses_multiline_call_args() {
     let src = r#"
 fn create_note(id: Id, title: String, content: String):

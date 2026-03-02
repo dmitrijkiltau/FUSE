@@ -338,6 +338,8 @@ Env override naming derives from config and field names:
 - `App.port` -> `APP_PORT`
 - `dbUrl` -> `DB_URL`
 - hyphens become underscores; camelCase splits to `SNAKE_CASE`
+- runtime prints a hint when it detects a likely env-name typo
+  (for example `APP_DBURL` vs expected `APP_DB_URL`)
 
 Type support levels for config values (env and file values):
 
@@ -381,6 +383,13 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 `fuse` CLI wrapper output contract (`check|run|build|test`):
 
 - emits stderr step markers: `[command] start` and `[command] ok|failed|validation failed`
+- when AOT output is requested, `fuse build` emits deterministic progress stages:
+  `[build] aot [n/6] ...`
+- `--diagnostics json` switches diagnostics on stderr to JSON Lines:
+  - diagnostic entries:
+    `{"kind":"diagnostic","level":"error|warning","message":"...","path":"...","line":N,"column":N,"span_start":N,"span_end":N}`
+  - command-step entries:
+    `{"kind":"command_step","command":"check|run|build|test","message":"start|ok|failed|validation failed|..."}`
 - keeps JSON validation payloads uncolored/machine-readable
 - `run` CLI argument validation failures exit with code `2`
 
@@ -416,7 +425,8 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 - `FUSE_HOST` (default `127.0.0.1`) controls bind host
 - `FUSE_SERVICE` selects service when multiple are declared
 - `FUSE_MAX_REQUESTS` stops server after N requests (useful for tests)
-- `FUSE_DEV_RELOAD_WS_URL` enables dev HTML script injection (`/__reload` client)
+- `FUSE_DEV_RELOAD_WS_URL` enables dev HTML script injection (`/__reload` client) and websocket-driven
+  page reload/compile-error overlay events in `fuse dev`
 - `FUSE_OPENAPI_JSON_PATH` + `FUSE_OPENAPI_UI_PATH` enable built-in OpenAPI UI serving
 - `FUSE_ASSET_MAP` provides logical-path -> public-URL mappings for `asset(path)`
 - `FUSE_VITE_PROXY_URL` enables fallback proxying of unknown routes to Vite dev server
@@ -509,6 +519,14 @@ See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [
 - `svg.inline(path: String) -> Html`
 - `json.encode(value) -> String` serializes a value to a JSON string
 - `json.decode(text: String) -> Value` parses a JSON string into a runtime value
+- `time.now() -> Int` returns Unix epoch milliseconds
+- `time.sleep(ms: Int)` blocks the current execution for `ms` milliseconds
+- `time.format(epoch: Int, fmt: String) -> String` formats epoch milliseconds (UTC)
+- `time.parse(text: String, fmt: String) -> Int!Error` parses text to epoch milliseconds
+- `crypto.hash(algo: String, data: Bytes) -> Bytes` supports `sha256` / `sha512`
+- `crypto.hmac(algo: String, key: Bytes, data: Bytes) -> Bytes` supports `sha256` / `sha512`
+- `crypto.random_bytes(n: Int) -> Bytes` returns cryptographically secure random bytes
+- `crypto.constant_time_eq(a: Bytes, b: Bytes) -> Bool` compares bytes in constant-time form
 
 `input` behavior notes:
 
@@ -533,8 +551,8 @@ fallback behavior.
 - modules declare capabilities with top-level `requires` declarations
 - `db.exec/query/one/from` calls require `requires db`
 - `serve(...)` calls require `requires network`
-- `time(...)` / `time.*` calls require `requires time` (capability placeholder; no runtime API yet)
-- `crypto.*` calls require `requires crypto` (capability placeholder; no runtime API yet)
+- `time.*` calls require `requires time`
+- `crypto.*` calls require `requires crypto`
 - calls to imported module functions require the caller to declare the callee module's capabilities
 - `transaction:` blocks require `requires db`, forbid non-`db` module capabilities, and reject
   non-`db` capability usage inside the block
@@ -574,6 +592,10 @@ Query builder methods (immutable style; each returns a new `Query`):
 - `Query.where(column, op, value)`
 - `Query.order_by(column, dir)` where `dir` is `asc`/`desc`
 - `Query.limit(n)` where `n >= 0`
+- `Query.insert(structValue)` builds `insert into ...` from struct fields
+- `Query.update(column, value)` builds/extends `set` clauses
+- `Query.delete()` builds `delete from ...`
+- `Query.count()` executes a `count(*)` query and returns `Int`
 - `Query.one()`
 - `Query.all()`
 - `Query.exec()`
@@ -585,6 +607,7 @@ Parameter binding:
 - supported param types: `null`, `Int`, `Float`, `Bool`, `String`, `Bytes`
   (boxed/results are unwrapped)
 - `in` expects non-empty list and expands to `IN (?, ?, ...)`
+- runtime DB failures include SQL text and a parameter summary
 
 Identifier constraints:
 
@@ -632,14 +655,21 @@ Run tests with:
 
 ```bash
 fusec --test path/to/file.fuse
+fusec --test --filter smoke path/to/file.fuse
 ```
 
 Rules:
 
 - tests are collected from all loaded modules
 - run order is ascending by test name
+- `--filter <pattern>` runs only tests whose names contain the pattern (case-sensitive substring match)
 - tests execute via AST interpreter
 - failures report non-zero exit
+
+Project check incremental mode:
+
+- `fuse check` writes `.fuse/build/check.meta` (or `.fuse/build/check.strict.meta` with `--strict-architecture`)
+- warm checks reuse module content hashes from this metadata and skip unchanged-module rechecks
 
 ### Concurrency
 

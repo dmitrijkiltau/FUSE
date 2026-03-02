@@ -22,6 +22,14 @@ export TMPDIR="$RUSTC_TMPDIR"
 export TMP="$RUSTC_TMPDIR"
 export TEMP="$RUSTC_TMPDIR"
 export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
+export CARGO_BUILD_PIPELINING="${CARGO_BUILD_PIPELINING:-false}"
+
+# In this workspace, parallel test builds can intermittently hit EXDEV when
+# rustc writes metadata artifacts. Default to a single build job for tests,
+# while still allowing an explicit override via CARGO_BUILD_JOBS.
+if [[ "${1:-}" == "cargo" && "${2:-}" == "test" ]]; then
+  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
+fi
 
 mkdir -p "$CARGO_TARGET_DIR" "$RUSTC_TMPDIR"
 
@@ -30,6 +38,35 @@ if [[ $# -eq 0 ]]; then
   echo "example: $(basename "$0") cargo check -p fusec"
   echo "repo: $ROOT"
   exit 1
+fi
+
+if [[ "${1:-}" == "cargo" ]]; then
+  log_file="$(mktemp "$RUSTC_TMPDIR/cargo-env.XXXXXX.log")"
+  max_attempts="${CARGO_ENV_EXDEV_RETRIES:-6}"
+  attempt=1
+  status=0
+  while :; do
+    : >"$log_file"
+    set +e
+    "$@" 2> >(tee "$log_file" >&2)
+    status=$?
+    set -e
+    if [[ $status -eq 0 ]]; then
+      break
+    fi
+    if ! grep -q "Invalid cross-device link" "$log_file"; then
+      break
+    fi
+    if (( attempt >= max_attempts )); then
+      break
+    fi
+    echo "[cargo_env] EXDEV detected; retrying ($attempt/$max_attempts)" >&2
+    find "$CARGO_TARGET_DIR" -type f \( -name '*.rmeta' -o -name '*.rmeta.*' \) -delete 2>/dev/null || true
+    attempt=$((attempt + 1))
+  done
+
+  rm -f "$log_file"
+  exit $status
 fi
 
 exec "$@"

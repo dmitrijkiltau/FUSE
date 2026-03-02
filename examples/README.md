@@ -36,12 +36,18 @@ APP_PORT=4000 ./scripts/fuse run examples/http_users.fuse
 | `interp_demo.fuse` | String interpolation |
 | `spawn_error.fuse` | Spawn/await task failure propagation |
 | `box_shared.fuse` | Shared `box` state mutation |
+| `transaction_demo.fuse` | `transaction:` commit/rollback behavior with typed error result |
+| `capability_demo.fuse` | Capability-gated cross-module calls (`requires db` + `requires network`) |
+| `test_demo.fuse` | In-language `test "..."` blocks with `assert(...)` |
 | `assign_field.fuse` | Struct field assignment |
 | `assign_index.fuse` | List/map index assignment |
 | `range_demo.fuse` | Range expressions (inclusive lists) |
 | `enum_match.fuse` | Enum declarations and match expressions |
 | `float_compare.fuse` | Float comparison semantics |
 | `task_api.fuse` | Spawn/await task workflow |
+| `refinement_demo.fuse` | Refinement constraints (`range`, `regex`, `predicate`) |
+| `json_codec.fuse` | `json.encode` / `json.decode` round-trip |
+| `time_crypto.fuse` | `time.*` and `crypto.*` runtime APIs |
 | `db_query_builder.fuse` | DB query-builder workflow (`db.from`) |
 
 ## Native backend examples
@@ -58,9 +64,15 @@ These exercise the Cranelift JIT backend specifically (`--backend native`):
 | `native_json.fuse` | JSON encode/decode |
 | `native_validation.fuse` | Validation behavior |
 
-## Package example
+## Package examples
 
-The `reference-service/` directory is the canonical package-level service example.
-It includes `fuse.toml`, HTML templates, registration/login + session-auth notes API flow,
-native CSS modules (imports/custom properties/nesting), and a client-side JS flow.
-See [reference-service/README.md](reference-service/README.md).
+| Directory | Topic |
+|---|---|
+| `reference-service/` | Full reference service package (`fuse.toml`, auth notes API, templates/assets) |
+| `strict_arch_demo/` | Multi-file package intended for `fuse check --strict-architecture` |
+| `dep_import/` | Multi-package dependency import example using `dep:` paths |
+
+`reference-service/` remains the canonical end-to-end package example. It includes
+registration/login + session-auth notes API flow, native CSS modules (imports/custom
+properties/nesting), and a client-side JS flow. See
+[reference-service/README.md](reference-service/README.md).

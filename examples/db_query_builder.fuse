@@ -3,11 +3,21 @@ requires db
 config App:
   dbUrl: String = env("FUSE_DB_URL") ?? "sqlite::memory:"
 
+type Note:
+  id: String
+  title: String
+
 fn seed():
   db.exec("create table if not exists notes (id text primary key, title text not null)")
   db.exec("delete from notes")
-  db.exec("insert into notes (id, title) values (?, ?)", ["n1", "Ada"])
-  db.exec("insert into notes (id, title) values (?, ?)", ["n2", "Bob"])
+  db.from("notes").insert(Note(id="n1", title="Ada")).exec()
+  db.from("notes").insert(Note(id="n2", title="Bob")).exec()
+
+fn update_title():
+  db.from("notes").update("title", "Anya").where("id", "=", "n1").exec()
+
+fn remove_second():
+  db.from("notes").delete().where("id", "=", "n2").exec()
 
 fn first_title() -> String:
   let rows = db.from("notes").select(["title"]).where("id", "=", "n1").limit(1).all()
@@ -24,5 +34,9 @@ fn all_titles() -> String:
 
 app "DbQueryBuilder":
   seed()
+  update_title()
+  remove_second()
   print(first_title())
   print(all_titles())
+  print(db.from("notes").count())
+  print(db.from("notes").where("title", "like", "A%").count())

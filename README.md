@@ -58,14 +58,14 @@ The runtime applies those contracts at boundaries instead of requiring repeated 
 
 ## Status
 
-FUSE `v0.7.0` release prep is active. This minor hardens AOT as production posture:
-explicit runtime contract guarantees, production ergonomics defaults, deployment-surface formalization,
-and AST/native/AOT parity-lock gates.
+FUSE `v0.8.0` release prep is active. This minor deepens runtime/tooling ergonomics:
+capability-runtime completion (`time`/`crypto`), native-lowering parity closure,
+workflow hardening, and GitHub-first guide coverage.
 
 Compatibility is defined by documented behavior in `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, and
 `governance/VERSIONING_POLICY.md`.
 Historical upgrade guidance for the `0.1.x -> 0.2.0` breaking minor is in
-`docs/migrations/0.1-to-0.2.md`.
+`guides/migrations/0.1-to-0.2.md`.
 
 ## Requirements
 
@@ -178,8 +178,15 @@ Global CLI output option:
 - `--color auto|always|never` controls ANSI colors for diagnostics/status output and runtime
   `log(...)` level tags.
   `auto` is default and respects `NO_COLOR`.
+- `--diagnostics json` switches CLI diagnostics on stderr to JSON Lines suitable for editor/CI
+  consumers. Diagnostic entries use fields:
+  `kind="diagnostic"`, `level`, `message`, `path?`, `line?`, `column?`, `span_start`, `span_end`.
+  Command-step entries use:
+  `kind="command_step"`, `command`, `message`.
 - `fuse check|run|build|test` emit consistent stderr step markers:
   `[command] start`, `[command] ok|failed|validation failed`.
+- `fuse test --filter <pattern>` runs only test blocks whose names contain `<pattern>`
+  (case-sensitive substring match).
 - `--strict-architecture` enables strict architecture checks in semantic analysis
   (primarily used with `fuse check` and `fuse build`).
 
@@ -189,6 +196,8 @@ Build-specific options:
   `.fuse/build/program.aot` (`.fuse/build/program.aot.exe` on Windows) unless
   `[build].native_bin` is configured.
 - `fuse build --aot` forces AOT output in debug profile.
+- AOT-emitting builds (`--aot`, `--release`, or `[build].native_bin`) print
+  `[build] aot [n/6] ...` progress stages for compile/link steps.
 - `fuse build` remains the explicit non-AOT local development path (cache artifacts only).
 
 Packages use a `fuse.toml` manifest. Minimal example:
@@ -255,6 +264,8 @@ Lockfile semantics (`fuse.lock`):
 Cache outputs are stored in `.fuse/build/` (`program.native`).
 Cache validity uses content hashes (module graph + `fuse.toml` + `fuse.lock`) in `program.meta` v3.
 Native/IR cache reuse also requires matching build fingerprints (target triple, Rust toolchain, CLI version).
+`fuse check` also writes incremental metadata (`check.meta` / `check.strict.meta`) and skips
+unchanged modules by hash on warm runs.
 
 Deployable AOT output:
 
@@ -312,7 +323,7 @@ The CLI loads `.env` from the package directory and sets only missing variables.
 | `NO_COLOR` | — | Disables ANSI color when set |
 | `FUSE_REQUEST_LOG` | — | `structured` for JSON request logging on stderr |
 | `FUSE_METRICS_HOOK` | — | `stderr` for per-request metrics lines |
-| `FUSE_DEV_RELOAD_WS_URL` | — | Dev HTML script injection (`/__reload` client) |
+| `FUSE_DEV_RELOAD_WS_URL` | — | Dev HTML script injection (`/__reload` client) with reload + compile-error overlay events |
 | `FUSE_OPENAPI_JSON_PATH` | — | Built-in OpenAPI JSON endpoint path |
 | `FUSE_OPENAPI_UI_PATH` | — | Built-in OpenAPI UI path |
 | `FUSE_ASSET_MAP` | — | Logical-path to public-URL mappings for `asset()` |
@@ -402,7 +413,7 @@ SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" ./scripts/generate_release_
 # Install a packaged VSIX example
 code --install-extension dist/fuse-vscode-linux-x64.vsix
 
-# Regenerate docs site guides
+# Regenerate GitHub guide markdown
 ./scripts/generate_guide_docs.sh
 ```
 
@@ -414,7 +425,7 @@ code --install-extension dist/fuse-vscode-linux-x64.vsix
 | `crates/fuse` | Package-oriented CLI wrapper |
 | `crates/fuse-rt` | Shared runtime library |
 | `examples/` | Sample programs and packages |
-| `docs/` | Documentation site (source, assets, generated specs) |
+| `guides/` | GitHub-facing guide markdown (generated + migration docs) |
 | `tools/vscode/` | VS Code extension (syntax highlighting + LSP client) |
 | `spec/` | Normative language/runtime contracts |
 | `ops/` | Release/incident contracts |
@@ -436,8 +447,9 @@ If two documents disagree, defer to the owning document listed for that tier.
 
 | Document | Scope |
 |---|---|
-| `docs/site/specs/onboarding.md` | Documentation-site onboarding walkthrough |
-| `docs/migrations/0.1-to-0.2.md` | Migration guide for `0.1.x -> 0.2.0` |
+| `guides/onboarding.md` | Onboarding walkthrough |
+| `guides/reference.md` | Generated developer reference |
+| `guides/migrations/0.1-to-0.2.md` | Migration guide for `0.1.x -> 0.2.0` |
 
 ### Operations contracts
 

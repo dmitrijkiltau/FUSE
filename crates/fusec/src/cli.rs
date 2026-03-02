@@ -6,16 +6,32 @@ use fuse_rt::error::{ValidationError, ValidationField};
 use fuse_rt::json;
 
 use crate::ast::{Item, TypeRefKind};
-use crate::diag::{Diag, Level};
+use crate::diag::Diag;
 use crate::interp::{Interpreter, MigrationJob, TestJob, TestOutcome};
 use crate::{load_program_with_modules, load_program_with_modules_and_deps};
 
-const USAGE: &str = "usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--strict-architecture] [--backend ast|native] [--app NAME] <file>";
+const USAGE: &str = "usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--filter PATTERN] [--strict-architecture] [--diagnostics json|text] [--backend ast|native] [--app NAME] <file>";
 
 #[derive(Copy, Clone)]
 enum Backend {
     Ast,
     Native,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum DiagnosticFormat {
+    Text,
+    Json,
+}
+
+impl DiagnosticFormat {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "json" => Some(Self::Json),
+            "text" => Some(Self::Text),
+            _ => None,
+        }
+    }
 }
 
 pub fn run<I>(args: I) -> i32
@@ -41,7 +57,9 @@ where
     let mut app_name: Option<String> = None;
     let mut migrate = false;
     let mut test = false;
+    let mut test_filter: Option<String> = None;
     let mut strict_architecture = false;
+    let mut diagnostics_format = diagnostics_format_from_env();
     let mut path = None;
 
     while let Some(arg) = args.next() {
@@ -77,8 +95,50 @@ where
             test = true;
             continue;
         }
+        if arg == "--filter" {
+            if let Some(pattern) = args.next() {
+                test_filter = Some(pattern);
+            } else {
+                eprintln!("--filter expects a pattern");
+                eprintln!("{USAGE}");
+                return 1;
+            }
+            continue;
+        }
+        if let Some(pattern) = arg.strip_prefix("--filter=") {
+            test_filter = Some(pattern.to_string());
+            continue;
+        }
         if arg == "--strict-architecture" {
             strict_architecture = true;
+            continue;
+        }
+        if arg == "--diagnostics" {
+            if let Some(mode) = args.next() {
+                diagnostics_format = match DiagnosticFormat::parse(&mode) {
+                    Some(mode) => mode,
+                    None => {
+                        eprintln!("invalid --diagnostics value: {mode} (expected json|text)");
+                        eprintln!("{USAGE}");
+                        return 1;
+                    }
+                };
+            } else {
+                eprintln!("--diagnostics expects json|text");
+                eprintln!("{USAGE}");
+                return 1;
+            }
+            continue;
+        }
+        if let Some(mode) = arg.strip_prefix("--diagnostics=") {
+            diagnostics_format = match DiagnosticFormat::parse(mode) {
+                Some(mode) => mode,
+                None => {
+                    eprintln!("invalid --diagnostics value: {mode} (expected json|text)");
+                    eprintln!("{USAGE}");
+                    return 1;
+                }
+            };
             continue;
         }
         if arg == "--backend" {
@@ -125,6 +185,12 @@ where
         }
     };
 
+    if test_filter.is_some() && !test {
+        eprintln!("--filter is only supported with --test");
+        eprintln!("{USAGE}");
+        return 1;
+    }
+
     let src = match fs::read_to_string(&path) {
         Ok(s) => s,
         Err(err) => {
@@ -149,7 +215,7 @@ where
         None => load_program_with_modules(Path::new(&path), &src),
     };
     if !diags.is_empty() {
-        emit_diags(&diags, Some(&src));
+        emit_diags(&diags, diagnostics_format, Some((Path::new(&path), &src)));
         return 1;
     }
     let root = match registry.root() {
@@ -181,7 +247,7 @@ where
         let (_analysis, diags) =
             crate::sema::analyze_registry_with_options(&registry, sema_options);
         if !diags.is_empty() {
-            emit_diags(&diags, Some(&src));
+            emit_diags(&diags, diagnostics_format, Some((Path::new(&path), &src)));
             return 1;
         }
     }
@@ -196,7 +262,7 @@ where
         let (_analysis, diags) =
             crate::sema::analyze_registry_with_options(&registry, sema_options);
         if !diags.is_empty() {
-            emit_diags(&diags, Some(&src));
+            emit_diags(&diags, diagnostics_format, Some((Path::new(&path), &src)));
             return 1;
         }
         let migrations = match collect_migrations(&registry) {
@@ -230,16 +296,19 @@ where
         let (_analysis, diags) =
             crate::sema::analyze_registry_with_options(&registry, sema_options);
         if !diags.is_empty() {
-            emit_diags(&diags, Some(&src));
+            emit_diags(&diags, diagnostics_format, Some((Path::new(&path), &src)));
             return 1;
         }
-        let tests = match collect_tests(&registry) {
+        let mut tests = match collect_tests(&registry) {
             Ok(tests) => tests,
             Err(err) => {
                 eprintln!("test error: {err}");
                 return 1;
             }
         };
+        if let Some(pattern) = test_filter.as_deref() {
+            tests.retain(|test| test.name.contains(pattern));
+        }
         let mut interp = Interpreter::with_registry(&registry);
         let outcomes = match interp.run_tests(&tests) {
             Ok(outcomes) => outcomes,
@@ -614,65 +683,32 @@ fn emit_error_json(message: &str) {
     emit_validation_error("$", "runtime_error", message);
 }
 
-fn emit_diags(diags: &[Diag], fallback_src: Option<&str>) {
+fn diagnostics_format_from_env() -> DiagnosticFormat {
+    match std::env::var("FUSE_DIAGNOSTICS").ok().as_deref() {
+        Some("json") => DiagnosticFormat::Json,
+        _ => DiagnosticFormat::Text,
+    }
+}
+
+fn emit_diags(diags: &[Diag], format: DiagnosticFormat, fallback: Option<(&Path, &str)>) {
     for diag in diags {
-        emit_diag(diag, fallback_src);
+        emit_diag(diag, format, fallback);
     }
 }
 
-fn emit_diag(diag: &Diag, fallback_src: Option<&str>) {
-    let level = match diag.level {
-        Level::Error => "error",
-        Level::Warning => "warning",
+fn emit_diag(diag: &Diag, format: DiagnosticFormat, fallback: Option<(&Path, &str)>) {
+    if matches!(format, DiagnosticFormat::Json) {
+        eprintln!(
+            "{}",
+            json::encode(&crate::diag_render::diagnostic_json_value(diag, fallback))
+        );
+        return;
+    }
+    let style = crate::diag_render::TextDiagnosticStyle {
+        error_label: "error".to_string(),
+        warning_label: "warning".to_string(),
+        caret: "^".to_string(),
+        include_fallback_path: false,
     };
-    if let Some(path) = &diag.path {
-        if let Ok(src) = fs::read_to_string(path) {
-            let (line, col, line_text) = line_info(&src, diag.span.start);
-            eprintln!(
-                "{level}: {} ({}:{}:{})",
-                diag.message,
-                path.display(),
-                line,
-                col
-            );
-            eprintln!("  {line_text}");
-            eprintln!("  {}^", " ".repeat(col.saturating_sub(1)));
-            return;
-        }
-        eprintln!("{level}: {} ({})", diag.message, path.display());
-        return;
-    }
-    if let Some(src) = fallback_src {
-        let (line, col, line_text) = line_info(src, diag.span.start);
-        eprintln!("{level}: {} ({}:{})", diag.message, line, col);
-        eprintln!("  {line_text}");
-        eprintln!("  {}^", " ".repeat(col.saturating_sub(1)));
-        return;
-    }
-    eprintln!(
-        "{level}: {} ({}..{})",
-        diag.message, diag.span.start, diag.span.end
-    );
-}
-
-fn line_info(src: &str, offset: usize) -> (usize, usize, &str) {
-    let offset = offset.min(src.len());
-    let mut line = 1usize;
-    let mut line_start = 0usize;
-    for (idx, byte) in src.bytes().enumerate() {
-        if idx >= offset {
-            break;
-        }
-        if byte == b'\n' {
-            line += 1;
-            line_start = idx + 1;
-        }
-    }
-    let line_end = src[line_start..]
-        .find('\n')
-        .map(|rel| line_start + rel)
-        .unwrap_or(src.len());
-    let col = offset.saturating_sub(line_start) + 1;
-    let line_text = &src[line_start..line_end];
-    (line, col, line_text)
+    crate::diag_render::emit_diag_text(diag, fallback, &style);
 }

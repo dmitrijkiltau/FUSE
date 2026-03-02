@@ -1816,6 +1816,10 @@ impl<'a> Parser<'a> {
                 name: "from".to_string(),
                 span: self.prev_span(),
             },
+            TokenKind::Keyword(Keyword::Delete) => Ident {
+                name: "delete".to_string(),
+                span: self.prev_span(),
+            },
             _ => {
                 self.error_here("expected identifier");
                 Ident {

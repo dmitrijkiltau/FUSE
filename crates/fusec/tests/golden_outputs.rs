@@ -1,11 +1,8 @@
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
 
 use fuse_rt::json;
 mod support;
+use support::http::send_http_request_status_body_with_retry;
 use support::net::{find_free_port, skip_if_loopback_unavailable};
 
 fn example_path(name: &str) -> String {
@@ -15,45 +12,6 @@ fn example_path(name: &str) -> String {
     path.push("examples");
     path.push(name);
     path.to_string_lossy().to_string()
-}
-
-fn send_http_request_with_retry(port: u16, request: &str) -> (u16, String) {
-    let start = Instant::now();
-    loop {
-        match TcpStream::connect(format!("127.0.0.1:{port}")) {
-            Ok(mut stream) => {
-                stream
-                    .write_all(request.as_bytes())
-                    .expect("failed to write request");
-                stream.shutdown(std::net::Shutdown::Write).ok();
-                let mut buffer = String::new();
-                stream
-                    .read_to_string(&mut buffer)
-                    .expect("failed to read response");
-                let mut lines = buffer.split("\r\n");
-                let status_line = lines.next().unwrap_or("");
-                let status = status_line
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("500")
-                    .parse::<u16>()
-                    .unwrap_or(500);
-                let body = buffer
-                    .split("\r\n\r\n")
-                    .nth(1)
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                return (status, body);
-            }
-            Err(_) => {
-                if start.elapsed() > Duration::from_secs(2) {
-                    panic!("server did not start on 127.0.0.1:{port}");
-                }
-                thread::sleep(Duration::from_millis(25));
-            }
-        }
-    }
 }
 
 #[test]
@@ -147,7 +105,7 @@ fn golden_http_users_post_ok() {
         body.len(),
         body
     );
-    let (status, response_body) = send_http_request_with_retry(port, &request);
+    let (status, response_body) = send_http_request_status_body_with_retry(port, &request);
     let _ = child.wait();
     assert_eq!(status, 200);
     assert_eq!(
@@ -176,7 +134,7 @@ fn golden_http_users_get_not_found() {
         .expect("failed to start server");
 
     let request = format!("GET /api/users/42 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n");
-    let (status, response_body) = send_http_request_with_retry(port, &request);
+    let (status, response_body) = send_http_request_status_body_with_retry(port, &request);
     let _ = child.wait();
     assert_eq!(status, 404);
     assert_eq!(
@@ -236,7 +194,7 @@ app "demo":
         ok_body.len(),
         ok_body
     );
-    let (ok_status, ok_resp) = send_http_request_with_retry(port, &ok_req);
+    let (ok_status, ok_resp) = send_http_request_status_body_with_retry(port, &ok_req);
     assert_eq!(ok_status, 200);
     assert_eq!(ok_resp, ok_body);
 
@@ -246,7 +204,7 @@ app "demo":
         bad_body.len(),
         bad_body
     );
-    let (bad_status, bad_resp) = send_http_request_with_retry(port, &bad_req);
+    let (bad_status, bad_resp) = send_http_request_status_body_with_retry(port, &bad_req);
     let _ = child.wait();
     assert_eq!(bad_status, 400);
     assert_eq!(

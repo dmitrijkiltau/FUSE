@@ -21,10 +21,31 @@ struct DbState {
 #[derive(Clone, Debug)]
 pub struct Query {
     table: String,
+    kind: QueryKind,
     select: Vec<String>,
     wheres: Vec<WhereClause>,
     order_by: Option<(String, OrderDir)>,
     limit: Option<i64>,
+}
+
+#[derive(Clone, Debug)]
+enum QueryKind {
+    Select,
+    Count,
+    Insert {
+        columns: Vec<String>,
+        values: Vec<Value>,
+    },
+    Update {
+        sets: Vec<SetClause>,
+    },
+    Delete,
+}
+
+#[derive(Clone, Debug)]
+struct SetClause {
+    column: String,
+    value: Value,
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +80,7 @@ impl Query {
         }
         Ok(Self {
             table,
+            kind: QueryKind::Select,
             select: Vec::new(),
             wheres: Vec::new(),
             order_by: None,
@@ -67,6 +89,9 @@ impl Query {
     }
 
     pub fn select(&self, columns: Vec<String>) -> Result<Self, String> {
+        if !matches!(self.kind, QueryKind::Select) {
+            return Err("select is only supported on select queries".to_string());
+        }
         if columns.is_empty() {
             return Err("select expects at least one column".to_string());
         }
@@ -81,6 +106,9 @@ impl Query {
     }
 
     pub fn where_clause(&self, column: String, op: String, value: Value) -> Result<Self, String> {
+        if matches!(self.kind, QueryKind::Insert { .. }) {
+            return Err("where is not supported for insert queries".to_string());
+        }
         if !is_valid_identifier(&column) {
             return Err(format!("invalid column name {column}"));
         }
@@ -108,6 +136,9 @@ impl Query {
     }
 
     pub fn order_by(&self, column: String, dir: String) -> Result<Self, String> {
+        if !matches!(self.kind, QueryKind::Select) {
+            return Err("order_by is only supported on select queries".to_string());
+        }
         if !is_valid_identifier(&column) {
             return Err(format!("invalid column name {column}"));
         }
@@ -118,11 +149,92 @@ impl Query {
     }
 
     pub fn limit(&self, value: i64) -> Result<Self, String> {
+        if !matches!(self.kind, QueryKind::Select) {
+            return Err("limit is only supported on select queries".to_string());
+        }
         if value < 0 {
             return Err("limit must be >= 0".to_string());
         }
         let mut next = self.clone();
         next.limit = Some(value);
+        Ok(next)
+    }
+
+    pub fn insert_struct(&self, value: Value) -> Result<Self, String> {
+        let Value::Struct { fields, .. } = value.unboxed() else {
+            return Err("insert expects a struct value".to_string());
+        };
+        if fields.is_empty() {
+            return Err("insert expects a struct with at least one field".to_string());
+        }
+        let mut columns: Vec<String> = fields.keys().cloned().collect();
+        columns.sort();
+        let mut values = Vec::with_capacity(columns.len());
+        for column in &columns {
+            if !is_valid_identifier(column) {
+                return Err(format!("invalid column name {column}"));
+            }
+            let value = fields
+                .get(column)
+                .cloned()
+                .ok_or_else(|| "insert field lookup failed".to_string())?;
+            validate_param_value(&value)?;
+            values.push(value);
+        }
+        let mut next = self.clone();
+        next.kind = QueryKind::Insert { columns, values };
+        next.select.clear();
+        next.order_by = None;
+        next.limit = None;
+        Ok(next)
+    }
+
+    pub fn update_set(&self, column: String, value: Value) -> Result<Self, String> {
+        if !is_valid_identifier(&column) {
+            return Err(format!("invalid column name {column}"));
+        }
+        validate_param_value(&value)?;
+        let mut next = self.clone();
+        next.kind = match &self.kind {
+            QueryKind::Update { sets } => {
+                let mut next_sets = sets.clone();
+                next_sets.push(SetClause { column, value });
+                QueryKind::Update { sets: next_sets }
+            }
+            QueryKind::Insert { .. } => {
+                return Err("update is not supported after insert".to_string());
+            }
+            _ => QueryKind::Update {
+                sets: vec![SetClause { column, value }],
+            },
+        };
+        next.select.clear();
+        next.order_by = None;
+        next.limit = None;
+        Ok(next)
+    }
+
+    pub fn delete_rows(&self) -> Result<Self, String> {
+        if matches!(self.kind, QueryKind::Insert { .. }) {
+            return Err("delete is not supported after insert".to_string());
+        }
+        let mut next = self.clone();
+        next.kind = QueryKind::Delete;
+        next.select.clear();
+        next.order_by = None;
+        next.limit = None;
+        Ok(next)
+    }
+
+    pub fn count(&self) -> Result<Self, String> {
+        if matches!(self.kind, QueryKind::Insert { .. }) {
+            return Err("count is not supported for insert queries".to_string());
+        }
+        let mut next = self.clone();
+        next.kind = QueryKind::Count;
+        next.select.clear();
+        next.order_by = None;
+        next.limit = None;
         Ok(next)
     }
 
@@ -135,51 +247,75 @@ impl Query {
     }
 
     pub fn build_sql(&self, limit_override: Option<i64>) -> Result<(String, Vec<Value>), String> {
-        let mut sql = String::new();
-        if self.select.is_empty() {
-            sql.push_str("select * from ");
-        } else {
-            sql.push_str("select ");
-            sql.push_str(&self.select.join(", "));
-            sql.push_str(" from ");
-        }
-        sql.push_str(&self.table);
-        let mut params = Vec::new();
-        if !self.wheres.is_empty() {
-            sql.push_str(" where ");
-            for (idx, clause) in self.wheres.iter().enumerate() {
-                if idx > 0 {
-                    sql.push_str(" and ");
-                }
-                sql.push_str(&clause.column);
-                sql.push(' ');
-                sql.push_str(clause.op.as_str());
-                if matches!(clause.op, WhereOp::In) {
-                    sql.push_str(" (");
-                    let mut placeholders = Vec::with_capacity(clause.values.len());
-                    for _ in &clause.values {
-                        placeholders.push("?");
-                    }
-                    sql.push_str(&placeholders.join(", "));
-                    sql.push(')');
+        match &self.kind {
+            QueryKind::Select => {
+                let mut sql = String::new();
+                if self.select.is_empty() {
+                    sql.push_str("select * from ");
                 } else {
-                    sql.push_str(" ?");
+                    sql.push_str("select ");
+                    sql.push_str(&self.select.join(", "));
+                    sql.push_str(" from ");
                 }
-                params.extend(clause.values.iter().cloned());
+                sql.push_str(&self.table);
+                let mut params = Vec::new();
+                append_where_sql(&mut sql, &self.wheres, &mut params);
+                if let Some((column, dir)) = &self.order_by {
+                    sql.push_str(" order by ");
+                    sql.push_str(column);
+                    sql.push(' ');
+                    sql.push_str(dir.as_str());
+                }
+                let limit = self.limit.or(limit_override);
+                if let Some(limit) = limit {
+                    sql.push_str(" limit ?");
+                    params.push(Value::Int(limit));
+                }
+                Ok((sql, params))
+            }
+            QueryKind::Count => {
+                let mut sql = format!("select count(*) as c from {}", self.table);
+                let mut params = Vec::new();
+                append_where_sql(&mut sql, &self.wheres, &mut params);
+                Ok((sql, params))
+            }
+            QueryKind::Insert { columns, values } => {
+                if columns.is_empty() {
+                    return Err("insert expects at least one field".to_string());
+                }
+                let placeholders: Vec<&str> = columns.iter().map(|_| "?").collect();
+                let sql = format!(
+                    "insert into {} ({}) values ({})",
+                    self.table,
+                    columns.join(", "),
+                    placeholders.join(", ")
+                );
+                Ok((sql, values.clone()))
+            }
+            QueryKind::Update { sets } => {
+                if sets.is_empty() {
+                    return Err("update expects at least one set clause".to_string());
+                }
+                let mut sql = format!("update {} set ", self.table);
+                let mut params = Vec::new();
+                for (idx, set) in sets.iter().enumerate() {
+                    if idx > 0 {
+                        sql.push_str(", ");
+                    }
+                    sql.push_str(&set.column);
+                    sql.push_str(" = ?");
+                    params.push(set.value.clone());
+                }
+                append_where_sql(&mut sql, &self.wheres, &mut params);
+                Ok((sql, params))
+            }
+            QueryKind::Delete => {
+                let mut sql = format!("delete from {}", self.table);
+                let mut params = Vec::new();
+                append_where_sql(&mut sql, &self.wheres, &mut params);
+                Ok((sql, params))
             }
         }
-        if let Some((column, dir)) = &self.order_by {
-            sql.push_str(" order by ");
-            sql.push_str(column);
-            sql.push(' ');
-            sql.push_str(dir.as_str());
-        }
-        let limit = self.limit.or(limit_override);
-        if let Some(limit) = limit {
-            sql.push_str(" limit ?");
-            params.push(Value::Int(limit));
-        }
-        Ok((sql, params))
     }
 }
 
@@ -212,18 +348,19 @@ impl Db {
     }
 
     pub fn exec_params(&self, sql: &str, params: &[Value]) -> Result<(), String> {
-        let sql_params = params_to_sql(params)?;
+        let sql_params =
+            params_to_sql(params).map_err(|err| format_db_error("exec", err, sql, params))?;
         self.with_connection(|conn| {
             conn.execute(sql, params_from_iter(sql_params))
                 .map(|_| ())
-                .map_err(|err| format!("db exec failed: {err}"))
+                .map_err(|err| format_db_error("exec", err, sql, params))
         })
     }
 
     pub fn execute<P: Params>(&self, sql: &str, params: P) -> Result<usize, String> {
         self.with_connection(|conn| {
             conn.execute(sql, params)
-                .map_err(|err| format!("db exec failed: {err}"))
+                .map_err(|err| format!("db exec failed: {err}; sql: {sql}; params: <opaque>"))
         })
     }
 
@@ -236,11 +373,12 @@ impl Db {
         sql: &str,
         params: &[Value],
     ) -> Result<Vec<HashMap<String, Value>>, String> {
-        let sql_params = params_to_sql(params)?;
+        let sql_params =
+            params_to_sql(params).map_err(|err| format_db_error("query", err, sql, params))?;
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(sql)
-                .map_err(|err| format!("db query failed: {err}"))?;
+                .map_err(|err| format_db_error("query", err, sql, params))?;
             let columns: Vec<String> = stmt
                 .column_names()
                 .iter()
@@ -248,17 +386,17 @@ impl Db {
                 .collect();
             let mut rows = stmt
                 .query(params_from_iter(sql_params))
-                .map_err(|err| format!("db query failed: {err}"))?;
+                .map_err(|err| format_db_error("query", err, sql, params))?;
             let mut out = Vec::new();
             while let Some(row) = rows
                 .next()
-                .map_err(|err| format!("db query failed: {err}"))?
+                .map_err(|err| format_db_error("query", err, sql, params))?
             {
                 let mut map = HashMap::new();
                 for (idx, name) in columns.iter().enumerate() {
                     let value = row
                         .get_ref(idx)
-                        .map_err(|err| format!("db query failed: {err}"))?;
+                        .map_err(|err| format_db_error("query", err, sql, params))?;
                     map.insert(name.clone(), value_from_ref(value));
                 }
                 out.push(map);
@@ -506,6 +644,87 @@ fn parse_sqlite_url(url: &str) -> Result<&str, String> {
     Err("unsupported db url (expected sqlite://...)".to_string())
 }
 
+fn append_where_sql(sql: &mut String, wheres: &[WhereClause], params: &mut Vec<Value>) {
+    if wheres.is_empty() {
+        return;
+    }
+    sql.push_str(" where ");
+    for (idx, clause) in wheres.iter().enumerate() {
+        if idx > 0 {
+            sql.push_str(" and ");
+        }
+        sql.push_str(&clause.column);
+        sql.push(' ');
+        sql.push_str(clause.op.as_str());
+        if matches!(clause.op, WhereOp::In) {
+            sql.push_str(" (");
+            let mut placeholders = Vec::with_capacity(clause.values.len());
+            for _ in &clause.values {
+                placeholders.push("?");
+            }
+            sql.push_str(&placeholders.join(", "));
+            sql.push(')');
+        } else {
+            sql.push_str(" ?");
+        }
+        params.extend(clause.values.iter().cloned());
+    }
+}
+
+fn format_db_error(
+    action: &str,
+    err: impl std::fmt::Display,
+    sql: &str,
+    params: &[Value],
+) -> String {
+    format!(
+        "db {action} failed: {err}; sql: {sql}; params: {}",
+        summarize_db_params(params)
+    )
+}
+
+fn summarize_db_params(params: &[Value]) -> String {
+    let mut out = String::from("[");
+    for (idx, value) in params.iter().enumerate() {
+        if idx > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&summarize_db_param(value));
+    }
+    out.push(']');
+    out
+}
+
+fn summarize_db_param(value: &Value) -> String {
+    match value.unboxed() {
+        Value::Null => "null".to_string(),
+        Value::Int(v) => format!("int({v})"),
+        Value::Float(v) => format!("float({v})"),
+        Value::Bool(v) => format!("bool({v})"),
+        Value::String(v) => format!("string({})", summarize_string(&v)),
+        Value::Bytes(v) => format!("bytes(len={})", v.len()),
+        Value::Boxed(inner) => summarize_db_param(&inner.lock().expect("box lock")),
+        Value::ResultOk(inner) => summarize_db_param(&inner),
+        Value::ResultErr(inner) => summarize_db_param(&inner),
+        other => format!("{}(<unsupported>)", other.to_string_value()),
+    }
+}
+
+fn summarize_string(value: &str) -> String {
+    const MAX_CHARS: usize = 48;
+    let mut truncated = String::new();
+    let mut count = 0usize;
+    for ch in value.chars() {
+        if count == MAX_CHARS {
+            truncated.push_str("...");
+            break;
+        }
+        truncated.push(ch);
+        count += 1;
+    }
+    format!("{truncated:?}")
+}
+
 fn value_from_ref(value: ValueRef<'_>) -> Value {
     match value {
         ValueRef::Null => Value::Null,
@@ -595,5 +814,90 @@ mod tests {
 
         let after_rollback = db.query("select count(*) as c from items").unwrap();
         assert_eq!(scalar_i64(&after_rollback, "c"), 0);
+    }
+
+    #[test]
+    fn query_builder_insert_update_delete_count_flow() {
+        let db = Db::open_with_pool(&temp_db_url("fuse_db_query_builder_write"), 1).unwrap();
+        db.exec("create table if not exists notes (id text primary key, title text not null)")
+            .unwrap();
+
+        let mut insert_fields = HashMap::new();
+        insert_fields.insert("id".to_string(), Value::String("n1".to_string()));
+        insert_fields.insert("title".to_string(), Value::String("Ada".to_string()));
+        let insert = Query::new("notes".to_string())
+            .unwrap()
+            .insert_struct(Value::Struct {
+                name: "Note".to_string(),
+                fields: insert_fields,
+            })
+            .unwrap();
+        let (insert_sql, insert_params) = insert.build_sql(None).unwrap();
+        assert_eq!(insert_sql, "insert into notes (id, title) values (?, ?)");
+        db.exec_params(&insert_sql, &insert_params).unwrap();
+
+        let update = Query::new("notes".to_string())
+            .unwrap()
+            .update_set("title".to_string(), Value::String("Bea".to_string()))
+            .unwrap()
+            .where_clause(
+                "id".to_string(),
+                "=".to_string(),
+                Value::String("n1".to_string()),
+            )
+            .unwrap();
+        let (update_sql, update_params) = update.build_sql(None).unwrap();
+        assert_eq!(update_sql, "update notes set title = ? where id = ?");
+        db.exec_params(&update_sql, &update_params).unwrap();
+
+        let count = Query::new("notes".to_string())
+            .unwrap()
+            .where_clause(
+                "title".to_string(),
+                "like".to_string(),
+                Value::String("B%".to_string()),
+            )
+            .unwrap()
+            .count()
+            .unwrap();
+        let (count_sql, count_params) = count.build_sql(None).unwrap();
+        assert_eq!(
+            count_sql,
+            "select count(*) as c from notes where title like ?"
+        );
+        let rows = db.query_params(&count_sql, &count_params).unwrap();
+        assert_eq!(scalar_i64(&rows, "c"), 1);
+
+        let delete = Query::new("notes".to_string())
+            .unwrap()
+            .delete_rows()
+            .unwrap()
+            .where_clause(
+                "id".to_string(),
+                "=".to_string(),
+                Value::String("n1".to_string()),
+            )
+            .unwrap();
+        let (delete_sql, delete_params) = delete.build_sql(None).unwrap();
+        assert_eq!(delete_sql, "delete from notes where id = ?");
+        db.exec_params(&delete_sql, &delete_params).unwrap();
+        let rows = db.query("select count(*) as c from notes").unwrap();
+        assert_eq!(scalar_i64(&rows, "c"), 0);
+    }
+
+    #[test]
+    fn db_errors_include_sql_and_params() {
+        let db = Db::open_with_pool(&temp_db_url("fuse_db_error_message"), 1).unwrap();
+        let err = db
+            .exec_params(
+                "insert into missing_table (id) values (?)",
+                &[Value::String("n1".to_string())],
+            )
+            .unwrap_err();
+        assert!(
+            err.contains("sql: insert into missing_table (id) values (?)"),
+            "err: {err}"
+        );
+        assert!(err.contains("params: [string(\"n1\")]"), "err: {err}");
     }
 }

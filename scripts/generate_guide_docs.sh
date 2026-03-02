@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC_DIR="$ROOT/docs/src/guides"
-OUT_DIR="$ROOT/docs/site/specs"
+SRC_DIR="$ROOT/guides/src"
+OUT_DIR="$ROOT/guides"
 
 if [[ "${FUSE_SKIP_GUIDE_DOCS:-0}" == "1" ]]; then
   echo "skipping guide docs generation (FUSE_SKIP_GUIDE_DOCS=1)"
@@ -58,8 +58,8 @@ extract_section() {
 # ---------------------------------------------------------------------------
 # generate_reference
 #
-# Assembles docs/site/specs/reference.md from spec/fls.md, spec/runtime.md, and governance/scope.md.
-# This replaces the previously hand-maintained reference.md.
+# Assembles guides/reference.md from spec/fls.md, spec/runtime.md, and governance/scope.md.
+# This is the canonical GitHub-facing reference surface.
 # ---------------------------------------------------------------------------
 generate_reference() {
   local dst="$OUT_DIR/reference.md"
@@ -372,7 +372,7 @@ TOOLING
 | `NO_COLOR` | — | Disables ANSI color when set (any value) |
 | `FUSE_REQUEST_LOG` | — | Set to `structured` (or `1`/`true`) for JSON request logging on stderr |
 | `FUSE_METRICS_HOOK` | — | Set to `stderr` for per-request metrics lines |
-| `FUSE_DEV_RELOAD_WS_URL` | — | Enables dev HTML script injection (`/__reload` client) |
+| `FUSE_DEV_RELOAD_WS_URL` | — | Enables dev HTML script injection (`/__reload` client) with reload + compile-error overlay events |
 | `FUSE_OPENAPI_JSON_PATH` | — | Enables built-in OpenAPI JSON endpoint at this path |
 | `FUSE_OPENAPI_UI_PATH` | — | Enables built-in OpenAPI UI at this path |
 | `FUSE_ASSET_MAP` | — | Logical-path to public-URL mappings for `asset(path)` |

@@ -1,0 +1,2 @@
+fn message() -> String:
+  return "strict-architecture-ok"

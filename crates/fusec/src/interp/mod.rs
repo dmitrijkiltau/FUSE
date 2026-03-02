@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::thread;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use fuse_rt::{
@@ -459,7 +459,19 @@ fn parse_log_level(raw: &str) -> Option<LogLevel> {
 fn is_query_method(name: &str) -> bool {
     matches!(
         name,
-        "select" | "where" | "order_by" | "limit" | "one" | "all" | "exec" | "sql" | "params"
+        "select"
+            | "where"
+            | "order_by"
+            | "limit"
+            | "insert"
+            | "update"
+            | "delete"
+            | "count"
+            | "one"
+            | "all"
+            | "exec"
+            | "sql"
+            | "params"
     )
 }
 
@@ -1217,6 +1229,12 @@ impl Interpreter {
             if let Some(owner) = self.config_owner.get(&name) {
                 self.current_module = *owner;
             }
+            let field_names: Vec<String> = decl
+                .fields
+                .iter()
+                .map(|field| field.name.name.clone())
+                .collect();
+            crate::runtime_types::emit_config_env_name_hints(&name, &field_names);
             self.configs.insert(name.clone(), HashMap::new());
             let section = file_values.get(&name);
             for field in &decl.fields {
@@ -1682,7 +1700,9 @@ impl Interpreter {
         }
         match name {
             "print" | "input" | "env" | "serve" | "log" | "db" | "assert" | "asset" | "json"
-            | "html" | "svg" | "request" | "response" => Ok(Value::Builtin(name.to_string())),
+            | "html" | "svg" | "request" | "response" | "time" | "crypto" => {
+                Ok(Value::Builtin(name.to_string()))
+            }
             _ if html_tags::is_html_tag(name) => Ok(Value::Builtin(name.to_string())),
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),
         }
@@ -1830,6 +1850,191 @@ impl Interpreter {
                 let json = rt_json::decode(&text)
                     .map_err(|msg| ExecError::Runtime(format!("invalid json: {msg}")))?;
                 Ok(self.json_to_value(&json))
+            }
+            "time.now" => {
+                if !args.is_empty() {
+                    return Err(ExecError::Runtime(
+                        "time.now expects 0 arguments".to_string(),
+                    ));
+                }
+                let now =
+                    crate::runtime_capabilities::time_now_unix_ms().map_err(ExecError::Runtime)?;
+                Ok(Value::Int(now))
+            }
+            "time.sleep" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "time.sleep expects 1 argument".to_string(),
+                    ));
+                }
+                let ms = match args.first() {
+                    Some(Value::Int(value)) => *value,
+                    Some(Value::Float(value)) => *value as i64,
+                    _ => return Err(ExecError::Runtime("time.sleep expects an Int".to_string())),
+                };
+                crate::runtime_capabilities::time_sleep_ms(ms).map_err(ExecError::Runtime)?;
+                Ok(Value::Unit)
+            }
+            "time.format" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "time.format expects 2 arguments".to_string(),
+                    ));
+                }
+                let epoch_ms = match args.first() {
+                    Some(Value::Int(value)) => *value,
+                    Some(Value::Float(value)) => *value as i64,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "time.format expects epoch as Int".to_string(),
+                        ));
+                    }
+                };
+                let fmt = match args.get(1) {
+                    Some(Value::String(value)) => value.as_str(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "time.format expects format as String".to_string(),
+                        ));
+                    }
+                };
+                let out = crate::runtime_capabilities::time_format_epoch_ms(epoch_ms, fmt)
+                    .map_err(ExecError::Runtime)?;
+                Ok(Value::String(out))
+            }
+            "time.parse" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "time.parse expects 2 arguments".to_string(),
+                    ));
+                }
+                let text = match args.first() {
+                    Some(Value::String(value)) => value.as_str(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "time.parse expects text as String".to_string(),
+                        ));
+                    }
+                };
+                let fmt = match args.get(1) {
+                    Some(Value::String(value)) => value.as_str(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "time.parse expects format as String".to_string(),
+                        ));
+                    }
+                };
+                match crate::runtime_capabilities::time_parse_epoch_ms(text, fmt) {
+                    Ok(epoch_ms) => Ok(Value::ResultOk(Box::new(Value::Int(epoch_ms)))),
+                    Err(message) => Ok(Value::ResultErr(Box::new(
+                        self.default_error_value(message),
+                    ))),
+                }
+            }
+            "crypto.hash" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "crypto.hash expects 2 arguments".to_string(),
+                    ));
+                }
+                let algo = match args.first() {
+                    Some(Value::String(algo)) => algo.as_str(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "crypto.hash expects algorithm as String".to_string(),
+                        ));
+                    }
+                };
+                let data = match args.get(1) {
+                    Some(Value::Bytes(data)) => data.as_slice(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "crypto.hash expects data as Bytes".to_string(),
+                        ));
+                    }
+                };
+                let digest = crate::runtime_capabilities::crypto_hash(algo, data)
+                    .map_err(ExecError::Runtime)?;
+                Ok(Value::Bytes(digest))
+            }
+            "crypto.hmac" => {
+                if args.len() != 3 {
+                    return Err(ExecError::Runtime(
+                        "crypto.hmac expects 3 arguments".to_string(),
+                    ));
+                }
+                let algo = match args.first() {
+                    Some(Value::String(algo)) => algo.as_str(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "crypto.hmac expects algorithm as String".to_string(),
+                        ));
+                    }
+                };
+                let key = match args.get(1) {
+                    Some(Value::Bytes(key)) => key.as_slice(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "crypto.hmac expects key as Bytes".to_string(),
+                        ));
+                    }
+                };
+                let data = match args.get(2) {
+                    Some(Value::Bytes(data)) => data.as_slice(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "crypto.hmac expects data as Bytes".to_string(),
+                        ));
+                    }
+                };
+                let digest = crate::runtime_capabilities::crypto_hmac(algo, key, data)
+                    .map_err(ExecError::Runtime)?;
+                Ok(Value::Bytes(digest))
+            }
+            "crypto.random_bytes" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "crypto.random_bytes expects 1 argument".to_string(),
+                    ));
+                }
+                let len = match args.first() {
+                    Some(Value::Int(value)) => *value,
+                    Some(Value::Float(value)) => *value as i64,
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "crypto.random_bytes expects an Int".to_string(),
+                        ));
+                    }
+                };
+                let bytes = crate::runtime_capabilities::crypto_random_bytes(len)
+                    .map_err(ExecError::Runtime)?;
+                Ok(Value::Bytes(bytes))
+            }
+            "crypto.constant_time_eq" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "crypto.constant_time_eq expects 2 arguments".to_string(),
+                    ));
+                }
+                let left = match args.first() {
+                    Some(Value::Bytes(bytes)) => bytes.as_slice(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "crypto.constant_time_eq expects Bytes arguments".to_string(),
+                        ));
+                    }
+                };
+                let right = match args.get(1) {
+                    Some(Value::Bytes(bytes)) => bytes.as_slice(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "crypto.constant_time_eq expects Bytes arguments".to_string(),
+                        ));
+                    }
+                };
+                Ok(Value::Bool(
+                    crate::runtime_capabilities::crypto_constant_time_eq(left, right),
+                ))
             }
             "asset" => {
                 if args.len() != 1 {
@@ -2238,6 +2443,101 @@ impl Interpreter {
                 let next = query.limit(limit).map_err(ExecError::Runtime)?;
                 Ok(Value::Query(next))
             }
+            "query.insert" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "query.insert expects 2 arguments".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.insert expects a Query".to_string(),
+                        ));
+                    }
+                };
+                let value = args.get(1).cloned().ok_or_else(|| {
+                    ExecError::Runtime("query.insert expects a struct".to_string())
+                })?;
+                let next = query.insert_struct(value).map_err(ExecError::Runtime)?;
+                Ok(Value::Query(next))
+            }
+            "query.update" => {
+                if args.len() != 3 {
+                    return Err(ExecError::Runtime(
+                        "query.update expects 3 arguments".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.update expects a Query".to_string(),
+                        ));
+                    }
+                };
+                let column = match args.get(1) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.update expects a column string".to_string(),
+                        ));
+                    }
+                };
+                let value = args.get(2).cloned().ok_or_else(|| {
+                    ExecError::Runtime("query.update expects a value".to_string())
+                })?;
+                let next = query
+                    .update_set(column, value)
+                    .map_err(ExecError::Runtime)?;
+                Ok(Value::Query(next))
+            }
+            "query.delete" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "query.delete expects 1 argument".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.delete expects a Query".to_string(),
+                        ));
+                    }
+                };
+                let next = query.delete_rows().map_err(ExecError::Runtime)?;
+                Ok(Value::Query(next))
+            }
+            "query.count" => {
+                if args.len() != 1 {
+                    return Err(ExecError::Runtime(
+                        "query.count expects 1 argument".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.count expects a Query".to_string(),
+                        ));
+                    }
+                };
+                let count_query = query.count().map_err(ExecError::Runtime)?;
+                let (sql, params) = count_query.build_sql(None).map_err(ExecError::Runtime)?;
+                let db = self.db_mut()?;
+                let rows = db.query_params(&sql, &params).map_err(ExecError::Runtime)?;
+                let count = rows
+                    .first()
+                    .and_then(|row| row.get("c"))
+                    .and_then(|value| match value {
+                        Value::Int(v) => Some(*v),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                Ok(Value::Int(count))
+            }
             "query.one" => {
                 if args.len() != 1 {
                     return Err(ExecError::Runtime(
@@ -2638,9 +2938,7 @@ impl Interpreter {
         loop {
             if observability::graceful_shutdown_requested() {
                 let signal = observability::take_shutdown_signal_name().unwrap_or("unknown");
-                eprintln!(
-                    "shutdown: runtime=ast signal={signal} handled_requests={handled}"
-                );
+                eprintln!("shutdown: runtime=ast signal={signal} handled_requests={handled}");
                 break;
             }
             let mut stream = match listener.accept() {
@@ -2655,7 +2953,7 @@ impl Interpreter {
                             "failed to accept connection: {err}"
                         )));
                     }
-                }
+                },
             };
             let request = match self.read_http_request(&mut stream) {
                 Ok(request) => request,
@@ -3223,9 +3521,8 @@ impl Interpreter {
             return body;
         }
         let ws_url = escape_js_single_quoted(&ws_url);
-        let script = format!(
-            "<script data-fuse-live-reload>(function(){{var url='{ws_url}';var retry=500;function connect(){{var ws=new WebSocket(url);ws.onopen=function(){{retry=500;}};ws.onmessage=function(){{window.location.reload();}};ws.onclose=function(){{setTimeout(connect,retry);retry=Math.min(retry*2,3000);}};ws.onerror=function(){{ws.close();}};}}connect();}})();</script>"
-        );
+        let script = r#"<script data-fuse-live-reload>(function(){var url='__WS_URL__';var retry=500;var overlayId='fuse-dev-overlay';function ensureOverlay(){var overlay=document.getElementById(overlayId);if(!overlay){overlay=document.createElement('div');overlay.id=overlayId;overlay.setAttribute('data-fuse-dev-overlay','1');overlay.style.cssText='position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,0.94);color:#f8fafc;padding:24px;font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;white-space:pre-wrap;overflow:auto;display:none;';document.documentElement.appendChild(overlay);}return overlay;}function hideOverlay(){var overlay=document.getElementById(overlayId);if(overlay){overlay.style.display='none';overlay.textContent='';}}function showOverlay(message){var overlay=ensureOverlay();overlay.textContent='FUSE dev compilation error\n\n'+message;overlay.style.display='block';}function handleMessage(raw){if(raw==='reload'){window.location.reload();return;}var event=null;try{event=JSON.parse(raw);}catch(_err){event=null;}if(!event||typeof event!=='object'){return;}if(event.type==='reload'){window.location.reload();return;}if(event.type==='clear_error'){hideOverlay();return;}if(event.type==='compile_error'){if(typeof event.message==='string'&&event.message.length>0){showOverlay(event.message);}else{showOverlay('unknown compile error');}}}function connect(){var ws=new WebSocket(url);ws.onopen=function(){retry=500;};ws.onmessage=function(ev){if(typeof ev.data==='string'){handleMessage(ev.data);}};ws.onclose=function(){setTimeout(connect,retry);retry=Math.min(retry*2,3000);};ws.onerror=function(){ws.close();};}connect();})();</script>"#
+            .replace("__WS_URL__", &ws_url);
         if let Some(index) = body.rfind("</body>") {
             body.insert_str(index, &script);
         } else {
@@ -3386,6 +3683,16 @@ impl Interpreter {
                 _ => Err(ExecError::Runtime(format!(
                     "unknown response method {field}"
                 ))),
+            },
+            Value::Builtin(name) if name == "time" => match field {
+                "now" | "sleep" | "format" | "parse" => Ok(Value::Builtin(format!("time.{field}"))),
+                _ => Err(ExecError::Runtime(format!("unknown time method {field}"))),
+            },
+            Value::Builtin(name) if name == "crypto" => match field {
+                "hash" | "hmac" | "random_bytes" | "constant_time_eq" => {
+                    Ok(Value::Builtin(format!("crypto.{field}")))
+                }
+                _ => Err(ExecError::Runtime(format!("unknown crypto method {field}"))),
             },
             Value::Config(name) => {
                 let map = self

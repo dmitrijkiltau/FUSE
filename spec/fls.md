@@ -484,6 +484,8 @@ Module capabilities:
 - duplicate capability declarations in one module are semantic errors
 - capability checks are compile-time only (no runtime capability guard)
 - calls requiring capabilities are rejected when the current module does not declare them
+- `requires time` gates access to runtime `time.*` builtins (`now`, `format`, `parse`, `sleep`)
+- `requires crypto` gates access to runtime `crypto.*` builtins (`hash`, `hmac`, `random_bytes`, `constant_time_eq`)
 - call sites to imported module functions must declare every capability required by the callee module
   (capability leakage across module boundaries is rejected)
 - `transaction` blocks are valid only in modules with `requires db` and no additional capabilities

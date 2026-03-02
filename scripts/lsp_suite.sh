@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-step() {
-  printf "\n[%s] %s\n" "$1" "$2"
-}
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+ROOT="$(fuse_repo_root "${BASH_SOURCE[0]}")"
 
 step "1/10" "Run focused LSP contract tests"
 "$ROOT/scripts/cargo_env.sh" cargo test -p fusec --test lsp_contracts

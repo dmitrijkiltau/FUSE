@@ -1,0 +1,18 @@
+requires db
+requires network
+
+import Data from "./capability_demo_data"
+
+config App:
+  dbUrl: String = env("FUSE_DB_URL") ?? "sqlite::memory:"
+  port: String = env("APP_PORT") ?? "4020"
+
+service NotesApi at "/api":
+  get "/health" -> Map<String, String>:
+    let total = Data.note_count()
+    return {"status": "ok", "notes": "${total}"}
+
+app "CapabilityDemo":
+  Data.ensure_schema()
+  Data.seed_once()
+  serve(App.port)

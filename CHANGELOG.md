@@ -2,6 +2,57 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.8.0] - 2026-03-02
+
+### Added
+
+- Runtime capability APIs are now implemented across AST/native:
+  - `time.now`, `time.format`, `time.parse`, `time.sleep`
+  - `crypto.hash`, `crypto.hmac`, `crypto.random_bytes`, `crypto.constant_time_eq`
+- Native lowering support for previously unsupported call-target patterns:
+  - index call targets
+  - optional-index call targets
+  - optional-member call targets
+- Example coverage expanded for key language/runtime features:
+  - `transaction_demo.fuse`
+  - `capability_demo.fuse`
+  - `test_demo.fuse`
+  - `strict_arch_demo/`
+  - `refinement_demo.fuse`
+  - `json_codec.fuse`
+  - `time_crypto.fuse`
+  - `dep_import/`
+- DB and config ergonomics improvements:
+  - `db.from(...).insert(struct)`
+  - `db.from(...).update(column, value).where(...)`
+  - `db.from(...).delete().where(...)`
+  - query-builder `.count()`
+  - config env override support for user-defined struct/enum values
+  - config env-name mismatch hints (`APP_DBURL` -> `APP_DB_URL`)
+- Developer workflow improvements:
+  - incremental `fuse check` cache mode
+  - `fuse dev` compile-error overlay via reload websocket
+  - `fuse test --filter <pattern>`
+  - deterministic AOT build progress stages in `fuse build`
+  - `--diagnostics json` structured diagnostic output mode
+
+### Changed
+
+- LSP server implementation was modularized from a monolith into focused handler/state modules;
+  dispatch entrypoint surface remains behaviorally equivalent.
+- `fuse` CLI internals were split into focused modules (`args`, `manifest`, `run/dev/build`, `deps`, `aot`, `cache`, `output`) with no contract changes.
+- Test harnesses now share centralized HTTP/runtime helper logic to reduce duplication and increase parity-test stability.
+- `project_cli` integration tests were split into feature-domain files while preserving test names and assertions.
+- Documentation delivery moved to a GitHub-first guide surface:
+  - `guides/` now contains generated `reference.md`, `onboarding.md`, and `boundary-contracts.md`
+  - `docs/` site package was removed
+  - `scripts/generate_guide_docs.sh` now generates guides under `guides/`
+
+### Migration
+
+- No language source migration is required from `0.7.x` to `0.8.0`.
+- Repository consumers linking to docs-site paths should switch to `guides/` paths.
+
 ## [0.7.0] - 2026-02-28
 
 ### Added
@@ -112,7 +163,7 @@ All notable changes to this project are documented in this file.
   two-backend model (AST/native). CHANGELOG historical entries preserved.
 - `release_smoke.sh` reduced from 24 to 23 steps (VM smoke step removed).
 - `use_case_bench.sh` CLI workload metrics now use `--backend native`.
-- `docs/fuse.toml` backend changed from `vm` to `native`.
+- Documentation package manifest backend changed from `vm` to `native`.
 - Parity tests compare AST vs Native only (VM removed from matrix).
 - RFC 0007 status updated to Implemented.
 
@@ -238,7 +289,7 @@ All notable changes to this project are documented in this file.
 - Cached `fuse run` fast-path now supports CLI program args after `--`.
 - VSIX integrity verification script: `scripts/verify_vscode_vsix.sh`.
 - Benchmark regression gate script: `scripts/check_use_case_bench_regression.sh`.
-- Migration guide: `docs/migrations/0.1-to-0.2.md`.
+- Migration guide: `guides/migrations/0.1-to-0.2.md`.
 - CLI `input(prompt: String = "") -> String` builtin across AST/VM/native backends.
 - CLI output color policy: `--color auto|always|never` (respects `NO_COLOR`).
 
@@ -257,7 +308,7 @@ All notable changes to this project are documented in this file.
 
 ### Migration
 
-- See `docs/migrations/0.1-to-0.2.md` for required source/tooling updates.
+- See `guides/migrations/0.1-to-0.2.md` for required source/tooling updates.
 
 ## [0.1.0] - 2026-02-21
 

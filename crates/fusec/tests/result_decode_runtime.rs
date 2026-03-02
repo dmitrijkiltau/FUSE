@@ -1,12 +1,12 @@
 use std::fs;
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod support;
+use support::http::send_http_request_status_body_with_retry;
 use support::net::{find_free_port, skip_if_loopback_unavailable};
 
 fn write_temp_file(name: &str, ext: &str, contents: &str) -> PathBuf {
@@ -20,43 +20,9 @@ fn write_temp_file(name: &str, ext: &str, contents: &str) -> PathBuf {
     path
 }
 
-fn send_http_request_with_retry(port: u16, request: &str) -> (u16, String) {
-    let start = Instant::now();
-    loop {
-        match TcpStream::connect(format!("127.0.0.1:{port}")) {
-            Ok(mut stream) => {
-                stream
-                    .write_all(request.as_bytes())
-                    .expect("failed to write request");
-                stream.shutdown(std::net::Shutdown::Write).ok();
-                let mut response = String::new();
-                stream
-                    .read_to_string(&mut response)
-                    .expect("failed to read response");
-                let mut lines = response.split("\r\n");
-                let status_line = lines.next().unwrap_or("");
-                let status = status_line
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("500")
-                    .parse::<u16>()
-                    .unwrap_or(500);
-                let body = response
-                    .split("\r\n\r\n")
-                    .nth(1)
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                return (status, body);
-            }
-            Err(_) => {
-                if start.elapsed() > Duration::from_secs(2) {
-                    panic!("server did not start on 127.0.0.1:{port}");
-                }
-                thread::sleep(Duration::from_millis(25));
-            }
-        }
-    }
+fn decode_http_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn run_decode_request(backend: &str, payload: &str) -> (u16, String) {
@@ -82,29 +48,59 @@ app "demo":
 }
 
 fn run_decode_request_with_program(backend: &str, program: &str, payload: &str) -> (u16, String) {
-    let port = find_free_port();
+    let _lock = decode_http_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let path = write_temp_file("fuse_result_decode_runtime", "fuse", program);
     let exe = env!("CARGO_BIN_EXE_fusec");
-    let mut child = Command::new(exe)
-        .arg("--run")
-        .arg("--backend")
-        .arg(backend)
-        .arg(&path)
-        .env("APP_PORT", port.to_string())
-        .env("FUSE_MAX_REQUESTS", "1")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to start server");
+    for attempt in 0..8 {
+        let port = find_free_port();
+        let mut child = Command::new(exe)
+            .arg("--run")
+            .arg("--backend")
+            .arg(backend)
+            .arg(&path)
+            .env("APP_PORT", port.to_string())
+            .env("FUSE_MAX_REQUESTS", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to start server");
 
-    let request = format!(
-        "POST /decode HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-        payload.len(),
-        payload
-    );
-    let out = send_http_request_with_retry(port, &request);
-    let _ = child.wait();
-    out
+        thread::sleep(Duration::from_millis(20));
+        if child
+            .try_wait()
+            .expect("failed to poll child status")
+            .is_some()
+        {
+            let output = child
+                .wait_with_output()
+                .expect("failed to collect child output");
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            if stderr.contains("Address already in use") && attempt < 7 {
+                continue;
+            }
+            let _ = fs::remove_file(&path);
+            panic!("server exited before readiness (backend={backend}): {stderr}");
+        }
+
+        let request = format!(
+            "POST /decode HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let out = send_http_request_status_body_with_retry(port, &request);
+        let output = child.wait_with_output().expect("failed to wait for server");
+        assert!(
+            output.status.success(),
+            "server exited with failure (backend={backend}): {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let _ = fs::remove_file(&path);
+        return out;
+    }
+    let _ = fs::remove_file(&path);
+    panic!("failed to start server after retries (backend={backend})");
 }
 
 #[test]
