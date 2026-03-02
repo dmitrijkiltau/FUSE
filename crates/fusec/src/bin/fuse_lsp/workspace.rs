@@ -8,6 +8,7 @@ use fusec::loader::{
     ModuleExports, ModuleLink, ModuleMap, ModuleRegistry,
     load_program_with_modules_and_deps_and_overrides,
 };
+use fusec::manifest::{build_transitive_deps, parse_manifest};
 use fusec::parse_source;
 use fusec::span::Span;
 
@@ -31,6 +32,9 @@ pub(crate) struct WorkspaceSnapshot {
     pub(crate) loader_diags: Vec<Diag>,
     pub(crate) module_ids_by_path: HashMap<PathBuf, usize>,
     pub(crate) index: Option<WorkspaceIndex>,
+    /// Mtimes (seconds since UNIX epoch) of every `fuse.toml` contributing to
+    /// this snapshot.  Used to detect manifest edits and trigger full rebuilds.
+    pub(crate) manifest_mtimes: HashMap<PathBuf, u64>,
 }
 
 pub(crate) fn try_incremental_module_update(
@@ -42,6 +46,10 @@ pub(crate) fn try_incremental_module_update(
         return true;
     };
     cache.docs_revision = state.docs_revision;
+    // Check if any watched fuse.toml has changed on disk; if so force full rebuild.
+    if any_manifest_changed(&cache.snapshot) {
+        return false;
+    }
     let Some(path) = uri_to_path(uri) else {
         return true;
     };
@@ -1381,7 +1389,29 @@ fn build_workspace_snapshot_from_entry(
     workspace_root: PathBuf,
     overrides: HashMap<PathBuf, String>,
 ) -> Option<WorkspaceSnapshot> {
-    let dep_roots = resolve_dependency_roots_for_workspace(&workspace_root);
+    // Use the shared manifest parser for dep resolution (supports transitive deps).
+    let direct_deps = parse_manifest(&workspace_root)
+        .map(|m| m.deps)
+        .unwrap_or_default();
+    let (dep_roots, _cycle_errors) = build_transitive_deps(&direct_deps);
+
+    // Record fuse.toml mtimes for manifest-change detection.
+    let mut manifest_mtimes: HashMap<PathBuf, u64> = HashMap::new();
+    {
+        let root_manifest = workspace_root.join("fuse.toml");
+        if root_manifest.exists() {
+            manifest_mtimes.insert(root_manifest.clone(), manifest_mtime(&root_manifest));
+        }
+        for dep_root in dep_roots.values() {
+            let dep_manifest = dep_root.join("fuse.toml");
+            if dep_manifest.exists() {
+                manifest_mtimes
+                    .entry(dep_manifest.clone())
+                    .or_insert_with(|| manifest_mtime(&dep_manifest));
+            }
+        }
+    }
+
     let entry_key = entry_path
         .canonicalize()
         .unwrap_or_else(|_| entry_path.clone());
@@ -1411,6 +1441,7 @@ fn build_workspace_snapshot_from_entry(
         loader_diags,
         module_ids_by_path,
         index: None,
+        manifest_mtimes,
     })
 }
 
@@ -1490,200 +1521,31 @@ fn resolve_entry_path(root_path: &Path, focus: Option<&Path>) -> Option<PathBuf>
 }
 
 fn read_manifest_entry(root: &Path) -> Option<PathBuf> {
-    let manifest = root.join("fuse.toml");
-    let contents = std::fs::read_to_string(&manifest).ok()?;
-    let mut in_package = false;
-    for raw_line in contents.lines() {
-        let line = strip_toml_comment(raw_line).trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if line.starts_with('[') && line.ends_with(']') {
-            in_package = line == "[package]";
-            continue;
-        }
-        if !in_package {
-            continue;
-        }
-        let mut parts = line.splitn(2, '=');
-        let key = parts.next()?.trim();
-        if key != "entry" {
-            continue;
-        }
-        let value = parts.next()?.trim();
-        let value = value.trim_matches('"').trim_matches('\'');
-        if value.is_empty() {
-            continue;
-        }
-        return Some(root.join(value));
-    }
-    None
+    parse_manifest(root).and_then(|m| m.entry)
 }
 
-fn resolve_dependency_roots_for_workspace(workspace_root: &Path) -> HashMap<String, PathBuf> {
-    let manifest = workspace_root.join("fuse.toml");
-    let contents = match std::fs::read_to_string(&manifest) {
-        Ok(contents) => contents,
-        Err(_) => return HashMap::new(),
-    };
-
-    let mut roots = HashMap::new();
-    let mut in_dependencies = false;
-    let mut dependency_table: Option<String> = None;
-
-    for raw_line in contents.lines() {
-        let line = strip_toml_comment(raw_line).trim();
-        if line.is_empty() {
-            continue;
+/// Compare stored manifest mtimes to current on-disk mtimes.
+/// Returns `true` if any manifest has changed (full workspace rebuild needed).
+fn any_manifest_changed(snapshot: &WorkspaceSnapshot) -> bool {
+    for (path, &stored_mtime) in &snapshot.manifest_mtimes {
+        if manifest_mtime(path) != stored_mtime {
+            return true;
         }
-
-        if line.starts_with('[') && line.ends_with(']') {
-            in_dependencies = false;
-            dependency_table = None;
-            let header = line[1..line.len() - 1].trim();
-            if header == "dependencies" {
-                in_dependencies = true;
-            } else if let Some(dep_name) = header.strip_prefix("dependencies.") {
-                let dep_name = unquote_toml_key(dep_name.trim());
-                if !dep_name.is_empty() {
-                    dependency_table = Some(dep_name);
-                }
-            }
-            continue;
-        }
-
-        if let Some(dep_name) = dependency_table.as_deref() {
-            let Some((key, value)) = split_toml_assignment(line) else {
-                continue;
-            };
-            if unquote_toml_key(key) != "path" {
-                continue;
-            }
-            let Some(path) = parse_toml_string(value) else {
-                continue;
-            };
-            roots.insert(
-                dep_name.to_string(),
-                dependency_root_path(workspace_root, &path),
-            );
-            continue;
-        }
-
-        if !in_dependencies {
-            continue;
-        }
-        let Some((dep_name_raw, dep_value_raw)) = split_toml_assignment(line) else {
-            continue;
-        };
-        let dep_name = unquote_toml_key(dep_name_raw);
-        if dep_name.is_empty() {
-            continue;
-        }
-        let Some(path) = resolve_dependency_path_value(dep_value_raw) else {
-            continue;
-        };
-        roots.insert(dep_name, dependency_root_path(workspace_root, &path));
     }
-
-    roots
+    false
 }
 
-fn resolve_dependency_path_value(value: &str) -> Option<String> {
-    let value = value.trim();
-    if let Some(path) = parse_toml_string(value) {
-        if looks_like_path_dependency(&path) {
-            return Some(path);
-        }
-        return None;
-    }
-    if !(value.starts_with('{') && value.ends_with('}')) {
-        return None;
-    }
-    let inner = &value[1..value.len() - 1];
-    for part in inner.split(',') {
-        let Some((key, path_value)) = split_toml_assignment(part) else {
-            continue;
-        };
-        if unquote_toml_key(key) != "path" {
-            continue;
-        }
-        return parse_toml_string(path_value);
-    }
-    None
-}
-
-fn dependency_root_path(workspace_root: &Path, raw_path: &str) -> PathBuf {
-    let path = PathBuf::from(raw_path);
-    let joined = if path.is_absolute() {
-        path
-    } else {
-        workspace_root.join(path)
-    };
-    normalized_path(joined.as_path())
-}
-
-fn split_toml_assignment(line: &str) -> Option<(&str, &str)> {
-    let mut parts = line.splitn(2, '=');
-    let key = parts.next()?.trim();
-    let value = parts.next()?.trim();
-    if key.is_empty() || value.is_empty() {
-        return None;
-    }
-    Some((key, value))
-}
-
-fn parse_toml_string(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.len() < 2 {
-        return None;
-    }
-    let quote = value.chars().next()?;
-    if quote != '"' && quote != '\'' {
-        return None;
-    }
-    if !value.ends_with(quote) {
-        return None;
-    }
-    Some(value[1..value.len() - 1].to_string())
-}
-
-fn unquote_toml_key(key: &str) -> String {
-    let key = key.trim();
-    if key.len() >= 2
-        && ((key.starts_with('"') && key.ends_with('"'))
-            || (key.starts_with('\'') && key.ends_with('\'')))
-    {
-        return key[1..key.len() - 1].to_string();
-    }
-    key.to_string()
-}
-
-fn strip_toml_comment(line: &str) -> &str {
-    let mut in_quote: Option<char> = None;
-    for (idx, ch) in line.char_indices() {
-        if ch == '"' || ch == '\'' {
-            if let Some(active) = in_quote {
-                if active == ch {
-                    in_quote = None;
-                }
-            } else {
-                in_quote = Some(ch);
-            }
-            continue;
-        }
-        if ch == '#' && in_quote.is_none() {
-            return &line[..idx];
-        }
-    }
-    line
-}
-
-fn looks_like_path_dependency(value: &str) -> bool {
-    value.starts_with("./")
-        || value.starts_with("../")
-        || value.starts_with('/')
-        || value.contains('/')
-        || value.contains('\\')
+/// Read the last-modified time of a file as nanoseconds since UNIX epoch.
+/// Returns 0 on error (missing file treated as mtime 0 → always triggers rebuild).
+/// Nanosecond resolution avoids false cache-hits when a file is rewritten within
+/// the same wall-clock second.
+fn manifest_mtime(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
 }
 
 fn find_first_fuse_file(root: &Path) -> Option<PathBuf> {

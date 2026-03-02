@@ -155,19 +155,40 @@ Implementation files changed:
 
 ### M3 — Dependency and package workflow hardening
 
+**Status: COMPLETE** ✓ (2026-03-03)
+
 **Goal:** Make multi-package repositories reliable and friction-free for larger project layouts.
 
 Deliverables:
 
-1. Harden `dep:` and `root:` import resolution for nested package structures
+1. ✓ Harden `dep:` and `root:` import resolution for nested package structures
    (transitive dependency resolution, cycle detection across package boundaries).
-2. Improve `fuse check` incremental cache correctness for multi-package workspaces
-   (cross-package invalidation on manifest or export-shape changes).
-3. Add `fuse check --workspace` mode for checking all packages in a repository root.
-4. Improve diagnostic quality for dependency resolution failures (missing dep, version
-   mismatch, circular import paths).
-5. Extend LSP dependency-root parsing coverage for additional manifest dependency syntaxes
-   (per `LSP_ROADMAP.md` planned item).
+   — `crates/fusec/src/manifest.rs` (new): `parse_manifest` reads all three `fuse.toml`
+   dependency syntaxes; `build_transitive_deps` performs BFS expansion of each dep's own
+   manifest; direct deps always shadow same-named sub-deps; cycles detected by tracking
+   the active resolution chain.
+   — Cycle diagnostic: `circular import: A → B → A` (full chain with `→` separators).
+   — Unknown-dep diagnostic: `unknown dependency 'Foo' — available: Auth, Math`.
+2. ✓ Improve `fuse check` incremental cache correctness for multi-package workspaces.
+   — `CheckCache` in `crates/fusec/src/cli.rs`: per-entry-point TSV fingerprint file at
+   `.fuse-cache/check-<hash>.tsv`; stores nanosecond-precision mtime for every loaded
+   source file; cache hit prints `check: ok (cached, no changes)`; cache invalidated
+   on any diagnostic error.
+3. ✓ Add `fuse check --workspace` mode for checking all packages in a repository root.
+   — `find_workspace_manifests` in `manifest.rs` walks the directory tree (skipping
+   `target/`, `.git/`, hidden dirs, `node_modules/`), discovers all `fuse.toml` with a
+   `[package].entry`; `run_workspace_check` checks each with per-package caching; final
+   summary line with total pass/fail count.
+4. ✓ Improve diagnostic quality for dependency resolution failures.
+   — `unknown dependency` error now lists all declared dep names as a hint.
+   — Cycle error shows the full `A → B → A` path.
+5. ✓ Extend LSP dependency-root parsing coverage for additional manifest dependency syntaxes
+   and manifest-change invalidation.
+   — `workspace.rs` replaced 8 inline TOML helpers + ~130 lines with calls to
+   `fusec::manifest::{parse_manifest, build_transitive_deps}`.
+   — `WorkspaceSnapshot.manifest_mtimes`: nanosecond-precision mtime per tracked
+   `fuse.toml`; `any_manifest_changed` checked at the top of every incremental update;
+   detected change clears the workspace cache and triggers a full rebuild on next request.
 
 Exit criteria:
 
@@ -176,6 +197,18 @@ Exit criteria:
 - LSP provides diagnostics and go-to-definition across package boundaries.
 - Integration test coverage for transitive `dep:` resolution and cycle rejection.
 - No regressions in single-package workflow (`project_demo`, `reference-service`).
+
+Implementation files changed:
+
+| File | Change |
+|---|---|
+| `crates/fusec/src/manifest.rs` | New: `parse_manifest`, `parse_manifest_contents`, `build_transitive_deps`, `find_workspace_manifests`, `find_workspace_root_for_entry` |
+| `crates/fusec/src/lib.rs` | Added `pub mod manifest;` |
+| `crates/fusec/src/loader.rs` | Both `load_program_with_modules_and_deps*` call `build_transitive_deps` first; improved diagnostic messages for unknown-dep and cycle |
+| `crates/fusec/src/cli.rs` | `--workspace` flag + `run_workspace_check`; `CheckCache` with nanosecond-mtime TSV fingerprint file; cache hit/miss/invalidate paths |
+| `crates/fusec/src/bin/fuse_lsp/workspace.rs` | `WorkspaceSnapshot.manifest_mtimes`; `any_manifest_changed` + `manifest_mtime` (nanosecond); replaces inline TOML helpers with `parse_manifest`; `try_incremental_module_update` checks manifest change before incremental path |
+| `crates/fusec/tests/dep_resolution.rs` | New: 12 integration tests covering transitive resolution, cycle detection, CLI cache, `--workspace` mode, `find_workspace_manifests` |
+| `crates/fusec/tests/lsp_workspace_incremental.rs` | Added `lsp_full_rebuild_triggered_by_manifest_change` test |
 
 ---
 

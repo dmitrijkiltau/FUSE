@@ -3,6 +3,7 @@ pub mod callbind;
 pub mod cli;
 pub mod db;
 pub mod diag;
+pub mod manifest;
 pub mod diag_render;
 pub mod format;
 pub mod frontend;

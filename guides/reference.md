@@ -326,6 +326,26 @@ Notes:
 - dependency modules use `dep:` import paths (for example, `dep:Auth/lib`)
 - root-qualified modules use `root:` import paths (for example, `root:lib/auth`)
 
+Package dependency resolution (`dep:` imports):
+
+- dependencies are declared in `fuse.toml` under `[dependencies]` using any of three syntaxes:
+  `Auth = "./deps/auth"` (bare path), `Auth = { path = "./deps/auth" }` (inline table),
+  `[dependencies.Auth] path = "./deps/auth"` (section table).
+- `dep:<Name>/<module-path>` resolves to `<dep-root>/<module-path>.fuse` (`.fuse` added if missing).
+- dependency resolution is transitive: each dependency's own `fuse.toml` is read and its
+  named sub-dependencies are merged into the consumer's dep map; the direct consumer's deps
+  always shadow any same-named sub-dependencies.
+- cross-package dependency cycles are a load-time error; the diagnostic identifies the full
+  cycle path with `→` separators (for example, `circular import: A → B → A`).
+- attempting to use an undeclared dependency name emits a structured error naming the unknown
+  dep and listing all declared deps (for example, `unknown dependency 'Foo' — available: Auth, Math`).
+- the `fuse check --workspace` flag walks the directory tree from the current working directory,
+  discovers all `fuse.toml` manifests that declare a `[package].entry`, and checks each package
+  independently; results are summarised with a per-package pass/fail line followed by a total.
+- a lightweight file-timestamp cache (`.fuse-cache/check-<hash>.tsv`) is maintained per
+  entry point; a `fuse check` that hits a valid cache prints `check: ok (cached, no changes)`
+  and exits immediately; the cache is invalidated after any diagnostic error.
+
 Module capabilities:
 
 - modules may declare capability requirements with top-level `requires` declarations

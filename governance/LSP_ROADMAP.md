@@ -30,6 +30,8 @@ Server: `crates/fusec/src/bin/fuse-lsp.rs`
 - incremental relink support for newly introduced `dep:` import paths (avoids full-reload fallback for dependency modules present on disk)
 - incremental relink support for newly introduced `root:` import paths (avoids full-reload fallback for package-root modules present on disk)
 - incremental materialization of `std.Error` during relink when newly introduced in edited modules (avoids pseudo-module fallback reload)
+- extended dependency-root parsing: all three `fuse.toml` dependency syntaxes (bare path, inline table, section table) resolved via shared `fusec::manifest` parser; transitively-expanded dep map populated for each workspace snapshot
+- manifest mtime invalidation: `fuse.toml` last-modified time is tracked per workspace snapshot; any change triggers a full workspace rebuild on the next `textDocument/didChange` notification
 - cancellation handling validated for request bursts (`$/cancelRequest` contract)
 - responsiveness budgets validated for large multi-file completion workloads
 
@@ -64,4 +66,6 @@ For the current phase, editor support means:
 
 ## Next improvements (planned)
 
-1. Extend dependency-root parsing coverage for additional manifest dependency syntaxes if/when they become part of the package spec surface.
+1. Progressive workspace indexing: index files on demand instead of eagerly loading all modules at startup (prerequisite for M4 latency budgets).
+2. Coarse-grained index persistence across LSP restarts (skip full re-index when workspace is unchanged).
+3. Latency budget enforcement: diagnostics ≤ 500 ms, completion ≤ 200 ms, workspace symbol ≤ 300 ms on a 50-file workspace.
