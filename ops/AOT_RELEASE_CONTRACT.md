@@ -1,7 +1,7 @@
 # AOT Release Contract
 
 Status: Accepted
-Scope: production AOT backend and release reproducibility contract for the active `v0.7.x` line.
+Scope: production AOT backend and release reproducibility contract for the active `v0.8.0` line.
 
 ## Document contract
 
@@ -21,7 +21,7 @@ Scope: production AOT backend and release reproducibility contract for the activ
 
 ## Operational contract
 
-1. `fuse build --aot` targets production deployment outputs.
+1. `fuse build --release` targets production deployment outputs.
 2. JIT-native remains valid for fast local iteration and diagnostics.
 3. AOT outputs must run without requiring a Rust toolchain on deployment hosts.
 4. AOT release artifacts must be produced for:
