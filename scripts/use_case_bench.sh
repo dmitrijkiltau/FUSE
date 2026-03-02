@@ -21,6 +21,7 @@ BENCH_REFERENCE_MANIFEST=""
 declare -a cli_check_samples=()
 declare -a cli_run_ok_samples=()
 declare -a cli_run_invalid_samples=()
+declare -a cli_spawn_bench_samples=()
 declare -a notes_check_cold_samples=()
 declare -a notes_check_warm_samples=()
 declare -a notes_check_incremental_edit_samples=()
@@ -237,7 +238,7 @@ collect_environment_metadata() {
 
 run_single_iteration() {
   local iteration="$1"
-  local cli_check_ms cli_run_ok_ms cli_run_invalid_ms cli_run_invalid_status
+  local cli_check_ms cli_run_ok_ms cli_run_invalid_ms cli_run_invalid_status cli_spawn_bench_ms
   local notes_check_cold_ms notes_check_warm_ms notes_check_incremental_edit_ms notes_migrate_ms
   local status_list status_post_ok status_post_invalid status_root
   local notes_get_list_ms notes_post_ok_ms notes_post_invalid_ms notes_frontend_get_ms
@@ -263,6 +264,10 @@ run_single_iteration() {
     echo "Expected project_demo contract-failure run to fail (DEMO_FAIL=1)." >&2
     exit 1
   fi
+
+  echo "Running parallel-spawn CLI workload metrics..."
+  measure_cmd_ms cli_spawn_bench_ms \
+    "$ROOT/scripts/fuse" run --backend native "$ROOT/examples/spawn_bench.fuse"
 
   echo "Running reference-service compile/check workload metrics..."
   PORT="$((39000 + RANDOM % 1000))"
@@ -351,6 +356,7 @@ run_single_iteration() {
   cli_check_samples+=("$cli_check_ms")
   cli_run_ok_samples+=("$cli_run_ok_ms")
   cli_run_invalid_samples+=("$cli_run_invalid_ms")
+  cli_spawn_bench_samples+=("$cli_spawn_bench_ms")
   notes_check_cold_samples+=("$notes_check_cold_ms")
   notes_check_warm_samples+=("$notes_check_warm_ms")
   notes_check_incremental_edit_samples+=("$notes_check_incremental_edit_ms")
@@ -367,6 +373,7 @@ aggregate_final_metrics() {
     cli_check_ms="${cli_check_samples[0]}"
     cli_run_ok_ms="${cli_run_ok_samples[0]}"
     cli_run_invalid_ms="${cli_run_invalid_samples[0]}"
+    cli_spawn_bench_ms="${cli_spawn_bench_samples[0]}"
     notes_check_cold_ms="${notes_check_cold_samples[0]}"
     notes_check_warm_ms="${notes_check_warm_samples[0]}"
     notes_check_incremental_edit_ms="${notes_check_incremental_edit_samples[0]}"
@@ -382,6 +389,7 @@ aggregate_final_metrics() {
   cli_check_ms="$(median_of_three "${cli_check_samples[0]}" "${cli_check_samples[1]}" "${cli_check_samples[2]}")"
   cli_run_ok_ms="$(median_of_three "${cli_run_ok_samples[0]}" "${cli_run_ok_samples[1]}" "${cli_run_ok_samples[2]}")"
   cli_run_invalid_ms="$(median_of_three "${cli_run_invalid_samples[0]}" "${cli_run_invalid_samples[1]}" "${cli_run_invalid_samples[2]}")"
+  cli_spawn_bench_ms="$(median_of_three "${cli_spawn_bench_samples[0]}" "${cli_spawn_bench_samples[1]}" "${cli_spawn_bench_samples[2]}")"
   notes_check_cold_ms="$(median_of_three "${notes_check_cold_samples[0]}" "${notes_check_cold_samples[1]}" "${notes_check_cold_samples[2]}")"
   notes_check_warm_ms="$(median_of_three "${notes_check_warm_samples[0]}" "${notes_check_warm_samples[1]}" "${notes_check_warm_samples[2]}")"
   notes_check_incremental_edit_ms="$(median_of_three "${notes_check_incremental_edit_samples[0]}" "${notes_check_incremental_edit_samples[1]}" "${notes_check_incremental_edit_samples[2]}")"
@@ -439,6 +447,9 @@ cat >"$METRICS_JSON" <<EOF
     "run_ok_ms": $cli_run_ok_ms,
     "run_contract_failure_ms": $cli_run_invalid_ms
   },
+  "cli_spawn_bench": {
+    "run_ms": $cli_spawn_bench_ms
+  },
   "reference_service": {
     "check_cold_ms": $notes_check_cold_ms,
     "check_warm_ms": $notes_check_warm_ms,
@@ -465,6 +476,7 @@ EOF
   print_row "CLI: project_demo" "check time" "${cli_check_ms} ms"
   print_row "CLI: project_demo" "run (valid)" "${cli_run_ok_ms} ms"
   print_row "CLI: project_demo" "run (contract failure)" "${cli_run_invalid_ms} ms"
+  print_row "CLI: spawn_bench" "8-task parallel spawn (native)" "${cli_spawn_bench_ms} ms"
   print_row "Package: reference-service" "check (cold)" "${notes_check_cold_ms} ms"
   print_row "Package: reference-service" "check (warm)" "${notes_check_warm_ms} ms"
   print_row "Package: reference-service" "check (incremental edit)" "${notes_check_incremental_edit_ms} ms"

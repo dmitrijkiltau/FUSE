@@ -219,8 +219,8 @@ pub(crate) struct HostCalls {
     bang: FuncId,
     iter_init: FuncId,
     iter_next: FuncId,
-    make_task: FuncId,
     task_await: FuncId,
+    spawn_async: FuncId,
     add: FuncId,
     eq: FuncId,
     not_eq: FuncId,
@@ -333,10 +333,13 @@ impl JitRuntime {
         builder.symbol("fuse_native_bang", fuse_native_bang as *const u8);
         builder.symbol("fuse_native_iter_init", fuse_native_iter_init as *const u8);
         builder.symbol("fuse_native_iter_next", fuse_native_iter_next as *const u8);
-        builder.symbol("fuse_native_make_task", fuse_native_make_task as *const u8);
         builder.symbol(
             "fuse_native_task_await",
             fuse_native_task_await as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_spawn_async",
+            fuse_native_spawn_async as *const u8,
         );
         builder.symbol("fuse_native_add", fuse_native_add as *const u8);
         builder.symbol("fuse_native_eq", fuse_native_eq as *const u8);
@@ -843,14 +846,16 @@ impl HostCalls {
             .declare_function("fuse_native_task_await", Linkage::Import, &iter_sig)
             .expect("declare task await hostcall");
 
-        let mut task_sig = module.make_signature();
-        task_sig.params.push(AbiParam::new(pointer_ty));
-        task_sig.params.push(AbiParam::new(types::I8));
-        task_sig.params.push(AbiParam::new(pointer_ty));
-        task_sig.returns.push(AbiParam::new(types::I64));
-        let make_task = module
-            .declare_function("fuse_native_make_task", Linkage::Import, &task_sig)
-            .expect("declare make_task hostcall");
+        // fuse_native_spawn_async(heap: ptr, name_handle: i64, argc: i32, args: ptr) -> i64
+        let mut spawn_async_sig = module.make_signature();
+        spawn_async_sig.params.push(AbiParam::new(pointer_ty));
+        spawn_async_sig.params.push(AbiParam::new(types::I64));
+        spawn_async_sig.params.push(AbiParam::new(types::I32));
+        spawn_async_sig.params.push(AbiParam::new(pointer_ty));
+        spawn_async_sig.returns.push(AbiParam::new(types::I64));
+        let spawn_async = module
+            .declare_function("fuse_native_spawn_async", Linkage::Import, &spawn_async_sig)
+            .expect("declare spawn_async hostcall");
 
         let mut builtin_sig = module.make_signature();
         builtin_sig.params.push(AbiParam::new(pointer_ty));
@@ -1105,8 +1110,8 @@ impl HostCalls {
             bang,
             iter_init,
             iter_next,
-            make_task,
             task_await,
+            spawn_async,
             add,
             eq,
             not_eq,
@@ -2321,58 +2326,125 @@ extern "C" fn fuse_native_iter_next(
     }
 }
 
+/// Dispatch a Fuse function to the thread pool and return a pending-task heap
+/// handle.  Called from JIT-compiled `Instr::Spawn` code.
+///
+/// The function name is passed as an interned heap handle so the JIT can
+/// encode it as a compile-time `iconst` without needing a string pointer.
+/// The spawned task creates its own `NativeVm` (same as the interpreter path)
+/// so there is no shared-heap aliasing between the caller and the task.
 #[unsafe(no_mangle)]
-extern "C" fn fuse_native_make_task(
+extern "C" fn fuse_native_spawn_async(
     heap: *mut NativeHeap,
-    status: u8,
-    result: *const NativeValue,
+    name_handle: u64,
+    argc: u32,
+    args: *const NativeValue,
 ) -> u64 {
     let heap = unsafe { heap.as_mut() };
     let Some(heap) = heap else {
         return u64::MAX;
     };
-    let Some(result) = (unsafe { result.as_ref() }) else {
+    // Resolve the function name from the interned heap handle.
+    let name = match heap.get(name_handle) {
+        Some(HeapValue::String(s)) => s.clone(),
+        _ => return u64::MAX,
+    };
+    // Convert NativeValue args to interpreter Values before releasing the heap
+    // borrow so the spawned closure can own them.
+    let heap_ref: &NativeHeap = heap;
+    let mut interp_args: Vec<crate::interp::Value> = Vec::with_capacity(argc as usize);
+    if argc > 0 {
+        let arg_slice = unsafe { std::slice::from_raw_parts(args, argc as usize) };
+        for nv in arg_slice {
+            let Some(v) = nv.to_value(heap_ref) else {
+                return u64::MAX;
+            };
+            interp_args.push(v);
+        }
+    }
+    // Clone program + configs so the spawned task owns its own copy.
+    let Some(vm) = current_vm() else {
         return u64::MAX;
     };
-    let task_result = match status {
-        0 => TaskResultValue::Ok(*result),
-        1 => TaskResultValue::Error(*result),
-        2 => {
-            let heap_ref: &NativeHeap = heap;
-            let message = result
-                .to_value(heap_ref)
-                .map(|value| value.to_string_value())
-                .unwrap_or_else(|| "runtime error".to_string());
-            TaskResultValue::Runtime(message)
-        }
-        _ => TaskResultValue::Runtime("runtime error".to_string()),
-    };
-    let task = TaskValue {
+    let program = super::NativeProgram::from_ir(vm.program.ir.clone());
+    let configs = vm.heap.clone_configs();
+    // Dispatch to the task pool; the spawned task will JIT-compile and execute
+    // the function in its own NativeVm.
+    let task = crate::interp::Task::spawn_async(move || {
+        super::run_native_spawn_task(program, configs, name, interp_args)
+    });
+    // Store a *pending* TaskValue in the parent heap.  The `done` flag is false
+    // and `pending` holds the interpreter Task.  `fuse_native_task_await` will
+    // block on this to retrieve the result.
+    let tv = TaskValue {
         id: 0,
-        done: true,
+        done: false,
         cancelled: false,
-        result: task_result,
+        result: TaskResultValue::Ok(NativeValue::null()),
+        pending: Some(task),
     };
-    heap.insert(HeapValue::Task(task))
+    heap.insert(HeapValue::Task(tv))
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn fuse_native_task_await(
     heap: *mut NativeHeap,
-    task: *const NativeValue,
+    task_nv: *const NativeValue,
     out: *mut NativeValue,
 ) -> u8 {
     let heap = unsafe { heap.as_mut() };
     let Some(heap) = heap else {
         return 2;
     };
-    let Some(task) = (unsafe { task.as_ref() }) else {
+    let Some(task_nv) = (unsafe { task_nv.as_ref() }) else {
         return 2;
     };
     let Some(out) = (unsafe { out.as_mut() }) else {
         return 2;
     };
-    let Some((task, _handle)) = task_arg_from_native(heap, task) else {
+    if task_nv.tag != NativeTag::Heap {
+        return builtin_runtime_error(out, heap, "await expects a Task value");
+    }
+    let handle = task_nv.payload;
+    // If the task has a pending interpreter-level task (async spawn), resolve
+    // it first.  We take the `pending` field out of the heap entry to avoid
+    // holding a mutable borrow on the heap while blocking on the result.
+    let pending_task: Option<crate::interp::Task> = match heap.get_mut(handle) {
+        Some(HeapValue::Task(tv)) if !tv.done => tv.pending.take(),
+        _ => None,
+    };
+    if let Some(pending) = pending_task {
+        // Block the current thread until the spawned task finishes.
+        let task_result = pending.result_raw();
+        // Convert the interpreter-level result into NativeValues in this heap.
+        let heap_ref: &mut NativeHeap = heap;
+        let native_result = match task_result {
+            crate::interp::TaskResult::Ok(value) => {
+                match NativeValue::from_value(&value, heap_ref) {
+                    Some(nv) => TaskResultValue::Ok(nv),
+                    None => TaskResultValue::Runtime(
+                        "task result conversion failed".to_string(),
+                    ),
+                }
+            }
+            crate::interp::TaskResult::Error(value) => {
+                match NativeValue::from_value(&value, heap_ref) {
+                    Some(nv) => TaskResultValue::Error(nv),
+                    None => TaskResultValue::Runtime(
+                        "task error conversion failed".to_string(),
+                    ),
+                }
+            }
+            crate::interp::TaskResult::Runtime(msg) => TaskResultValue::Runtime(msg),
+        };
+        // Write the result back into the heap entry.
+        if let Some(HeapValue::Task(tv)) = heap.get_mut(handle) {
+            tv.done = true;
+            tv.result = native_result;
+        }
+    }
+    // Read the (now-resolved) result.
+    let Some((task, _handle)) = task_arg_from_native(heap, task_nv) else {
         return builtin_runtime_error(out, heap, "await expects a Task value");
     };
     match &task.result {
@@ -6212,6 +6284,12 @@ fn compile_function<M: Module>(
                     break;
                 }
                 Instr::Spawn { name, argc } => {
+                    // Async spawn: dispatch to the thread pool via
+                    // fuse_native_spawn_async rather than calling the callee
+                    // inline.  The callee is identified by an interned heap
+                    // handle (stable compile-time constant) so the JIT can
+                    // encode it as an iconst without embedding a string pointer
+                    // in the machine code.
                     let mut args = Vec::with_capacity(*argc);
                     for _ in 0..*argc {
                         args.push(stack.pop()?);
@@ -6234,72 +6312,17 @@ fn compile_function<M: Module>(
                         }
                         base
                     };
-                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        NATIVE_VALUE_SIZE as u32,
-                        NATIVE_VALUE_ALIGN_SHIFT,
-                    ));
-                    let call_out_ptr = builder.ins().stack_addr(pointer_ty, out_slot, 0);
-                    let mut param_kinds = Vec::with_capacity(args.len());
-                    for arg in &args {
-                        param_kinds.push(canonical_param_kind(arg.kind));
-                    }
-                    let callee = match program
-                        .functions
-                        .get(name)
-                        .or_else(|| program.apps.get(name))
-                        .or_else(|| {
-                            program
-                                .apps
-                                .values()
-                                .find(|func| func.name == name.as_str())
-                        }) {
-                        Some(callee) => callee,
-                        None => jit_fail!(func, Some(ip), Some(&func.code[ip]), "unknown callee"),
-                    };
-                    if callee.params.len() != args.len() {
-                        jit_fail!(
-                            func,
-                            Some(ip),
-                            Some(&func.code[ip]),
-                            "callee arity mismatch"
-                        );
-                    }
-                    let callee_id = match compile_function(
-                        module,
-                        hostcalls,
-                        program,
-                        name,
-                        callee,
-                        &param_kinds,
-                        Linkage::Local,
-                        heap,
-                        state,
-                        pending,
-                    ) {
-                        Some(id) => id,
-                        None => {
-                            let nested = take_last_jit_compile_error()
-                                .unwrap_or_else(|| "callee compile failed".to_string());
-                            jit_fail!(
-                                func,
-                                Some(ip),
-                                Some(&func.code[ip]),
-                                format!("callee compile failed: {nested}")
-                            )
-                        }
-                    };
-                    let func_ref = module.declare_func_in_func(callee_id, builder.func);
-                    let call = builder
+                    // Intern the function name in the heap at JIT-compile time
+                    // so we can pass a stable u64 handle to the hostcall.
+                    let name_handle = heap.intern_string(name.clone()) as i64;
+                    let name_handle_val = builder.ins().iconst(types::I64, name_handle);
+                    let argc_val = builder.ins().iconst(types::I32, count as i64);
+                    let spawn_async_ref =
+                        module.declare_func_in_func(hostcalls.spawn_async, builder.func);
+                    let task_handle_inst = builder
                         .ins()
-                        .call(func_ref, &[base, call_out_ptr, heap_ptr]);
-                    let status = builder.inst_results(call)[0];
-                    let make_task_ref =
-                        module.declare_func_in_func(hostcalls.make_task, builder.func);
-                    let task_handle = builder
-                        .ins()
-                        .call(make_task_ref, &[heap_ptr, status, call_out_ptr]);
-                    let task_handle = builder.inst_results(task_handle)[0];
+                        .call(spawn_async_ref, &[heap_ptr, name_handle_val, argc_val, base]);
+                    let task_handle = builder.inst_results(task_handle_inst)[0];
                     let task_slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         NATIVE_VALUE_SIZE as u32,

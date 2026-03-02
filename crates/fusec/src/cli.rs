@@ -495,6 +495,14 @@ where
         }
     }
 
+    if run {
+        let snap = crate::concurrency_metrics::snapshot();
+        crate::observability::emit_concurrency_metrics(
+            &snap,
+            diagnostics_format == DiagnosticFormat::Json,
+        );
+    }
+
     if dump_ast {
         println!("{:#?}", program);
     }

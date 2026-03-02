@@ -46,6 +46,10 @@ pub struct TaskValue {
     pub done: bool,
     pub cancelled: bool,
     pub result: TaskResultValue,
+    /// Non-None when the task was spawned asynchronously via the JIT
+    /// `fuse_native_spawn_async` hostcall and has not yet completed.
+    /// `fuse_native_task_await` will block on this to retrieve the result.
+    pub pending: Option<Task>,
 }
 
 #[derive(Clone, Debug)]
@@ -516,6 +520,7 @@ impl NativeValue {
                     done: task.is_done(),
                     cancelled: false,
                     result,
+                    pending: None,
                 };
                 Some(Self::task(task, heap))
             }

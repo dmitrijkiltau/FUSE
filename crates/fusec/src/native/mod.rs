@@ -1919,7 +1919,9 @@ fn call_function_native_only_with(
     ))
 }
 
-fn run_native_spawn_task(
+/// Visible to `jit.rs` (sibling submodule) so the JIT async-spawn hostcall
+/// can dispatch tasks to the thread pool without duplicating this logic.
+pub(super) fn run_native_spawn_task(
     program: NativeProgram,
     configs: HashMap<String, HashMap<String, Value>>,
     name: String,

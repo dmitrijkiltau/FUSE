@@ -25,6 +25,7 @@ pub mod sema;
 pub mod span;
 mod task_pool;
 pub mod token;
+pub mod concurrency_metrics;
 
 use crate::diag::Diagnostics;
 

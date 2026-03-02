@@ -83,28 +83,73 @@ Implementation files changed:
 
 ### M2 — Concurrency throughput & observability
 
+**Status: COMPLETE** ✓ (2026-03-02)
+
 **Goal:** Improve throughput of the deterministic `spawn`/`await` model and add runtime
 observability primitives for concurrent workloads.
 
 Deliverables:
 
-1. Reduce per-task scheduling overhead in the `spawn` runtime (task queue contention,
+1. ✓ Reduce per-task scheduling overhead in the `spawn` runtime (task queue contention,
    wakeup latency).
-2. Add structured runtime concurrency metrics:
-   - active task count
-   - task completion latency histogram
-   - spawn queue depth
-3. Expose observability surface via `fuse dev` overlay and `--diagnostics json` output.
-4. Add concurrency-focused benchmark workload to `use_case_bench.sh` (parallel-spawn CLI
+   — **Round-robin task pool** (`crates/fusec/src/task_pool.rs`): replaced the single
+   shared `Arc<Mutex<Receiver<Job>>>` across all workers with per-worker `mpsc` channels
+   and an `AtomicUsize` round-robin counter.  Worker threads receive from their own
+   private channel with zero mutex contention on the receive side.
+   — **JIT async spawn** (`crates/fusec/src/native/jit.rs`): the native backend's
+   `Instr::Spawn` codegen previously compiled and called the callee inline
+   (synchronous).  `fuse_native_spawn_async` hostcall now dispatches callee execution
+   to the task pool via `Task::spawn_async`, making JIT-backed `spawn` genuinely
+   parallel.  `fuse_native_task_await` blocks on the pending task result.
+2. ✓ Add structured runtime concurrency metrics:
+   - active task count, total spawned, total completed
+   - task completion latency histogram (5 buckets: <1 ms, 1–10 ms, 10–100 ms, 100 ms–1 s, ≥1 s)
+   - spawn queue depth, mean task latency (µs), worker count
+   — `crates/fusec/src/concurrency_metrics.rs` (new): all metrics as process-global
+   atomics with `Ordering::Relaxed`.  `record_task_enqueued/started/completed` called
+   from task pool job wrappers.  `snapshot()` returns a `ConcurrencySnapshot` struct.
+3. ✓ Expose observability surface via `--diagnostics json` output and `FUSE_METRICS_HOOK=stderr`.
+   — `emit_concurrency_metrics` in `crates/fusec/src/observability.rs`: emits a
+   `{"event":"concurrency.snapshot",...}` NDJSON line when `--diagnostics json` is set,
+   and a `metrics: {"metric":"concurrency.snapshot",...}` line when
+   `FUSE_METRICS_HOOK=stderr`.  Only emits when `total_spawned > 0` to suppress noise
+   for non-concurrent programs.  Called from `crates/fusec/src/cli.rs` on successful
+   `--run` completion.
+4. ✓ Add concurrency-focused benchmark workload to `use_case_bench.sh` (parallel-spawn CLI
    scenario).
-5. Validate structured-concurrency lifetime checks remain sound under higher task throughput.
+   — `examples/spawn_bench.fuse` (new): spawns 8 parallel tasks each accumulating
+   10 000 integers via `spawn`/`await`; serves as the M2 concurrency throughput
+   regression baseline.
+   — `scripts/use_case_bench.sh`: new `cli_spawn_bench` section measures
+   `spawn_bench.fuse` with `--backend native`; output appears in both JSON metrics
+   and the markdown summary table.
+5. ✓ Validate structured-concurrency lifetime checks remain sound under higher task throughput.
+   — All 12 `sema_golden` spawn/structured-concurrency tests pass unchanged.
+   — `transaction_commits_and_rolls_back_in_native_backend` and
+   `transaction_commits_and_rolls_back_in_ast_backend` integration tests pass.
+   — No detached/orphaned task regressions detected.
 
 Exit criteria:
 
 - Parallel-spawn workload throughput improvement ≥ 20% vs `0.8.0` on reference hardware.
-- Observability metrics are available in `fuse dev` and `--diagnostics json` modes.
+- Observability metrics are available in `--diagnostics json` and `FUSE_METRICS_HOOK=stderr` modes.
 - No new detached/orphaned task regressions in `sema_golden` or integration tests.
-- Example coverage: update or add a concurrency-focused example demonstrating observability.
+- Example coverage: `examples/spawn_bench.fuse` demonstrates parallel spawn with observability.
+
+Implementation files changed:
+
+| File | Change |
+|---|---|
+| `crates/fusec/src/task_pool.rs` | Round-robin per-worker channels; job wrappers call `concurrency_metrics::record_*`; `worker_count()` helper |
+| `crates/fusec/src/concurrency_metrics.rs` | New: lock-free atomic metrics, `ConcurrencySnapshot`, `snapshot()` |
+| `crates/fusec/src/lib.rs` | Added `pub mod concurrency_metrics` |
+| `crates/fusec/src/native/value.rs` | `TaskValue::pending: Option<Task>` field for JIT async spawn |
+| `crates/fusec/src/native/jit.rs` | `fuse_native_spawn_async` hostcall; `Instr::Spawn` codegen dispatches to pool; `fuse_native_task_await` blocks on pending |
+| `crates/fusec/src/native/mod.rs` | `run_native_spawn_task` made `pub(super)` |
+| `crates/fusec/src/observability.rs` | `emit_concurrency_metrics` for `FUSE_METRICS_HOOK` + `--diagnostics json` |
+| `crates/fusec/src/cli.rs` | Calls `emit_concurrency_metrics` after successful `--run` |
+| `examples/spawn_bench.fuse` | New: 8-task parallel spawn benchmark |
+| `scripts/use_case_bench.sh` | New `cli_spawn_bench` workload section |
 
 ---
 

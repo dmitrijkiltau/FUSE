@@ -1,6 +1,8 @@
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::thread;
+use std::time::Instant;
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
@@ -11,8 +13,21 @@ where
     TaskPool::global().submit(Box::new(job));
 }
 
+/// Per-worker-channel round-robin task pool.
+///
+/// The previous design used a single `Arc<Mutex<Receiver<Job>>>` shared
+/// across all workers.  Under parallel-spawn workloads every job dispatch
+/// acquired that mutex, serialising job pickup and creating thundering-herd
+/// wakeups.
+///
+/// This design gives each worker its own `mpsc::channel`.  The dispatcher
+/// round-robins assignments with an `AtomicUsize`, so no mutex is ever
+/// taken on the critical submit path.  Trade-off: if one worker is busy
+/// other workers may sit idle.  For short-lived Fuse tasks (compute,
+/// DB-round-trip) this is almost always faster than shared-queue contention.
 struct TaskPool {
-    tx: Sender<Job>,
+    senders: Vec<Sender<Job>>,
+    next: AtomicUsize,
 }
 
 impl TaskPool {
@@ -22,35 +37,44 @@ impl TaskPool {
     }
 
     fn new() -> Self {
-        let (tx, rx) = mpsc::channel::<Job>();
         let workers = thread::available_parallelism()
             .map(|n| n.get().max(2))
             .unwrap_or(2);
-        let shared_rx: Arc<Mutex<Receiver<Job>>> = Arc::new(Mutex::new(rx));
+        crate::concurrency_metrics::set_worker_count(workers);
+        let mut senders = Vec::with_capacity(workers);
         for idx in 0..workers {
-            let worker_rx = Arc::clone(&shared_rx);
-            let name = format!("fuse-task-{idx}");
-            let _ = thread::Builder::new().name(name).spawn(move || {
-                loop {
-                    let job = {
-                        let guard = match worker_rx.lock() {
-                            Ok(guard) => guard,
-                            Err(_) => break,
-                        };
-                        match guard.recv() {
-                            Ok(job) => job,
-                            Err(_) => break,
-                        }
-                    };
-                    job();
-                }
-            });
+            let (tx, rx) = mpsc::channel::<Job>();
+            senders.push(tx);
+            let _ = thread::Builder::new()
+                .name(format!("fuse-task-{idx}"))
+                .spawn(move || {
+                    for job in rx {
+                        job();
+                    }
+                });
         }
-        Self { tx }
+        Self {
+            senders,
+            next: AtomicUsize::new(0),
+        }
     }
 
     fn submit(&self, job: Job) {
-        let _ = self.tx.send(job);
+        // Record enqueue before wrapping so the metric is always incremented
+        // even if the channel send fails.
+        crate::concurrency_metrics::record_task_enqueued();
+        let enqueue_time = Instant::now();
+        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.senders.len();
+        let wrapped: Job = Box::new(move || {
+            crate::concurrency_metrics::record_task_started();
+            job();
+            crate::concurrency_metrics::record_task_completed(
+                enqueue_time.elapsed().as_micros() as u64,
+            );
+        });
+        // If send fails (worker thread has exited), the job is silently
+        // dropped.  This matches the previous behaviour.
+        let _ = self.senders[idx].send(wrapped);
     }
 }
 

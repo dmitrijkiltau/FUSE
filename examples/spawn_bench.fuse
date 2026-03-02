@@ -1,0 +1,41 @@
+# Parallel-spawn benchmark: 8 tasks each accumulating 10 000 integers.
+# Used by use_case_bench.sh as the M2 concurrency throughput workload.
+
+fn accumulate(n: Int) -> Int:
+  var i = 0
+  var acc = 0
+  while i < n:
+    acc = acc + i
+    i = i + 1
+  return acc
+
+fn run_parallel() -> Int:
+  let t1 = spawn:
+    accumulate(10000)
+  let t2 = spawn:
+    accumulate(10000)
+  let t3 = spawn:
+    accumulate(10000)
+  let t4 = spawn:
+    accumulate(10000)
+  let t5 = spawn:
+    accumulate(10000)
+  let t6 = spawn:
+    accumulate(10000)
+  let t7 = spawn:
+    accumulate(10000)
+  let t8 = spawn:
+    accumulate(10000)
+  let r1 = await t1
+  let r2 = await t2
+  let r3 = await t3
+  let r4 = await t4
+  let r5 = await t5
+  let r6 = await t6
+  let r7 = await t7
+  let r8 = await t8
+  return r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8
+
+app "spawn_bench":
+  let result = run_parallel()
+  print(result)
