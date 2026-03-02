@@ -341,7 +341,100 @@ Implementation files changed:
 
 ---
 
-### M6 — Pre-tag cleanup, docs, and release
+### M6 — HTML DSL ergonomics
+
+**Goal:** Extend HTML rendering expressiveness while preserving the closed, boundary-first model.
+
+Deliverables:
+
+1. `component` declaration — a typed `fn`-like form with an enforced signature of
+   `(attrs: Map<String, String>, children: List<Html>) -> Html`. The compiler verifies
+   the signature at the declaration site and at every call site. Components are resolved
+   through the existing module system; no new abstraction layer is introduced.
+2. `when` expression for inline conditional and list rendering in HTML blocks — purely
+   syntactic sugar that lowers directly to existing `if` and `for` constructs. Adds
+   `when condition: <expr>` (skip if false) and `when item in list: <expr>` (map to
+   `List<Html>`) forms that read cleanly inside nested HTML trees without requiring
+   full statement syntax.
+3. Typed attribute constraints — compile-time validation of attribute names on known
+   HTML elements. Unknown or misused `aria-*` attributes are flagged as diagnostics.
+   Attribute value constraints (e.g. enum-typed values for `type=`, `role=`) use the
+   existing refinement model; no new constraint mechanism is needed.
+
+Exit criteria:
+
+- `component` declarations are type-checked at both declaration and call sites; invalid
+  signatures are rejected with clear diagnostics.
+- `when` forms lower correctly and are covered by interpreter and native parity tests.
+- At least 5 `aria-*` misuse patterns produce compile-time diagnostics.
+- `spec/fls.md` updated to document all three additions.
+- Example coverage: `examples/component_demo.fuse` demonstrates component declarations
+  and `when` rendering.
+
+Implementation files changed:
+
+| File | Change |
+|---|---|
+| `crates/fusec/src/parser.rs` | `component` declaration parsing; `when` expression parsing in HTML block contexts |
+| `crates/fusec/src/ast.rs` | `ComponentDecl` AST node; `ExprKind::When` for inline conditional/list rendering |
+| `crates/fusec/src/sema/check.rs` | Component signature verification at declaration and call sites; `aria-*` and known-element attribute constraint checks |
+| `crates/fusec/src/ir/lower.rs` | Lower `when` to `if`/`for` IR; lower component calls to typed function dispatch |
+| `crates/fusec/src/interp/mod.rs` | Component eval; `ExprKind::When` eval |
+| `crates/fusec/src/native/jit.rs` | JIT codegen for component dispatch and `when` lowered forms |
+| `spec/fls.md` | Document `component` declaration syntax, `when` expression, and attribute constraints |
+| `examples/component_demo.fuse` | New: component declarations, `when` rendering, typed attribute constraints |
+
+---
+
+### M7 — DB layer enhancements
+
+**Goal:** Apply the boundary model inward to DB outputs and complete the CRUD surface
+before multi-package workloads scale.
+
+Deliverables:
+
+1. Typed row results — `db.from(table).select(...).all<T>()` and `.one<T>()` forms
+   that apply the same struct-decode/validation pipeline used at HTTP boundaries to DB
+   output rows. The type parameter `T` must be a declared `type` whose field names match
+   the selected columns; mismatches are caught at compile time. Architecturally consistent
+   with the principle of pushing boundary validation inward.
+2. `db.from(...).upsert(struct)` — companion to `.insert()` using INSERT OR REPLACE
+   semantics. Accepts the same struct argument shape as `.insert()`. Fills the last
+   significant gap in the CRUD surface that currently requires falling back to raw
+   `db.exec()` with hand-written SQL.
+3. Migration namespacing — `__fuse_migrations` table extended from a single `name TEXT`
+   primary key to a composite `(package TEXT, name TEXT)` primary key. Package name is
+   sourced from `fuse.toml`; defaults to an empty string for single-package projects,
+   preserving full backward compatibility with existing migration records. Required before
+   multi-package usage scales beyond the `reference-service` pattern.
+
+Exit criteria:
+
+- `db.from(...).all<T>()` produces correctly typed values for all matching field types;
+  column/field mismatches produce compile-time diagnostics.
+- `upsert` passes parity tests against both interpreter and native backends.
+- Migration namespacing is backward-compatible: existing single-package projects run
+  without re-running migrations.
+- Integration test coverage for typed queries, upsert, and multi-package migration
+  namespace isolation.
+- `spec/fls.md` and `spec/runtime.md` updated to document all three additions.
+
+Implementation files changed:
+
+| File | Change |
+|---|---|
+| `crates/fusec/src/db.rs` | `upsert_struct` method; typed row extraction helpers; `Query::all_typed` / `one_typed` |
+| `crates/fusec/src/sema/check.rs` | Type-parameterised `.all<T>()` / `.one<T>()` checking; `upsert` method signature in `lookup_query_member` |
+| `crates/fusec/src/interp/mod.rs` | `query.upsert`, `query.all_typed`, and `query.one_typed` builtin dispatch |
+| `crates/fusec/src/native/jit.rs` | `fuse_native_query_upsert`, `fuse_native_query_all_typed`, `fuse_native_query_one_typed` hostcalls |
+| `crates/fusec/src/loader.rs` | Migration schema bootstrap checks for composite `(package, name)` primary key; migration runner receives and passes package name |
+| `spec/fls.md` | Document typed query result forms and `upsert` |
+| `spec/runtime.md` | Document migration namespace schema change and backward-compat guarantee |
+| `examples/native_db.fuse` | Updated: demonstrate typed query results and `upsert` |
+
+---
+
+### M8 — Pre-tag cleanup, docs, and release
 
 **Goal:** Final integration, documentation, and release cut.
 
@@ -369,9 +462,9 @@ Exit criteria:
 
 ```
 M1 (native perf) ──────┐
-                        ├──▶ M3 (package workflow) ──▶ M5 (release automation) ──▶ M6 (release)
-M2 (concurrency) ──────┘          │
-                                  ▼
+                        ├──▶ M3 (package workflow) ──▶ M5 (release automation) ──▶ M6 (HTML DSL) ──┐
+M2 (concurrency) ──────┘          │                                                                  ├──▶ M8 (release)
+                                  ▼                                               M7 (DB layer) ─────┘
                            M4 (LSP scalability)
 ```
 
@@ -380,7 +473,10 @@ M2 (concurrency) ──────┘          │
 - **M4** can begin alongside M3 (LSP work is largely independent) but should incorporate
   M3's dependency-parsing changes before closing.
 - **M5** can begin as soon as M1–M4 are feature-complete.
-- **M6** is the final integration gate.
+- **M6** (HTML DSL) and **M7** (DB layer) are independent of each other and can proceed in
+  parallel after M5. M7 should incorporate M3's multi-package plumbing before closing
+  (migration namespacing depends on the package-name plumbing from M3).
+- **M8** is the final integration gate; requires M6 and M7 to be feature-complete.
 
 ---
 
@@ -392,3 +488,6 @@ M2 (concurrency) ──────┘          │
 | Progressive LSP indexing regresses small-workspace UX | User-facing regression | Existing `lsp_suite.sh` + `lsp_ux` tests remain green; latency budgets apply to both small and large workspaces |
 | Multi-package cache invalidation edge cases | Incorrect builds | Golden-test coverage for cross-package scenarios; `fuse check --workspace` exercises full graph |
 | Release automation scripts mask failures | Bad release | `release_preflight.sh` must exit non-zero on any sub-step failure; dry-run mode validates without publishing |
+| `component` signature enforcement breaks existing `fn`-returning-`Html` patterns | Source-level breakage | `component` is a new keyword; existing `fn` declarations are unaffected; no coercion between `fn` and `component` call sites |
+| Typed DB query column/field mismatch diagnostics are overly strict at runtime | Developer friction | Mismatch is a compile-time error only when type parameter is explicit; unparameterised `.all()` retains current `List<Map<String, String>>` behaviour |
+| Migration namespace schema change breaks existing deployments | Data loss / re-run migrations | Migration runner detects old single-key schema and runs a non-destructive `ALTER TABLE` migration before any user migrations execute; covered by integration tests |
