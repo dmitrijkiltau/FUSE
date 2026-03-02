@@ -21,54 +21,71 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
 - Clean working tree (or deliberate release-only diff).
 - Version/changelog updates prepared.
 
-## Release checklist
+## Simplified release flow
 
-1. Update versions:
-   - `crates/fuse/Cargo.toml`
-   - `crates/fusec/Cargo.toml`
-   - `crates/fuse-rt/Cargo.toml` (if changed API/runtime)
-   - `tools/vscode/package.json`
-   - `tools/vscode/package-lock.json`
-2. Update `CHANGELOG.md`:
-   - Move relevant items from `Unreleased` into the new version section.
-3. Regenerate guide/reference docs:
-   - `./scripts/generate_guide_docs.sh`
-   - verify `guides/reference.md`, `guides/onboarding.md`, and `guides/boundary-contracts.md` are up to date
-4. Run smoke checks:
-   - `./scripts/authority_parity.sh` (explicit semantic-authority gate)
-   - `./scripts/release_smoke.sh`
-   - Verify `AOT_RELEASE_CONTRACT.md` thresholds for release scope that includes AOT production artifacts.
-   - Verify latest `.fuse/bench/aot_perf_metrics.json` passes `./scripts/check_aot_perf_slo.sh`.
-   - Ensure GitHub Actions `Pre-release Gate` passed on the release PR (`.github/workflows/pre-release-gate.yml`).
-   - Covers authority/parity gates, `fusec` + `fuse` test suites, release-mode compile checks,
-     package build cache checks, AST/native backend smoke runs, benchmark regression checks,
-     VSIX package validation, packaging verifier regression checks, and host release artifact/checksum generation.
-5. Verify package UX manually (optional but recommended):
-   - `./scripts/fuse build`
-   - `./scripts/fuse run examples/project_demo.fuse`
-6. Build distributable binaries:
-   - `./scripts/build_dist.sh --release` (outputs `dist/fuse[.exe]` and `dist/fuse-lsp[.exe]`)
-7. Build host release artifacts and metadata:
-   - `./scripts/package_cli_artifacts.sh --release` (emits `dist/fuse-cli-<platform>.tar.gz|.zip`)
-   - `./scripts/package_aot_artifact.sh --release --manifest-path .` (emits `dist/fuse-aot-<platform>.tar.gz|.zip`)
-   - `./scripts/package_aot_container_image.sh --archive dist/fuse-aot-linux-x64.tar.gz --image ghcr.io/dmitrijkiltau/fuse-aot-demo --tag vX.Y.Z --tag <git-sha>` (builds container image from release artifact)
-   - `./scripts/package_vscode_extension.sh --platform <platform> --release`
-   - `SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" ./scripts/generate_release_checksums.sh` (emits `dist/SHA256SUMS` and `dist/release-artifacts.json`)
-8. Validate rollback posture:
-   - confirm `AOT_ROLLBACK_PLAYBOOK.md` steps were reviewed for this release
-   - confirm fallback `fuse-cli-<platform>.*` artifacts are published alongside `fuse-aot-<platform>.*`
-9. Run the release artifact matrix workflow (`.github/workflows/release-artifacts.yml`):
-   - Trigger on tag push (`v*`) or run manually via `workflow_dispatch`.
-   - Produces verified per-platform CLI, AOT, and VSIX artifacts for `linux-x64`, `macos-arm64`, `windows-x64`.
-   - On tagged releases, also publishes the official reference container image:
-     `ghcr.io/dmitrijkiltau/fuse-aot-demo:<tag>` built from `fuse-aot-linux-x64.tar.gz`.
-   - On tag refs, publishes GitHub release assets automatically and runs post-publish checksum/package verification.
-10. Commit release metadata:
-   - `git add CHANGELOG.md ops/RELEASE.md governance/VERSIONING_POLICY.md governance/scope.md README.md guides/ crates/*/Cargo.toml Cargo.lock tools/vscode/package*.json tools/vscode/CHANGELOG.md`
-   - `git commit -m "release: vX.Y.Z"`
-11. Tag release:
-   - `git tag vX.Y.Z`
-   - `git push origin main --tags`
+Three scripts cover the full release cycle:
+
+| Script | Purpose |
+|---|---|
+| `scripts/bump_version.sh <version>` | Bump version in all Cargo manifests and VS Code package files |
+| `scripts/release_preflight.sh <version>` | Run the full pre-tag checklist (version gate, changelog, guides, smoke, SLOs) |
+| `scripts/package_release.sh --release` | Build and package all host-platform release artifacts in one invocation |
+
+### Step-by-step
+
+1. **Bump version** across all locations:
+   ```sh
+   ./scripts/bump_version.sh 0.9.0
+   ```
+   Dry-run to verify what will change without writing:
+   ```sh
+   ./scripts/bump_version.sh --dry-run 0.9.0
+   ```
+2. **Update `CHANGELOG.md`:**
+   - Move relevant items from `Unreleased` into the new version section (e.g. `## [0.9.0] — 2026-03-04`).
+3. **Run preflight** — verifies version consistency, changelog, guide freshness, authority parity, smoke, AOT SLO, and benchmark regression gates:
+   ```sh
+   ./scripts/release_preflight.sh 0.9.0
+   ```
+   Skip bench checks when perf artifacts are not available locally:
+   ```sh
+   ./scripts/release_preflight.sh --skip-bench 0.9.0
+   ```
+4. Verify package UX manually (optional but recommended):
+   ```sh
+   ./scripts/fuse build
+   ./scripts/fuse run examples/project_demo.fuse
+   ```
+5. **Build all release artifacts** for the host platform:
+   ```sh
+   ./scripts/package_release.sh --release
+   ```
+   This dispatches to `package_cli_artifacts.sh`, `package_aot_artifact.sh`,
+   `package_vscode_extension.sh`, `generate_release_checksums.sh`, and
+   (Linux only) `package_aot_container_image.sh`. Outputs are written to `dist/`.
+6. **Validate rollback posture:**
+   - Confirm `AOT_ROLLBACK_PLAYBOOK.md` steps were reviewed for this release.
+   - Confirm fallback `fuse-cli-<platform>.*` artifacts are published alongside `fuse-aot-<platform>.*`.
+7. **Run the release artifact matrix workflow** (`.github/workflows/release-artifacts.yml`):
+   - **Dry-run first** (validate packaging without publishing): trigger `workflow_dispatch` with `dry_run` checked.
+     Builds and packages all per-platform artifacts and uploads them as workflow artifacts, but skips the
+     GitHub Release publish, container image push, and post-publish checksum verification.
+   - **Production run**: trigger on tag push (`v*`) or uncheck `dry_run` in `workflow_dispatch`.
+     Produces verified per-platform CLI, AOT, and VSIX artifacts for `linux-x64`, `macos-arm64`, `windows-x64`.
+     On tagged releases publishes the official reference container image
+     `ghcr.io/dmitrijkiltau/fuse-aot-demo:<tag>` and GitHub release assets, then verifies checksums.
+   - Ensure `Pre-release Gate` (`.github/workflows/pre-release-gate.yml`) passed on the release PR.
+8. **Commit release metadata:**
+   ```sh
+   git add CHANGELOG.md ops/RELEASE.md governance/VERSIONING_POLICY.md governance/scope.md \
+     README.md guides/ crates/*/Cargo.toml Cargo.lock tools/vscode/package*.json tools/vscode/CHANGELOG.md
+   git commit -m "release: vX.Y.Z"
+   ```
+9. **Tag release:**
+   ```sh
+   git tag vX.Y.Z
+   git push origin main --tags
+   ```
 
 ## Rollback
 

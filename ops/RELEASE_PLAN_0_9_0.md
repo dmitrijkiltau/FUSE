@@ -285,28 +285,59 @@ Implementation files changed:
 
 ### M5 — Release automation simplification
 
+**Status: COMPLETE** ✓ (2026-03-02)
+
 **Goal:** Reduce manual steps and friction in the release pipeline.
 
 Deliverables:
 
-1. Consolidate per-platform packaging scripts into a single `scripts/package_release.sh`
+1. ✓ Consolidate per-platform packaging scripts into a single `scripts/package_release.sh`
    entry point that dispatches to CLI, AOT, VSIX, and container image packaging.
-2. Add a `scripts/release_preflight.sh` that runs the full pre-tag checklist
+   — `package_release.sh` accepts `--release`, `--skip-build`, `--skip-container`,
+   `--push-container`, `--platform`, `--image`, `--tag`, and `--manifest-path` flags.
+   — Auto-detects host platform; silently skips container packaging on non-linux hosts.
+   — Runs steps 1–5: CLI artifact → AOT artifact → VSIX → checksums/metadata → container image.
+   — Derives `SOURCE_DATE_EPOCH` from git HEAD for deterministic checksum metadata when
+   not set by the caller.
+2. ✓ Add a `scripts/release_preflight.sh` that runs the full pre-tag checklist
    (version bump verification, changelog check, guide regeneration, authority parity,
    smoke, AOT SLO, benchmark regression) in one invocation.
-3. Automate version bump across all `Cargo.toml` files and `tools/vscode/package*.json`
+   — Collects per-step pass/fail results; always prints a full summary table.
+   — Exits non-zero and lists every failing gate by name for actionable diagnostics.
+   — Supports `--skip-bench` (when perf artifacts unavailable) and `--skip-guide-regen`.
+3. ✓ Automate version bump across all `Cargo.toml` files and `tools/vscode/package*.json`
    via a `scripts/bump_version.sh <version>` helper.
-4. Add dry-run mode to `release-artifacts.yml` workflow for validating packaging without
+   — Uses `perl -i` for portable in-place regex (GNU and BSD `sed -i` differ in semantics).
+   — Verifies `x.y.z` format before patching; rejects unexpected arguments.
+   — Supports `--dry-run` to preview what would change without writing files.
+   — Regenerates `Cargo.lock` via `cargo generate-lockfile` after patching crate manifests.
+4. ✓ Add dry-run mode to `release-artifacts.yml` workflow for validating packaging without
    publishing.
-5. Document simplified release flow in `ops/RELEASE.md`.
+   — `workflow_dispatch` gains a `dry_run: boolean` input (default `false`).
+   — `publish`, `publish-container`, and `verify-published` jobs skip when `inputs.dry_run` is set.
+   — `aggregate` job emits a Dry Run notice to the step summary explaining what was skipped.
+5. ✓ Document simplified release flow in `ops/RELEASE.md`.
+   — Replaced the 11-step manual checklist with a 3-script flow table (`bump_version.sh`,
+   `release_preflight.sh`, `package_release.sh`) plus a 9-step step-by-step guide.
+   — Documents dry-run workflow dispatch usage for validating packaging pre-publish.
 
 Exit criteria:
 
 - `release_preflight.sh` exits 0 on a clean release-ready tree and non-zero with
-  actionable diagnostics otherwise.
-- `bump_version.sh 0.9.0` correctly updates all version locations.
-- `package_release.sh` produces all release artifacts for the host platform.
-- Release checklist in `ops/RELEASE.md` references new scripts.
+  actionable diagnostics otherwise. ✓
+- `bump_version.sh 0.9.0` correctly updates all version locations. ✓
+- `package_release.sh` produces all release artifacts for the host platform. ✓
+- Release checklist in `ops/RELEASE.md` references new scripts. ✓
+
+Implementation files changed:
+
+| File | Change |
+|---|---|
+| `scripts/bump_version.sh` | New: version bump helper for all Cargo.toml and package*.json; `--dry-run` mode |
+| `scripts/package_release.sh` | New: single packaging dispatch entry point (cli → aot → vsix → checksums → container) |
+| `scripts/release_preflight.sh` | New: full pre-tag checklist runner with per-step pass/fail summary |
+| `.github/workflows/release-artifacts.yml` | `dry_run` boolean input; publish/container/verify jobs gated on `!inputs.dry_run`; dry-run step summary notice |
+| `ops/RELEASE.md` | Simplified to 3-script flow table + 9-step guide; documents dry-run workflow dispatch |
 
 ---
 
