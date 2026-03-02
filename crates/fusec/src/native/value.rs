@@ -77,6 +77,10 @@ pub struct NativeHeap {
     db: Option<Db>,
     configs: std::collections::HashMap<String, std::collections::HashMap<String, Value>>,
     types: HashMap<String, TypeInfo>,
+    /// Number of heap slots allocated since the last `collect_garbage` call.
+    /// When this is zero, `collect_garbage` skips the mark-and-sweep entirely
+    /// because nothing new has been allocated that could become garbage.
+    alloc_count: u32,
 }
 
 impl NativeHeap {
@@ -85,6 +89,7 @@ impl NativeHeap {
     }
 
     pub fn insert(&mut self, value: HeapValue) -> u64 {
+        self.alloc_count = self.alloc_count.saturating_add(1);
         if let Some(idx) = self.free_list.pop() {
             self.values[idx] = Some(value);
             return idx as u64;
@@ -202,9 +207,14 @@ impl NativeHeap {
     }
 
     pub fn collect_garbage(&mut self) {
-        if self.values.is_empty() {
+        // Skip the mark-and-sweep entirely when nothing has been allocated
+        // since the last collection.  Pure functions (integer arithmetic,
+        // boolean logic) and many builtin calls produce no heap values, so
+        // this guard eliminates most GC cycles on non-allocating call sites.
+        if self.alloc_count == 0 || self.values.is_empty() {
             return;
         }
+        self.alloc_count = 0;
         let mut marks = vec![false; self.values.len()];
         let mut stack: Vec<u64> = self.pinned.iter().copied().collect();
         while let Some(handle) = stack.pop() {

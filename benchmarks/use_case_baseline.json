@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "generated_utc": "2026-03-02T14:11:00Z",
-  "refresh_rationale": "0.8.0 release cold-check baseline bump: reference_service.check_cold_ms measured at 165.151ms on ci_github_actions; increase is intentional and persistent, driven by expanded sema surface (time/crypto builtins, DB query-builder methods, capability-call resolution depth). All other metrics improved or held steady.",
-  "notes": "Baselines refreshed from latest successful use-case metrics capture; thresholds remain intentionally tolerant for host variance while preserving regression detection.",
+  "generated_utc": "2026-03-02T16:00:00Z",
+  "refresh_rationale": "0.9.0-M1 native-backend performance optimizations applied: (1) JSON encode_string replaced char-by-char iteration with byte-level bulk-copy ASCII fast path + pre-reserved output buffer; (2) JSON integer number encoding avoids heap allocation for whole-number f64 values; (3) NativeVm route segment cache pre-computes split_path results at construction time, eliminating per-request path splitting in match_route; (4) NativeHeap collect_garbage now skips mark-and-sweep when alloc_count is zero, eliminating GC overhead on non-allocating call sites. HTTP request latency regression budgets tightened for get_notes and post_valid to reflect expected improvement on those paths. Baseline ms values retained from 0.8.0 measurement; will be refreshed after post-M1 benchmark run.",
+  "notes": "M1 threshold tightening: request_get_notes max_regression_ms reduced 8 -> 6, request_post_valid max_regression_ms reduced 25 -> 18. Other metrics unchanged pending post-optimization bench capture.",
   "metrics": {
     "cli_project_demo.check_ms": {
       "baseline_ms": 91.415,
@@ -42,12 +42,12 @@
     "reference_service.request_get_notes_ms": {
       "baseline_ms": 23.054,
       "max_regression_pct": 2.5,
-      "max_regression_ms": 8.0
+      "max_regression_ms": 6.0
     },
     "reference_service.request_post_valid_ms": {
       "baseline_ms": 35.242,
       "max_regression_pct": 1.0,
-      "max_regression_ms": 25.0
+      "max_regression_ms": 18.0
     },
     "reference_service.request_post_invalid_ms": {
       "baseline_ms": 21.064,

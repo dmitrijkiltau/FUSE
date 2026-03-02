@@ -22,7 +22,15 @@ fn encode_value(value: &JsonValue, out: &mut String) {
         JsonValue::Bool(v) => out.push_str(if *v { "true" } else { "false" }),
         JsonValue::Number(v) => {
             if v.is_finite() {
-                out.push_str(&v.to_string());
+                // Fast path: if the value is a whole number within i64 range,
+                // write it as an integer (no decimal point, no scientific
+                // notation, no heap allocation beyond what `out` already has).
+                let i = *v as i64;
+                if i as f64 == *v {
+                    encode_i64(i, out);
+                } else {
+                    out.push_str(&v.to_string());
+                }
             } else {
                 out.push_str("null");
             }
@@ -54,18 +62,39 @@ fn encode_value(value: &JsonValue, out: &mut String) {
 }
 
 fn encode_string(value: &str, out: &mut String) {
+    // Pre-reserve: at minimum we need len + 2 for the surrounding quotes.
+    out.reserve(value.len() + 2);
     out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0C}' => out.push_str("\\f"),
-            _ => out.push(ch),
+    // Byte-level scan: bulk-copy unescaped segments and only emit escape
+    // sequences for the 7 characters that JSON requires escaping.  All
+    // multi-byte UTF-8 sequences have bytes >= 0x80 and are never among the
+    // 7 special ASCII bytes, so scanning byte-by-byte is safe and correct.
+    let bytes = value.as_bytes();
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let escaped = match bytes[i] {
+            b'"' => "\\\"",
+            b'\\' => "\\\\",
+            b'\n' => "\\n",
+            b'\r' => "\\r",
+            b'\t' => "\\t",
+            0x08 => "\\b",
+            0x0C => "\\f",
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        if start < i {
+            out.push_str(&value[start..i]);
         }
+        out.push_str(escaped);
+        i += 1;
+        start = i;
+    }
+    if start < bytes.len() {
+        out.push_str(&value[start..]);
     }
     out.push('"');
 }
@@ -317,4 +346,36 @@ impl<'a> Parser<'a> {
             false
         }
     }
+}
+
+/// Write an i64 into `out` using a fixed 20-byte stack buffer.
+/// Avoids a heap allocation for the common case of integer-valued JSON numbers
+/// (IDs, counts, status codes, etc.).
+fn encode_i64(mut value: i64, out: &mut String) {
+    // i64::MIN needs special handling because negating it overflows.
+    if value == i64::MIN {
+        out.push_str("-9223372036854775808");
+        return;
+    }
+    let negative = value < 0;
+    if negative {
+        value = -value;
+    }
+    // Max i64 is 19 digits; 20 bytes is enough for sign + digits.
+    let mut buf = [0u8; 20];
+    let mut end = buf.len();
+    loop {
+        end -= 1;
+        buf[end] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    if negative {
+        end -= 1;
+        buf[end] = b'-';
+    }
+    // SAFETY: buf contains only ASCII digits and an optional '-'.
+    out.push_str(unsafe { std::str::from_utf8_unchecked(&buf[end..]) });
 }

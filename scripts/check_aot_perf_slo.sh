@@ -3,18 +3,20 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 METRICS_JSON="$ROOT/.fuse/bench/aot_perf_metrics.json"
-MIN_P50=30
-MIN_P95=20
+MIN_P50=40
+MIN_P95=25
+MIN_THROUGHPUT_P50=5
 
 usage() {
   cat <<'EOF'
 Usage: scripts/check_aot_perf_slo.sh [options]
 
 Options:
-  --metrics <path>  Path to AOT performance metrics JSON
-  --min-p50 <pct>   Minimum required p50 cold-start improvement percentage (default: 30)
-  --min-p95 <pct>   Minimum required p95 cold-start improvement percentage (default: 20)
-  -h, --help        Show this help
+  --metrics <path>          Path to AOT performance metrics JSON
+  --min-p50 <pct>           Minimum required p50 cold-start improvement percentage (default: 40)
+  --min-p95 <pct>           Minimum required p95 cold-start improvement percentage (default: 25)
+  --min-throughput-p50 <pct> Minimum required p50 AOT throughput improvement vs JIT (default: 5)
+  -h, --help                Show this help
 EOF
 }
 
@@ -51,6 +53,14 @@ while [[ $# -gt 0 ]]; do
       fi
       shift 2
       ;;
+    --min-throughput-p50)
+      MIN_THROUGHPUT_P50="${2:-}"
+      if [[ -z "$MIN_THROUGHPUT_P50" ]]; then
+        echo "--min-throughput-p50 requires a value" >&2
+        exit 1
+      fi
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -79,7 +89,12 @@ if ! [[ "$MIN_P95" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
   exit 1
 fi
 
-METRICS_JSON="$METRICS_JSON" MIN_P50="$MIN_P50" MIN_P95="$MIN_P95" node <<'NODE'
+if ! [[ "$MIN_THROUGHPUT_P50" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+  echo "--min-throughput-p50 must be numeric" >&2
+  exit 1
+fi
+
+METRICS_JSON="$METRICS_JSON" MIN_P50="$MIN_P50" MIN_P95="$MIN_P95" MIN_THROUGHPUT_P50="$MIN_THROUGHPUT_P50" node <<'NODE'
 const fs = require("fs");
 
 function readJson(path) {
@@ -109,6 +124,7 @@ function readNumber(root, path) {
 const metricsPath = process.env.METRICS_JSON;
 const minP50 = Number(process.env.MIN_P50);
 const minP95 = Number(process.env.MIN_P95);
+const minThroughputP50 = Number(process.env.MIN_THROUGHPUT_P50);
 
 const metrics = readJson(metricsPath);
 if (Number(metrics.schema_version) !== 1) {
@@ -156,6 +172,12 @@ if (startupP95 < minP95) {
   failures += 1;
   console.error(
     `FAIL startup p95 improvement ${startupP95.toFixed(3)}% < required ${minP95.toFixed(3)}%`
+  );
+}
+if (throughputP50 < minThroughputP50) {
+  failures += 1;
+  console.error(
+    `FAIL throughput p50 improvement ${throughputP50.toFixed(3)}% < required ${minThroughputP50.toFixed(3)}%`
   );
 }
 
