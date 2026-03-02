@@ -1,6 +1,6 @@
 requires db
 
-import { NotFound, Unauthorized, BadRequest, Forbidden } from "./errors"
+import { NotFound, Unauthorized, BadRequest, Forbidden } from "std.Error"
 import { Note, NoteId, NoteCreate, NoteVisibilityUpdate, AuthSession, RegisterInput, LoginInput, RequestContext, request_context_user_id } from "./domain"
 import { register_user, login_user, logout_session, session_user_id, session_token } from "./auth"
 import { anonymous_context, session_context, authenticated_context, scoped_context, request_context_or_anonymous, request_session_token } from "./context"
@@ -115,9 +115,8 @@ service ReferenceService at "/":
     if body.published == "1":
       is_public = "1"
       published = true
-    else: 
-      if body.published != "0":
-        null ?! BadRequest(message="published must be '1' or '0'")
+    else if body.published != "0":
+      null ?! BadRequest(message="published must be '1' or '0'")
     transaction:
       row = db
         .from("notes")
@@ -262,9 +261,8 @@ service ReferenceService at "/":
     var is_public = "0"
     if body.published == "1":
       is_public = "1"
-    else: 
-      if body.published != "0":
-        null ?! BadRequest(message="published must be '1' or '0'")
+    else if body.published != "0":
+      null ?! BadRequest(message="published must be '1' or '0'")
     transaction:
       db
         .from("notes")

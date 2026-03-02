@@ -387,7 +387,6 @@ TOOLING
 | Variable | Default | Description |
 |---|---|---|
 | `FUSE_DB_URL` | — | Database connection URL (`sqlite://path`) |
-| `DATABASE_URL` | — | Fallback DB URL when `FUSE_DB_URL` is unset |
 | `FUSE_DB_POOL_SIZE` | `1` | SQLite connection pool size |
 | `FUSE_CONFIG` | `config.toml` | Config file path |
 | `FUSE_HOST` | `127.0.0.1` | HTTP server bind host |

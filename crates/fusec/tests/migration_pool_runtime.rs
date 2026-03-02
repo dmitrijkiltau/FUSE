@@ -35,7 +35,6 @@ fn run_migrate(program_path: &PathBuf, db_url: &str, pool_size: usize) -> Output
         .arg(program_path)
         .env("FUSE_DB_URL", db_url)
         .env("FUSE_DB_POOL_SIZE", pool_size.to_string())
-        .env_remove("DATABASE_URL")
         .env_remove("APP_DB_POOL_SIZE")
         .output()
         .expect("failed to run fusec --migrate")

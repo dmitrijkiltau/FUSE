@@ -362,7 +362,7 @@ fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
     };
     let name = name.as_str();
     match name {
-        "std.Error.Validation" | "Validation" => {
+        "std.Error.Validation" => {
             let message = match fields.get("message") {
                 Some(Value::String(msg)) => msg.as_str(),
                 _ => "validation failed",
@@ -370,7 +370,7 @@ fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
             let field_items = extract_validation_fields(fields.get("fields"));
             Some(rt_error::validation_error_json(message, &field_items))
         }
-        "std.Error" | "Error" => {
+        "std.Error" => {
             let code = match fields.get("code") {
                 Some(Value::String(code)) => code.as_str(),
                 _ => "error",
@@ -501,11 +501,6 @@ fn builtin_error_defaults(name: &str) -> Option<(&'static str, &'static str)> {
         "std.Error.Forbidden" => Some(("forbidden", "forbidden")),
         "std.Error.NotFound" => Some(("not_found", "not found")),
         "std.Error.Conflict" => Some(("conflict", "conflict")),
-        "BadRequest" => Some(("bad_request", "bad request")),
-        "Unauthorized" => Some(("unauthorized", "unauthorized")),
-        "Forbidden" => Some(("forbidden", "forbidden")),
-        "NotFound" => Some(("not_found", "not found")),
-        "Conflict" => Some(("conflict", "conflict")),
         _ => None,
     }
 }
@@ -629,6 +624,7 @@ pub struct Interpreter {
     current_module: ModuleId,
     current_http_request: Option<HttpRequestContext>,
     current_http_response: Option<HttpResponseMeta>,
+    std_error_module_id: Option<ModuleId>,
 }
 
 pub struct MigrationJob<'a> {
@@ -766,6 +762,7 @@ impl Interpreter {
             current_module: 0,
             current_http_request: None,
             current_http_response: None,
+            std_error_module_id: None,
         }
     }
 
@@ -834,6 +831,11 @@ impl Interpreter {
             current_module: registry.root,
             current_http_request: None,
             current_http_response: None,
+            std_error_module_id: registry
+                .modules
+                .iter()
+                .find(|(_, u)| u.path.to_string_lossy() == "<std.Error>")
+                .map(|(id, _)| *id),
         }
     }
 
@@ -857,6 +859,7 @@ impl Interpreter {
             current_module: self.current_module,
             current_http_request: None,
             current_http_response: None,
+            std_error_module_id: self.std_error_module_id,
         }
     }
 
@@ -1647,9 +1650,6 @@ impl Interpreter {
 
     fn db_url(&self) -> ExecResult<String> {
         if let Ok(url) = std::env::var("FUSE_DB_URL") {
-            return Ok(url);
-        }
-        if let Ok(url) = std::env::var("DATABASE_URL") {
             return Ok(url);
         }
         if let Some(Value::String(url)) = self
@@ -3586,13 +3586,13 @@ impl Interpreter {
     fn http_status_for_error_value(&self, value: &Value) -> u16 {
         match value {
             Value::Struct { name, fields } => match name.as_str() {
-                "std.Error.Validation" | "Validation" => 400,
-                "std.Error.BadRequest" | "BadRequest" => 400,
-                "std.Error.Unauthorized" | "Unauthorized" => 401,
-                "std.Error.Forbidden" | "Forbidden" => 403,
-                "std.Error.NotFound" | "NotFound" => 404,
-                "std.Error.Conflict" | "Conflict" => 409,
-                "std.Error" | "Error" => fields
+                "std.Error.Validation" => 400,
+                "std.Error.BadRequest" => 400,
+                "std.Error.Unauthorized" => 401,
+                "std.Error.Forbidden" => 403,
+                "std.Error.NotFound" => 404,
+                "std.Error.Conflict" => 409,
+                "std.Error" => fields
                     .get("status")
                     .and_then(|v| match v {
                         Value::Int(n) => (*n).try_into().ok(),
@@ -3815,6 +3815,27 @@ impl Interpreter {
         self.enum_variant_arity(enum_name, variant).is_some()
     }
 
+    fn qualify_struct_name(&self, name: &str) -> String {
+        if let Some(std_error_id) = self.std_error_module_id {
+            // Check if explicitly imported from std.Error in the current module
+            if let Some(import_items) = self.module_import_items.get(&self.current_module) {
+                if let Some(link) = import_items.get(name) {
+                    if link.id == std_error_id {
+                        if name == "Error" {
+                            return "std.Error".to_string();
+                        }
+                        return format!("std.Error.{}", name);
+                    }
+                }
+            }
+            // Also handle the globally-builtin Error type (usable without explicit import)
+            if name == "Error" {
+                return "std.Error".to_string();
+            }
+        }
+        name.to_string()
+    }
+
     fn eval_struct_lit(&mut self, name: &Ident, fields: &[StructField]) -> ExecResult<Value> {
         let decl = match self.types.get(&name.name) {
             Some(decl) => decl.clone(),
@@ -3859,7 +3880,7 @@ impl Interpreter {
             }
         }
         Ok(Value::Struct {
-            name: name.name.clone(),
+            name: self.qualify_struct_name(&name.name),
             fields: values,
         })
     }

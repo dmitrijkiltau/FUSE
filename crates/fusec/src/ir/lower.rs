@@ -120,7 +120,7 @@ pub fn lower_program(program: &Program, modules: &ModuleMap) -> Result<IrProgram
     let import_items = HashMap::new();
     let mut module_fn_decls = HashMap::new();
     module_fn_decls.insert(0, collect_function_decls(program));
-    let mut lowerer = Lowerer::new(program, 0, modules, &import_items, Rc::new(module_fn_decls));
+    let mut lowerer = Lowerer::new(program, 0, modules, &import_items, Rc::new(module_fn_decls), None);
     lowerer.lower();
     if lowerer.errors.is_empty() {
         Ok(IrProgram {
@@ -142,8 +142,9 @@ fn lower_program_in_module(
     modules: &ModuleMap,
     import_items: &HashMap<String, ModuleLink>,
     module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
+    std_error_module_id: Option<ModuleId>,
 ) -> Result<IrProgram, Vec<String>> {
-    let mut lowerer = Lowerer::new(program, module_id, modules, import_items, module_fn_decls);
+    let mut lowerer = Lowerer::new(program, module_id, modules, import_items, module_fn_decls, std_error_module_id);
     lowerer.lower();
     if lowerer.errors.is_empty() {
         Ok(IrProgram {
@@ -165,6 +166,11 @@ pub fn lower_registry(registry: &ModuleRegistry) -> Result<IrProgram, Vec<String
         module_fn_decls.insert(*id, collect_function_decls(&unit.program));
     }
     let module_fn_decls = Rc::new(module_fn_decls);
+    let std_error_module_id = registry
+        .modules
+        .iter()
+        .find(|(_, u)| u.path.to_string_lossy() == "<std.Error>")
+        .map(|(id, _)| *id);
 
     let mut merged = IrProgram {
         functions: HashMap::new(),
@@ -182,6 +188,7 @@ pub fn lower_registry(registry: &ModuleRegistry) -> Result<IrProgram, Vec<String
             &unit.modules,
             &unit.import_items,
             module_fn_decls.clone(),
+            std_error_module_id,
         ) {
             Ok(ir) => {
                 merge_named("function", ir.functions, &mut merged.functions, &mut errors);
@@ -221,6 +228,7 @@ struct Lowerer<'a> {
     imported_names: HashSet<String>,
     builtin_names: HashSet<String>,
     default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
+    std_error_module_id: Option<ModuleId>,
 }
 
 struct LoopContext {
@@ -248,6 +256,7 @@ impl<'a> Lowerer<'a> {
         modules: &'a ModuleMap,
         import_items: &'a HashMap<String, ModuleLink>,
         module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
+        std_error_module_id: Option<ModuleId>,
     ) -> Self {
         let mut config_names = HashSet::new();
         let mut enum_names = HashSet::new();
@@ -308,6 +317,7 @@ impl<'a> Lowerer<'a> {
             imported_names,
             builtin_names,
             default_helpers: Rc::new(RefCell::new(HashMap::new())),
+            std_error_module_id,
         }
     }
 
@@ -360,6 +370,7 @@ impl<'a> Lowerer<'a> {
             self.fn_decls.clone(),
             self.module_fn_decls.clone(),
             self.default_helpers.clone(),
+            self.std_error_module_id,
         );
         for param in &decl.params {
             builder.declare_param(&param.name);
@@ -389,6 +400,7 @@ impl<'a> Lowerer<'a> {
             self.fn_decls.clone(),
             self.module_fn_decls.clone(),
             self.default_helpers.clone(),
+            self.std_error_module_id,
         );
         builder.lower_block(&app.body);
         builder.ensure_return();
@@ -418,6 +430,7 @@ impl<'a> Lowerer<'a> {
                 self.fn_decls.clone(),
                 self.module_fn_decls.clone(),
                 self.default_helpers.clone(),
+                self.std_error_module_id,
             );
             builder.lower_expr(&field.value);
             builder.emit(Instr::Return);
@@ -466,6 +479,7 @@ impl<'a> Lowerer<'a> {
                     self.fn_decls.clone(),
                     self.module_fn_decls.clone(),
                     self.default_helpers.clone(),
+                    self.std_error_module_id,
                 );
                 builder.lower_expr(expr);
                 builder.emit(Instr::Return);
@@ -490,13 +504,28 @@ impl<'a> Lowerer<'a> {
                 default_fn,
             });
         }
-        self.types.insert(
-            decl.name.name.clone(),
-            TypeInfo {
-                name: decl.name.name.clone(),
-                fields,
-            },
-        );
+        let bare_name = decl.name.name.clone();
+        let qualified_name = if let Some(std_error_id) = self.std_error_module_id {
+            if self.module_id == std_error_id {
+                if bare_name == "Error" {
+                    "std.Error".to_string()
+                } else {
+                    format!("std.Error.{}", bare_name)
+                }
+            } else {
+                bare_name.clone()
+            }
+        } else {
+            bare_name.clone()
+        };
+        let type_info = TypeInfo {
+            name: qualified_name.clone(),
+            fields,
+        };
+        self.types.insert(qualified_name.clone(), type_info.clone());
+        if qualified_name != bare_name {
+            self.types.insert(bare_name, type_info);
+        }
     }
 
     fn lower_enum(&mut self, decl: &EnumDecl) {
@@ -552,6 +581,7 @@ impl<'a> Lowerer<'a> {
                 self.fn_decls.clone(),
                 self.module_fn_decls.clone(),
                 self.default_helpers.clone(),
+                self.std_error_module_id,
             );
             for name in &params {
                 let ident = Ident {
@@ -687,6 +717,7 @@ struct FuncBuilder {
     fn_decls: Rc<HashMap<String, FnDecl>>,
     module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
     default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
+    std_error_module_id: Option<ModuleId>,
 }
 
 impl FuncBuilder {
@@ -704,6 +735,7 @@ impl FuncBuilder {
         fn_decls: Rc<HashMap<String, FnDecl>>,
         module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
         default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
+        std_error_module_id: Option<ModuleId>,
     ) -> Self {
         Self {
             module_id,
@@ -727,6 +759,7 @@ impl FuncBuilder {
             fn_decls,
             module_fn_decls,
             default_helpers,
+            std_error_module_id,
         }
     }
 
@@ -758,6 +791,25 @@ impl FuncBuilder {
         if self.scopes.is_empty() {
             self.scopes.push(HashMap::new());
         }
+    }
+
+    fn qualify_struct_name(&self, name: &str) -> String {
+        if let Some(std_error_id) = self.std_error_module_id {
+            // Check if explicitly imported from std.Error in this module
+            if let Some(link) = self.import_items.get(name) {
+                if link.id == std_error_id {
+                    if name == "Error" {
+                        return "std.Error".to_string();
+                    }
+                    return format!("std.Error.{}", name);
+                }
+            }
+            // Error is a globally-builtin type usable without explicit import
+            if name == "Error" {
+                return "std.Error".to_string();
+            }
+        }
+        name.to_string()
     }
 
     fn declare(&mut self, ident: &Ident) -> usize {
@@ -1596,7 +1648,7 @@ impl FuncBuilder {
                     field_names.push(field.name.name.clone());
                 }
                 self.emit(Instr::MakeStruct {
-                    name: name.name.clone(),
+                    name: self.qualify_struct_name(&name.name),
                     fields: field_names,
                 });
             }
@@ -1668,6 +1720,7 @@ impl FuncBuilder {
                     self.fn_decls.clone(),
                     self.module_fn_decls.clone(),
                     self.default_helpers.clone(),
+                    self.std_error_module_id,
                 );
                 for (name, _) in &captured {
                     let ident = Ident {
@@ -1957,6 +2010,7 @@ impl FuncBuilder {
             self.fn_decls.clone(),
             self.module_fn_decls.clone(),
             self.default_helpers.clone(),
+            self.std_error_module_id,
         );
         for param in decl.params.iter().take(param_index) {
             builder.declare_param(&param.name);

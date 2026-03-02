@@ -402,7 +402,7 @@ Rules:
 The runtime recognizes a small set of error struct names for standardized HTTP status mapping
 and error JSON formatting.
 
-Preferred canonical names (from `std.Error`):
+Canonical names (from `std.Error`):
 
 - `std.Error.Validation`
 - `std.Error`
@@ -412,8 +412,6 @@ Preferred canonical names (from `std.Error`):
 - `std.Error.NotFound`
 - `std.Error.Conflict`
 
-Compatibility short names are also recognized (`Validation`, `Error`, `BadRequest`,
-`Unauthorized`, `Forbidden`, `NotFound`, `Conflict`), which commonly occur after named imports.
 Other names do not participate in standardized mapping/formatting behavior.
 
 ### Error JSON shape
@@ -434,23 +432,23 @@ Errors are rendered as JSON with a single `error` object:
 
 Rules:
 
-- `std.Error.Validation` / `Validation` uses `message` and `fields`
+- `std.Error.Validation` uses `message` and `fields`
   (list of structs with `path`, `code`, `message`).
-- `std.Error` / `Error` uses `code` and `message`. Other fields are ignored for JSON output.
-- `std.Error.BadRequest` / `BadRequest`, `std.Error.Unauthorized` / `Unauthorized`,
-  `std.Error.Forbidden` / `Forbidden`, `std.Error.NotFound` / `NotFound`,
-  `std.Error.Conflict` / `Conflict` use their `message` field if present, otherwise a default message.
+- `std.Error` uses `code` and `message`. Other fields are ignored for JSON output.
+- `std.Error.BadRequest`, `std.Error.Unauthorized`,
+  `std.Error.Forbidden`, `std.Error.NotFound`,
+  `std.Error.Conflict` use their `message` field if present, otherwise a default message.
 - Any other error value renders as `internal_error`.
 
 Status mapping uses the error name first, then `std.Error.status` if present:
 
-- `std.Error.Validation` / `Validation` -> 400
-- `std.Error.BadRequest` / `BadRequest` -> 400
-- `std.Error.Unauthorized` / `Unauthorized` -> 401
-- `std.Error.Forbidden` / `Forbidden` -> 403
-- `std.Error.NotFound` / `NotFound` -> 404
-- `std.Error.Conflict` / `Conflict` -> 409
-- `std.Error` / `Error` with `status: Int` -> that status
+- `std.Error.Validation` -> 400
+- `std.Error.BadRequest` -> 400
+- `std.Error.Unauthorized` -> 401
+- `std.Error.Forbidden` -> 403
+- `std.Error.NotFound` -> 404
+- `std.Error.Conflict` -> 409
+- `std.Error` with `status: Int` -> that status
 - anything else -> 500
 
 `expr ?! err` behavior:
@@ -671,7 +669,7 @@ connections.
 
 Configuration sources:
 
-- `FUSE_DB_URL` (preferred) or `DATABASE_URL`
+- `FUSE_DB_URL`
 - `App.dbUrl` if config has been loaded
 - `FUSE_DB_POOL_SIZE` (default `1`) for pool sizing
 - `App.dbPoolSize` as optional fallback when `FUSE_DB_POOL_SIZE` is unset
@@ -902,7 +900,6 @@ Useful flags:
 | Variable | Default | Description |
 |---|---|---|
 | `FUSE_DB_URL` | — | Database connection URL (`sqlite://path`) |
-| `DATABASE_URL` | — | Fallback DB URL when `FUSE_DB_URL` is unset |
 | `FUSE_DB_POOL_SIZE` | `1` | SQLite connection pool size |
 | `FUSE_CONFIG` | `config.toml` | Config file path |
 | `FUSE_HOST` | `127.0.0.1` | HTTP server bind host |

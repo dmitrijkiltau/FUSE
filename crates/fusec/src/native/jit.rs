@@ -1519,9 +1519,6 @@ fn db_url() -> Result<String, String> {
     if let Ok(url) = std::env::var("FUSE_DB_URL") {
         return Ok(url);
     }
-    if let Ok(url) = std::env::var("DATABASE_URL") {
-        return Ok(url);
-    }
     let key = rt_config::env_key("App", "dbUrl");
     if let Ok(url) = std::env::var(key) {
         return Ok(url);
