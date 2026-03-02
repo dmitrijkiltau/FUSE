@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/common.sh"
 VSCODE_DIR="$ROOT/tools/vscode"
 DIST_DIR="$ROOT/dist"
 
@@ -21,28 +22,6 @@ Options:
   --skip-verify       Skip scripts/verify_vscode_lsp_resolution.sh
   -h, --help          Show this help
 EOF
-}
-
-host_platform_dir() {
-  local os arch
-  case "$(uname -s)" in
-    Linux) os="linux" ;;
-    Darwin) os="macos" ;;
-    MINGW*|MSYS*|CYGWIN*|Windows_NT) os="windows" ;;
-    *)
-      echo "unsupported host OS for platform detection: $(uname -s)" >&2
-      return 1
-      ;;
-  esac
-  case "$(uname -m)" in
-    x86_64|amd64) arch="x64" ;;
-    aarch64|arm64) arch="arm64" ;;
-    *)
-      echo "unsupported host arch for platform detection: $(uname -m)" >&2
-      return 1
-      ;;
-  esac
-  echo "${os}-${arch}"
 }
 
 while [[ $# -gt 0 ]]; do

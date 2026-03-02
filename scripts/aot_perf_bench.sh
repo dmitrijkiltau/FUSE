@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/common.sh"
 FIXTURE_SRC="$ROOT/examples/project_demo.fuse"
 OUT_DIR="$ROOT/.fuse/bench"
 METRICS_JSON="$OUT_DIR/aot_perf_metrics.json"
@@ -28,13 +29,6 @@ Options:
   --out-dir <path>   Output directory (default: .fuse/bench)
   -h, --help         Show this help
 USAGE
-}
-
-abspath() {
-  case "$1" in
-    /*) printf '%s\n' "$1" ;;
-    *) printf '%s/%s\n' "$ROOT" "$1" ;;
-  esac
 }
 
 cleanup() {

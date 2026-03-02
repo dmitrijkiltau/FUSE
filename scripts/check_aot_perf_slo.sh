@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/common.sh"
 METRICS_JSON="$ROOT/.fuse/bench/aot_perf_metrics.json"
 MIN_P50=40
 MIN_P95=25
@@ -18,13 +19,6 @@ Options:
   --min-throughput-p50 <pct> Minimum required p50 AOT throughput improvement vs JIT (default: 5)
   -h, --help                Show this help
 EOF
-}
-
-abspath() {
-  case "$1" in
-    /*) printf '%s\n' "$1" ;;
-    *) printf '%s/%s\n' "$ROOT" "$1" ;;
-  esac
 }
 
 while [[ $# -gt 0 ]]; do
