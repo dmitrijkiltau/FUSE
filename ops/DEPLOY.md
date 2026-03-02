@@ -75,7 +75,7 @@ Release artifact image build command (maintainers):
 ./scripts/package_aot_container_image.sh \
   --archive dist/fuse-aot-linux-x64.tar.gz \
   --image ghcr.io/dmitrijkiltau/fuse-aot-demo \
-  --tag v0.7.0 \
+  --tag v0.8.0 \
   --tag "$(git rev-parse --short=12 HEAD)" \
   --push
 ```

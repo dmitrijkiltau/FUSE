@@ -399,7 +399,7 @@ Reproducibility + static profile policy: `ops/AOT_RELEASE_CONTRACT.md`.
 ./scripts/package_aot_artifact.sh --release --manifest-path .
 
 # Build official reference container image from release archive
-./scripts/package_aot_container_image.sh --archive dist/fuse-aot-linux-x64.tar.gz --tag v0.7.0
+./scripts/package_aot_container_image.sh --archive dist/fuse-aot-linux-x64.tar.gz --tag v0.8.0
 
 # Package VS Code extension with bundled LSP (.vsix + integrity check)
 ./scripts/package_vscode_extension.sh --release

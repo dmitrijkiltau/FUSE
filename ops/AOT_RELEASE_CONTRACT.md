@@ -35,7 +35,7 @@ Scope: production AOT backend and release reproducibility contract for the activ
 6. Tagged releases publish a Linux reference container image built from
    `fuse-aot-linux-x64.tar.gz` at `ghcr.io/dmitrijkiltau/fuse-aot-demo:<tag|sha>`.
 
-## SLO targets for v0.7.0
+## SLO targets for v0.8.0
 
 These targets are enforced as release-go/no-go criteria for the AOT rollout.
 

@@ -371,7 +371,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "fuse"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "bincode",
  "fuse-rt",
@@ -382,11 +382,11 @@ dependencies = [
 
 [[package]]
 name = "fuse-rt"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "fusec"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "bincode",
  "chrono",
