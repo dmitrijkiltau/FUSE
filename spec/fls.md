@@ -410,7 +410,7 @@ with listed fields removed. Field types/defaults are preserved for retained fiel
 
 Base types can be module-qualified (`Foo.User`). Unknown base types or fields are errors.
 
-### Spawn static restrictions (v0.2.0)
+### Spawn static restrictions
 
 Inside a `spawn` block, semantic analysis rejects:
 
@@ -428,7 +428,7 @@ These restrictions are part of the language contract for deterministic cross-bac
 
 See also: [Imports and modules (current)](#imports-and-modules-current), [Runtime semantics](runtime.md), [Scope + constraints](../governance/scope.md).
 
-### Transaction static restrictions (v0.6.0)
+### Transaction static restrictions
 
 `transaction:` defines a compiler-constrained block for deterministic DB transaction scope.
 
@@ -493,9 +493,10 @@ Package dependency resolution (`dep:` imports):
 - the `fuse check --workspace` flag walks the directory tree from the current working directory,
   discovers all `fuse.toml` manifests that declare a `[package].entry`, and checks each package
   independently; results are summarised with a per-package pass/fail line followed by a total.
-- a lightweight file-timestamp cache (`.fuse-cache/check-<hash>.tsv`) is maintained per
-  entry point; a `fuse check` that hits a valid cache prints `check: ok (cached, no changes)`
-  and exits immediately; the cache is invalidated after any diagnostic error.
+- in `--workspace` mode, a lightweight file-timestamp cache (`.fuse-cache/check-<hash>.tsv`) is
+  maintained per entry point; a workspace check that hits a valid cache prints
+  `check: ok (cached, no changes)` and exits immediately; the cache is invalidated after any
+  diagnostic error.
 
 Module capabilities:
 

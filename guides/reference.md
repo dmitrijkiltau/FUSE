@@ -126,178 +126,51 @@ Base types can be module-qualified (`Foo.User`). Unknown base types or fields ar
 - Line comment: `# ...`
 - Doc comment: `## ...` attaches to the next declaration
 
----
+## Indentation
 
-## Grammar (EBNF approximation)
+FUSE uses Python-style block structure with strict space rules.
 
-Top level:
+- Indentation is measured in spaces only (tabs are illegal).
+- Indent width is not fixed, but must be consistent within a file.
+- A block starts after `:` at end of line.
+- New indentation level must be strictly greater than previous.
+- Dedent closes blocks until indentation matches a previous level.
+- Empty lines are ignored.
+- Lines inside parentheses/brackets/braces ignore indentation semantics (implicit line joining).
 
-```ebnf
-Program        := { RequiresDecl } { TopDecl }
-RequiresDecl   := "requires" Capability { "," Capability } NEWLINE
-Capability     := "db" | "crypto" | "network" | "time"
+INDENT/DEDENT reference algorithm:
 
-TopDecl        := ImportDecl
-                | AppDecl
-                | ServiceDecl
-                | ConfigDecl
-                | TypeDecl
-                | EnumDecl
-                | MigrationDecl
-                | TestDecl
-                | FnDecl
-
-ImportDecl     := "import" ImportSpec NEWLINE
-ImportSpec     := Ident
-                | Ident "from" StringLit
-                | "{" Ident { "," Ident } "}" "from" StringLit
-                | Ident "as" Ident "from" StringLit
-
-TypeDecl       := "type" Ident ":" NEWLINE INDENT { FieldDecl } DEDENT
-                | "type" Ident "=" TypeName "without" Ident { "," Ident } NEWLINE
-FieldDecl      := Ident ":" TypeRef [ "=" Expr ] NEWLINE
-
-EnumDecl       := "enum" Ident ":" NEWLINE INDENT { EnumVariant } DEDENT
-EnumVariant    := Ident [ "(" TypeRef { "," TypeRef } ")" ] NEWLINE
-
-FnDecl         := "fn" Ident "(" NEWLINE* [ ParamList [ "," ] ] NEWLINE* ")" [ "->" TypeRef ] ":" NEWLINE Block
-ParamList      := Param { "," NEWLINE* Param }
-Param          := Ident ":" TypeRef [ "=" Expr ]
-
-Block          := INDENT { Stmt } DEDENT
-
-Stmt           := LetStmt
-                | VarStmt
-                | AssignStmt
-                | ReturnStmt
-                | IfStmt
-                | MatchStmt
-                | ForStmt
-                | WhileStmt
-                | TransactionStmt
-                | BreakStmt
-                | ContinueStmt
-                | ExprStmt
-
-LetStmt        := "let" Ident [ ":" TypeRef ] "=" Expr NEWLINE
-VarStmt        := "var" Ident [ ":" TypeRef ] "=" Expr NEWLINE
-AssignStmt     := LValue "=" Expr NEWLINE
-LValue         := Ident | Member | OptionalMember | Index | OptionalIndex
-ReturnStmt     := "return" [ Expr ] NEWLINE
-ExprStmt       := Expr NEWLINE | SpawnExpr
-
-IfStmt         := "if" Expr ":" IfBody { "else" "if" Expr ":" IfBody } [ "else" ":" IfBody ]
-IfBody         := NEWLINE Block | InlineStmt
-InlineStmt     := Stmt
-MatchStmt      := "match" Expr ":" NEWLINE INDENT { MatchCase } DEDENT
-MatchCase      := Pattern ( "->" Expr NEWLINE | ":" NEWLINE Block )
-                # `Pattern -> Expr` is sugar for `Pattern: return Expr`
-ForStmt        := "for" Pattern "in" Expr ":" NEWLINE Block
-WhileStmt      := "while" Expr ":" NEWLINE Block
-TransactionStmt := "transaction" ":" NEWLINE Block
-
-AppDecl        := "app" StringLit ":" NEWLINE Block
-ServiceDecl    := "service" Ident "at" StringLit ":" NEWLINE INDENT { RouteDecl } DEDENT
-
-RouteDecl      := HttpVerb StringLit [ "body" TypeRef ] "->" TypeRef ":" NEWLINE Block
-HttpVerb       := "get" | "post" | "put" | "patch" | "delete"
-
-ConfigDecl     := "config" Ident ":" NEWLINE INDENT { ConfigField } DEDENT
-ConfigField    := Ident ":" TypeRef "=" Expr NEWLINE
-
-MigrationDecl  := "migration" ( Ident | StringLit | Int ) ":" NEWLINE Block
-TestDecl       := "test" StringLit ":" NEWLINE Block
-```
-
-Types:
-
-```ebnf
-TypeRef        := TypeAtom { "?" | "!" [ TypeRef ] }
-TypeAtom       := TypeName
-                | TypeName "<" TypeRef { "," TypeRef } ">"
-                | TypeName "(" [ Expr { "," Expr } ] ")"
-TypeName       := Ident { "." Ident }
-```
-
-Expressions:
-
-```ebnf
-Expr           := CoalesceExpr
-CoalesceExpr   := OrExpr { "??" OrExpr }
-OrExpr         := AndExpr { "or" AndExpr }
-AndExpr        := EqExpr  { "and" EqExpr }
-EqExpr         := RelExpr { ("==" | "!=") RelExpr }
-RelExpr        := RangeExpr { ("<" | "<=" | ">" | ">=") RangeExpr }
-RangeExpr      := AddExpr { ".." AddExpr }
-AddExpr        := MulExpr { ("+" | "-") MulExpr }
-MulExpr        := UnaryExpr { ("*" | "/" | "%") UnaryExpr }
-UnaryExpr      := ("-" | "!") UnaryExpr
-                | "await" UnaryExpr
-                | "box" UnaryExpr
-                | PostfixExpr
-PostfixExpr    := PrimaryExpr { Call | Member | OptionalMember | Index | OptionalIndex | BangChain }
-Call           := "(" [ ArgList ] ")"
-ArgList        := Arg { "," Arg }
-Arg            := [ Ident "=" ] Expr
-Member         := "." Ident
-OptionalMember := "?." Ident
-Index          := "[" Expr "]"
-OptionalIndex  := "?[" Expr "]"
-BangChain      := "?!" [ Expr ]
-PrimaryExpr    := Literal
-                | Ident
-                | "(" Expr ")"
-                | StructLit
-                | ListLit
-                | MapLit
-                | InterpString
-                | SpawnExpr
-
-StructLit      := Ident "(" [ NamedArgs ] ")"
-NamedArgs      := Ident "=" Expr { "," Ident "=" Expr }
-
-ListLit        := "[" [ Expr { "," Expr } ] "]"
-MapLit         := "{" [ Expr ":" Expr { "," Expr ":" Expr } ] "}"
-SpawnExpr      := "spawn" ":" NEWLINE Block
-
-HtmlBlockSuffix := ":" ( NEWLINE INDENT HtmlChildStmt* DEDENT | Expr )
-HtmlChildStmt   := Expr NEWLINE
-```
-
-Patterns:
-
-```ebnf
-Pattern        := "_" | Literal | TypeName [ "(" PatternArgs ")" ]
-PatternArgs    := Pattern { "," Pattern }
-               | PatternField { "," PatternField }
-PatternField   := Ident "=" Pattern
-```
-
-Notes:
-
-- `StructLit` is chosen when an identifier call contains named arguments.
-- `spawn` is an expression whose block provides its own newline.
-- `HtmlBlockSuffix` is enabled only in statement value positions (`let`/`var` RHS, `return` expr,
-  assignment RHS, expression statements). It is parsed only for call expressions and lowered to a call
-  with block-sugar args (`{}` attrs if omitted, plus `List<Html>` children).
-- HTML block children must be expression statements; bare string literals in HTML blocks are lowered to
-  `html.text(...)`, while non-literal expressions are not coerced.
-- HTML tag calls accept attribute shorthand (`div(class="hero")`) with string literals only; it lowers
-  to a standard attrs map argument (`div({"class": "hero"})`).
-- Named call args can use keyword names (`type="button"`, `for="x"`), and named args may omit commas
-  when separated by layout (`button(class="x" id="y")` split across lines).
-- In HTML attribute shorthand, `_` in attribute names is normalized to `-`
-  (`aria_label` -> `aria-label`, `data_view` -> `data-view`).
-- Postfix chains can continue across line breaks when the next token is a postfix continuation
-  (`(`, `.`, `[`, `?`, `?!`), so long call/member/index chains can be wrapped line-by-line.
-- Call argument lists allow line breaks and trailing commas before `)`.
-- Function parameter lists allow line breaks and a trailing comma before `)`.
-- `if` / `else if` / `else` bodies can use either a normal indented block or an inline single statement
-  (`if flag: x = 1`).
-- `HtmlBlockSuffix` also supports an inline single child expression (`span(): "FUSE"`).
+- Maintain a stack `indents` starting with `[0]`.
+- For each logical line not inside `()[]{}`:
+  - Let `col` be count of leading spaces.
+  - If `col > top(indents)`: emit `INDENT`, push `col`.
+  - If `col < top(indents)`: while `col < top(indents)` emit `DEDENT`, pop;
+    error if `col != top(indents)` after popping.
+  - Else: continue.
 
 ---
 
+## Match and Patterns
+
+`match` executes the first case whose pattern matches the value.
+
+Case forms:
+
+- `Pattern -> Expr` is a single-expression case (sugar for `Pattern: return Expr`).
+- `Pattern:` followed by an indented block is the full block form.
+
+Pattern forms:
+
+- `_` — wildcard, matches any value
+- `Literal` — integer, float, string, or bool literal
+- `None` — matches optional empty value
+- `Some(x)` — matches optional present value, binds the payload to `x`
+- `Ok(x)` / `Err(e)` — matches result variants, binds the payload
+- `EnumVariant` — matches a no-payload enum variant by name
+- `EnumVariant(x, y)` — matches an enum variant with positional payload bindings
+- `TypeName(field = pattern, ...)` — matches struct fields by name
+
+---
 ## Imports and Modules
 
 `import` declarations are resolved at load time.
@@ -342,9 +215,10 @@ Package dependency resolution (`dep:` imports):
 - the `fuse check --workspace` flag walks the directory tree from the current working directory,
   discovers all `fuse.toml` manifests that declare a `[package].entry`, and checks each package
   independently; results are summarised with a per-package pass/fail line followed by a total.
-- a lightweight file-timestamp cache (`.fuse-cache/check-<hash>.tsv`) is maintained per
-  entry point; a `fuse check` that hits a valid cache prints `check: ok (cached, no changes)`
-  and exits immediately; the cache is invalidated after any diagnostic error.
+- in `--workspace` mode, a lightweight file-timestamp cache (`.fuse-cache/check-<hash>.tsv`) is
+  maintained per entry point; a workspace check that hits a valid cache prints
+  `check: ok (cached, no changes)` and exits immediately; the cache is invalidated after any
+  diagnostic error.
 
 Module capabilities:
 
@@ -641,7 +515,7 @@ CLI binding:
 CLI binding is enabled when program args are passed after the file (or after `--`):
 
 ```bash
-fusec --run file.fuse -- --name=Codex
+fuse run file.fuse -- --name=Codex
 ```
 
 Rules:
@@ -739,25 +613,6 @@ Metrics hook extension point (non-semantic):
   `duration_ms`
 - unsupported/empty hook values are treated as no-op
 - hook emission is best-effort and must not change request/response behavior
-
-Deterministic panic taxonomy:
-
-- fatal envelope class remains `runtime_fatal` for handled runtime errors and `panic` for
-  process-level panics
-- `panic` envelope messages include `panic_kind=<panic_static_str|panic_string|panic_non_string>`
-  for deterministic panic payload classification
-
-Production health route convention (non-built-in):
-
-- runtime does not auto-register `/health`.
-- canonical minimal route pattern is:
-  `get "/health" -> Map<String, String>: return {"status": "ok"}`
-- production guidance should treat this pattern as the default liveness/readiness contract unless a
-  service-specific contract is documented.
-
-Explicit non-goal:
-
-- no runtime plugin extension system (no runtime-loaded plugin/module capability).
 
 ---
 
@@ -884,7 +739,7 @@ Connection pool behavior:
 Run migrations with:
 
 ```bash
-fusec --migrate path/to/file.fuse
+fuse migrate path/to/file.fuse
 ```
 
 Rules:
@@ -902,8 +757,8 @@ Rules:
 Run tests with:
 
 ```bash
-fusec --test path/to/file.fuse
-fusec --test --filter smoke path/to/file.fuse
+fuse test path/to/file.fuse
+fuse test --filter smoke path/to/file.fuse
 ```
 
 Rules:
@@ -936,14 +791,10 @@ Structured concurrency is enforced at compile time:
 - spawned task bindings cannot be reassigned before `await`
 - `transaction:` blocks reject `spawn` and `await`
 
-Task surface (v0.2.0):
-
-- `Task<T>` remains an opaque runtime type
-- task helper builtins were removed (`task.id`, `task.done`, `task.cancel`)
-- task values are consumed via `await` only
+`Task<T>` is an opaque runtime type; task values are consumed via `await` only.
 
 Spawn determinism restrictions are enforced at compile time by semantic analysis.
-See [Spawn static restrictions](fls.md#spawn-static-restrictions-v020) for the full list.
+See [Spawn static restrictions](fls.md#spawn-static-restrictions) for the full list.
 
 `box expr` creates a shared mutable cell. Boxed values are transparently dereferenced in most
 expressions; assigning boxed bindings updates shared cell state. `spawn` blocks cannot capture or
@@ -955,7 +806,7 @@ use boxed state.
 
 ### Loops
 
-- `for` iterates over `List<T>` and `Map<K, V>` values (map iteration yields values)
+- `for` iterates over `List<T>` (yields each element) and `Map<K, V>` (yields values only; keys are not available in `for` loop bodies)
 - `break` exits nearest loop
 - `continue` skips to next iteration
 
@@ -1016,28 +867,33 @@ Structured logging:
 
 Common package commands:
 
-- `fuse check`
-- `fuse run`
-- `fuse dev`
-- `fuse test`
-- `fuse build`
+- `fuse check` — parse and semantic-check a package
+- `fuse run` — run a package
+- `fuse dev` — run in watch/dev mode with live reload
+- `fuse test` — run test blocks
+- `fuse build` — compile to a native binary
+- `fuse fmt` — format a source file
+- `fuse openapi` — emit an OpenAPI JSON document
+- `fuse migrate` — execute pending migration blocks
+- `fuse lsp` — start the language server
 
-Compiler/runtime CLI operations include:
+Useful flags:
 
-- `fusec --check`
-- `fusec --run`
-- `fusec --test`
-- `fusec --migrate`
-- `fusec --openapi`
+- `--workspace` — check all packages under the current directory
+- `--strict-architecture` — enable architectural purity checks
+- `--diagnostics json` — emit diagnostics as JSON Lines on stderr
 
-`fuse.toml` sections commonly used:
+`fuse.toml` manifest sections:
 
-- `[package]`
-- `[build]`
-- `[serve]`
-- `[assets]`, `[assets.hooks]`
-- `[vite]`
-- `[dependencies]`
+| Section | Purpose |
+|---|---|
+| `[package]` | Entry source file (`entry`), app/service name (`app`), runtime backend (`backend`) |
+| `[build]` | Build outputs: `native_bin` binary path, `openapi` JSON output path |
+| `[serve]` | Server defaults: `static_dir` for static file serving |
+| `[assets]` | Named asset entries (CSS, JS) and `watch` flag |
+| `[assets.hooks]` | Build hooks for asset processing |
+| `[vite]` | Vite dev server integration settings |
+| `[dependencies]` | Package dependencies for `dep:` import paths |
 
 ---
 
@@ -1065,10 +921,16 @@ Compiler/runtime CLI operations include:
 | `FUSE_SVG_DIR` | — | Override SVG base directory for `svg.inline` |
 | `FUSE_STATIC_DIR` | — | Serve static files from this directory |
 | `FUSE_STATIC_INDEX` | `index.html` | Fallback file for directory requests when `FUSE_STATIC_DIR` is set |
-| `FUSE_DEV_MODE` | — | Enables development-mode runtime behavior |
-| `FUSE_AOT_BUILD_INFO` | — | Print AOT build metadata and exit (AOT binaries only) |
-| `FUSE_AOT_STARTUP_TRACE` | — | Emit startup diagnostic line (AOT binaries only) |
-| `FUSE_AOT_REQUEST_LOG_DEFAULT` | — | Default to structured request logging in release AOT binaries |
+
+### AOT binary environment variables
+
+The following variables are only effective in compiled AOT binaries (`fuse build --release`):
+
+| Variable | Description |
+|---|---|
+| `FUSE_AOT_BUILD_INFO` | Print AOT build metadata and exit |
+| `FUSE_AOT_STARTUP_TRACE` | Emit a startup diagnostic line to stderr |
+| `FUSE_AOT_REQUEST_LOG_DEFAULT` | Default to structured request logging when `FUSE_REQUEST_LOG` is unset |
 
 ---
 
@@ -1079,4 +941,3 @@ Current practical constraints:
 - SQLite-focused database runtime
 - no full ORM layer
 - task model is still evolving
-- native backend uses Cranelift JIT

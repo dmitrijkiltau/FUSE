@@ -358,7 +358,7 @@ Compatibility notes:
 CLI binding is enabled when program args are passed after the file (or after `--`):
 
 ```bash
-fusec --run file.fuse -- --name=Codex
+fuse run file.fuse -- --name=Codex
 ```
 
 Rules:
@@ -471,6 +471,8 @@ Metrics hook extension point (non-semantic):
   `duration_ms`
 - unsupported/empty hook values are treated as no-op
 - hook emission is best-effort and must not change request/response behavior
+
+#### AOT and deployment notes
 
 Deterministic panic taxonomy:
 
@@ -636,7 +638,7 @@ Connection pool behavior:
 Run migrations with:
 
 ```bash
-fusec --migrate path/to/file.fuse
+fuse migrate path/to/file.fuse
 ```
 
 Rules:
@@ -654,8 +656,8 @@ Rules:
 Run tests with:
 
 ```bash
-fusec --test path/to/file.fuse
-fusec --test --filter smoke path/to/file.fuse
+fuse test path/to/file.fuse
+fuse test --filter smoke path/to/file.fuse
 ```
 
 Rules:
@@ -686,14 +688,10 @@ Structured concurrency is enforced at compile time:
 - spawned task bindings cannot be reassigned before `await`
 - `transaction:` blocks reject `spawn` and `await`
 
-Task surface (v0.2.0):
-
-- `Task<T>` remains an opaque runtime type
-- task helper builtins were removed (`task.id`, `task.done`, `task.cancel`)
-- task values are consumed via `await` only
+`Task<T>` is an opaque runtime type; task values are consumed via `await` only.
 
 Spawn determinism restrictions are enforced at compile time by semantic analysis.
-See [Spawn static restrictions](fls.md#spawn-static-restrictions-v020) for the full list.
+See [Spawn static restrictions](fls.md#spawn-static-restrictions) for the full list.
 
 `box expr` creates a shared mutable cell. Boxed values are transparently dereferenced in most
 expressions; assigning boxed bindings updates shared cell state. `spawn` blocks cannot capture or
@@ -701,7 +699,7 @@ use boxed state.
 
 ### Loops
 
-- `for` iterates over `List<T>` and `Map<K, V>` values (map iteration yields values)
+- `for` iterates over `List<T>` (yields each element) and `Map<K, V>` (yields values only; keys are not available in `for` loop bodies)
 - `break` exits nearest loop
 - `continue` skips to next iteration
 
