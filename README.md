@@ -58,9 +58,9 @@ The runtime applies those contracts at boundaries instead of requiring repeated 
 
 ## Status
 
-FUSE `v0.7.0` release prep is active. This minor hardens AOT as production posture:
-explicit runtime contract guarantees, production ergonomics defaults, deployment-surface formalization,
-and AST/native/AOT parity-lock gates.
+FUSE `v0.8.0` release prep is active. This minor deepens runtime/tooling ergonomics:
+capability-runtime completion (`time`/`crypto`), native-lowering parity closure,
+workflow hardening, and GitHub-first guide coverage.
 
 Compatibility is defined by documented behavior in `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, and
 `governance/VERSIONING_POLICY.md`.

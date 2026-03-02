@@ -2,6 +2,57 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.8.0] - 2026-03-02
+
+### Added
+
+- Runtime capability APIs are now implemented across AST/native:
+  - `time.now`, `time.format`, `time.parse`, `time.sleep`
+  - `crypto.hash`, `crypto.hmac`, `crypto.random_bytes`, `crypto.constant_time_eq`
+- Native lowering support for previously unsupported call-target patterns:
+  - index call targets
+  - optional-index call targets
+  - optional-member call targets
+- Example coverage expanded for key language/runtime features:
+  - `transaction_demo.fuse`
+  - `capability_demo.fuse`
+  - `test_demo.fuse`
+  - `strict_arch_demo/`
+  - `refinement_demo.fuse`
+  - `json_codec.fuse`
+  - `time_crypto.fuse`
+  - `dep_import/`
+- DB and config ergonomics improvements:
+  - `db.from(...).insert(struct)`
+  - `db.from(...).update(column, value).where(...)`
+  - `db.from(...).delete().where(...)`
+  - query-builder `.count()`
+  - config env override support for user-defined struct/enum values
+  - config env-name mismatch hints (`APP_DBURL` -> `APP_DB_URL`)
+- Developer workflow improvements:
+  - incremental `fuse check` cache mode
+  - `fuse dev` compile-error overlay via reload websocket
+  - `fuse test --filter <pattern>`
+  - deterministic AOT build progress stages in `fuse build`
+  - `--diagnostics json` structured diagnostic output mode
+
+### Changed
+
+- LSP server implementation was modularized from a monolith into focused handler/state modules;
+  dispatch entrypoint surface remains behaviorally equivalent.
+- `fuse` CLI internals were split into focused modules (`args`, `manifest`, `run/dev/build`, `deps`, `aot`, `cache`, `output`) with no contract changes.
+- Test harnesses now share centralized HTTP/runtime helper logic to reduce duplication and increase parity-test stability.
+- `project_cli` integration tests were split into feature-domain files while preserving test names and assertions.
+- Documentation delivery moved to a GitHub-first guide surface:
+  - `guides/` now contains generated `reference.md`, `onboarding.md`, and `boundary-contracts.md`
+  - `docs/` site package was removed
+  - `scripts/generate_guide_docs.sh` now generates guides under `guides/`
+
+### Migration
+
+- No language source migration is required from `0.7.x` to `0.8.0`.
+- Repository consumers linking to docs-site paths should switch to `guides/` paths.
+
 ## [0.7.0] - 2026-02-28
 
 ### Added
