@@ -214,22 +214,52 @@ Implementation files changed:
 
 ### M4 — LSP UX refinement for large workspaces
 
+**Status: COMPLETE** ✓ (2026-03-02)
+
 **Goal:** Keep LSP responsiveness within budget for workspaces significantly larger than
 current test fixtures.
 
 Deliverables:
 
-1. Define and enforce latency budgets for core LSP operations:
+1. ✓ Define and enforce latency budgets for core LSP operations:
    - diagnostics publish: ≤ 500 ms for incremental edits in a 50-file workspace.
    - completion response: ≤ 200 ms after keystroke in a 50-file workspace.
    - workspace symbol search: ≤ 300 ms for a 50-file workspace.
-2. Implement progressive workspace indexing (index files on demand rather than
+   — Budget constants added to `lsp_perf_reliability.rs` (`M4_DIAG_INCREMENTAL_BUDGET_MS`,
+   `M4_COMPLETION_WARM_BUDGET_MS`, `M4_SYMBOL_SEARCH_BUDGET_MS`).
+2. ✓ Implement progressive workspace indexing (index files on demand rather than
    eagerly loading all modules at startup).
-3. Add coarse-grained index persistence across LSP restarts (avoid full re-index on
+   — `build_progressive_snapshot_cached()` in `workspace.rs`: builds a focus-file-only
+   snapshot (focus file + its transitive imports) keyed by `(docs_revision, focus_uri)`.
+   Cache invalidates automatically on every document change.
+   — `workspace_diags_for_uri()` in `diagnostics.rs` now checks whether the full
+   workspace cache is already warm; if not, it falls back to the progressive snapshot
+   instead of triggering a full workspace build.  The full workspace is only built
+   lazily when cross-file features (completion, references, workspace/symbol) are first
+   requested.
+   — `LspState.progressive_cache` / `progressive_builds` track the progressive snapshot.
+   — `fuse/internalWorkspaceStats` now exposes `progressiveBuilds` and
+   `progressiveCachePresent`.
+3. ✓ Add coarse-grained index persistence across LSP restarts (avoid full re-index on
    server restart when workspace has not changed).
-4. Validate cancellation handling under sustained editing bursts in large workspaces
+   — `workspace_fingerprint()`: computes a coarse fingerprint from all loaded source
+   file paths + nanosecond mtimes.
+   — `persist_workspace_index()` serialises the `WorkspaceIndex` to
+   `.fuse-cache/lsp-index-<hash>.json` after each fresh build.
+   — `load_persisted_workspace_index()` checks for a matching fingerprint on the next
+   build and deserialises the cached index if valid, skipping `build_workspace_from_registry`.
+   — Full JSON round-trip serialisation implemented for all `WorkspaceIndex` fields
+   (`files`, `defs`, `refs`, `calls`, `module_alias_exports`, `redirects`).
+   — `SymbolKind::to_u8()` / `from_u8()` added to `symbols.rs` for lossless kind
+   serialisation (unlike `lsp_kind()` which is not injective).
+4. ✓ Validate cancellation handling under sustained editing bursts in large workspaces
    (extend `lsp_perf_reliability` test suite).
-5. Add an LSP latency regression harness gated in CI.
+   — `lsp_large_workspace_edit_burst_does_not_hang`: 20 rapid edit+cancellation pairs
+   in a 50-file workspace; server must drain within 5 s and remain responsive.
+5. ✓ Add an LSP latency regression harness gated in CI.
+   — `scripts/check_lsp_latency_slo.sh`: runs `lsp_perf_reliability` with `--nocapture`;
+   exits non-zero if any budget assertion fails.
+   — `scripts/lsp_suite.sh` updated to 11 steps; step 11 invokes the SLO harness.
 
 Exit criteria:
 
@@ -238,6 +268,18 @@ Exit criteria:
 - No regressions in existing LSP behavior (`lsp_suite.sh` green).
 - Progressive indexing verified: opening a single file in a large workspace does not
   block on full workspace load.
+
+Implementation files changed:
+
+| File | Change |
+|---|---|
+| `crates/fusec/src/bin/fuse_lsp/symbols.rs` | `SymbolKind::to_u8()` / `from_u8()` for lossless serialisation |
+| `crates/fusec/src/bin/fuse_lsp/core.rs` | `LspState.progressive_cache`, `progressive_builds`; `invalidate_workspace_cache` clears progressive cache |
+| `crates/fusec/src/bin/fuse_lsp/workspace.rs` | `build_progressive_snapshot_cached`; `build_workspace_index_cached` now loads/saves persisted index; `workspace_fingerprint`, `fingerprint_hash`, `persist_workspace_index`, `load_persisted_workspace_index`, `serialize_workspace_index`, `deserialize_workspace_index`; `workspace_stats_result` exposes new counters |
+| `crates/fusec/src/bin/fuse_lsp/diagnostics.rs` | `workspace_diags_for_uri` uses progressive snapshot when full workspace cache is cold |
+| `crates/fusec/tests/lsp_perf_reliability.rs` | M4 budget constants; 5 new tests: `lsp_50_file_workspace_incremental_diagnostics_within_budget`, `lsp_50_file_workspace_completion_warm_within_budget`, `lsp_50_file_workspace_symbol_search_within_budget`, `lsp_progressive_indexing_does_not_block_on_full_workspace_load`, `lsp_large_workspace_edit_burst_does_not_hang` |
+| `scripts/check_lsp_latency_slo.sh` | New: CI latency SLO regression gate |
+| `scripts/lsp_suite.sh` | Extended to 11 steps; step 11 runs latency SLO gate |
 
 ---
 

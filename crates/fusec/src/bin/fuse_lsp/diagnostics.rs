@@ -7,8 +7,9 @@ use fusec::parse_source;
 use fusec::sema;
 
 use super::super::{
-    LspState, build_focus_workspace_snapshot, build_workspace_snapshot_cached, json_notification,
-    line_offsets, offset_to_line_col, range_json, uri_to_path, write_message,
+    LspState, build_progressive_snapshot_cached, build_workspace_snapshot_cached,
+    json_notification, line_offsets, offset_to_line_col, range_json, uri_to_path,
+    workspace_index_key, write_message,
 };
 
 pub(crate) fn publish_diagnostics(
@@ -44,31 +45,55 @@ fn workspace_diags_for_uri(state: &mut LspState, uri: &str) -> Option<Vec<Diag>>
     let focus_key = focus_path
         .canonicalize()
         .unwrap_or_else(|_| focus_path.clone());
-    let snapshot = build_workspace_snapshot_cached(state, uri)?;
-    if let Some(module_id) = snapshot.module_ids_by_path.get(&focus_key).copied() {
-        let (_, sema_diags) = sema::analyze_module(&snapshot.registry, module_id);
-        let mut diags = Vec::new();
-        for diag in &snapshot.loader_diags {
-            if diag.path.is_none() {
-                diags.push(diag.clone());
-                continue;
-            }
-            if let Some(path) = diag.path.as_ref() {
-                let key = path.canonicalize().unwrap_or_else(|_| path.clone());
-                if key == focus_key {
-                    diags.push(diag.clone());
+
+    // Use the full workspace snapshot when it is already warm for this revision
+    // (no extra build cost), or when the focused file is the workspace entry
+    // (the file that anchors the full workspace build anyway).
+    // For any other file with a cold cache, go straight to the progressive path
+    // so a single-file open in a large workspace does not block on a full build.
+    let full_cache_warm = state
+        .workspace_cache
+        .as_ref()
+        .is_some_and(|c| c.docs_revision == state.docs_revision);
+    let force_full = std::mem::take(&mut state.workspace_rebuild_pending);
+    let focus_is_entry = !full_cache_warm
+        && !force_full
+        && workspace_index_key(state, uri)
+            .map(|k| std::path::PathBuf::from(&k) == focus_key)
+            .unwrap_or(false);
+
+    if full_cache_warm || focus_is_entry || force_full {
+        if let Some(snapshot) = build_workspace_snapshot_cached(state, uri) {
+            if let Some(module_id) = snapshot.module_ids_by_path.get(&focus_key).copied() {
+                let (_, sema_diags) = sema::analyze_module(&snapshot.registry, module_id);
+                let mut diags = Vec::new();
+                for diag in &snapshot.loader_diags {
+                    if diag.path.is_none() {
+                        diags.push(diag.clone());
+                        continue;
+                    }
+                    if let Some(path) = diag.path.as_ref() {
+                        let key = path.canonicalize().unwrap_or_else(|_| path.clone());
+                        if key == focus_key {
+                            diags.push(diag.clone());
+                        }
+                    }
                 }
+                diags.extend(sema_diags);
+                return Some(diags);
             }
+            // File not in full workspace registry — fall through to progressive.
         }
-        diags.extend(sema_diags);
-        return Some(diags);
     }
 
-    let focus_snapshot = build_focus_workspace_snapshot(state, uri)?;
-    let module_id = *focus_snapshot.module_ids_by_path.get(&focus_key)?;
-    let (_, sema_diags) = sema::analyze_module(&focus_snapshot.registry, module_id);
+    // Progressive path: load only the focus file and its transitive imports.
+    // Used when the cache is cold and the file is not the workspace entry, so
+    // the first diagnostics response is not blocked on a full workspace build.
+    let snap = build_progressive_snapshot_cached(state, uri)?;
+    let module_id = *snap.module_ids_by_path.get(&focus_key)?;
+    let (_, sema_diags) = sema::analyze_module(&snap.registry, module_id);
     let mut diags = Vec::new();
-    for diag in &focus_snapshot.loader_diags {
+    for diag in &snap.loader_diags {
         if diag.path.is_none() {
             diags.push(diag.clone());
             continue;

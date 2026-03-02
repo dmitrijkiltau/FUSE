@@ -15,6 +15,13 @@ const WARM_NAV_BUDGET_MS: u128 = 2_500;
 const COLD_DIAGNOSTICS_BUDGET_MS: u128 = 6_000;
 const WARM_DIAGNOSTICS_BUDGET_MS: u128 = 3_000;
 
+// Latency budgets for the 50-file workspace fixture
+const DIAG_INCREMENTAL_BUDGET_MS: u128 = 500;
+const COMPLETION_WARM_BUDGET_MS: u128 = 200;
+const SYMBOL_SEARCH_BUDGET_MS: u128 = 300;
+const PROGRESSIVE_FIRST_DIAG_BUDGET_MS: u128 = 500;
+const EDIT_BURST_BUDGET_MS: u128 = 5_000;
+
 fn line_col_of(text: &str, needle: &str) -> (usize, usize) {
     let idx = text.find(needle).expect("needle");
     let line = text[..idx].bytes().filter(|b| *b == b'\n').count();
@@ -386,6 +393,247 @@ fn main():
     assert!(
         warm_ms <= WARM_DIAGNOSTICS_BUDGET_MS,
         "incremental diagnostics latency {warm_ms}ms exceeded budget {WARM_DIAGNOSTICS_BUDGET_MS}ms"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
+// ─── 50-file workspace latency budget tests ──────────────────────────────────
+
+fn workspace_symbol_params(query: &str) -> JsonValue {
+    let mut params = BTreeMap::new();
+    params.insert("query".to_string(), JsonValue::String(query.to_string()));
+    JsonValue::Object(params)
+}
+
+fn workspace_stats_params() -> JsonValue {
+    JsonValue::Object(BTreeMap::new())
+}
+
+/// Build a 50-file workspace fixture.
+/// Returns (dir, main_path, root_uri, main_src).
+/// Files file_00.fuse … file_49.fuse each export 3 small functions.
+/// main.fuse imports file_00 and file_01.
+fn build_50_file_workspace(prefix: &str) -> (std::path::PathBuf, std::path::PathBuf, String, String) {
+    let dir = temp_project_dir(prefix);
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    );
+    for i in 0u32..50 {
+        let src = format!(
+            "fn f{i}_a(x: Int) -> Int:\n  return x + {i}\n\nfn f{i}_b(x: Int) -> Int:\n  return x * {i}\n\nfn f{i}_c(x: Int) -> Int:\n  return x - {i}\n"
+        );
+        write_project_file(&dir.join(format!("file_{i:02}.fuse")), &src);
+    }
+    let main_src = r#"import m0 from "./file_00"
+import m1 from "./file_01"
+
+fn main():
+  let a = m0.f0_a(1)
+  let b = m1.f1_b(a)
+  print(b)
+"#;
+    let main_path = dir.join("main.fuse");
+    write_project_file(&main_path, main_src);
+    let root_uri = path_to_uri(&dir);
+    (dir, main_path, root_uri, main_src.to_string())
+}
+
+/// Incremental diagnostics for an edit inside a 50-file workspace must arrive
+/// within DIAG_INCREMENTAL_BUDGET_MS (500 ms) after the workspace is warm.
+#[test]
+fn lsp_50_file_workspace_incremental_diagnostics_within_budget() {
+    let (dir, main_path, root_uri, main_src) = build_50_file_workspace("fuse_lsp_m4_diag");
+    let main_uri = path_to_uri(&main_path);
+
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&main_uri, &main_src, 1);
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+
+    // Warm up: ensure full workspace is cached by issuing a workspace/symbol request.
+    let _ = lsp.request("workspace/symbol", workspace_symbol_params("f0"));
+
+    // Incremental edit: add a new function to main.fuse.
+    let main_src_v2 = format!("{main_src}\nfn extra(x: Int) -> Int:\n  return x + 99\n");
+    let edit_start = Instant::now();
+    lsp.change_document(&main_uri, &main_src_v2, 2);
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+    let edit_ms = edit_start.elapsed().as_millis();
+
+    assert!(
+        edit_ms <= DIAG_INCREMENTAL_BUDGET_MS,
+        "incremental diagnostics latency {edit_ms}ms exceeded budget {DIAG_INCREMENTAL_BUDGET_MS}ms"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// Warm completion inside a 50-file workspace must respond within
+/// COMPLETION_WARM_BUDGET_MS (200 ms) once the workspace cache is hot.
+#[test]
+fn lsp_50_file_workspace_completion_warm_within_budget() {
+    let (dir, main_path, root_uri, main_src) = build_50_file_workspace("fuse_lsp_m4_comp");
+    let main_uri = path_to_uri(&main_path);
+
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&main_uri, &main_src, 1);
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+
+    let (line, col) = line_col_of(&main_src, "m0.");
+    let params = completion_params(&main_uri, line, col + "m0.".len());
+
+    // One cold request to prime the workspace cache.
+    let _ = lsp.request("textDocument/completion", params.clone());
+
+    // Warm measurements.
+    let mut max_warm_ms = 0u128;
+    for _ in 0..6 {
+        let start = Instant::now();
+        let _ = lsp.request("textDocument/completion", params.clone());
+        max_warm_ms = max_warm_ms.max(start.elapsed().as_millis());
+    }
+
+    assert!(
+        max_warm_ms <= COMPLETION_WARM_BUDGET_MS,
+        "warm completion latency {max_warm_ms}ms exceeded budget {COMPLETION_WARM_BUDGET_MS}ms"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// workspace/symbol on a 50-file workspace must respond within
+/// SYMBOL_SEARCH_BUDGET_MS (300 ms).
+#[test]
+fn lsp_50_file_workspace_symbol_search_within_budget() {
+    let (dir, main_path, root_uri, main_src) = build_50_file_workspace("fuse_lsp_m4_sym");
+    let main_uri = path_to_uri(&main_path);
+
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&main_uri, &main_src, 1);
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+
+    // Cold workspace/symbol — builds the full index.
+    let cold_start = Instant::now();
+    let result = lsp.request("workspace/symbol", workspace_symbol_params("f0"));
+    let cold_ms = cold_start.elapsed().as_millis();
+    let result_text = fuse_rt::json::encode(&result);
+    assert!(
+        result_text.contains("f0_a"),
+        "workspace/symbol did not return expected results: {result_text}"
+    );
+
+    // Warm workspace/symbol — index already cached.
+    let warm_start = Instant::now();
+    let _ = lsp.request("workspace/symbol", workspace_symbol_params("f0"));
+    let warm_ms = warm_start.elapsed().as_millis();
+
+    assert!(
+        cold_ms <= SYMBOL_SEARCH_BUDGET_MS,
+        "cold workspace/symbol latency {cold_ms}ms exceeded budget {SYMBOL_SEARCH_BUDGET_MS}ms"
+    );
+    assert!(
+        warm_ms <= SYMBOL_SEARCH_BUDGET_MS,
+        "warm workspace/symbol latency {warm_ms}ms exceeded budget {SYMBOL_SEARCH_BUDGET_MS}ms"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// Opening a single file in a 50-file workspace must not block on loading all
+/// 50 files.  The first diagnostics response must arrive within
+/// PROGRESSIVE_FIRST_DIAG_BUDGET_MS and workspace stats must show that
+/// only a progressive (focus-file) snapshot was built, not the full workspace.
+#[test]
+fn lsp_progressive_indexing_does_not_block_on_full_workspace_load() {
+    let (dir, _main_path, root_uri, _) = build_50_file_workspace("fuse_lsp_m4_prog");
+
+    // Open a file that is NOT the entry point and has no imports — only that
+    // one file needs to be parsed for diagnostics.
+    let solo_path = dir.join("file_25.fuse");
+    let solo_uri = path_to_uri(&solo_path);
+    let solo_src = fs::read_to_string(&solo_path).expect("read file_25.fuse");
+
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+
+    let first_diag_start = Instant::now();
+    lsp.open_document(&solo_uri, &solo_src, 1);
+    let diags = lsp.wait_diagnostics(&solo_uri);
+    let first_diag_ms = first_diag_start.elapsed().as_millis();
+
+    assert!(
+        diags.is_empty(),
+        "unexpected diagnostics for file_25.fuse: {diags:?}"
+    );
+    assert!(
+        first_diag_ms <= PROGRESSIVE_FIRST_DIAG_BUDGET_MS,
+        "first diagnostics for standalone file took {first_diag_ms}ms, exceeded budget {PROGRESSIVE_FIRST_DIAG_BUDGET_MS}ms"
+    );
+
+    // Verify that no full workspace snapshot was built — only a progressive one.
+    let stats = lsp.request("fuse/internalWorkspaceStats", workspace_stats_params());
+    let stats_text = fuse_rt::json::encode(&stats);
+    assert!(
+        stats_text.contains("\"workspaceBuilds\":0"),
+        "full workspace should not have been built for single-file open: {stats_text}"
+    );
+    assert!(
+        stats_text.contains("\"progressiveBuilds\":1"),
+        "progressive snapshot should have been built: {stats_text}"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// Rapid editing bursts in a large workspace must not cause the LSP server to
+/// hang.  After the burst, the server must still respond to a normal request.
+///
+/// Note: cancellation-under-burst behavior is covered separately by
+/// `lsp_cancellation_burst_is_handled_without_hanging`.  This test deliberately
+/// avoids mixing diagnostics-drain and response-drain loops on the same pipe,
+/// which would cause one loop to consume messages intended for the other.
+#[test]
+fn lsp_large_workspace_edit_burst_does_not_hang() {
+    let (dir, main_path, root_uri, main_src) = build_50_file_workspace("fuse_lsp_burst");
+    let main_uri = path_to_uri(&main_path);
+
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&main_uri, &main_src, 1);
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+
+    // Send 20 rapid edits. Each produces one synchronous publishDiagnostics
+    // notification from the server, so draining is straightforward.
+    const BURST_SIZE: u32 = 20;
+    let burst_start = Instant::now();
+    for i in 0..BURST_SIZE {
+        let new_src = format!("{main_src}\n// burst edit {i}\n");
+        lsp.change_document(&main_uri, &new_src, (i + 2) as u64);
+    }
+    for _ in 0..BURST_SIZE {
+        let _ = lsp.wait_diagnostics(&main_uri);
+    }
+    let burst_ms = burst_start.elapsed().as_millis();
+    assert!(
+        burst_ms <= EDIT_BURST_BUDGET_MS,
+        "burst drain took {burst_ms}ms, exceeded budget {EDIT_BURST_BUDGET_MS}ms"
+    );
+
+    // Server must still respond normally after the burst.
+    let (line, col) = line_col_of(&main_src, "m0.");
+    let ok = lsp.request(
+        "textDocument/completion",
+        completion_params(&main_uri, line, col + "m0.".len()),
+    );
+    let ok_text = fuse_rt::json::encode(&ok);
+    assert!(
+        ok_text.contains("\"items\""),
+        "completion should still respond after edit burst: {ok_text}"
     );
 
     lsp.shutdown();

@@ -196,12 +196,21 @@ pub(crate) struct LspState {
     pub(crate) docs_revision: u64,
     pub(crate) workspace_cache: Option<WorkspaceCache>,
     pub(crate) workspace_builds: u64,
+    /// Set to `true` when `try_incremental_module_update` clears the cache due
+    /// to a non-incremental change.  The next diagnostics call consumes this
+    /// flag and triggers a full workspace rebuild even for non-entry files.
+    pub(crate) workspace_rebuild_pending: bool,
+    /// Focus-file snapshot cache: loaded lazily for diagnostics before the full
+    /// workspace snapshot is built.  Keyed by (docs_revision, focus_uri).
+    pub(crate) progressive_cache: Option<WorkspaceCache>,
+    pub(crate) progressive_builds: u64,
 }
 
 impl LspState {
     pub(crate) fn invalidate_workspace_cache(&mut self) {
         self.docs_revision = self.docs_revision.saturating_add(1);
         self.workspace_cache = None;
+        self.progressive_cache = None;
     }
 }
 
@@ -244,6 +253,7 @@ pub(crate) fn apply_doc_overlay_change(state: &mut LspState, uri: &str, text: Op
     state.docs_revision = state.docs_revision.saturating_add(1);
     if !try_incremental_module_update(state, uri, text.as_deref()) {
         state.workspace_cache = None;
+        state.workspace_rebuild_pending = true;
     }
 }
 

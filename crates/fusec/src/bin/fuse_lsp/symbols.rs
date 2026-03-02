@@ -113,6 +113,43 @@ impl SymbolKind {
         }
     }
 
+    pub(crate) fn to_u8(self) -> u8 {
+        match self {
+            SymbolKind::Module => 0,
+            SymbolKind::Type => 1,
+            SymbolKind::Enum => 2,
+            SymbolKind::EnumVariant => 3,
+            SymbolKind::Function => 4,
+            SymbolKind::Config => 5,
+            SymbolKind::Service => 6,
+            SymbolKind::App => 7,
+            SymbolKind::Migration => 8,
+            SymbolKind::Test => 9,
+            SymbolKind::Param => 10,
+            SymbolKind::Variable => 11,
+            SymbolKind::Field => 12,
+        }
+    }
+
+    pub(crate) fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(SymbolKind::Module),
+            1 => Some(SymbolKind::Type),
+            2 => Some(SymbolKind::Enum),
+            3 => Some(SymbolKind::EnumVariant),
+            4 => Some(SymbolKind::Function),
+            5 => Some(SymbolKind::Config),
+            6 => Some(SymbolKind::Service),
+            7 => Some(SymbolKind::App),
+            8 => Some(SymbolKind::Migration),
+            9 => Some(SymbolKind::Test),
+            10 => Some(SymbolKind::Param),
+            11 => Some(SymbolKind::Variable),
+            12 => Some(SymbolKind::Field),
+            _ => None,
+        }
+    }
+
     pub(crate) fn hover_label(self) -> &'static str {
         match self {
             SymbolKind::Module => "Module",
