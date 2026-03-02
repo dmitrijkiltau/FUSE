@@ -61,3 +61,14 @@ A flake issue is closed only when:
 1. fix is merged,
 2. repeat-run gate has been green on main for multiple runs,
 3. related docs/tests are updated.
+
+---
+
+## Known-slow tests
+
+These tests consistently take longer than 60 seconds and trigger the runner's slow-test warning.
+They are not flaky — they pass reliably — but they inflate overall CI duration.
+
+| Test | Suite | Observed duration | Root cause | Action |
+|---|---|---|---|---|
+| `aot_parity_lock_matrix_is_observable_equivalent` | `authority_parity.sh` / `cargo test -p fusec --test aot_parity` | ~65–90s | Full AST/native/AOT observable-equivalence matrix: compiles and runs each fixture through all three backends, compares stdout/stderr/exit-code/JSON shape across every combination. Matrix size grows with each new error/boundary test case added in 0.8.0. | Track total matrix size milestone; consider parallel fixture execution or fixture batching if duration exceeds 120s. |
