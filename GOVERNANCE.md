@@ -25,9 +25,9 @@ Minimum required:
 2. `scripts/authority_parity.sh`
 3. `scripts/release_smoke.sh`
 
-If docs site behavior changed, also run:
+If guide/spec docs behavior changed, also run:
 
-4. `scripts/fuse check --manifest-path docs`
+4. `scripts/generate_guide_docs.sh`
 
 ## Disagreements
 

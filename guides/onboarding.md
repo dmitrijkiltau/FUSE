@@ -3,7 +3,7 @@
 Start from typed contracts and ship a small HTTP service.
 This page is generated from FUSE source comments + code blocks.
 
-_Generated from `docs/src/guides/onboarding.fuse` by `scripts/generate_guide_docs.sh`._
+_Generated from `guides/src/onboarding.fuse` by `scripts/generate_guide_docs.sh`._
 
 
 ```fuse

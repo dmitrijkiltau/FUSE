@@ -112,7 +112,7 @@ All notable changes to this project are documented in this file.
   two-backend model (AST/native). CHANGELOG historical entries preserved.
 - `release_smoke.sh` reduced from 24 to 23 steps (VM smoke step removed).
 - `use_case_bench.sh` CLI workload metrics now use `--backend native`.
-- `docs/fuse.toml` backend changed from `vm` to `native`.
+- Documentation package manifest backend changed from `vm` to `native`.
 - Parity tests compare AST vs Native only (VM removed from matrix).
 - RFC 0007 status updated to Implemented.
 
@@ -238,7 +238,7 @@ All notable changes to this project are documented in this file.
 - Cached `fuse run` fast-path now supports CLI program args after `--`.
 - VSIX integrity verification script: `scripts/verify_vscode_vsix.sh`.
 - Benchmark regression gate script: `scripts/check_use_case_bench_regression.sh`.
-- Migration guide: `docs/migrations/0.1-to-0.2.md`.
+- Migration guide: `guides/migrations/0.1-to-0.2.md`.
 - CLI `input(prompt: String = "") -> String` builtin across AST/VM/native backends.
 - CLI output color policy: `--color auto|always|never` (respects `NO_COLOR`).
 
@@ -257,7 +257,7 @@ All notable changes to this project are documented in this file.
 
 ### Migration
 
-- See `docs/migrations/0.1-to-0.2.md` for required source/tooling updates.
+- See `guides/migrations/0.1-to-0.2.md` for required source/tooling updates.
 
 ## [0.1.0] - 2026-02-21
 

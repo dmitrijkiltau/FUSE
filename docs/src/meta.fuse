@@ -1,5 +1,0 @@
-fn title() -> String:
-  return "FUSE docs"
-
-fn subtitle() -> String:
-  return "specs + OpenAPI"

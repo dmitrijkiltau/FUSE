@@ -265,7 +265,7 @@ Config:
 - Added config env-name typo hinting (`APP_DBURL` -> `APP_DB_URL`) in runtime config resolution
 - Updated docs:
   - `spec/runtime.md`
-  - regenerated `docs/site/specs/reference.md` via `scripts/generate_guide_docs.sh`
+  - regenerated `guides/reference.md` via `scripts/generate_guide_docs.sh`
 - Migrated reference-service DB writes where applicable to query-builder updates/deletes
 - Validation runs:
   - `scripts/cargo_env.sh cargo check -p fusec -p fuse`
@@ -312,7 +312,7 @@ Config:
 - Added test filtering for project test runs:
   - `fuse test --filter <pattern>` implemented in CLI argument plumbing (`fuse` -> `fusec`)
   - `fusec --test --filter <pattern>` filters test jobs by case-sensitive substring match on test name
-  - docs updated in `README.md` and `spec/runtime.md`; regenerated `docs/site/specs/reference.md`
+  - docs updated in `README.md` and `spec/runtime.md`; regenerated `guides/reference.md`
 - Implemented project-level incremental `fuse check` caching:
   - warm-cache fast path returns immediately when `.fuse/build/check.meta` (or `check.strict.meta`) remains valid
   - cache invalidation keys include module content hashes plus manifest/lock/build fingerprints
@@ -329,7 +329,7 @@ Config:
   - new `--diagnostics json` option for `fuse` commands switches stderr diagnostic output to JSON Lines
   - wrapper emits machine-readable command-step events (`kind=command_step`) and structured compiler diagnostics (`kind=diagnostic`)
   - delegated `fusec` execution paths (`fuse check|run|test` fallback) now honor the same mode for parse/sema diagnostics via shared diagnostics formatting
-- Documented JSON diagnostics schema in `spec/runtime.md` and propagated to `docs/site/specs/reference.md`
+- Documented JSON diagnostics schema in `spec/runtime.md` and propagated to `guides/reference.md`
 - Added JSON diagnostics regression coverage:
   - `crates/fuse/tests/project_cli.rs::check_diagnostics_json_emits_structured_output_for_project_mode`
   - `crates/fuse/tests/project_cli.rs::check_diagnostics_json_emits_structured_output_for_delegated_mode`
@@ -382,7 +382,7 @@ Config:
 - [ ] `governance/scope.md` roadmap refreshed (mark completed items, add next priorities)
 - [ ] `governance/VERSIONING_POLICY.md` updated with 0.8.0 compatibility line
 - [ ] `spec/fls.md` and `spec/runtime.md` fully reflect new behavior
-- [ ] `docs/site/specs/reference.md` regenerated and verified
+- [ ] GitHub-facing guide/reference markdown regenerated and verified
 - [ ] `benchmarks/use_case_baseline.json` refreshed if metrics changed
 - [ ] `ops/RELEASE.md` checklist executed
 
@@ -547,6 +547,63 @@ without changing language/runtime behavior.
 
 ---
 
+### Milestone 7B — GitHub-first guide surface (remove `/docs`)
+
+**Goal:** Replace the current `docs/` site package with a repository-native markdown
+guide surface that is directly readable on GitHub, while preserving reference
+coverage and generation ergonomics.
+
+**Scope:**
+
+- [x] Remove the `docs/` folder from the repository
+- [x] Introduce a root-level guide surface (for example `guides/`) with separate markdown files (`onboarding`, `boundary-contracts`, `reference`, etc.)
+- [x] Update `scripts/generate_guide_docs.sh` to generate into the new GitHub-facing location instead of `docs/site/specs/`
+- [x] Update all references/build scripts/tests that currently point at `docs/site/specs/reference.md`
+- [x] Keep generated guide links valid in GitHub markdown navigation (`README.md` and guide cross-links)
+
+**Deliverables:**
+
+- [x] `docs/` removed with no broken references in repository tooling/docs
+- [x] Generated guide files exist as first-class markdown docs in-repo (GitHub-renderable)
+- [x] `scripts/generate_guide_docs.sh` succeeds and is the canonical generation path
+- [x] `README.md` links to the new guide index/reference locations
+- [x] Release gates still pass after docs migration (`semantic_suite.sh`, `authority_parity.sh`, `release_smoke.sh`)
+
+**Execution slices (recommended order):**
+
+1. Layout migration pass:
+   - introduce new root guide directory and move generated outputs there
+   - keep filenames/link slugs stable where possible
+2. Generator migration pass:
+   - retarget `generate_guide_docs.sh` inputs/outputs to new layout
+   - regenerate guide/reference markdown and verify diff quality
+3. Reference rewiring pass:
+   - update README/spec/governance/script references to new paths
+   - remove `docs/` package and dead docs-only assets
+4. Gate pass:
+   - run release-critical scripts and ensure no regressions
+
+**Progress update (2026-03-02):**
+
+- Migrated guide source + outputs to root `guides/`:
+  - source moved to `guides/src/` (`onboarding.fuse`, `boundary-contracts.fuse`)
+  - generated outputs now in `guides/` (`onboarding.md`, `boundary-contracts.md`, `reference.md`)
+  - added `guides/README.md` index and moved migration guide to `guides/migrations/0.1-to-0.2.md`
+- Retargeted generator:
+  - `scripts/generate_guide_docs.sh` now reads from `guides/src` and writes to `guides/`
+  - generation run completed: `./scripts/generate_guide_docs.sh`
+- Repository reference rewiring completed:
+  - updated paths in `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `GOVERNANCE.md`, `governance/VERSIONING_POLICY.md`, and `CHANGELOG.md`
+- Removed `docs/` package and assets completely from repository tree
+- Post-migration validation runs green:
+  - `./scripts/semantic_suite.sh`
+  - `./scripts/authority_parity.sh`
+  - `./scripts/release_smoke.sh`
+
+**Exit criteria:** `docs/` removed, GitHub-first guide markdown generated by script, and release gates remain green.
+
+---
+
 ## Milestone dependency graph
 
 ```
@@ -559,9 +616,10 @@ M4 (examples + docs)           ──→ M7
 M5 (DB/config ergonomics)      ──→ M7
 M6 (workflow improvements)     ──→ M7
 M7A (cleanup + dedupe)         ──→ M7
+M7B (docs to github guides)    ──→ M7
 
 M1, M2, M3, M5, M6 are independent of each other and can be parallelized.
-M7A runs as refactor-only hardening before tagging.
+M7A and M7B run as pre-tag hardening before the release gate.
 M7 is the integration/release gate and depends on all others.
 ```
 

@@ -15,6 +15,6 @@
   - `governance/IDENTITY_CHARTER.md`
   - `governance/EXTENSIBILITY_BOUNDARIES.md`
   - `spec/runtime.md`
-  - `docs/site/specs/reference.md` (auto-generated; run `scripts/generate_guide_docs.sh` after updating `spec/fls.md`, `spec/runtime.md`, or `governance/scope.md`)
+  - `guides/reference.md` (auto-generated; run `scripts/generate_guide_docs.sh` after updating `spec/fls.md`, `spec/runtime.md`, or `governance/scope.md`)
 - Parser fixtures live in `crates/fusec/tests/parser_fixtures.rs`.
 - Semantic analysis golden tests live in `crates/fusec/tests/sema_golden.rs`.

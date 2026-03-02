@@ -107,7 +107,7 @@ A contract-facing change must follow all steps:
      but must include:
      - explicit breaking notes in `CHANGELOG.md`
      - compiler/runtime diagnostics with migration hints where possible
-     - a concrete migration guide under `docs/migrations/`
+     - a concrete migration guide under `guides/migrations/`
 3. Removal:
    - allowed only on the next breaking release boundary
    - include migration notes and before/after examples

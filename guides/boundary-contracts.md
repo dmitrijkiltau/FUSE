@@ -3,7 +3,7 @@
 Define request/response behavior in signatures, not ad hoc glue code.
 Generated from annotated FUSE source.
 
-_Generated from `docs/src/guides/boundary-contracts.fuse` by `scripts/generate_guide_docs.sh`._
+_Generated from `guides/src/boundary-contracts.fuse` by `scripts/generate_guide_docs.sh`._
 
 
 ## 1) Input type with refinements

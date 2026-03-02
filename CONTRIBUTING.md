@@ -33,7 +33,7 @@ Recommended baseline before opening a PR (see [Quality gates](README.md#quality-
 1. `scripts/semantic_suite.sh`
 2. `scripts/authority_parity.sh`
 3. `scripts/release_smoke.sh`
-4. `scripts/fuse check --manifest-path docs` (if docs site changed)
+4. `scripts/generate_guide_docs.sh` (if guide/spec docs changed)
 5. `scripts/reliability_repeat.sh --iterations 1` (recommended for CI-sensitive changes)
 6. `scripts/packaging_verifier_regression.sh` (recommended when touching release/package scripts)
 
@@ -45,8 +45,8 @@ Recommended baseline before opening a PR (see [Quality gates](README.md#quality-
 | Runtime behavior, boundary mapping, builtins, status/error semantics | update `spec/runtime.md`; add/adjust runtime/parity tests |
 | Scope or non-goal boundaries | update `governance/scope.md` and/or `governance/IDENTITY_CHARTER.md` |
 | Versioning/deprecation behavior | update `governance/VERSIONING_POLICY.md` and `CHANGELOG.md` |
-| Docs site behavior/content pipeline | update docs source + generated outputs under `docs/site/` |
-| Language/runtime behavior visible in reference docs | run `scripts/generate_guide_docs.sh` to regenerate `docs/site/specs/reference.md` from `spec/fls.md`, `spec/runtime.md`, and `governance/scope.md` |
+| Guide behavior/content pipeline | update guide source under `guides/src/` and generated markdown under `guides/` |
+| Language/runtime behavior visible in reference docs | run `scripts/generate_guide_docs.sh` to regenerate `guides/reference.md` from `spec/fls.md`, `spec/runtime.md`, and `governance/scope.md` |
 
 If semantics change and docs are not updated in the same PR, the PR is incomplete.
 

@@ -65,7 +65,7 @@ and AST/native/AOT parity-lock gates.
 Compatibility is defined by documented behavior in `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, and
 `governance/VERSIONING_POLICY.md`.
 Historical upgrade guidance for the `0.1.x -> 0.2.0` breaking minor is in
-`docs/migrations/0.1-to-0.2.md`.
+`guides/migrations/0.1-to-0.2.md`.
 
 ## Requirements
 
@@ -413,7 +413,7 @@ SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" ./scripts/generate_release_
 # Install a packaged VSIX example
 code --install-extension dist/fuse-vscode-linux-x64.vsix
 
-# Regenerate docs site guides
+# Regenerate GitHub guide markdown
 ./scripts/generate_guide_docs.sh
 ```
 
@@ -425,7 +425,7 @@ code --install-extension dist/fuse-vscode-linux-x64.vsix
 | `crates/fuse` | Package-oriented CLI wrapper |
 | `crates/fuse-rt` | Shared runtime library |
 | `examples/` | Sample programs and packages |
-| `docs/` | Documentation site (source, assets, generated specs) |
+| `guides/` | GitHub-facing guide markdown (generated + migration docs) |
 | `tools/vscode/` | VS Code extension (syntax highlighting + LSP client) |
 | `spec/` | Normative language/runtime contracts |
 | `ops/` | Release/incident contracts |
@@ -447,8 +447,9 @@ If two documents disagree, defer to the owning document listed for that tier.
 
 | Document | Scope |
 |---|---|
-| `docs/site/specs/onboarding.md` | Documentation-site onboarding walkthrough |
-| `docs/migrations/0.1-to-0.2.md` | Migration guide for `0.1.x -> 0.2.0` |
+| `guides/onboarding.md` | Onboarding walkthrough |
+| `guides/reference.md` | Generated developer reference |
+| `guides/migrations/0.1-to-0.2.md` | Migration guide for `0.1.x -> 0.2.0` |
 
 ### Operations contracts
 

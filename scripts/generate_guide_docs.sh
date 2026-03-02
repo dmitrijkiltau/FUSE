@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC_DIR="$ROOT/docs/src/guides"
-OUT_DIR="$ROOT/docs/site/specs"
+SRC_DIR="$ROOT/guides/src"
+OUT_DIR="$ROOT/guides"
 
 if [[ "${FUSE_SKIP_GUIDE_DOCS:-0}" == "1" ]]; then
   echo "skipping guide docs generation (FUSE_SKIP_GUIDE_DOCS=1)"
@@ -58,8 +58,8 @@ extract_section() {
 # ---------------------------------------------------------------------------
 # generate_reference
 #
-# Assembles docs/site/specs/reference.md from spec/fls.md, spec/runtime.md, and governance/scope.md.
-# This replaces the previously hand-maintained reference.md.
+# Assembles guides/reference.md from spec/fls.md, spec/runtime.md, and governance/scope.md.
+# This is the canonical GitHub-facing reference surface.
 # ---------------------------------------------------------------------------
 generate_reference() {
   local dst="$OUT_DIR/reference.md"
