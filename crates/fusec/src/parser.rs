@@ -655,7 +655,11 @@ impl<'a> Parser<'a> {
             (vec![child], child_span, expr.span.merge(child_span))
         };
         match expr.kind {
-            ExprKind::Call { callee, mut args } => {
+            ExprKind::Call {
+                callee,
+                mut args,
+                type_args,
+            } => {
                 let all_named_attrs = !args.is_empty() && args.iter().all(|arg| arg.name.is_some());
                 if args.len() > 1 && !all_named_attrs {
                     self.diags.error(
@@ -688,7 +692,11 @@ impl<'a> Parser<'a> {
                     is_block_sugar: true,
                 });
                 Expr {
-                    kind: ExprKind::Call { callee, args },
+                    kind: ExprKind::Call {
+                        callee,
+                        args,
+                        type_args,
+                    },
                     span: output_span,
                 }
             }
@@ -735,6 +743,7 @@ impl<'a> Parser<'a> {
                     kind: ExprKind::Call {
                         callee: Box::new(callee),
                         args,
+                        type_args: Vec::new(),
                     },
                     span: output_span,
                 }
@@ -839,6 +848,7 @@ impl<'a> Parser<'a> {
                             comma_before: None,
                             is_block_sugar: false,
                         }],
+                        type_args: Vec::new(),
                     },
                     span,
                 }
@@ -1335,18 +1345,25 @@ impl<'a> Parser<'a> {
             ) {
                 break;
             }
-            if self.eat_punct(Punct::LParen).is_some() {
+            let type_args = if self.is_type_arg_call_start() {
+                self.parse_call_type_args()
+            } else {
+                Vec::new()
+            };
+            if !type_args.is_empty() || self.eat_punct(Punct::LParen).is_some() {
+                if !type_args.is_empty() {
+                    self.expect_punct(Punct::LParen);
+                }
                 let args = self.parse_call_args();
                 let end = self.expect_punct(Punct::RParen);
                 let span = expr.span.merge(end);
                 self.validate_html_attr_call_syntax(&expr, &args);
                 let has_named = args.iter().any(|arg| arg.name.is_some());
-                let struct_name = if has_named {
-                    self.struct_literal_name(&expr)
-                        .filter(|name| {
-                            !html_tags::is_html_tag(&name.name)
-                                && !self.component_names.contains(&name.name)
-                        })
+                let struct_name = if has_named && type_args.is_empty() {
+                    self.struct_literal_name(&expr).filter(|name| {
+                        !html_tags::is_html_tag(&name.name)
+                            && !self.component_names.contains(&name.name)
+                    })
                 } else {
                     None
                 };
@@ -1371,6 +1388,7 @@ impl<'a> Parser<'a> {
                         kind: ExprKind::Call {
                             callee: Box::new(expr),
                             args,
+                            type_args,
                         },
                         span,
                     };
@@ -1451,6 +1469,57 @@ impl<'a> Parser<'a> {
             break;
         }
         expr
+    }
+
+    fn is_type_arg_call_start(&self) -> bool {
+        if !self.at_punct(Punct::Lt) {
+            return false;
+        }
+        let mut idx = 0usize;
+        let mut depth = 0usize;
+        loop {
+            let kind = self.peek_kind_n(idx);
+            match kind {
+                TokenKind::Punct(Punct::Lt) => {
+                    depth += 1;
+                }
+                TokenKind::Punct(Punct::Gt) => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        idx += 1;
+                        break;
+                    }
+                }
+                TokenKind::Eof | TokenKind::Newline => return false,
+                _ => {}
+            }
+            idx += 1;
+        }
+        while matches!(
+            self.peek_kind_n(idx),
+            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
+        ) {
+            idx += 1;
+        }
+        matches!(self.peek_kind_n(idx), TokenKind::Punct(Punct::LParen))
+    }
+
+    fn parse_call_type_args(&mut self) -> Vec<TypeRef> {
+        self.expect_punct(Punct::Lt);
+        let mut args = Vec::new();
+        if !self.at_punct(Punct::Gt) {
+            loop {
+                args.push(self.parse_type_ref());
+                if self.eat_punct(Punct::Comma).is_none() {
+                    break;
+                }
+            }
+        }
+        self.expect_punct(Punct::Gt);
+        args
     }
 
     fn parse_primary(&mut self) -> Expr {

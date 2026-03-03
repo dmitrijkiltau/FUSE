@@ -110,7 +110,10 @@ impl Query {
     }
 
     pub fn where_clause(&self, column: String, op: String, value: Value) -> Result<Self, String> {
-        if matches!(self.kind, QueryKind::Insert { .. } | QueryKind::Upsert { .. }) {
+        if matches!(
+            self.kind,
+            QueryKind::Insert { .. } | QueryKind::Upsert { .. }
+        ) {
             return Err("where is not supported for insert/upsert queries".to_string());
         }
         if !is_valid_identifier(&column) {
@@ -212,7 +215,10 @@ impl Query {
     }
 
     pub fn delete_rows(&self) -> Result<Self, String> {
-        if matches!(self.kind, QueryKind::Insert { .. } | QueryKind::Upsert { .. }) {
+        if matches!(
+            self.kind,
+            QueryKind::Insert { .. } | QueryKind::Upsert { .. }
+        ) {
             return Err("delete is not supported after insert/upsert".to_string());
         }
         let mut next = self.clone();
@@ -224,7 +230,10 @@ impl Query {
     }
 
     pub fn count(&self) -> Result<Self, String> {
-        if matches!(self.kind, QueryKind::Insert { .. } | QueryKind::Upsert { .. }) {
+        if matches!(
+            self.kind,
+            QueryKind::Insert { .. } | QueryKind::Upsert { .. }
+        ) {
             return Err("count is not supported for insert/upsert queries".to_string());
         }
         let mut next = self.clone();

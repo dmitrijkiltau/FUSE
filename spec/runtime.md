@@ -600,10 +600,19 @@ Query builder methods (immutable style; each returns a new `Query`):
 - `Query.update(column, value)` builds/extends `set` clauses
 - `Query.delete()` builds `delete from ...`
 - `Query.count()` executes a `count(*)` query and returns `Int`
-- `Query.one()`
-- `Query.all()`
+- `Query.one()` returns first row `Map<String, Value>?`
+- `Query.all()` returns `List<Map<String, Value>>`
+- `Query.one<T>()` returns `T?` using boundary-style struct decode/validation for each row
+- `Query.all<T>()` returns `List<T>` using boundary-style struct decode/validation for each row
 - `Query.exec()`
 - `Query.sql()` and `Query.params()` for inspection/debugging
+
+Typed query constraints:
+
+- typed query forms are valid only on `one<T>()` and `all<T>()`
+- the type argument must be a declared `type`
+- typed query forms require `select([...])` with string-literal columns before `one<T>()`/`all<T>()`
+- selected column names must match the target type field names at compile time
 
 Parameter binding:
 

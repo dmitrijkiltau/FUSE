@@ -263,7 +263,9 @@ pub(crate) struct HostCalls {
     query_delete: FuncId,
     query_count: FuncId,
     query_one: FuncId,
+    query_one_typed: FuncId,
     query_all: FuncId,
+    query_all_typed: FuncId,
     query_exec: FuncId,
     query_sql: FuncId,
     query_params: FuncId,
@@ -506,7 +508,15 @@ impl JitRuntime {
             fuse_native_query_count as *const u8,
         );
         builder.symbol("fuse_native_query_one", fuse_native_query_one as *const u8);
+        builder.symbol(
+            "fuse_native_query_one_typed",
+            fuse_native_query_one_typed as *const u8,
+        );
         builder.symbol("fuse_native_query_all", fuse_native_query_all as *const u8);
+        builder.symbol(
+            "fuse_native_query_all_typed",
+            fuse_native_query_all_typed as *const u8,
+        );
         builder.symbol(
             "fuse_native_query_exec",
             fuse_native_query_exec as *const u8,
@@ -1054,9 +1064,15 @@ impl HostCalls {
         let query_one = module
             .declare_function("fuse_native_query_one", Linkage::Import, &builtin_sig)
             .expect("declare query one hostcall");
+        let query_one_typed = module
+            .declare_function("fuse_native_query_one_typed", Linkage::Import, &builtin_sig)
+            .expect("declare query one_typed hostcall");
         let query_all = module
             .declare_function("fuse_native_query_all", Linkage::Import, &builtin_sig)
             .expect("declare query all hostcall");
+        let query_all_typed = module
+            .declare_function("fuse_native_query_all_typed", Linkage::Import, &builtin_sig)
+            .expect("declare query all_typed hostcall");
         let query_exec = module
             .declare_function("fuse_native_query_exec", Linkage::Import, &builtin_sig)
             .expect("declare query exec hostcall");
@@ -1161,7 +1177,9 @@ impl HostCalls {
             query_delete,
             query_count,
             query_one,
+            query_one_typed,
             query_all,
+            query_all_typed,
             query_exec,
             query_sql,
             query_params,
@@ -4913,6 +4931,70 @@ extern "C" fn fuse_native_query_count(
     0
 }
 
+fn decode_query_row_typed(
+    mut row: HashMap<String, Value>,
+    type_name: &str,
+    heap: &mut NativeHeap,
+    out: &mut NativeValue,
+) -> Result<Value, u8> {
+    let Some(type_info) = heap.type_info(type_name) else {
+        return Err(builtin_runtime_error(
+            out,
+            heap,
+            format!("unknown typed query result type {type_name}"),
+        ));
+    };
+    let decl_name = type_info.name.clone();
+    let decl_fields = type_info.fields.clone();
+
+    for key in row.keys() {
+        if decl_fields.iter().all(|field| field.name != *key) {
+            let err_value =
+                validation_error_value(&format!("$.{key}"), "unknown_field", "unknown field");
+            let Some(native) = NativeValue::from_value(&err_value, heap) else {
+                return Err(builtin_runtime_error(out, heap, "validation error"));
+            };
+            *out = native;
+            return Err(1);
+        }
+    }
+
+    let mut fields = HashMap::with_capacity(decl_fields.len());
+    for field in &decl_fields {
+        let Some(value) = row.remove(&field.name) else {
+            let err_value = validation_error_value(
+                &format!("$.{}", field.name),
+                "missing_field",
+                "missing field",
+            );
+            let Some(native) = NativeValue::from_value(&err_value, heap) else {
+                return Err(builtin_runtime_error(out, heap, "validation error"));
+            };
+            *out = native;
+            return Err(1);
+        };
+        let path = format!("{decl_name}.{}", field.name);
+        match validate_value(&value, &field.ty, &path) {
+            ValidateResult::Ok => {}
+            ValidateResult::Error(err_value) => {
+                let Some(native) = NativeValue::from_value(&err_value, heap) else {
+                    return Err(builtin_runtime_error(out, heap, "validation error"));
+                };
+                *out = native;
+                return Err(1);
+            }
+            ValidateResult::Runtime(message) => {
+                return Err(builtin_runtime_error(out, heap, message));
+            }
+        }
+        fields.insert(field.name.clone(), value);
+    }
+    Ok(Value::Struct {
+        name: decl_name,
+        fields,
+    })
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn fuse_native_query_one(
     heap: *mut NativeHeap,
@@ -4971,6 +5053,72 @@ extern "C" fn fuse_native_query_one(
 }
 
 #[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_one_typed(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "query.one_typed expects 2 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.one_typed expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.one_typed expects a Query");
+    };
+    let Some(type_name_val) = args.get(1).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.one_typed expects a type name string");
+    };
+    let Value::String(type_name) = type_name_val else {
+        return builtin_runtime_error(out, heap, "query.one_typed expects a type name string");
+    };
+    let (sql, params) = match query.build_sql(Some(1)) {
+        Ok(result) => result,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let pool_size = match db_pool_size(heap) {
+        Ok(size) => size,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let url = match db_url() {
+        Ok(url) => url,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let db = match heap.db_mut(url, pool_size) {
+        Ok(db) => db,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let rows = match db.query_params(&sql, &params) {
+        Ok(rows) => rows,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    if let Some(row) = rows.into_iter().next() {
+        let value = match decode_query_row_typed(row, &type_name, heap, out) {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        let Some(native) = NativeValue::from_value(&value, heap) else {
+            return builtin_runtime_error(out, heap, "query.one_typed result unsupported");
+        };
+        *out = native;
+    } else {
+        *out = NativeValue::null();
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn fuse_native_query_all(
     heap: *mut NativeHeap,
     args: *const NativeValue,
@@ -5019,6 +5167,73 @@ extern "C" fn fuse_native_query_all(
     let value = Value::List(list);
     let Some(native) = NativeValue::from_value(&value, heap) else {
         return builtin_runtime_error(out, heap, "query.all result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_all_typed(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "query.all_typed expects 2 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.all_typed expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.all_typed expects a Query");
+    };
+    let Some(type_name_val) = args.get(1).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.all_typed expects a type name string");
+    };
+    let Value::String(type_name) = type_name_val else {
+        return builtin_runtime_error(out, heap, "query.all_typed expects a type name string");
+    };
+    let (sql, params) = match query.build_sql(None) {
+        Ok(result) => result,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let pool_size = match db_pool_size(heap) {
+        Ok(size) => size,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let url = match db_url() {
+        Ok(url) => url,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let db = match heap.db_mut(url, pool_size) {
+        Ok(db) => db,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let rows = match db.query_params(&sql, &params) {
+        Ok(rows) => rows,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let mut list = Vec::with_capacity(rows.len());
+    for row in rows {
+        let value = match decode_query_row_typed(row, &type_name, heap, out) {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        list.push(value);
+    }
+    let value = Value::List(list);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "query.all_typed result unsupported");
     };
     *out = native;
     0
@@ -6480,7 +6695,9 @@ fn compile_function<M: Module>(
                                 "query.delete" => hostcalls.query_delete,
                                 "query.count" => hostcalls.query_count,
                                 "query.one" => hostcalls.query_one,
+                                "query.one_typed" => hostcalls.query_one_typed,
                                 "query.all" => hostcalls.query_all,
+                                "query.all_typed" => hostcalls.query_all_typed,
                                 "query.exec" => hostcalls.query_exec,
                                 "query.sql" => hostcalls.query_sql,
                                 "query.params" => hostcalls.query_params,
@@ -7414,7 +7631,9 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     | "query.delete"
                     | "query.count"
                     | "query.one"
+                    | "query.one_typed"
                     | "query.all"
+                    | "query.all_typed"
                     | "query.exec"
                     | "query.sql"
                     | "query.params"
@@ -7990,7 +8209,9 @@ fn analyze_types(
                                 | "query.delete"
                                 | "query.count"
                                 | "query.one"
+                                | "query.one_typed"
                                 | "query.all"
+                                | "query.all_typed"
                                 | "query.exec"
                                 | "query.sql"
                                 | "query.params"

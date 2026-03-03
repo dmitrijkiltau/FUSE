@@ -641,7 +641,11 @@ impl<'a> Checker<'a> {
                 let right_ty = self.check_expr(right);
                 self.check_binary(expr.span, op, left_ty, right_ty)
             }
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call {
+                callee,
+                args,
+                type_args,
+            } => {
                 let uses_html_block = args.iter().any(|arg| arg.is_block_sugar);
                 if let ExprKind::Ident(ident) = &callee.kind {
                     if self.should_use_html_tag_builtin(&ident.name)
@@ -659,6 +663,9 @@ impl<'a> Checker<'a> {
                     }
                 }
                 self.enforce_call_capabilities(callee, expr.span);
+                if !type_args.is_empty() {
+                    return self.check_typed_query_call(expr.span, callee, args, type_args);
+                }
                 if let ExprKind::Member { base, name } = &callee.kind {
                     if let ExprKind::Ident(ident) = &base.kind {
                         if ident.name == "db"
@@ -1044,6 +1051,154 @@ impl<'a> Checker<'a> {
             Ty::Option(Box::new(field_ty))
         } else {
             field_ty
+        }
+    }
+
+    fn check_typed_query_call(
+        &mut self,
+        span: Span,
+        callee: &Expr,
+        args: &[CallArg],
+        type_args: &[crate::ast::TypeRef],
+    ) -> Ty {
+        let ExprKind::Member { base, name } = &callee.kind else {
+            self.diags.error(
+                span,
+                "type arguments are only supported on query.one<T>() and query.all<T>()",
+            );
+            for arg in args {
+                let _ = self.check_expr(&arg.value);
+            }
+            return Ty::Unknown;
+        };
+        if !matches!(name.name.as_str(), "one" | "all") {
+            self.diags.error(
+                span,
+                "type arguments are only supported on query.one<T>() and query.all<T>()",
+            );
+            for arg in args {
+                let _ = self.check_expr(&arg.value);
+            }
+            return Ty::Unknown;
+        }
+        if !args.is_empty() {
+            self.diags
+                .error(span, "typed query methods do not accept arguments");
+            for arg in args {
+                let _ = self.check_expr(&arg.value);
+            }
+        }
+        if type_args.len() != 1 {
+            self.diags
+                .error(span, "typed query methods expect exactly one type argument");
+            return Ty::Unknown;
+        }
+        let base_ty = self.check_expr(base);
+        if !matches!(base_ty, Ty::External(ref name) if name == "query") && !base_ty.is_unknown() {
+            self.diags.error(
+                base.span,
+                format!("typed query call expects Query receiver, got {base_ty}"),
+            );
+            return Ty::Unknown;
+        }
+
+        let target_ty = self.resolve_type_ref(&type_args[0]);
+        let struct_name = match &target_ty {
+            Ty::Struct(name) => name.clone(),
+            Ty::Unknown => return Ty::Unknown,
+            other => {
+                self.diags.error(
+                    type_args[0].span,
+                    format!(
+                        "typed query result type must be a declared type, found {}",
+                        other
+                    ),
+                );
+                return Ty::Unknown;
+            }
+        };
+        self.check_typed_query_projection(base, &struct_name, span);
+        if name.name == "one" {
+            Ty::Option(Box::new(target_ty))
+        } else {
+            Ty::List(Box::new(target_ty))
+        }
+    }
+
+    fn check_typed_query_projection(&mut self, base: &Expr, struct_name: &str, span: Span) {
+        let selected = self.extract_query_select_columns(base);
+        let Some(selected) = selected else {
+            self.diags.error(
+                span,
+                "typed query requires select([...]) with string literal columns before one<T>()/all<T>()",
+            );
+            return;
+        };
+        if selected.is_empty() {
+            self.diags.error(
+                span,
+                "typed query requires select([...]) with string literal columns before one<T>()/all<T>()",
+            );
+            return;
+        }
+        let Some(info) = self.type_info(struct_name) else {
+            return;
+        };
+        let selected_fields: HashSet<String> = selected
+            .iter()
+            .map(|name| name.rsplit('.').next().unwrap_or(name.as_str()).to_string())
+            .collect();
+        let declared_fields: HashSet<String> =
+            info.fields.iter().map(|field| field.name.clone()).collect();
+        if selected_fields == declared_fields {
+            return;
+        }
+        let mut selected_sorted: Vec<String> = selected_fields.into_iter().collect();
+        selected_sorted.sort();
+        let mut declared_sorted: Vec<String> = declared_fields.into_iter().collect();
+        declared_sorted.sort();
+        self.diags.error(
+            span,
+            format!(
+                "typed query column mismatch for {struct_name}: selected [{}], expected [{}]",
+                selected_sorted.join(", "),
+                declared_sorted.join(", ")
+            ),
+        );
+    }
+
+    fn extract_query_select_columns(&self, expr: &Expr) -> Option<Vec<String>> {
+        let ExprKind::Call { callee, args, .. } = &expr.kind else {
+            return None;
+        };
+        let ExprKind::Member { base, name } = &callee.kind else {
+            return None;
+        };
+        if !is_query_method_name(&name.name) {
+            return None;
+        }
+        match name.name.as_str() {
+            "select" => {
+                if args.len() != 1 {
+                    return None;
+                }
+                let ExprKind::ListLit(items) = &args[0].value.kind else {
+                    return None;
+                };
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    let ExprKind::Literal(Literal::String(text)) = &item.kind else {
+                        return None;
+                    };
+                    out.push(text.clone());
+                }
+                Some(out)
+            }
+            "where" | "order_by" | "limit" | "one" | "all" => {
+                self.extract_query_select_columns(base)
+            }
+            "from" => Some(Vec::new()),
+            _ => None,
         }
     }
 
@@ -2842,6 +2997,26 @@ fn force_html_input_tag_call(name: &str, args: &[CallArg]) -> bool {
             args.first().map(|arg| &arg.value.kind),
             Some(ExprKind::MapLit(_))
         )
+}
+
+fn is_query_method_name(name: &str) -> bool {
+    matches!(
+        name,
+        "select"
+            | "where"
+            | "order_by"
+            | "limit"
+            | "insert"
+            | "upsert"
+            | "update"
+            | "delete"
+            | "count"
+            | "one"
+            | "all"
+            | "exec"
+            | "sql"
+            | "params"
+    )
 }
 
 fn capability_for_ident_call(name: &str) -> Option<Capability> {

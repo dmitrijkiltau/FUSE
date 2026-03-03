@@ -578,7 +578,13 @@ fn collect_migrations<'a>(
                         decl.name, package_label, prev
                     ));
                 }
-                jobs.push((decl.name.clone(), package.clone(), module_path.clone(), *id, decl));
+                jobs.push((
+                    decl.name.clone(),
+                    package.clone(),
+                    module_path.clone(),
+                    *id,
+                    decl,
+                ));
             }
         }
     }

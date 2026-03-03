@@ -403,7 +403,11 @@ app "demo":
             String::from_utf8_lossy(&output.stderr)
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert_eq!(stdout.trim(), r#"<div class="Ada">hello</div>"#, "{backend} stdout");
+        assert_eq!(
+            stdout.trim(),
+            r#"<div class="Ada">hello</div>"#,
+            "{backend} stdout"
+        );
     }
 }
 
@@ -429,7 +433,11 @@ app "demo":
             String::from_utf8_lossy(&output.stderr)
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert_eq!(stdout.trim(), r#"<div class="hero">hello</div>"#, "{backend} stdout");
+        assert_eq!(
+            stdout.trim(),
+            r#"<div class="hero">hello</div>"#,
+            "{backend} stdout"
+        );
     }
 }
 

@@ -462,6 +462,42 @@ fn main():
 }
 
 #[test]
+fn checks_typed_query_result_forms() {
+    let src = r#"
+requires db
+
+type User:
+  id: Int
+  name: String
+
+fn main():
+  let users = db.from("users").select(["id", "name"]).all<User>()
+  let first = db.from("users").select(["id", "name"]).one<User>()
+  let _users_typed: List<User> = users
+  let _first_typed: User? = first
+"#;
+    assert_diags(src, &[]);
+}
+
+#[test]
+fn rejects_typed_query_column_field_mismatch() {
+    let src = r#"
+requires db
+
+type User:
+  id: Int
+  name: String
+
+fn main():
+  let _bad = db.from("users").select(["id"]).all<User>()
+"#;
+    assert_diags(
+        src,
+        &["Error: typed query column mismatch for User: selected [id], expected [id, name]"],
+    );
+}
+
+#[test]
 fn requires_db_capability_for_db_calls() {
     let src = r#"
 fn main():

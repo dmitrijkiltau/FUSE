@@ -354,8 +354,8 @@ fn lsp_semantic_tokens_and_inlay_hints_contract() {
         .expect("token type for member property");
     let class_attr_ty = token_type_at(&rows, attr_class_line, attr_class_col)
         .expect("token type for class html attr");
-    let type_attr_ty = token_type_at(&rows, attr_type_line, attr_type_col)
-        .expect("token type for type html attr");
+    let type_attr_ty =
+        token_type_at(&rows, attr_type_line, attr_type_col).expect("token type for type html attr");
     let id_attr_ty =
         token_type_at(&rows, attr_id_line, attr_id_col).expect("token type for id html attr");
 

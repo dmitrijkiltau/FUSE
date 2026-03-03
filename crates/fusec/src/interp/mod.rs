@@ -31,6 +31,7 @@ use crate::observability;
 use crate::refinement::{
     NumberLiteral, RefinementConstraint, base_is_string_like, parse_constraints,
 };
+use crate::span::Span;
 
 #[derive(Clone, Debug)]
 pub struct FunctionRef {
@@ -1566,7 +1567,11 @@ impl Interpreter {
                     UnaryOp::Not => Ok(Value::Bool(!self.as_bool(&value)?)),
                 }
             }
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call {
+                callee,
+                args,
+                type_args,
+            } => {
                 if let ExprKind::Ident(ident) = &callee.kind {
                     if self.should_use_html_tag_builtin(&ident.name)
                         || force_html_input_tag_call(&ident.name, args)
@@ -1597,6 +1602,28 @@ impl Interpreter {
                     }
                     let base_val = self.eval_expr(base)?.unboxed();
                     if is_query_method(&name.name) && matches!(base_val, Value::Query(_)) {
+                        if !type_args.is_empty() {
+                            if !matches!(name.name.as_str(), "one" | "all") {
+                                return Err(ExecError::Runtime(
+                                    "type arguments are only supported on query.one<T>() and query.all<T>()".to_string(),
+                                ));
+                            }
+                            if args.len() != 0 {
+                                return Err(ExecError::Runtime(
+                                    "typed query methods do not accept arguments".to_string(),
+                                ));
+                            }
+                            if type_args.len() != 1 {
+                                return Err(ExecError::Runtime(
+                                    "typed query methods expect exactly one type argument"
+                                        .to_string(),
+                                ));
+                            }
+                            let type_name = self.query_typed_type_name(&type_args[0])?;
+                            let query_args = vec![base_val, Value::String(type_name)];
+                            return self
+                                .eval_builtin(&format!("query.{}_typed", name.name), query_args);
+                        }
                         let mut query_args = Vec::with_capacity(args.len() + 1);
                         query_args.push(base_val);
                         query_args.extend(arg_vals);
@@ -1884,6 +1911,41 @@ impl Interpreter {
                 "call target is not callable".to_string(),
             )),
         }
+    }
+
+    fn query_typed_type_name(&self, ty: &TypeRef) -> ExecResult<String> {
+        match &ty.kind {
+            TypeRefKind::Simple(ident) => {
+                let (_, simple_name) = crate::runtime_types::split_type_name(&ident.name);
+                if self.types.contains_key(simple_name) {
+                    Ok(simple_name.to_string())
+                } else {
+                    Err(ExecError::Runtime(format!(
+                        "unknown typed query result type {}",
+                        ident.name
+                    )))
+                }
+            }
+            _ => Err(ExecError::Runtime(
+                "typed query result type must be a declared type name".to_string(),
+            )),
+        }
+    }
+
+    fn decode_query_row_typed(
+        &mut self,
+        row: HashMap<String, Value>,
+        type_name: &str,
+    ) -> ExecResult<Value> {
+        let json = self.value_to_json(&Value::Map(row));
+        let ty = TypeRef {
+            kind: TypeRefKind::Simple(Ident {
+                name: type_name.to_string(),
+                span: Span::default(),
+            }),
+            span: Span::default(),
+        };
+        self.decode_json_value(&json, &ty, "$")
     }
 
     fn eval_builtin(&mut self, name: &str, args: Vec<Value>) -> ExecResult<Value> {
@@ -2706,6 +2768,37 @@ impl Interpreter {
                     Ok(Value::Null)
                 }
             }
+            "query.one_typed" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "query.one_typed expects 2 arguments".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.one_typed expects a Query".to_string(),
+                        ));
+                    }
+                };
+                let type_name = match args.get(1) {
+                    Some(Value::String(name)) => name.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.one_typed expects a type name string".to_string(),
+                        ));
+                    }
+                };
+                let (sql, params) = query.build_sql(Some(1)).map_err(ExecError::Runtime)?;
+                let db = self.db_mut()?;
+                let rows = db.query_params(&sql, &params).map_err(ExecError::Runtime)?;
+                if let Some(row) = rows.into_iter().next() {
+                    self.decode_query_row_typed(row, &type_name)
+                } else {
+                    Ok(Value::Null)
+                }
+            }
             "query.all" => {
                 if args.len() != 1 {
                     return Err(ExecError::Runtime(
@@ -2720,6 +2813,37 @@ impl Interpreter {
                 let db = self.db_mut()?;
                 let rows = db.query_params(&sql, &params).map_err(ExecError::Runtime)?;
                 let list = rows.into_iter().map(Value::Map).collect();
+                Ok(Value::List(list))
+            }
+            "query.all_typed" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "query.all_typed expects 2 arguments".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.all_typed expects a Query".to_string(),
+                        ));
+                    }
+                };
+                let type_name = match args.get(1) {
+                    Some(Value::String(name)) => name.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.all_typed expects a type name string".to_string(),
+                        ));
+                    }
+                };
+                let (sql, params) = query.build_sql(None).map_err(ExecError::Runtime)?;
+                let db = self.db_mut()?;
+                let rows = db.query_params(&sql, &params).map_err(ExecError::Runtime)?;
+                let mut list = Vec::with_capacity(rows.len());
+                for row in rows {
+                    list.push(self.decode_query_row_typed(row, &type_name)?);
+                }
                 Ok(Value::List(list))
             }
             "query.exec" => {

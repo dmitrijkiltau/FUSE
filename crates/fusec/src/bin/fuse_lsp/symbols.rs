@@ -299,10 +299,17 @@ fn collect_qualified_expr(expr: &Expr, out: &mut Vec<QualifiedNameRef>) {
             collect_qualified_expr(right, out);
         }
         ExprKind::Unary { expr, .. } => collect_qualified_expr(expr, out),
-        ExprKind::Call { callee, args } => {
+        ExprKind::Call {
+            callee,
+            args,
+            type_args,
+        } => {
             collect_qualified_expr(callee, out);
             for arg in args {
                 collect_qualified_expr(&arg.value, out);
+            }
+            for ty in type_args {
+                collect_qualified_type_ref(ty, out);
             }
         }
         ExprKind::Member { base, name } => {
@@ -981,7 +988,11 @@ impl<'a> IndexBuilder<'a> {
             ExprKind::Unary { expr, .. } => {
                 self.visit_expr(expr);
             }
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call {
+                callee,
+                args,
+                type_args,
+            } => {
                 self.record_call(callee);
                 self.visit_expr(callee);
                 for arg in args {
@@ -991,6 +1002,9 @@ impl<'a> IndexBuilder<'a> {
                         }
                     }
                     self.visit_expr(&arg.value);
+                }
+                for ty in type_args {
+                    self.visit_type_ref(ty);
                 }
             }
             ExprKind::Member { base, name } | ExprKind::OptionalMember { base, name } => {

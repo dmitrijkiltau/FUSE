@@ -20,6 +20,12 @@ fn db_one_name() -> Map<String, String>?:
 fn db_query_names() -> List<Map<String, String>>:
   return db.query("select name from users order by id")
 
+fn db_query_typed_users() -> List<User>:
+  return db.from("users").select(["id", "name"]).order_by("id", "asc").all<User>()
+
+fn db_one_typed_user(id: Int) -> User?:
+  return db.from("users").select(["id", "name"]).where("id", "=", id).one<User>()
+
 fn db_upsert_name() -> Map<String, String>?:
   db.from("users").upsert(User(id=2, name="Bobby")).exec()
   return db.one("select name from users where id = 2")
@@ -28,4 +34,6 @@ app "demo":
   db_init()
   print(db_one_name())
   print(db_query_names())
+  print(db_query_typed_users())
+  print(db_one_typed_user(1))
   print(db_upsert_name())

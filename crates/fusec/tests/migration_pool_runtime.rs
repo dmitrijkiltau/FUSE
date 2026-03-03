@@ -259,7 +259,9 @@ migration "001_seed":
     assert_eq!(scalar_i64(&item_rows, "c"), 2);
 
     let root_rows = verify_db
-        .query("select count(*) as c from __fuse_migrations where package = '' and name = '001_seed'")
+        .query(
+            "select count(*) as c from __fuse_migrations where package = '' and name = '001_seed'",
+        )
         .expect("query root migration history");
     assert_eq!(scalar_i64(&root_rows, "c"), 1);
 

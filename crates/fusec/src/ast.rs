@@ -316,6 +316,8 @@ pub enum ExprKind {
     Call {
         callee: Box<Expr>,
         args: Vec<CallArg>,
+        #[serde(default)]
+        type_args: Vec<TypeRef>,
     },
     Member {
         base: Box<Expr>,

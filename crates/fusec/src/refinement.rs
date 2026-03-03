@@ -95,7 +95,7 @@ fn parse_constraint(expr: &Expr) -> Result<RefinementConstraint, RefinementParse
         });
     }
 
-    let ExprKind::Call { callee, args } = &expr.kind else {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
         return Err(RefinementParseError {
             span: expr.span,
             message: "unsupported refinement constraint; expected 1..10, regex(\"...\"), or predicate(fn_name)".to_string(),

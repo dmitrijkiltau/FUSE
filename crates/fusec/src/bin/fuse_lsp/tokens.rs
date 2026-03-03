@@ -193,11 +193,7 @@ fn collect_html_attr_name_spans(program: &Program) -> HashSet<(usize, usize)> {
             }
             Item::Service(decl) => {
                 for route in &decl.routes {
-                    collect_html_attr_name_spans_block(
-                        &route.body,
-                        &component_names,
-                        &mut spans,
-                    );
+                    collect_html_attr_name_spans_block(&route.body, &component_names, &mut spans);
                 }
             }
             Item::App(decl) => {
@@ -281,7 +277,7 @@ fn collect_html_attr_name_spans_expr(
     out: &mut HashSet<(usize, usize)>,
 ) {
     match &expr.kind {
-        ExprKind::Call { callee, args } => {
+        ExprKind::Call { callee, args, .. } => {
             let html_attr_context = matches!(&callee.kind, ExprKind::Ident(ident)
                 if fusec::html_tags::is_html_tag(&ident.name) || component_names.contains(&ident.name));
             if html_attr_context {
@@ -757,7 +753,7 @@ fn collect_inlay_hints_expr(
     seen: &mut HashSet<(usize, String)>,
 ) {
     match &expr.kind {
-        ExprKind::Call { callee, args } => {
+        ExprKind::Call { callee, args, .. } => {
             if let Some(param_names) = call_param_names(index, uri, text, callee) {
                 for (idx, arg) in args.iter().enumerate() {
                     if arg.name.is_none() {

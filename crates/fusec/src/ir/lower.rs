@@ -90,9 +90,17 @@ fn rewrite_predicate_name_in_refined_arg(
     import_items: &HashMap<String, ModuleLink>,
     fn_decls: &HashMap<String, FnDecl>,
 ) {
-    let ExprKind::Call { callee, args } = &mut expr.kind else {
+    let ExprKind::Call {
+        callee,
+        args,
+        type_args,
+    } = &mut expr.kind
+    else {
         return;
     };
+    if !type_args.is_empty() {
+        return;
+    }
     let ExprKind::Ident(callee_ident) = &callee.kind else {
         return;
     };
@@ -1572,8 +1580,18 @@ impl FuncBuilder {
                     UnaryOp::Not => self.emit(Instr::Not),
                 }
             }
-            ExprKind::Call { callee, args } => match &callee.kind {
+            ExprKind::Call {
+                callee,
+                args,
+                type_args,
+            } => match &callee.kind {
                 ExprKind::Ident(ident) => {
+                    if !type_args.is_empty() {
+                        self.errors.push(
+                            "type arguments are only supported on query.one<T>() and query.all<T>()"
+                                .to_string(),
+                        );
+                    }
                     if self.should_use_html_tag_builtin(&ident.name)
                         || force_html_input_tag_call(&ident.name, args)
                     {
@@ -1639,6 +1657,39 @@ impl FuncBuilder {
                         }
                     }
                     if is_query_method(&name.name) {
+                        if !type_args.is_empty() {
+                            if !matches!(name.name.as_str(), "one" | "all") {
+                                self.errors.push(
+                                    "type arguments are only supported on query.one<T>() and query.all<T>()"
+                                        .to_string(),
+                                );
+                            } else if type_args.len() != 1 {
+                                self.errors.push(
+                                    "typed query methods expect exactly one type argument"
+                                        .to_string(),
+                                );
+                            } else if !args.is_empty() {
+                                self.errors.push(
+                                    "typed query methods do not accept arguments".to_string(),
+                                );
+                            } else if let Some(type_name) =
+                                self.query_type_arg_name_for_builtin(&type_args[0])
+                            {
+                                self.lower_expr(base);
+                                self.emit(Instr::Push(Const::String(type_name)));
+                                self.emit(Instr::Call {
+                                    name: format!("query.{}_typed", name.name),
+                                    argc: 2,
+                                    kind: CallKind::Builtin,
+                                });
+                                return;
+                            } else {
+                                self.errors.push(
+                                    "typed query result type must be a declared type name"
+                                        .to_string(),
+                                );
+                            }
+                        }
                         self.lower_expr(base);
                         for arg in args {
                             self.lower_expr(&arg.value);
@@ -2038,6 +2089,17 @@ impl FuncBuilder {
         self.emit(Instr::RuntimeError(
             "call target is not callable".to_string(),
         ));
+    }
+
+    fn query_type_arg_name_for_builtin(&self, ty: &TypeRef) -> Option<String> {
+        match &ty.kind {
+            TypeRefKind::Simple(ident) => ident
+                .name
+                .rsplit('.')
+                .next()
+                .map(std::string::ToString::to_string),
+            _ => None,
+        }
     }
 
     fn lower_call_with_defaults(

@@ -253,7 +253,7 @@ impl Canonicalizer {
                 self.canonicalize_expr(right, scope);
             }
             ExprKind::Unary { expr, .. } => self.canonicalize_expr(expr, scope),
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call { callee, args, .. } => {
                 self.canonicalize_expr(callee, scope);
                 for arg in args.iter_mut() {
                     self.canonicalize_expr(&mut arg.value, scope);

@@ -258,6 +258,8 @@ Notes:
   (`aria_label` -> `aria-label`, `data_view` -> `data-view`).
 - Postfix chains can continue across line breaks when the next token is a postfix continuation
   (`(`, `.`, `[`, `?`, `?!`), so long call/member/index chains can be wrapped line-by-line.
+- Call-site type arguments are supported only for typed query reads:
+  `db.from(...).select([...]).one<T>()` and `.all<T>()`.
 - Call argument lists allow line breaks and trailing commas before `)`.
 - Function parameter lists allow line breaks and a trailing comma before `)`.
 - `if` / `else if` / `else` bodies can use either a normal indented block or an inline single statement
@@ -335,7 +337,7 @@ Expressions:
 - `Ident`
 - `Binary(op, left, right)`
 - `Unary(op, expr)`
-- `Call(callee, args)` where args are `CallArg { name, value, is_block_sugar }`
+- `Call(callee, args, type_args)` where args are `CallArg { name, value, is_block_sugar }`
 - `Member(base, name)`
 - `OptionalMember(base, name)`
 - `Index(base, index)`
@@ -535,6 +537,8 @@ Module capabilities:
 - calls requiring capabilities are rejected when the current module does not declare them
 - `requires db` gates `db.exec/query/one/from` and query-builder calls reachable from `db.from(...)`
   (`select`, `where`, `order_by`, `limit`, `insert`, `upsert`, `update`, `delete`, `count`, `one`, `all`, `exec`, `sql`, `params`)
+- typed query forms (`one<T>()`, `all<T>()`) are compile-time checked:
+  the type argument must be a declared `type`, and `select([...])` columns must match its fields
 - `requires time` gates access to runtime `time.*` builtins (`now`, `format`, `parse`, `sleep`)
 - `requires crypto` gates access to runtime `crypto.*` builtins (`hash`, `hmac`, `random_bytes`, `constant_time_eq`)
 - call sites to imported module functions must declare every capability required by the callee module

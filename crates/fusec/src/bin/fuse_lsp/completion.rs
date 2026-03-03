@@ -349,7 +349,7 @@ fn collect_call_context_expr(expr: &Expr, cursor: usize, best: &mut Option<CallC
         return;
     }
     match &expr.kind {
-        ExprKind::Call { callee, args } => {
+        ExprKind::Call { callee, args, .. } => {
             consider_call_context(best, expr.span, callee, args, cursor);
             collect_call_context_expr(callee, cursor, best);
             for arg in args {

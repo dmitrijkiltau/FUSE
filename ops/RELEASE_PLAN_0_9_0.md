@@ -384,7 +384,7 @@ Implementation files changed:
 
 ### M7 — DB layer enhancements
 
-**Status: IN PROGRESS** (started 2026-03-03)
+**Status: COMPLETE** ✓ (2026-03-03)
 
 **Goal:** Apply the boundary model inward to DB outputs and complete the CRUD surface
 before multi-package workloads scale.

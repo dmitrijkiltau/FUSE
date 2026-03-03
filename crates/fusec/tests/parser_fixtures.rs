@@ -1,4 +1,4 @@
-use fusec::ast::{Capability, ExprKind, Item, Literal, StmtKind};
+use fusec::ast::{Capability, ExprKind, Item, Literal, StmtKind, TypeRefKind};
 use fusec::parse_source;
 
 fn assert_parse_ok(src: &str) {
@@ -195,6 +195,89 @@ fn get_note(id: Id) -> Map<String, String>!std.Error.NotFound:
     ?! std.Error.NotFound(message="not found")
 "#;
     assert_parse_ok(src);
+}
+
+#[test]
+fn parses_typed_query_method_calls() {
+    let src = r#"
+requires db
+
+type User:
+  id: Int
+  name: String
+
+fn main():
+  let users = db.from("users").select(["id", "name"]).all<User>()
+  let first = db.from("users").select(["id", "name"]).one<User>()
+"#;
+    let program = parse_ok(src);
+    let Some(Item::Fn(main_fn)) = program
+        .items
+        .iter()
+        .find(|item| matches!(item, Item::Fn(decl) if decl.name.name == "main"))
+    else {
+        panic!("expected main function");
+    };
+    let Some(first_stmt) = main_fn.body.stmts.first() else {
+        panic!("expected first statement");
+    };
+    let StmtKind::Let {
+        expr: first_expr, ..
+    } = &first_stmt.kind
+    else {
+        panic!("expected first let statement");
+    };
+    let ExprKind::Call {
+        callee: first_callee,
+        type_args: first_type_args,
+        ..
+    } = &first_expr.kind
+    else {
+        panic!("expected typed all<User>() call");
+    };
+    let ExprKind::Member {
+        name: first_method, ..
+    } = &first_callee.kind
+    else {
+        panic!("expected member call for all<User>()");
+    };
+    assert_eq!(first_method.name, "all");
+    assert_eq!(first_type_args.len(), 1);
+    match &first_type_args[0].kind {
+        TypeRefKind::Simple(ident) => assert_eq!(ident.name, "User"),
+        other => panic!("expected simple type argument, got {other:?}"),
+    }
+
+    let Some(second_stmt) = main_fn.body.stmts.get(1) else {
+        panic!("expected second statement");
+    };
+    let StmtKind::Let {
+        expr: second_expr, ..
+    } = &second_stmt.kind
+    else {
+        panic!("expected second let statement");
+    };
+    let ExprKind::Call {
+        callee: second_callee,
+        type_args: second_type_args,
+        ..
+    } = &second_expr.kind
+    else {
+        panic!("expected typed one<User>() call");
+    };
+    let ExprKind::Member {
+        name: second_method,
+        ..
+    } = &second_callee.kind
+    else {
+        panic!("expected member call for one<User>()");
+    };
+    assert_eq!(second_method.name, "one");
+    assert_eq!(second_type_args.len(), 1);
+    match &second_type_args[0].kind {
+        TypeRefKind::Simple(ident) => assert_eq!(ident.name, "User"),
+        other => panic!("expected simple type argument, got {other:?}"),
+    }
 }
 
 #[test]
@@ -406,7 +489,7 @@ fn page() -> Html:
     let StmtKind::Return { expr: Some(expr) } = &stmt.kind else {
         panic!("expected return expression");
     };
-    let ExprKind::Call { callee, args } = &expr.kind else {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
         panic!("expected call expression");
     };
     let ExprKind::Ident(callee_ident) = &callee.kind else {
@@ -436,6 +519,7 @@ fn page() -> Html:
     let ExprKind::Call {
         callee: text_callee,
         args: text_args,
+        ..
     } = &children[0].kind
     else {
         panic!("expected lowered html.text call for string child");
