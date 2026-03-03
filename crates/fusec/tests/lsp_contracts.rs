@@ -46,17 +46,24 @@ fn local_id(input: String) -> String:
   return input
 
 fn call_greet(user: Person) -> String:
+  let name = user.name
   let rendered = greet(user, 2)
   return local_id(rendered)
 
 fn main():
   let user: Person = Person(name="Ada")
   let out = call_greet(user)
+  let field = input(
+    class="form-input"
+    type="text"
+    id="title"
+  )
   let rows = db
     .from("notes")
     .select(["id"])
     .all()
   let _typed: List<Map<String, String>> = rows
+  print(field)
   print(out)
 "#
     .to_string();
@@ -331,6 +338,10 @@ fn lsp_semantic_tokens_and_inlay_hints_contract() {
     let (annot_person_line, annot_person_col) = line_col_of(&fixture.main_src, "user: Person");
     let (from_line, from_col) = line_col_of(&fixture.main_src, ".from(\"notes\")");
     let (select_line, select_col) = line_col_of(&fixture.main_src, ".select([\"id\"])");
+    let (member_name_line, member_name_col) = line_col_of(&fixture.main_src, "user.name");
+    let (attr_class_line, attr_class_col) = line_col_of(&fixture.main_src, "class=\"form-input\"");
+    let (attr_type_line, attr_type_col) = line_col_of(&fixture.main_src, "type=\"text\"");
+    let (attr_id_line, attr_id_col) = line_col_of(&fixture.main_src, "id=\"title\"");
     let import_person_ty = token_type_at(&rows, import_person_line, import_person_col)
         .expect("token type for imported Person");
     let annotate_person_ty = token_type_at(&rows, annot_person_line, annot_person_col + 6)
@@ -339,12 +350,26 @@ fn lsp_semantic_tokens_and_inlay_hints_contract() {
         token_type_at(&rows, from_line, from_col + 1).expect("token type for from member");
     let select_ty =
         token_type_at(&rows, select_line, select_col + 1).expect("token type for select member");
+    let member_name_ty = token_type_at(&rows, member_name_line, member_name_col + 5)
+        .expect("token type for member property");
+    let class_attr_ty = token_type_at(&rows, attr_class_line, attr_class_col)
+        .expect("token type for class html attr");
+    let type_attr_ty = token_type_at(&rows, attr_type_line, attr_type_col)
+        .expect("token type for type html attr");
+    let id_attr_ty =
+        token_type_at(&rows, attr_id_line, attr_id_col).expect("token type for id html attr");
 
     assert_eq!(
         import_person_ty, annotate_person_ty,
         "imported vs annotated type token mismatch"
     );
     assert_eq!(from_ty, select_ty, "db member token mismatch");
+    assert_eq!(class_attr_ty, type_attr_ty, "html attr token mismatch");
+    assert_eq!(class_attr_ty, id_attr_ty, "html attr token mismatch");
+    assert_eq!(
+        class_attr_ty, member_name_ty,
+        "html attrs should use property token type"
+    );
 
     lsp.shutdown();
     let _ = fs::remove_dir_all(fixture.dir);

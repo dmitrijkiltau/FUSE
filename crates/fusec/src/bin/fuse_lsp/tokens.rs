@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use fuse_rt::json::JsonValue;
-use fusec::ast::{BinaryOp, Block, Expr, ExprKind, Item, Literal, StmtKind, UnaryOp};
+use fusec::ast::{BinaryOp, Block, Expr, ExprKind, Item, Literal, Program, StmtKind, UnaryOp};
 use fusec::diag::Level;
 use fusec::parse_source;
 use fusec::span::Span;
@@ -46,6 +46,8 @@ fn semantic_tokens_for_text(
     text: &str,
     range: Option<Span>,
 ) -> JsonValue {
+    let (program, _) = parse_source(text);
+    let html_attr_name_spans = collect_html_attr_name_spans(&program);
     let mut symbol_types: HashMap<(usize, usize), usize> = HashMap::new();
     if let Some(index) = build_workspace_index_cached(state, uri) {
         for def in &index.defs {
@@ -69,7 +71,6 @@ fn semantic_tokens_for_text(
             symbol_types.insert((reference.span.start, reference.span.end), token_type);
         }
     } else {
-        let (program, _) = parse_source(text);
         let index = build_index_with_program(text, &program);
         for def in &index.defs {
             if let Some(token_type) = semantic_type_for_symbol_kind(def.kind) {
@@ -91,23 +92,32 @@ fn semantic_tokens_for_text(
     let tokens = fusec::lexer::lex(text, &mut token_diags);
     let mut rows = Vec::new();
     for (idx, token) in tokens.iter().enumerate() {
-        let token_type = match &token.kind {
-            fusec::token::TokenKind::Keyword(fusec::token::Keyword::From) => {
-                semantic_member_token_type(&tokens, idx).or(Some(SEM_KEYWORD))
+        let token_key = (token.span.start, token.span.end);
+        let token_type = if html_attr_name_spans.contains(&token_key) {
+            Some(SEM_PROPERTY)
+        } else {
+            match &token.kind {
+                fusec::token::TokenKind::Keyword(fusec::token::Keyword::From) => {
+                    semantic_member_token_type(&tokens, idx).or(Some(SEM_KEYWORD))
+                }
+                fusec::token::TokenKind::Keyword(_) => Some(SEM_KEYWORD),
+                fusec::token::TokenKind::String(_) | fusec::token::TokenKind::InterpString(_) => {
+                    Some(SEM_STRING)
+                }
+                fusec::token::TokenKind::Int(_) | fusec::token::TokenKind::Float(_) => {
+                    Some(SEM_NUMBER)
+                }
+                fusec::token::TokenKind::DocComment(_) => Some(SEM_COMMENT),
+                fusec::token::TokenKind::Bool(_) | fusec::token::TokenKind::Null => {
+                    Some(SEM_KEYWORD)
+                }
+                fusec::token::TokenKind::Ident(name) => symbol_types
+                    .get(&(token.span.start, token.span.end))
+                    .copied()
+                    .or_else(|| semantic_ident_fallback(&tokens, idx, name))
+                    .or(Some(SEM_VARIABLE)),
+                _ => None,
             }
-            fusec::token::TokenKind::Keyword(_) => Some(SEM_KEYWORD),
-            fusec::token::TokenKind::String(_) | fusec::token::TokenKind::InterpString(_) => {
-                Some(SEM_STRING)
-            }
-            fusec::token::TokenKind::Int(_) | fusec::token::TokenKind::Float(_) => Some(SEM_NUMBER),
-            fusec::token::TokenKind::DocComment(_) => Some(SEM_COMMENT),
-            fusec::token::TokenKind::Bool(_) | fusec::token::TokenKind::Null => Some(SEM_KEYWORD),
-            fusec::token::TokenKind::Ident(name) => symbol_types
-                .get(&(token.span.start, token.span.end))
-                .copied()
-                .or_else(|| semantic_ident_fallback(&tokens, idx, name))
-                .or(Some(SEM_VARIABLE)),
-            _ => None,
         };
         let Some(token_type) = token_type else {
             continue;
@@ -161,6 +171,216 @@ fn semantic_tokens_for_text(
     let mut out = BTreeMap::new();
     out.insert("data".to_string(), JsonValue::Array(data));
     JsonValue::Object(out)
+}
+
+fn collect_html_attr_name_spans(program: &Program) -> HashSet<(usize, usize)> {
+    let component_names = program
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Component(decl) => Some(decl.name.name.clone()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let mut spans = HashSet::new();
+    for item in &program.items {
+        match item {
+            Item::Fn(decl) => {
+                collect_html_attr_name_spans_block(&decl.body, &component_names, &mut spans);
+            }
+            Item::Component(decl) => {
+                collect_html_attr_name_spans_block(&decl.body, &component_names, &mut spans);
+            }
+            Item::Service(decl) => {
+                for route in &decl.routes {
+                    collect_html_attr_name_spans_block(
+                        &route.body,
+                        &component_names,
+                        &mut spans,
+                    );
+                }
+            }
+            Item::App(decl) => {
+                collect_html_attr_name_spans_block(&decl.body, &component_names, &mut spans);
+            }
+            Item::Migration(decl) => {
+                collect_html_attr_name_spans_block(&decl.body, &component_names, &mut spans);
+            }
+            Item::Test(decl) => {
+                collect_html_attr_name_spans_block(&decl.body, &component_names, &mut spans);
+            }
+            Item::Import(_) | Item::Type(_) | Item::Enum(_) | Item::Config(_) => {}
+        }
+    }
+    spans
+}
+
+fn collect_html_attr_name_spans_block(
+    block: &Block,
+    component_names: &HashSet<String>,
+    out: &mut HashSet<(usize, usize)>,
+) {
+    for stmt in &block.stmts {
+        match &stmt.kind {
+            StmtKind::Let { expr, .. } | StmtKind::Var { expr, .. } => {
+                collect_html_attr_name_spans_expr(expr, component_names, out);
+            }
+            StmtKind::Assign { target, expr } => {
+                collect_html_attr_name_spans_expr(target, component_names, out);
+                collect_html_attr_name_spans_expr(expr, component_names, out);
+            }
+            StmtKind::Return { expr } => {
+                if let Some(expr) = expr {
+                    collect_html_attr_name_spans_expr(expr, component_names, out);
+                }
+            }
+            StmtKind::If {
+                cond,
+                then_block,
+                else_if,
+                else_block,
+            } => {
+                collect_html_attr_name_spans_expr(cond, component_names, out);
+                collect_html_attr_name_spans_block(then_block, component_names, out);
+                for (branch_cond, branch_block) in else_if {
+                    collect_html_attr_name_spans_expr(branch_cond, component_names, out);
+                    collect_html_attr_name_spans_block(branch_block, component_names, out);
+                }
+                if let Some(else_block) = else_block {
+                    collect_html_attr_name_spans_block(else_block, component_names, out);
+                }
+            }
+            StmtKind::Match { expr, cases } => {
+                collect_html_attr_name_spans_expr(expr, component_names, out);
+                for (_, case_block) in cases {
+                    collect_html_attr_name_spans_block(case_block, component_names, out);
+                }
+            }
+            StmtKind::For { iter, block, .. } => {
+                collect_html_attr_name_spans_expr(iter, component_names, out);
+                collect_html_attr_name_spans_block(block, component_names, out);
+            }
+            StmtKind::While { cond, block } => {
+                collect_html_attr_name_spans_expr(cond, component_names, out);
+                collect_html_attr_name_spans_block(block, component_names, out);
+            }
+            StmtKind::Transaction { block } => {
+                collect_html_attr_name_spans_block(block, component_names, out);
+            }
+            StmtKind::Expr(expr) => {
+                collect_html_attr_name_spans_expr(expr, component_names, out);
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+}
+
+fn collect_html_attr_name_spans_expr(
+    expr: &Expr,
+    component_names: &HashSet<String>,
+    out: &mut HashSet<(usize, usize)>,
+) {
+    match &expr.kind {
+        ExprKind::Call { callee, args } => {
+            let html_attr_context = matches!(&callee.kind, ExprKind::Ident(ident)
+                if fusec::html_tags::is_html_tag(&ident.name) || component_names.contains(&ident.name));
+            if html_attr_context {
+                for arg in args {
+                    if let Some(name) = &arg.name {
+                        out.insert((name.span.start, name.span.end));
+                    }
+                }
+            }
+            collect_html_attr_name_spans_expr(callee, component_names, out);
+            for arg in args {
+                collect_html_attr_name_spans_expr(&arg.value, component_names, out);
+            }
+        }
+        ExprKind::Binary { left, right, .. } | ExprKind::Coalesce { left, right } => {
+            collect_html_attr_name_spans_expr(left, component_names, out);
+            collect_html_attr_name_spans_expr(right, component_names, out);
+        }
+        ExprKind::Unary { expr, .. } | ExprKind::Await { expr } | ExprKind::Box { expr } => {
+            collect_html_attr_name_spans_expr(expr, component_names, out);
+        }
+        ExprKind::Member { base, .. } | ExprKind::OptionalMember { base, .. } => {
+            collect_html_attr_name_spans_expr(base, component_names, out);
+        }
+        ExprKind::Index {
+            base,
+            index: index_expr,
+        }
+        | ExprKind::OptionalIndex {
+            base,
+            index: index_expr,
+        } => {
+            collect_html_attr_name_spans_expr(base, component_names, out);
+            collect_html_attr_name_spans_expr(index_expr, component_names, out);
+        }
+        ExprKind::StructLit { fields, .. } => {
+            for field in fields {
+                collect_html_attr_name_spans_expr(&field.value, component_names, out);
+            }
+        }
+        ExprKind::ListLit(items) => {
+            for item in items {
+                collect_html_attr_name_spans_expr(item, component_names, out);
+            }
+        }
+        ExprKind::MapLit(items) => {
+            for (key, value) in items {
+                collect_html_attr_name_spans_expr(key, component_names, out);
+                collect_html_attr_name_spans_expr(value, component_names, out);
+            }
+        }
+        ExprKind::InterpString(parts) => {
+            for part in parts {
+                if let fusec::ast::InterpPart::Expr(expr) = part {
+                    collect_html_attr_name_spans_expr(expr, component_names, out);
+                }
+            }
+        }
+        ExprKind::BangChain { expr, error } => {
+            collect_html_attr_name_spans_expr(expr, component_names, out);
+            if let Some(error) = error {
+                collect_html_attr_name_spans_expr(error, component_names, out);
+            }
+        }
+        ExprKind::Spawn { block } => {
+            collect_html_attr_name_spans_block(block, component_names, out);
+        }
+        ExprKind::HtmlIf {
+            cond,
+            then_children,
+            else_if,
+            else_children,
+        } => {
+            collect_html_attr_name_spans_expr(cond, component_names, out);
+            for child in then_children {
+                collect_html_attr_name_spans_expr(child, component_names, out);
+            }
+            for (branch_cond, branch_children) in else_if {
+                collect_html_attr_name_spans_expr(branch_cond, component_names, out);
+                for child in branch_children {
+                    collect_html_attr_name_spans_expr(child, component_names, out);
+                }
+            }
+            for child in else_children {
+                collect_html_attr_name_spans_expr(child, component_names, out);
+            }
+        }
+        ExprKind::HtmlFor {
+            iter,
+            body_children,
+            ..
+        } => {
+            collect_html_attr_name_spans_expr(iter, component_names, out);
+            for child in body_children {
+                collect_html_attr_name_spans_expr(child, component_names, out);
+            }
+        }
+        ExprKind::Literal(_) | ExprKind::Ident(_) => {}
+    }
 }
 
 fn semantic_ident_fallback(
