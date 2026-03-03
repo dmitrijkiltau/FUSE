@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use fuse_rt::json as rt_json;
 
+use crate::concurrency_metrics::ConcurrencySnapshot;
+
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
 pub const REQUEST_ID_FALLBACK_HEADER: &str = "x-correlation-id";
 pub const RESPONSE_REQUEST_ID_HEADER: &str = "X-Request-Id";
@@ -254,6 +256,115 @@ fn sanitize_request_id(raw: &str) -> Option<String> {
 fn next_request_id() -> String {
     let next = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     format!("req-{next:016x}")
+}
+
+/// Emit a `concurrency.snapshot` metric line after a `--run` invocation completes.
+///
+/// Only emits when `total_spawned > 0` (i.e., the program actually used `spawn`).
+///
+/// - When `diagnostics_json` is true, emits a structured NDJSON event line to stderr
+///   (same channel used by `--diagnostics json` diagnostic output).
+/// - When `FUSE_METRICS_HOOK=stderr`, emits `metrics: {...}` to stderr regardless.
+pub fn emit_concurrency_metrics(snapshot: &ConcurrencySnapshot, diagnostics_json: bool) {
+    if snapshot.total_spawned == 0 {
+        return;
+    }
+
+    let build_hist = || {
+        let mut h = BTreeMap::new();
+        h.insert(
+            "ge_1s".to_string(),
+            rt_json::JsonValue::Number(snapshot.latency_hist[4] as f64),
+        );
+        h.insert(
+            "lt_100ms".to_string(),
+            rt_json::JsonValue::Number(snapshot.latency_hist[2] as f64),
+        );
+        h.insert(
+            "lt_10ms".to_string(),
+            rt_json::JsonValue::Number(snapshot.latency_hist[1] as f64),
+        );
+        h.insert(
+            "lt_1ms".to_string(),
+            rt_json::JsonValue::Number(snapshot.latency_hist[0] as f64),
+        );
+        h.insert(
+            "lt_1s".to_string(),
+            rt_json::JsonValue::Number(snapshot.latency_hist[3] as f64),
+        );
+        rt_json::JsonValue::Object(h)
+    };
+
+    if diagnostics_json {
+        let mut obj = BTreeMap::new();
+        obj.insert(
+            "active_tasks".to_string(),
+            rt_json::JsonValue::Number(snapshot.active_tasks as f64),
+        );
+        obj.insert(
+            "avg_latency_us".to_string(),
+            rt_json::JsonValue::Number(snapshot.avg_latency_us),
+        );
+        obj.insert(
+            "event".to_string(),
+            rt_json::JsonValue::String("concurrency.snapshot".to_string()),
+        );
+        obj.insert("latency_hist".to_string(), build_hist());
+        obj.insert(
+            "queue_depth".to_string(),
+            rt_json::JsonValue::Number(snapshot.queue_depth as f64),
+        );
+        obj.insert(
+            "total_completed".to_string(),
+            rt_json::JsonValue::Number(snapshot.total_completed as f64),
+        );
+        obj.insert(
+            "total_spawned".to_string(),
+            rt_json::JsonValue::Number(snapshot.total_spawned as f64),
+        );
+        obj.insert(
+            "worker_count".to_string(),
+            rt_json::JsonValue::Number(snapshot.worker_count as f64),
+        );
+        eprintln!("{}", rt_json::encode(&rt_json::JsonValue::Object(obj)));
+    }
+
+    if metrics_hook_mode() == MetricsHookMode::Stderr {
+        let mut obj = BTreeMap::new();
+        obj.insert(
+            "active_tasks".to_string(),
+            rt_json::JsonValue::Number(snapshot.active_tasks as f64),
+        );
+        obj.insert(
+            "avg_latency_us".to_string(),
+            rt_json::JsonValue::Number(snapshot.avg_latency_us),
+        );
+        obj.insert("latency_hist".to_string(), build_hist());
+        obj.insert(
+            "metric".to_string(),
+            rt_json::JsonValue::String("concurrency.snapshot".to_string()),
+        );
+        obj.insert(
+            "queue_depth".to_string(),
+            rt_json::JsonValue::Number(snapshot.queue_depth as f64),
+        );
+        obj.insert(
+            "total_completed".to_string(),
+            rt_json::JsonValue::Number(snapshot.total_completed as f64),
+        );
+        obj.insert(
+            "total_spawned".to_string(),
+            rt_json::JsonValue::Number(snapshot.total_spawned as f64),
+        );
+        obj.insert(
+            "worker_count".to_string(),
+            rt_json::JsonValue::Number(snapshot.worker_count as f64),
+        );
+        eprintln!(
+            "metrics: {}",
+            rt_json::encode(&rt_json::JsonValue::Object(obj))
+        );
+    }
 }
 
 fn structured_request_logging_enabled() -> bool {

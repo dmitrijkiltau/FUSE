@@ -113,6 +113,43 @@ impl SymbolKind {
         }
     }
 
+    pub(crate) fn to_u8(self) -> u8 {
+        match self {
+            SymbolKind::Module => 0,
+            SymbolKind::Type => 1,
+            SymbolKind::Enum => 2,
+            SymbolKind::EnumVariant => 3,
+            SymbolKind::Function => 4,
+            SymbolKind::Config => 5,
+            SymbolKind::Service => 6,
+            SymbolKind::App => 7,
+            SymbolKind::Migration => 8,
+            SymbolKind::Test => 9,
+            SymbolKind::Param => 10,
+            SymbolKind::Variable => 11,
+            SymbolKind::Field => 12,
+        }
+    }
+
+    pub(crate) fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(SymbolKind::Module),
+            1 => Some(SymbolKind::Type),
+            2 => Some(SymbolKind::Enum),
+            3 => Some(SymbolKind::EnumVariant),
+            4 => Some(SymbolKind::Function),
+            5 => Some(SymbolKind::Config),
+            6 => Some(SymbolKind::Service),
+            7 => Some(SymbolKind::App),
+            8 => Some(SymbolKind::Migration),
+            9 => Some(SymbolKind::Test),
+            10 => Some(SymbolKind::Param),
+            11 => Some(SymbolKind::Variable),
+            12 => Some(SymbolKind::Field),
+            _ => None,
+        }
+    }
+
     pub(crate) fn hover_label(self) -> &'static str {
         match self {
             SymbolKind::Module => "Module",
@@ -182,6 +219,7 @@ pub(crate) fn collect_qualified_refs(program: &Program) -> Vec<QualifiedNameRef>
                     collect_qualified_expr(&field.value, &mut out);
                 }
             }
+            Item::Component(decl) => collect_qualified_block(&decl.body, &mut out),
             Item::App(decl) => collect_qualified_block(&decl.body, &mut out),
             Item::Migration(decl) => collect_qualified_block(&decl.body, &mut out),
             Item::Test(decl) => collect_qualified_block(&decl.body, &mut out),
@@ -261,10 +299,17 @@ fn collect_qualified_expr(expr: &Expr, out: &mut Vec<QualifiedNameRef>) {
             collect_qualified_expr(right, out);
         }
         ExprKind::Unary { expr, .. } => collect_qualified_expr(expr, out),
-        ExprKind::Call { callee, args } => {
+        ExprKind::Call {
+            callee,
+            args,
+            type_args,
+        } => {
             collect_qualified_expr(callee, out);
             for arg in args {
                 collect_qualified_expr(&arg.value, out);
+            }
+            for ty in type_args {
+                collect_qualified_type_ref(ty, out);
             }
         }
         ExprKind::Member { base, name } => {
@@ -340,6 +385,37 @@ fn collect_qualified_expr(expr: &Expr, out: &mut Vec<QualifiedNameRef>) {
             }
         }
         ExprKind::Spawn { block } => collect_qualified_block(block, out),
+        ExprKind::HtmlIf {
+            cond,
+            then_children,
+            else_if,
+            else_children,
+        } => {
+            collect_qualified_expr(cond, out);
+            for child in then_children {
+                collect_qualified_expr(child, out);
+            }
+            for (branch_cond, branch_children) in else_if {
+                collect_qualified_expr(branch_cond, out);
+                for child in branch_children {
+                    collect_qualified_expr(child, out);
+                }
+            }
+            for child in else_children {
+                collect_qualified_expr(child, out);
+            }
+        }
+        ExprKind::HtmlFor {
+            pat,
+            iter,
+            body_children,
+        } => {
+            collect_qualified_pattern(pat, out);
+            collect_qualified_expr(iter, out);
+            for child in body_children {
+                collect_qualified_expr(child, out);
+            }
+        }
         ExprKind::Await { expr } => collect_qualified_expr(expr, out),
         ExprKind::Box { expr } => collect_qualified_expr(expr, out),
     }
@@ -550,6 +626,15 @@ impl<'a> IndexBuilder<'a> {
                     );
                     self.test_defs.insert(decl.name.value.clone(), def_id);
                 }
+                Item::Component(decl) => {
+                    self.define_global(
+                        &decl.name,
+                        SymbolKind::Function,
+                        format!("component {}", decl.name.name),
+                        decl.doc.as_ref(),
+                        None,
+                    );
+                }
             }
         }
     }
@@ -686,6 +771,12 @@ impl<'a> IndexBuilder<'a> {
             Item::Test(decl) => {
                 let prev = self.current_callable;
                 self.current_callable = self.test_defs.get(&decl.name.value).copied();
+                self.visit_block(&decl.body);
+                self.current_callable = prev;
+            }
+            Item::Component(decl) => {
+                let prev = self.current_callable;
+                self.current_callable = self.globals.get(&decl.name.name).copied();
                 self.visit_block(&decl.body);
                 self.current_callable = prev;
             }
@@ -897,7 +988,11 @@ impl<'a> IndexBuilder<'a> {
             ExprKind::Unary { expr, .. } => {
                 self.visit_expr(expr);
             }
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call {
+                callee,
+                args,
+                type_args,
+            } => {
                 self.record_call(callee);
                 self.visit_expr(callee);
                 for arg in args {
@@ -907,6 +1002,9 @@ impl<'a> IndexBuilder<'a> {
                         }
                     }
                     self.visit_expr(&arg.value);
+                }
+                for ty in type_args {
+                    self.visit_type_ref(ty);
                 }
             }
             ExprKind::Member { base, name } | ExprKind::OptionalMember { base, name } => {
@@ -958,6 +1056,39 @@ impl<'a> IndexBuilder<'a> {
                 }
             }
             ExprKind::Spawn { block } => self.visit_block(block),
+            ExprKind::HtmlIf {
+                cond,
+                then_children,
+                else_if,
+                else_children,
+            } => {
+                self.visit_expr(cond);
+                for child in then_children {
+                    self.visit_expr(child);
+                }
+                for (branch_cond, branch_children) in else_if {
+                    self.visit_expr(branch_cond);
+                    for child in branch_children {
+                        self.visit_expr(child);
+                    }
+                }
+                for child in else_children {
+                    self.visit_expr(child);
+                }
+            }
+            ExprKind::HtmlFor {
+                pat,
+                iter,
+                body_children,
+            } => {
+                self.visit_expr(iter);
+                self.enter_scope();
+                self.visit_pattern(pat);
+                for child in body_children {
+                    self.visit_expr(child);
+                }
+                self.exit_scope();
+            }
             ExprKind::Await { expr } => self.visit_expr(expr),
             ExprKind::Box { expr } => self.visit_expr(expr),
         }

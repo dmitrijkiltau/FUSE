@@ -36,6 +36,10 @@ enum QueryKind {
         columns: Vec<String>,
         values: Vec<Value>,
     },
+    Upsert {
+        columns: Vec<String>,
+        values: Vec<Value>,
+    },
     Update {
         sets: Vec<SetClause>,
     },
@@ -106,8 +110,11 @@ impl Query {
     }
 
     pub fn where_clause(&self, column: String, op: String, value: Value) -> Result<Self, String> {
-        if matches!(self.kind, QueryKind::Insert { .. }) {
-            return Err("where is not supported for insert queries".to_string());
+        if matches!(
+            self.kind,
+            QueryKind::Insert { .. } | QueryKind::Upsert { .. }
+        ) {
+            return Err("where is not supported for insert/upsert queries".to_string());
         }
         if !is_valid_identifier(&column) {
             return Err(format!("invalid column name {column}"));
@@ -161,28 +168,21 @@ impl Query {
     }
 
     pub fn insert_struct(&self, value: Value) -> Result<Self, String> {
-        let Value::Struct { fields, .. } = value.unboxed() else {
-            return Err("insert expects a struct value".to_string());
-        };
-        if fields.is_empty() {
-            return Err("insert expects a struct with at least one field".to_string());
-        }
-        let mut columns: Vec<String> = fields.keys().cloned().collect();
-        columns.sort();
-        let mut values = Vec::with_capacity(columns.len());
-        for column in &columns {
-            if !is_valid_identifier(column) {
-                return Err(format!("invalid column name {column}"));
-            }
-            let value = fields
-                .get(column)
-                .cloned()
-                .ok_or_else(|| "insert field lookup failed".to_string())?;
-            validate_param_value(&value)?;
-            values.push(value);
-        }
+        let (columns, values) = struct_write_fields(value, "insert")?;
         let mut next = self.clone();
         next.kind = QueryKind::Insert { columns, values };
+        next.wheres.clear();
+        next.select.clear();
+        next.order_by = None;
+        next.limit = None;
+        Ok(next)
+    }
+
+    pub fn upsert_struct(&self, value: Value) -> Result<Self, String> {
+        let (columns, values) = struct_write_fields(value, "upsert")?;
+        let mut next = self.clone();
+        next.kind = QueryKind::Upsert { columns, values };
+        next.wheres.clear();
         next.select.clear();
         next.order_by = None;
         next.limit = None;
@@ -201,8 +201,8 @@ impl Query {
                 next_sets.push(SetClause { column, value });
                 QueryKind::Update { sets: next_sets }
             }
-            QueryKind::Insert { .. } => {
-                return Err("update is not supported after insert".to_string());
+            QueryKind::Insert { .. } | QueryKind::Upsert { .. } => {
+                return Err("update is not supported after insert/upsert".to_string());
             }
             _ => QueryKind::Update {
                 sets: vec![SetClause { column, value }],
@@ -215,8 +215,11 @@ impl Query {
     }
 
     pub fn delete_rows(&self) -> Result<Self, String> {
-        if matches!(self.kind, QueryKind::Insert { .. }) {
-            return Err("delete is not supported after insert".to_string());
+        if matches!(
+            self.kind,
+            QueryKind::Insert { .. } | QueryKind::Upsert { .. }
+        ) {
+            return Err("delete is not supported after insert/upsert".to_string());
         }
         let mut next = self.clone();
         next.kind = QueryKind::Delete;
@@ -227,8 +230,11 @@ impl Query {
     }
 
     pub fn count(&self) -> Result<Self, String> {
-        if matches!(self.kind, QueryKind::Insert { .. }) {
-            return Err("count is not supported for insert queries".to_string());
+        if matches!(
+            self.kind,
+            QueryKind::Insert { .. } | QueryKind::Upsert { .. }
+        ) {
+            return Err("count is not supported for insert/upsert queries".to_string());
         }
         let mut next = self.clone();
         next.kind = QueryKind::Count;
@@ -286,6 +292,19 @@ impl Query {
                 let placeholders: Vec<&str> = columns.iter().map(|_| "?").collect();
                 let sql = format!(
                     "insert into {} ({}) values ({})",
+                    self.table,
+                    columns.join(", "),
+                    placeholders.join(", ")
+                );
+                Ok((sql, values.clone()))
+            }
+            QueryKind::Upsert { columns, values } => {
+                if columns.is_empty() {
+                    return Err("upsert expects at least one field".to_string());
+                }
+                let placeholders: Vec<&str> = columns.iter().map(|_| "?").collect();
+                let sql = format!(
+                    "insert or replace into {} ({}) values ({})",
                     self.table,
                     columns.join(", "),
                     placeholders.join(", ")
@@ -644,6 +663,30 @@ fn parse_sqlite_url(url: &str) -> Result<&str, String> {
     Err("unsupported db url (expected sqlite://...)".to_string())
 }
 
+fn struct_write_fields(value: Value, action: &str) -> Result<(Vec<String>, Vec<Value>), String> {
+    let Value::Struct { fields, .. } = value.unboxed() else {
+        return Err(format!("{action} expects a struct value"));
+    };
+    if fields.is_empty() {
+        return Err(format!("{action} expects a struct with at least one field"));
+    }
+    let mut columns: Vec<String> = fields.keys().cloned().collect();
+    columns.sort();
+    let mut values = Vec::with_capacity(columns.len());
+    for column in &columns {
+        if !is_valid_identifier(column) {
+            return Err(format!("invalid column name {column}"));
+        }
+        let value = fields
+            .get(column)
+            .cloned()
+            .ok_or_else(|| format!("{action} field lookup failed"))?;
+        validate_param_value(&value)?;
+        values.push(value);
+    }
+    Ok((columns, values))
+}
+
 fn append_where_sql(sql: &mut String, wheres: &[WhereClause], params: &mut Vec<Value>) {
     if wheres.is_empty() {
         return;
@@ -883,6 +926,54 @@ mod tests {
         db.exec_params(&delete_sql, &delete_params).unwrap();
         let rows = db.query("select count(*) as c from notes").unwrap();
         assert_eq!(scalar_i64(&rows, "c"), 0);
+    }
+
+    #[test]
+    fn query_builder_upsert_replaces_existing_row() {
+        let db = Db::open_with_pool(&temp_db_url("fuse_db_query_builder_upsert"), 1).unwrap();
+        db.exec("create table if not exists notes (id text primary key, title text not null)")
+            .unwrap();
+
+        let mut insert_fields = HashMap::new();
+        insert_fields.insert("id".to_string(), Value::String("n1".to_string()));
+        insert_fields.insert("title".to_string(), Value::String("Ada".to_string()));
+        let insert = Query::new("notes".to_string())
+            .unwrap()
+            .upsert_struct(Value::Struct {
+                name: "Note".to_string(),
+                fields: insert_fields,
+            })
+            .unwrap();
+        let (insert_sql, insert_params) = insert.build_sql(None).unwrap();
+        assert_eq!(
+            insert_sql,
+            "insert or replace into notes (id, title) values (?, ?)"
+        );
+        db.exec_params(&insert_sql, &insert_params).unwrap();
+
+        let mut update_fields = HashMap::new();
+        update_fields.insert("id".to_string(), Value::String("n1".to_string()));
+        update_fields.insert("title".to_string(), Value::String("Bea".to_string()));
+        let upsert = Query::new("notes".to_string())
+            .unwrap()
+            .upsert_struct(Value::Struct {
+                name: "Note".to_string(),
+                fields: update_fields,
+            })
+            .unwrap();
+        let (upsert_sql, upsert_params) = upsert.build_sql(None).unwrap();
+        db.exec_params(&upsert_sql, &upsert_params).unwrap();
+
+        let rows = db.query("select id, title from notes").unwrap();
+        assert_eq!(rows.len(), 1);
+        let title = rows
+            .first()
+            .and_then(|row| row.get("title"))
+            .and_then(|value| match value {
+                Value::String(value) => Some(value.clone()),
+                _ => None,
+            });
+        assert_eq!(title.as_deref(), Some("Bea"));
     }
 
     #[test]

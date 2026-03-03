@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use crate::manifest::build_transitive_deps;
 
 use crate::ast::{FieldDecl, ImportDecl, ImportSpec, Item, Program, TypeDecl, TypeDerive};
 use crate::diag::{Diag, Diagnostics};
@@ -145,7 +148,11 @@ pub fn load_program_with_modules_and_deps(
     src: &str,
     deps: &HashMap<String, PathBuf>,
 ) -> (ModuleRegistry, Vec<Diag>) {
-    let mut loader = ModuleLoader::with_deps(deps);
+    let (transitive_deps, cycle_errors) = build_transitive_deps(deps);
+    let mut loader = ModuleLoader::with_deps(&transitive_deps);
+    for msg in cycle_errors {
+        loader.diags.error(crate::span::Span::default(), msg);
+    }
     let root = loader.insert_root(path, src);
     let root = root.unwrap_or(0);
     let mut registry = ModuleRegistry {
@@ -162,7 +169,11 @@ pub fn load_program_with_modules_and_deps_and_overrides(
     deps: &HashMap<String, PathBuf>,
     overrides: &HashMap<PathBuf, String>,
 ) -> (ModuleRegistry, Vec<Diag>) {
-    let mut loader = ModuleLoader::with_deps_and_overrides(deps, overrides);
+    let (transitive_deps, cycle_errors) = build_transitive_deps(deps);
+    let mut loader = ModuleLoader::with_deps_and_overrides(&transitive_deps, overrides);
+    for msg in cycle_errors {
+        loader.diags.error(crate::span::Span::default(), msg);
+    }
     let root = loader.insert_root(path, src);
     let root = root.unwrap_or(0);
     let mut registry = ModuleRegistry {
@@ -247,14 +258,27 @@ impl ModuleLoader {
             return Some(*id);
         }
         if self.visiting.contains(&key) {
-            self.diags
-                .error(span, format!("cyclic module import {}", key.display()));
+            // Build the cycle path for a readable error.
+            let cycle_path = self
+                .visiting
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>();
+            self.diags.error(
+                span,
+                format!(
+                    "circular import: {} → {}",
+                    cycle_path.join(" → "),
+                    key.display()
+                ),
+            );
             return self.by_path.get(&key).copied();
         }
         self.visiting.insert(key.clone());
 
         let src = match src_override {
             Some(src) => src.to_string(),
+            None if is_std_error_virtual_path(&key) => STD_ERROR_MODULE.to_string(),
             None => {
                 if let Some(src) = self.source_overrides.get(&key) {
                     src.clone()
@@ -562,7 +586,7 @@ impl ModuleLoader {
         let Some(unit) = self.modules.get(&module_id) else {
             return;
         };
-        if unit.path.to_string_lossy() == "<std.Error>" {
+        if is_std_error_virtual_path(&unit.path) {
             return;
         }
         for item in &unit.program.items {
@@ -612,7 +636,18 @@ impl ModuleLoader {
                 }
             };
             let Some(root) = self.deps.get(dep) else {
-                self.diags.error(span, format!("unknown dependency {dep}"));
+                let available: Vec<&str> = {
+                    let mut names: Vec<&str> = self.deps.keys().map(|s| s.as_str()).collect();
+                    names.sort_unstable();
+                    names
+                };
+                let hint = if available.is_empty() {
+                    " — no dependencies declared in fuse.toml".to_string()
+                } else {
+                    format!(" — available: {}", available.join(", "))
+                };
+                self.diags
+                    .error(span, format!("unknown dependency '{dep}'{hint}"));
                 return base_dir.join(raw);
             };
             let mut path = root.join(rel);
@@ -671,10 +706,10 @@ impl ModuleLoader {
     }
 
     fn load_std_module(&mut self, name: &str, span: Span) -> Option<ModuleId> {
-        if name != "std.Error" {
+        if name != "std.Error" && name != "<std.Error>" {
             return None;
         }
-        let path = PathBuf::from("<std.Error>");
+        let path = std_error_virtual_path();
         if let Some(id) = self.by_path.get(&path) {
             return Some(*id);
         }
@@ -682,6 +717,9 @@ impl ModuleLoader {
     }
 
     fn normalize_path(&self, path: &Path) -> PathBuf {
+        if is_std_error_virtual_path(path) {
+            return std_error_virtual_path();
+        }
         if let Ok(canon) = path.canonicalize() {
             canon
         } else {
@@ -719,4 +757,15 @@ fn split_qualified_name(name: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((module, item))
+}
+
+fn std_error_virtual_path() -> PathBuf {
+    PathBuf::from("<std.Error>")
+}
+
+fn is_std_error_virtual_path(path: &Path) -> bool {
+    if path.to_string_lossy() == "<std.Error>" {
+        return true;
+    }
+    matches!(path.file_name(), Some(name) if name == OsStr::new("<std.Error>"))
 }

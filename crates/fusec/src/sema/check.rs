@@ -114,6 +114,7 @@ impl<'a> Checker<'a> {
         for item in &program.items {
             match item {
                 Item::Fn(decl) => self.check_fn_decl(decl),
+                Item::Component(decl) => self.check_component_decl(decl),
                 Item::Config(decl) => self.check_config_decl(decl),
                 Item::Service(decl) => self.check_service_decl(decl),
                 Item::App(decl) => {
@@ -209,6 +210,28 @@ impl<'a> Checker<'a> {
         let _ = self.check_block(&decl.body);
         self.env.pop();
         self.current_return = None;
+    }
+
+    fn check_component_decl(&mut self, decl: &crate::ast::ComponentDecl) {
+        let prev_return = self.current_return.take();
+        self.current_return = Some(Ty::Html);
+        self.env.push();
+        self.insert_var(
+            "attrs",
+            Ty::Map(Box::new(Ty::String), Box::new(Ty::String)),
+            false,
+            decl.span,
+        );
+        self.insert_var("children", Ty::List(Box::new(Ty::Html)), false, decl.span);
+        let body_ty = self.check_block(&decl.body);
+        if !self.is_assignable(&body_ty, &Ty::Html) && !body_ty.is_unknown() {
+            self.diags.error(
+                decl.span,
+                format!("component body must return Html, got {}", body_ty),
+            );
+        }
+        self.env.pop();
+        self.current_return = prev_return;
     }
 
     fn resolve_fn_sig(&mut self, decl: &crate::ast::FnDecl) -> FnSig {
@@ -618,7 +641,11 @@ impl<'a> Checker<'a> {
                 let right_ty = self.check_expr(right);
                 self.check_binary(expr.span, op, left_ty, right_ty)
             }
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call {
+                callee,
+                args,
+                type_args,
+            } => {
                 let uses_html_block = args.iter().any(|arg| arg.is_block_sugar);
                 if let ExprKind::Ident(ident) = &callee.kind {
                     if self.should_use_html_tag_builtin(&ident.name)
@@ -636,6 +663,9 @@ impl<'a> Checker<'a> {
                     }
                 }
                 self.enforce_call_capabilities(callee, expr.span);
+                if !type_args.is_empty() {
+                    return self.check_typed_query_call(expr.span, callee, args, type_args);
+                }
                 if let ExprKind::Member { base, name } = &callee.kind {
                     if let ExprKind::Ident(ident) = &base.kind {
                         if ident.name == "db"
@@ -716,9 +746,18 @@ impl<'a> Checker<'a> {
                             return *sig.ret;
                         }
                         for (arg, param) in args.iter().zip(sig.params.iter()) {
-                            let arg_ty = self.check_expr(&arg.value);
-                            if !self.is_assignable(&arg_ty, &param.ty) {
-                                self.type_mismatch(arg.span, &param.ty, &arg_ty);
+                            // Block-sugar children arg against List<Html>: use relaxed
+                            // HTML children checking (allows String auto-coercion and
+                            // List<Html> spreading).
+                            if arg.is_block_sugar
+                                && matches!(&param.ty, Ty::List(inner) if inner.as_ref() == &Ty::Html)
+                            {
+                                self.check_html_children_expr(&arg.value);
+                            } else {
+                                let arg_ty = self.check_expr(&arg.value);
+                                if !self.is_assignable(&arg_ty, &param.ty) {
+                                    self.type_mismatch(arg.span, &param.ty, &arg_ty);
+                                }
                             }
                         }
                         *sig.ret
@@ -818,6 +857,45 @@ impl<'a> Checker<'a> {
                 let block_ty = self.check_block(block);
                 self.spawn_scope_markers.pop();
                 Ty::Task(Box::new(block_ty))
+            }
+            ExprKind::HtmlIf {
+                cond,
+                then_children,
+                else_if,
+                else_children,
+            } => {
+                let cond_ty = self.check_expr(cond);
+                self.expect_bool(cond.span, &cond_ty);
+                self.check_html_children_items(then_children);
+                for (branch_cond, branch_children) in else_if {
+                    let branch_ty = self.check_expr(branch_cond);
+                    self.expect_bool(branch_cond.span, &branch_ty);
+                    self.check_html_children_items(branch_children);
+                }
+                self.check_html_children_items(else_children);
+                Ty::List(Box::new(Ty::Html))
+            }
+            ExprKind::HtmlFor {
+                pat,
+                iter,
+                body_children,
+            } => {
+                let iter_ty = self.check_expr(iter);
+                let item_ty = match iter_ty {
+                    Ty::List(inner) => *inner,
+                    Ty::Map(_, value) => *value,
+                    Ty::Unknown => Ty::Unknown,
+                    other => {
+                        self.diags
+                            .error(iter.span, format!("cannot iterate over type {}", other));
+                        Ty::Unknown
+                    }
+                };
+                self.env.push();
+                self.bind_pattern(pat, &item_ty);
+                self.check_html_children_items(body_children);
+                self.env.pop();
+                Ty::List(Box::new(Ty::Html))
             }
             ExprKind::Await { expr: inner } => {
                 if self.transaction_scope_depth > 0 {
@@ -973,6 +1051,154 @@ impl<'a> Checker<'a> {
             Ty::Option(Box::new(field_ty))
         } else {
             field_ty
+        }
+    }
+
+    fn check_typed_query_call(
+        &mut self,
+        span: Span,
+        callee: &Expr,
+        args: &[CallArg],
+        type_args: &[crate::ast::TypeRef],
+    ) -> Ty {
+        let ExprKind::Member { base, name } = &callee.kind else {
+            self.diags.error(
+                span,
+                "type arguments are only supported on query.one<T>() and query.all<T>()",
+            );
+            for arg in args {
+                let _ = self.check_expr(&arg.value);
+            }
+            return Ty::Unknown;
+        };
+        if !matches!(name.name.as_str(), "one" | "all") {
+            self.diags.error(
+                span,
+                "type arguments are only supported on query.one<T>() and query.all<T>()",
+            );
+            for arg in args {
+                let _ = self.check_expr(&arg.value);
+            }
+            return Ty::Unknown;
+        }
+        if !args.is_empty() {
+            self.diags
+                .error(span, "typed query methods do not accept arguments");
+            for arg in args {
+                let _ = self.check_expr(&arg.value);
+            }
+        }
+        if type_args.len() != 1 {
+            self.diags
+                .error(span, "typed query methods expect exactly one type argument");
+            return Ty::Unknown;
+        }
+        let base_ty = self.check_expr(base);
+        if !matches!(base_ty, Ty::External(ref name) if name == "query") && !base_ty.is_unknown() {
+            self.diags.error(
+                base.span,
+                format!("typed query call expects Query receiver, got {base_ty}"),
+            );
+            return Ty::Unknown;
+        }
+
+        let target_ty = self.resolve_type_ref(&type_args[0]);
+        let struct_name = match &target_ty {
+            Ty::Struct(name) => name.clone(),
+            Ty::Unknown => return Ty::Unknown,
+            other => {
+                self.diags.error(
+                    type_args[0].span,
+                    format!(
+                        "typed query result type must be a declared type, found {}",
+                        other
+                    ),
+                );
+                return Ty::Unknown;
+            }
+        };
+        self.check_typed_query_projection(base, &struct_name, span);
+        if name.name == "one" {
+            Ty::Option(Box::new(target_ty))
+        } else {
+            Ty::List(Box::new(target_ty))
+        }
+    }
+
+    fn check_typed_query_projection(&mut self, base: &Expr, struct_name: &str, span: Span) {
+        let selected = self.extract_query_select_columns(base);
+        let Some(selected) = selected else {
+            self.diags.error(
+                span,
+                "typed query requires select([...]) with string literal columns before one<T>()/all<T>()",
+            );
+            return;
+        };
+        if selected.is_empty() {
+            self.diags.error(
+                span,
+                "typed query requires select([...]) with string literal columns before one<T>()/all<T>()",
+            );
+            return;
+        }
+        let Some(info) = self.type_info(struct_name) else {
+            return;
+        };
+        let selected_fields: HashSet<String> = selected
+            .iter()
+            .map(|name| name.rsplit('.').next().unwrap_or(name.as_str()).to_string())
+            .collect();
+        let declared_fields: HashSet<String> =
+            info.fields.iter().map(|field| field.name.clone()).collect();
+        if selected_fields == declared_fields {
+            return;
+        }
+        let mut selected_sorted: Vec<String> = selected_fields.into_iter().collect();
+        selected_sorted.sort();
+        let mut declared_sorted: Vec<String> = declared_fields.into_iter().collect();
+        declared_sorted.sort();
+        self.diags.error(
+            span,
+            format!(
+                "typed query column mismatch for {struct_name}: selected [{}], expected [{}]",
+                selected_sorted.join(", "),
+                declared_sorted.join(", ")
+            ),
+        );
+    }
+
+    fn extract_query_select_columns(&self, expr: &Expr) -> Option<Vec<String>> {
+        let ExprKind::Call { callee, args, .. } = &expr.kind else {
+            return None;
+        };
+        let ExprKind::Member { base, name } = &callee.kind else {
+            return None;
+        };
+        if !is_query_method_name(&name.name) {
+            return None;
+        }
+        match name.name.as_str() {
+            "select" => {
+                if args.len() != 1 {
+                    return None;
+                }
+                let ExprKind::ListLit(items) = &args[0].value.kind else {
+                    return None;
+                };
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    let ExprKind::Literal(Literal::String(text)) = &item.kind else {
+                        return None;
+                    };
+                    out.push(text.clone());
+                }
+                Some(out)
+            }
+            "where" | "order_by" | "limit" | "one" | "all" => {
+                self.extract_query_select_columns(base)
+            }
+            "from" => Some(Vec::new()),
+            _ => None,
         }
     }
 
@@ -1382,6 +1608,14 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::External("query".to_string())),
             }),
             "insert" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "value".to_string(),
+                    ty: Ty::Unknown,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::External("query".to_string())),
+            }),
+            "upsert" => Ty::Fn(FnSig {
                 params: vec![ParamSig {
                     name: "value".to_string(),
                     ty: Ty::Unknown,
@@ -2672,6 +2906,19 @@ impl<'a> Checker<'a> {
             if !self.is_assignable(&attrs_ty, &expected_attrs) {
                 self.type_mismatch(attrs.span, &expected_attrs, &attrs_ty);
             }
+            if let ExprKind::MapLit(pairs) = &attrs.value.kind {
+                for (key_expr, val_expr) in pairs {
+                    if let (
+                        ExprKind::Literal(Literal::String(key)),
+                        ExprKind::Literal(Literal::String(val)),
+                    ) = (&key_expr.kind, &val_expr.kind)
+                    {
+                        check_aria_attr(self.diags, key_expr.span, key, val);
+                    } else if let ExprKind::Literal(Literal::String(key)) = &key_expr.kind {
+                        check_aria_attr_key_only(self.diags, key_expr.span, key);
+                    }
+                }
+            }
         }
         if let Some(children) = args.get(1) {
             if matches!(kind, HtmlTagKind::Void) {
@@ -2680,16 +2927,48 @@ impl<'a> Checker<'a> {
                     format!("void html tag {} does not accept children", tag),
                 );
             }
-            let children_ty = self.check_expr(&children.value);
-            let expected_children = Ty::List(Box::new(Ty::Html));
-            if !self.is_assignable(&children_ty, &expected_children) {
-                self.type_mismatch(children.span, &expected_children, &children_ty);
-            }
+            self.check_html_children_expr(&children.value);
         }
         for arg in args.iter().skip(2) {
             let _ = self.check_expr(&arg.value);
         }
         Ty::Html
+    }
+
+    /// Check an expression used as HTML block children. Accepts `Html`, `String`
+    /// (auto-coerced to a text node at runtime), and `List<Html>` (spread into the
+    /// parent children list). When the expression is a `ListLit` (the normal case
+    /// produced by HTML block sugar), each element is checked individually.
+    fn check_html_children_expr(&mut self, expr: &Expr) {
+        if let ExprKind::ListLit(items) = &expr.kind {
+            self.check_html_children_items(items);
+        } else {
+            let ty = self.check_expr(expr);
+            let expected = Ty::List(Box::new(Ty::Html));
+            if !self.is_assignable(&ty, &expected) {
+                self.type_mismatch(expr.span, &expected, &ty);
+            }
+        }
+    }
+
+    fn check_html_children_items(&mut self, items: &[Expr]) {
+        for item in items {
+            let ty = self.check_expr(item);
+            if !self.is_valid_html_child_ty(&ty) {
+                self.type_mismatch(item.span, &Ty::Html, &ty);
+            }
+        }
+    }
+
+    /// Returns true if a value of this type may appear as an element inside an HTML
+    /// block children list: direct `Html`, auto-coercible `String`, or spreadable
+    /// `List<Html>` (or `List<String>`).
+    fn is_valid_html_child_ty(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Html | Ty::String | Ty::Unknown => true,
+            Ty::List(inner) => matches!(inner.as_ref(), Ty::Html | Ty::String | Ty::Unknown),
+            _ => false,
+        }
     }
 
     fn validate_html_tag_named_args(&self, args: &[CallArg]) -> Option<&'static str> {
@@ -2718,6 +2997,26 @@ fn force_html_input_tag_call(name: &str, args: &[CallArg]) -> bool {
             args.first().map(|arg| &arg.value.kind),
             Some(ExprKind::MapLit(_))
         )
+}
+
+fn is_query_method_name(name: &str) -> bool {
+    matches!(
+        name,
+        "select"
+            | "where"
+            | "order_by"
+            | "limit"
+            | "insert"
+            | "upsert"
+            | "update"
+            | "delete"
+            | "count"
+            | "one"
+            | "all"
+            | "exec"
+            | "sql"
+            | "params"
+    )
 }
 
 fn capability_for_ident_call(name: &str) -> Option<Capability> {
@@ -2893,4 +3192,144 @@ struct VarInfo {
     ty: Ty,
     mutable: bool,
     pending_spawn: Option<Span>,
+}
+
+// ---------------------------------------------------------------------------
+// aria-* attribute validation
+// ---------------------------------------------------------------------------
+
+/// Known aria-* attribute names (subset; covers all common interactive roles).
+static KNOWN_ARIA_ATTRS: &[&str] = &[
+    "aria-activedescendant",
+    "aria-atomic",
+    "aria-autocomplete",
+    "aria-braillelabel",
+    "aria-brailleroledescription",
+    "aria-busy",
+    "aria-checked",
+    "aria-colcount",
+    "aria-colindex",
+    "aria-colindextext",
+    "aria-colspan",
+    "aria-controls",
+    "aria-current",
+    "aria-describedby",
+    "aria-description",
+    "aria-details",
+    "aria-disabled",
+    "aria-errormessage",
+    "aria-expanded",
+    "aria-flowto",
+    "aria-haspopup",
+    "aria-hidden",
+    "aria-invalid",
+    "aria-keyshortcuts",
+    "aria-label",
+    "aria-labelledby",
+    "aria-level",
+    "aria-live",
+    "aria-modal",
+    "aria-multiline",
+    "aria-multiselectable",
+    "aria-orientation",
+    "aria-owns",
+    "aria-placeholder",
+    "aria-posinset",
+    "aria-pressed",
+    "aria-readonly",
+    "aria-relevant",
+    "aria-required",
+    "aria-roledescription",
+    "aria-rowcount",
+    "aria-rowindex",
+    "aria-rowindextext",
+    "aria-rowspan",
+    "aria-selected",
+    "aria-setsize",
+    "aria-sort",
+    "aria-valuemax",
+    "aria-valuemin",
+    "aria-valuenow",
+    "aria-valuetext",
+];
+
+fn check_aria_attr_key_only(diags: &mut crate::diag::Diagnostics, span: Span, key: &str) {
+    if !key.starts_with("aria-") {
+        return;
+    }
+    // Pattern 1: `aria-role` is never a valid attribute; the correct attribute is `role`.
+    if key == "aria-role" {
+        diags.error(
+            span,
+            "invalid aria attribute: use `role` instead of `aria-role`",
+        );
+        return;
+    }
+    // Pattern 2: unknown aria-* attribute (likely a typo).
+    if !KNOWN_ARIA_ATTRS.contains(&key) {
+        diags.error(
+            span,
+            format!("unknown aria attribute `{key}`; check spelling"),
+        );
+    }
+}
+
+fn check_aria_attr(diags: &mut crate::diag::Diagnostics, span: Span, key: &str, val: &str) {
+    if !key.starts_with("aria-") {
+        return;
+    }
+    // Run key-only checks first.
+    check_aria_attr_key_only(diags, span, key);
+
+    // Pattern 3: aria-hidden must be "true" or "false".
+    if key == "aria-hidden" && val != "true" && val != "false" {
+        diags.error(
+            span,
+            format!("`aria-hidden` value must be \"true\" or \"false\", got \"{val}\""),
+        );
+    }
+    // Pattern 4: aria-expanded must be "true", "false", or "undefined".
+    if key == "aria-expanded" && val != "true" && val != "false" && val != "undefined" {
+        diags.error(
+            span,
+            format!(
+                "`aria-expanded` value must be \"true\", \"false\", or \"undefined\", got \"{val}\""
+            ),
+        );
+    }
+    // Pattern 5: aria-checked must be "true", "false", "mixed", or "undefined".
+    if key == "aria-checked"
+        && val != "true"
+        && val != "false"
+        && val != "mixed"
+        && val != "undefined"
+    {
+        diags.error(
+            span,
+            format!(
+                "`aria-checked` value must be \"true\", \"false\", \"mixed\", or \"undefined\", got \"{val}\""
+            ),
+        );
+    }
+    // Pattern 6: aria-level must be a positive integer string.
+    if key == "aria-level" && val.parse::<u32>().map_or(true, |n| n == 0) {
+        diags.error(
+            span,
+            format!("`aria-level` value must be a positive integer, got \"{val}\""),
+        );
+    }
+    // Pattern 7: aria-pressed must be "true", "false", "mixed", or "undefined".
+    if key == "aria-pressed"
+        && val != "true"
+        && val != "false"
+        && val != "mixed"
+        && val != "undefined"
+    {
+        diags.error(
+            span,
+            format!(
+                "`aria-pressed` value must be \"true\", \"false\", \"mixed\", or \"undefined\", got \"{val}\""
+            ),
+        );
+    }
 }

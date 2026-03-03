@@ -160,16 +160,37 @@ HEADER
     echo
     extract_section "$fls" "### Comments"
     echo
+    echo "## Indentation"
+    echo
+    extract_section "$fls" "### Significant indentation"
+    echo
     echo "---"
     echo
 
-    # --- Grammar (from spec/fls.md) ---
-    echo "## Grammar (EBNF approximation)"
-    echo
-    extract_section "$fls" "## Grammar (EBNF approximation)" "## AST model (structural spec)"
-    echo
-    echo "---"
-    echo
+    # --- Match and Patterns ---
+    cat <<'MATCH_PATTERNS'
+## Match and Patterns
+
+`match` executes the first case whose pattern matches the value.
+
+Case forms:
+
+- `Pattern -> Expr` is a single-expression case (sugar for `Pattern: return Expr`).
+- `Pattern:` followed by an indented block is the full block form.
+
+Pattern forms:
+
+- `_` — wildcard, matches any value
+- `Literal` — integer, float, string, or bool literal
+- `None` — matches optional empty value
+- `Some(x)` — matches optional present value, binds the payload to `x`
+- `Ok(x)` / `Err(e)` — matches result variants, binds the payload
+- `EnumVariant` — matches a no-payload enum variant by name
+- `EnumVariant(x, y)` — matches an enum variant with positional payload bindings
+- `TypeName(field = pattern, ...)` — matches struct fields by name
+
+---
+MATCH_PATTERNS
 
     # --- Imports and Modules (from spec/fls.md) ---
     echo "## Imports and Modules"
@@ -192,11 +213,11 @@ HEADER
     echo
     echo "### Spawn static restrictions"
     echo
-    extract_section "$fls" "### Spawn static restrictions (v0.2.0)" "### Transaction static restrictions (v0.6.0)"
+    extract_section "$fls" "### Spawn static restrictions" "### Transaction static restrictions"
     echo
     echo "### Transaction static restrictions"
     echo
-    extract_section "$fls" "### Transaction static restrictions (v0.6.0)"
+    extract_section "$fls" "### Transaction static restrictions"
     echo
     echo "---"
     echo
@@ -327,28 +348,33 @@ HEADER
 
 Common package commands:
 
-- `fuse check`
-- `fuse run`
-- `fuse dev`
-- `fuse test`
-- `fuse build`
+- `fuse check` — parse and semantic-check a package
+- `fuse run` — run a package
+- `fuse dev` — run in watch/dev mode with live reload
+- `fuse test` — run test blocks
+- `fuse build` — compile to a native binary
+- `fuse fmt` — format a source file
+- `fuse openapi` — emit an OpenAPI JSON document
+- `fuse migrate` — execute pending migration blocks
+- `fuse lsp` — start the language server
 
-Compiler/runtime CLI operations include:
+Useful flags:
 
-- `fusec --check`
-- `fusec --run`
-- `fusec --test`
-- `fusec --migrate`
-- `fusec --openapi`
+- `--workspace` — check all packages under the current directory
+- `--strict-architecture` — enable architectural purity checks
+- `--diagnostics json` — emit diagnostics as JSON Lines on stderr
 
-`fuse.toml` sections commonly used:
+`fuse.toml` manifest sections:
 
-- `[package]`
-- `[build]`
-- `[serve]`
-- `[assets]`, `[assets.hooks]`
-- `[vite]`
-- `[dependencies]`
+| Section | Purpose |
+|---|---|
+| `[package]` | Entry source file (`entry`), app/service name (`app`), runtime backend (`backend`) |
+| `[build]` | Build outputs: `native_bin` binary path, `openapi` JSON output path |
+| `[serve]` | Server defaults: `static_dir` for static file serving |
+| `[assets]` | Named asset entries (CSS, JS) and `watch` flag |
+| `[assets.hooks]` | Build hooks for asset processing |
+| `[vite]` | Vite dev server integration settings |
+| `[dependencies]` | Package dependencies for `dep:` import paths |
 
 ---
 TOOLING
@@ -361,7 +387,6 @@ TOOLING
 | Variable | Default | Description |
 |---|---|---|
 | `FUSE_DB_URL` | — | Database connection URL (`sqlite://path`) |
-| `DATABASE_URL` | — | Fallback DB URL when `FUSE_DB_URL` is unset |
 | `FUSE_DB_POOL_SIZE` | `1` | SQLite connection pool size |
 | `FUSE_CONFIG` | `config.toml` | Config file path |
 | `FUSE_HOST` | `127.0.0.1` | HTTP server bind host |
@@ -380,10 +405,16 @@ TOOLING
 | `FUSE_SVG_DIR` | — | Override SVG base directory for `svg.inline` |
 | `FUSE_STATIC_DIR` | — | Serve static files from this directory |
 | `FUSE_STATIC_INDEX` | `index.html` | Fallback file for directory requests when `FUSE_STATIC_DIR` is set |
-| `FUSE_DEV_MODE` | — | Enables development-mode runtime behavior |
-| `FUSE_AOT_BUILD_INFO` | — | Print AOT build metadata and exit (AOT binaries only) |
-| `FUSE_AOT_STARTUP_TRACE` | — | Emit startup diagnostic line (AOT binaries only) |
-| `FUSE_AOT_REQUEST_LOG_DEFAULT` | — | Default to structured request logging in release AOT binaries |
+
+### AOT binary environment variables
+
+The following variables are only effective in compiled AOT binaries (`fuse build --release`):
+
+| Variable | Description |
+|---|---|
+| `FUSE_AOT_BUILD_INFO` | Print AOT build metadata and exit |
+| `FUSE_AOT_STARTUP_TRACE` | Emit a startup diagnostic line to stderr |
+| `FUSE_AOT_REQUEST_LOG_DEFAULT` | Default to structured request logging when `FUSE_REQUEST_LOG` is unset |
 
 ENVTABLE
     echo "---"
@@ -397,7 +428,6 @@ ENVTABLE
     echo "- SQLite-focused database runtime"
     echo "- no full ORM layer"
     echo "- task model is still evolving"
-    echo "- native backend uses Cranelift JIT"
 
   } >"$dst"
 

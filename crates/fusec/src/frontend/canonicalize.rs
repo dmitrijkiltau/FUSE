@@ -17,6 +17,7 @@ pub fn canonicalize_registry(registry: &mut ModuleRegistry) {
         };
         let mut fn_names = HashSet::new();
         let mut config_names = HashSet::new();
+        let mut component_names = HashSet::new();
         for item in &unit.program.items {
             match item {
                 Item::Fn(decl) => {
@@ -25,6 +26,9 @@ pub fn canonicalize_registry(registry: &mut ModuleRegistry) {
                 Item::Config(decl) => {
                     config_names.insert(decl.name.name.clone());
                 }
+                Item::Component(decl) => {
+                    component_names.insert(decl.name.name.clone());
+                }
                 _ => {}
             }
         }
@@ -32,6 +36,7 @@ pub fn canonicalize_registry(registry: &mut ModuleRegistry) {
         let mut canonicalizer = Canonicalizer {
             fn_names,
             config_names,
+            component_names,
             import_item_names,
         };
         canonicalizer.canonicalize_program(&mut unit.program.items);
@@ -41,6 +46,7 @@ pub fn canonicalize_registry(registry: &mut ModuleRegistry) {
 pub fn canonicalize_program(program: &mut Program) {
     let mut fn_names = HashSet::new();
     let mut config_names = HashSet::new();
+    let mut component_names = HashSet::new();
     for item in &program.items {
         match item {
             Item::Fn(decl) => {
@@ -49,12 +55,16 @@ pub fn canonicalize_program(program: &mut Program) {
             Item::Config(decl) => {
                 config_names.insert(decl.name.name.clone());
             }
+            Item::Component(decl) => {
+                component_names.insert(decl.name.name.clone());
+            }
             _ => {}
         }
     }
     let mut canonicalizer = Canonicalizer {
         fn_names,
         config_names,
+        component_names,
         import_item_names: HashSet::new(),
     };
     canonicalizer.canonicalize_program(&mut program.items);
@@ -63,6 +73,7 @@ pub fn canonicalize_program(program: &mut Program) {
 struct Canonicalizer {
     fn_names: HashSet<String>,
     config_names: HashSet<String>,
+    component_names: HashSet<String>,
     import_item_names: HashSet<String>,
 }
 
@@ -113,6 +124,12 @@ impl Canonicalizer {
                         self.canonicalize_type_ref(&mut field.ty, &ScopeStack::new());
                         self.canonicalize_expr(&mut field.value, &mut ScopeStack::new());
                     }
+                }
+                Item::Component(decl) => {
+                    let mut scope = ScopeStack::new();
+                    scope.declare("attrs".to_string());
+                    scope.declare("children".to_string());
+                    self.canonicalize_block(&mut decl.body, &mut scope);
                 }
                 Item::App(decl) => self.canonicalize_block(&mut decl.body, &mut ScopeStack::new()),
                 Item::Migration(decl) => {
@@ -236,7 +253,7 @@ impl Canonicalizer {
                 self.canonicalize_expr(right, scope);
             }
             ExprKind::Unary { expr, .. } => self.canonicalize_expr(expr, scope),
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call { callee, args, .. } => {
                 self.canonicalize_expr(callee, scope);
                 for arg in args.iter_mut() {
                     self.canonicalize_expr(&mut arg.value, scope);
@@ -244,6 +261,7 @@ impl Canonicalizer {
                 if let ExprKind::Ident(ident) = &callee.kind {
                     if self.should_use_html_tag_builtin(&ident.name, scope)
                         || force_html_input_tag_call(&ident.name, args)
+                        || self.component_names.contains(&ident.name)
                     {
                         canonicalize_html_attr_shorthand(args);
                     }
@@ -293,6 +311,45 @@ impl Canonicalizer {
                 let mut spawn_scope = scope.clone();
                 self.canonicalize_block(block, &mut spawn_scope);
             }
+            ExprKind::HtmlIf {
+                cond,
+                then_children,
+                else_if,
+                else_children,
+            } => {
+                self.canonicalize_expr(cond, scope);
+                let mut then_scope = scope.clone();
+                for child in then_children {
+                    self.canonicalize_expr(child, &mut then_scope);
+                }
+                for (branch_cond, branch_children) in else_if {
+                    self.canonicalize_expr(branch_cond, scope);
+                    let mut branch_scope = scope.clone();
+                    for child in branch_children {
+                        self.canonicalize_expr(child, &mut branch_scope);
+                    }
+                }
+                let mut else_scope = scope.clone();
+                for child in else_children {
+                    self.canonicalize_expr(child, &mut else_scope);
+                }
+            }
+            ExprKind::HtmlFor {
+                pat,
+                iter,
+                body_children,
+            } => {
+                self.canonicalize_expr(iter, scope);
+                let mut loop_scope = scope.clone();
+                let mut names = Vec::new();
+                collect_pattern_bindings(pat, &mut names);
+                for name in names {
+                    loop_scope.declare(name);
+                }
+                for child in body_children {
+                    self.canonicalize_expr(child, &mut loop_scope);
+                }
+            }
             ExprKind::Await { expr } | ExprKind::Box { expr } => {
                 self.canonicalize_expr(expr, scope);
             }
@@ -328,16 +385,13 @@ fn canonicalize_html_attr_shorthand(args: &mut Vec<CallArg>) {
         return;
     }
 
-    let mut attrs: Vec<(String, String, crate::span::Span)> = Vec::new();
+    let mut attrs: Vec<(String, Expr, crate::span::Span)> = Vec::new();
     let mut child_expr: Option<Expr> = None;
     for arg in args.iter() {
         if let Some(name) = &arg.name {
-            let ExprKind::Literal(Literal::String(value)) = &arg.value.kind else {
-                return;
-            };
             attrs.push((
                 html_tags::normalize_attr_name(&name.name),
-                value.clone(),
+                arg.value.clone(),
                 arg.span,
             ));
             continue;
@@ -359,13 +413,9 @@ fn canonicalize_html_attr_shorthand(args: &mut Vec<CallArg>) {
         .unwrap_or_default();
     let map_entries = attrs
         .into_iter()
-        .map(|(key, value, span)| {
+        .map(|(key, value_expr, span)| {
             let key_expr = Expr {
                 kind: ExprKind::Literal(Literal::String(key)),
-                span,
-            };
-            let value_expr = Expr {
-                kind: ExprKind::Literal(Literal::String(value)),
                 span,
             };
             (key_expr, value_expr)
@@ -378,6 +428,7 @@ fn canonicalize_html_attr_shorthand(args: &mut Vec<CallArg>) {
             span: map_span,
         },
         span: map_span,
+        comma_before: None,
         is_block_sugar: false,
     }];
     if let Some(child) = child_expr {
@@ -386,7 +437,8 @@ fn canonicalize_html_attr_shorthand(args: &mut Vec<CallArg>) {
             name: None,
             value: child,
             span,
-            is_block_sugar: false,
+            comma_before: None,
+            is_block_sugar: true,
         });
     }
     *args = canonical;

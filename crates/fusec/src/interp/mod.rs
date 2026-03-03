@@ -14,10 +14,10 @@ use fuse_rt::{
 };
 
 use crate::ast::{
-    AppDecl, BinaryOp, Block, ConfigDecl, EnumDecl, Expr, ExprKind, FnDecl, HttpVerb, Ident,
-    InterpPart, Item, Literal, MigrationDecl, Pattern, PatternField, PatternKind, Program,
-    RouteDecl, ServiceDecl, Stmt, StmtKind, StructField, TestDecl, TypeDecl, TypeRef, TypeRefKind,
-    UnaryOp,
+    AppDecl, BinaryOp, Block, ComponentDecl, ConfigDecl, EnumDecl, Expr, ExprKind, FnDecl,
+    HttpVerb, Ident, InterpPart, Item, Literal, MigrationDecl, Param, Pattern, PatternField,
+    PatternKind, Program, RouteDecl, ServiceDecl, Stmt, StmtKind, StructField, TestDecl, TypeDecl,
+    TypeRef, TypeRefKind, UnaryOp,
 };
 use crate::callbind::{
     CallArgSpec, CallBindError, ParamBinding, ParamSpec, bind_call_args, bind_positional_args,
@@ -31,6 +31,7 @@ use crate::observability;
 use crate::refinement::{
     NumberLiteral, RefinementConstraint, base_is_string_like, parse_constraints,
 };
+use crate::span::Span;
 
 #[derive(Clone, Debug)]
 pub struct FunctionRef {
@@ -362,7 +363,7 @@ fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
     };
     let name = name.as_str();
     match name {
-        "std.Error.Validation" | "Validation" => {
+        "std.Error.Validation" => {
             let message = match fields.get("message") {
                 Some(Value::String(msg)) => msg.as_str(),
                 _ => "validation failed",
@@ -370,7 +371,7 @@ fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
             let field_items = extract_validation_fields(fields.get("fields"));
             Some(rt_error::validation_error_json(message, &field_items))
         }
-        "std.Error" | "Error" => {
+        "std.Error" => {
             let code = match fields.get("code") {
                 Some(Value::String(code)) => code.as_str(),
                 _ => "error",
@@ -464,6 +465,7 @@ fn is_query_method(name: &str) -> bool {
             | "order_by"
             | "limit"
             | "insert"
+            | "upsert"
             | "update"
             | "delete"
             | "count"
@@ -501,11 +503,6 @@ fn builtin_error_defaults(name: &str) -> Option<(&'static str, &'static str)> {
         "std.Error.Forbidden" => Some(("forbidden", "forbidden")),
         "std.Error.NotFound" => Some(("not_found", "not found")),
         "std.Error.Conflict" => Some(("conflict", "conflict")),
-        "BadRequest" => Some(("bad_request", "bad request")),
-        "Unauthorized" => Some(("unauthorized", "unauthorized")),
-        "Forbidden" => Some(("forbidden", "forbidden")),
-        "NotFound" => Some(("not_found", "not found")),
-        "Conflict" => Some(("conflict", "conflict")),
         _ => None,
     }
 }
@@ -629,9 +626,11 @@ pub struct Interpreter {
     current_module: ModuleId,
     current_http_request: Option<HttpRequestContext>,
     current_http_response: Option<HttpResponseMeta>,
+    std_error_module_id: Option<ModuleId>,
 }
 
 pub struct MigrationJob<'a> {
+    pub package: String,
     pub id: String,
     pub module_id: ModuleId,
     pub decl: &'a MigrationDecl,
@@ -726,6 +725,12 @@ impl Interpreter {
                         .or_default()
                         .insert(decl.name.name.clone(), decl.clone());
                 }
+                Item::Component(decl) => {
+                    functions
+                        .entry(0)
+                        .or_default()
+                        .insert(decl.name.name.clone(), component_decl_to_fn(decl));
+                }
                 Item::App(app) => {
                     apps.push(app.clone());
                     app_owner.insert(app.name.value.clone(), 0);
@@ -766,6 +771,7 @@ impl Interpreter {
             current_module: 0,
             current_http_request: None,
             current_http_response: None,
+            std_error_module_id: None,
         }
     }
 
@@ -792,6 +798,12 @@ impl Interpreter {
                             .entry(*id)
                             .or_default()
                             .insert(decl.name.name.clone(), decl.clone());
+                    }
+                    Item::Component(decl) => {
+                        functions
+                            .entry(*id)
+                            .or_default()
+                            .insert(decl.name.name.clone(), component_decl_to_fn(decl));
                     }
                     Item::App(app) => {
                         apps.push(app.clone());
@@ -834,6 +846,11 @@ impl Interpreter {
             current_module: registry.root,
             current_http_request: None,
             current_http_response: None,
+            std_error_module_id: registry
+                .modules
+                .iter()
+                .find(|(_, u)| u.path.to_string_lossy() == "<std.Error>")
+                .map(|(id, _)| *id),
         }
     }
 
@@ -857,6 +874,7 @@ impl Interpreter {
             current_module: self.current_module,
             current_http_request: None,
             current_http_response: None,
+            std_error_module_id: self.std_error_module_id,
         }
     }
 
@@ -928,25 +946,28 @@ impl Interpreter {
                 Ok(db) => db,
                 Err(err) => return Err(self.render_exec_error(err)),
             };
-            db.exec(
-                "CREATE TABLE IF NOT EXISTS __fuse_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
-            )?;
+            Self::ensure_migration_history_schema(db)?;
         }
         let applied_rows = {
             let db = match self.db_mut() {
                 Ok(db) => db,
                 Err(err) => return Err(self.render_exec_error(err)),
             };
-            db.query("SELECT id FROM __fuse_migrations")?
+            db.query("SELECT package, name FROM __fuse_migrations")?
         };
-        let mut applied = HashSet::new();
+        let mut applied: HashSet<(String, String)> = HashSet::new();
         for row in applied_rows {
-            if let Some(Value::String(id)) = row.get("id") {
-                applied.insert(id.clone());
+            let package = row
+                .get("package")
+                .and_then(Self::value_as_string)
+                .unwrap_or_default();
+            if let Some(name) = row.get("name").and_then(Self::value_as_string) {
+                applied.insert((package, name));
             }
         }
         for job in migrations {
-            if applied.contains(&job.id) {
+            let key = (job.package.clone(), job.id.clone());
+            if applied.contains(&key) {
                 continue;
             }
             {
@@ -981,8 +1002,8 @@ impl Interpreter {
                     Err(err) => return Err(self.render_exec_error(err)),
                 };
                 if let Err(err) = db.execute(
-                    "INSERT INTO __fuse_migrations (id, applied_at) VALUES (?1, CURRENT_TIMESTAMP)",
-                    (&job.id,),
+                    "INSERT INTO __fuse_migrations (package, name, applied_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)",
+                    (&job.package, &job.id),
                 ) {
                     let _ = db.rollback_transaction();
                     return Err(err);
@@ -992,8 +1013,66 @@ impl Interpreter {
                     return Err(err);
                 }
             }
+            applied.insert(key);
         }
         Ok(())
+    }
+
+    fn ensure_migration_history_schema(db: &Db) -> Result<(), String> {
+        db.exec(
+            "CREATE TABLE IF NOT EXISTS __fuse_migrations (package TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, applied_at TEXT NOT NULL, PRIMARY KEY (package, name))",
+        )?;
+        let info_rows = db.query("PRAGMA table_info(__fuse_migrations)")?;
+        let mut has_package = false;
+        let mut has_name = false;
+        let mut has_legacy_id = false;
+        for row in info_rows {
+            let Some(column) = row.get("name").and_then(Self::value_as_string) else {
+                continue;
+            };
+            match column.as_str() {
+                "package" => has_package = true,
+                "name" => has_name = true,
+                "id" => has_legacy_id = true,
+                _ => {}
+            }
+        }
+        if has_package && has_name {
+            return Ok(());
+        }
+        if !has_legacy_id {
+            return Err(
+                "unsupported __fuse_migrations schema; expected columns (package, name) or legacy id"
+                    .to_string(),
+            );
+        }
+
+        db.begin_transaction()?;
+        let result = (|| -> Result<(), String> {
+            db.exec("ALTER TABLE __fuse_migrations RENAME TO __fuse_migrations_legacy")?;
+            db.exec(
+                "CREATE TABLE __fuse_migrations (package TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, applied_at TEXT NOT NULL, PRIMARY KEY (package, name))",
+            )?;
+            db.exec(
+                "INSERT INTO __fuse_migrations (package, name, applied_at) SELECT '' as package, id as name, applied_at FROM __fuse_migrations_legacy",
+            )?;
+            db.exec("DROP TABLE __fuse_migrations_legacy")?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => db.commit_transaction(),
+            Err(err) => {
+                let _ = db.rollback_transaction();
+                Err(err)
+            }
+        }
+    }
+
+    fn value_as_string(value: &Value) -> Option<String> {
+        match value {
+            Value::String(text) => Some(text.clone()),
+            _ => None,
+        }
     }
 
     pub fn run_tests(&mut self, tests: &[TestJob<'_>]) -> Result<Vec<TestOutcome>, String> {
@@ -1488,7 +1567,11 @@ impl Interpreter {
                     UnaryOp::Not => Ok(Value::Bool(!self.as_bool(&value)?)),
                 }
             }
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call {
+                callee,
+                args,
+                type_args,
+            } => {
                 if let ExprKind::Ident(ident) = &callee.kind {
                     if self.should_use_html_tag_builtin(&ident.name)
                         || force_html_input_tag_call(&ident.name, args)
@@ -1519,6 +1602,28 @@ impl Interpreter {
                     }
                     let base_val = self.eval_expr(base)?.unboxed();
                     if is_query_method(&name.name) && matches!(base_val, Value::Query(_)) {
+                        if !type_args.is_empty() {
+                            if !matches!(name.name.as_str(), "one" | "all") {
+                                return Err(ExecError::Runtime(
+                                    "type arguments are only supported on query.one<T>() and query.all<T>()".to_string(),
+                                ));
+                            }
+                            if args.len() != 0 {
+                                return Err(ExecError::Runtime(
+                                    "typed query methods do not accept arguments".to_string(),
+                                ));
+                            }
+                            if type_args.len() != 1 {
+                                return Err(ExecError::Runtime(
+                                    "typed query methods expect exactly one type argument"
+                                        .to_string(),
+                                ));
+                            }
+                            let type_name = self.query_typed_type_name(&type_args[0])?;
+                            let query_args = vec![base_val, Value::String(type_name)];
+                            return self
+                                .eval_builtin(&format!("query.{}_typed", name.name), query_args);
+                        }
                         let mut query_args = Vec::with_capacity(args.len() + 1);
                         query_args.push(base_val);
                         query_args.extend(arg_vals);
@@ -1628,6 +1733,59 @@ impl Interpreter {
                 });
                 Ok(Value::Task(task))
             }
+            ExprKind::HtmlIf {
+                cond,
+                then_children,
+                else_if,
+                else_children,
+            } => {
+                let cond_value = self.eval_expr(cond)?;
+                if self.as_bool(&cond_value)? {
+                    return Ok(Value::List(self.eval_html_child_values(then_children)?));
+                }
+                for (branch_cond, branch_children) in else_if {
+                    let branch_value = self.eval_expr(branch_cond)?;
+                    if self.as_bool(&branch_value)? {
+                        return Ok(Value::List(self.eval_html_child_values(branch_children)?));
+                    }
+                }
+                Ok(Value::List(self.eval_html_child_values(else_children)?))
+            }
+            ExprKind::HtmlFor {
+                pat,
+                iter,
+                body_children,
+            } => {
+                let iter_value = self.eval_expr(iter)?.unboxed();
+                let items = match iter_value {
+                    Value::List(items) => items,
+                    Value::Map(items) => items.into_values().collect(),
+                    other => {
+                        return Err(ExecError::Runtime(format!(
+                            "cannot iterate over {}",
+                            self.value_type_name(&other)
+                        )));
+                    }
+                };
+                let mut out = Vec::new();
+                for item in items {
+                    let mut bindings = HashMap::new();
+                    if !self.match_pattern(&item, pat, &mut bindings)? {
+                        return Err(ExecError::Runtime(
+                            "for pattern did not match value".to_string(),
+                        ));
+                    }
+                    self.env.push();
+                    for (name, value) in bindings {
+                        self.env.insert(&name, value);
+                    }
+                    let chunk = self.eval_html_child_values(body_children);
+                    self.env.pop();
+                    let mut chunk = chunk?;
+                    out.append(&mut chunk);
+                }
+                Ok(Value::List(out))
+            }
             ExprKind::Await { expr } => {
                 let value = self.eval_expr(expr)?;
                 match value {
@@ -1645,11 +1803,16 @@ impl Interpreter {
         }
     }
 
+    fn eval_html_child_values(&mut self, children: &[Expr]) -> ExecResult<Vec<Value>> {
+        let mut values = Vec::with_capacity(children.len());
+        for child in children {
+            values.push(self.eval_expr(child)?);
+        }
+        Ok(values)
+    }
+
     fn db_url(&self) -> ExecResult<String> {
         if let Ok(url) = std::env::var("FUSE_DB_URL") {
-            return Ok(url);
-        }
-        if let Ok(url) = std::env::var("DATABASE_URL") {
             return Ok(url);
         }
         if let Some(Value::String(url)) = self
@@ -1748,6 +1911,41 @@ impl Interpreter {
                 "call target is not callable".to_string(),
             )),
         }
+    }
+
+    fn query_typed_type_name(&self, ty: &TypeRef) -> ExecResult<String> {
+        match &ty.kind {
+            TypeRefKind::Simple(ident) => {
+                let (_, simple_name) = crate::runtime_types::split_type_name(&ident.name);
+                if self.types.contains_key(simple_name) {
+                    Ok(simple_name.to_string())
+                } else {
+                    Err(ExecError::Runtime(format!(
+                        "unknown typed query result type {}",
+                        ident.name
+                    )))
+                }
+            }
+            _ => Err(ExecError::Runtime(
+                "typed query result type must be a declared type name".to_string(),
+            )),
+        }
+    }
+
+    fn decode_query_row_typed(
+        &mut self,
+        row: HashMap<String, Value>,
+        type_name: &str,
+    ) -> ExecResult<Value> {
+        let json = self.value_to_json(&Value::Map(row));
+        let ty = TypeRef {
+            kind: TypeRefKind::Simple(Ident {
+                name: type_name.to_string(),
+                span: Span::default(),
+            }),
+            span: Span::default(),
+        };
+        self.decode_json_value(&json, &ty, "$")
     }
 
     fn eval_builtin(&mut self, name: &str, args: Vec<Value>) -> ExecResult<Value> {
@@ -2116,14 +2314,7 @@ impl Interpreter {
                 let children = match args.get(2) {
                     Some(Value::List(items)) => {
                         let mut children = Vec::with_capacity(items.len());
-                        for item in items {
-                            let Value::Html(node) = item else {
-                                return Err(ExecError::Runtime(
-                                    "html.node children must be List<Html>".to_string(),
-                                ));
-                            };
-                            children.push(node.clone());
-                        }
+                        collect_html_children(items, &mut children, "html.node")?;
                         children
                     }
                     _ => {
@@ -2463,6 +2654,26 @@ impl Interpreter {
                 let next = query.insert_struct(value).map_err(ExecError::Runtime)?;
                 Ok(Value::Query(next))
             }
+            "query.upsert" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "query.upsert expects 2 arguments".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.upsert expects a Query".to_string(),
+                        ));
+                    }
+                };
+                let value = args.get(1).cloned().ok_or_else(|| {
+                    ExecError::Runtime("query.upsert expects a struct".to_string())
+                })?;
+                let next = query.upsert_struct(value).map_err(ExecError::Runtime)?;
+                Ok(Value::Query(next))
+            }
             "query.update" => {
                 if args.len() != 3 {
                     return Err(ExecError::Runtime(
@@ -2557,6 +2768,37 @@ impl Interpreter {
                     Ok(Value::Null)
                 }
             }
+            "query.one_typed" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "query.one_typed expects 2 arguments".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.one_typed expects a Query".to_string(),
+                        ));
+                    }
+                };
+                let type_name = match args.get(1) {
+                    Some(Value::String(name)) => name.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.one_typed expects a type name string".to_string(),
+                        ));
+                    }
+                };
+                let (sql, params) = query.build_sql(Some(1)).map_err(ExecError::Runtime)?;
+                let db = self.db_mut()?;
+                let rows = db.query_params(&sql, &params).map_err(ExecError::Runtime)?;
+                if let Some(row) = rows.into_iter().next() {
+                    self.decode_query_row_typed(row, &type_name)
+                } else {
+                    Ok(Value::Null)
+                }
+            }
             "query.all" => {
                 if args.len() != 1 {
                     return Err(ExecError::Runtime(
@@ -2571,6 +2813,37 @@ impl Interpreter {
                 let db = self.db_mut()?;
                 let rows = db.query_params(&sql, &params).map_err(ExecError::Runtime)?;
                 let list = rows.into_iter().map(Value::Map).collect();
+                Ok(Value::List(list))
+            }
+            "query.all_typed" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "query.all_typed expects 2 arguments".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.all_typed expects a Query".to_string(),
+                        ));
+                    }
+                };
+                let type_name = match args.get(1) {
+                    Some(Value::String(name)) => name.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.all_typed expects a type name string".to_string(),
+                        ));
+                    }
+                };
+                let (sql, params) = query.build_sql(None).map_err(ExecError::Runtime)?;
+                let db = self.db_mut()?;
+                let rows = db.query_params(&sql, &params).map_err(ExecError::Runtime)?;
+                let mut list = Vec::with_capacity(rows.len());
+                for row in rows {
+                    list.push(self.decode_query_row_typed(row, &type_name)?);
+                }
                 Ok(Value::List(list))
             }
             "query.exec" => {
@@ -2803,15 +3076,7 @@ impl Interpreter {
             HtmlTagKind::Normal => match args.get(1) {
                 Some(Value::List(items)) => {
                     let mut children = Vec::with_capacity(items.len());
-                    for item in items {
-                        let Value::Html(node) = item else {
-                            return Err(ExecError::Runtime(format!(
-                                "{} children must be List<Html>",
-                                name
-                            )));
-                        };
-                        children.push(node.clone());
-                    }
+                    collect_html_children(items, &mut children, name)?;
                     children
                 }
                 Some(_) => {
@@ -3586,13 +3851,13 @@ impl Interpreter {
     fn http_status_for_error_value(&self, value: &Value) -> u16 {
         match value {
             Value::Struct { name, fields } => match name.as_str() {
-                "std.Error.Validation" | "Validation" => 400,
-                "std.Error.BadRequest" | "BadRequest" => 400,
-                "std.Error.Unauthorized" | "Unauthorized" => 401,
-                "std.Error.Forbidden" | "Forbidden" => 403,
-                "std.Error.NotFound" | "NotFound" => 404,
-                "std.Error.Conflict" | "Conflict" => 409,
-                "std.Error" | "Error" => fields
+                "std.Error.Validation" => 400,
+                "std.Error.BadRequest" => 400,
+                "std.Error.Unauthorized" => 401,
+                "std.Error.Forbidden" => 403,
+                "std.Error.NotFound" => 404,
+                "std.Error.Conflict" => 409,
+                "std.Error" => fields
                     .get("status")
                     .and_then(|v| match v {
                         Value::Int(n) => (*n).try_into().ok(),
@@ -3815,6 +4080,27 @@ impl Interpreter {
         self.enum_variant_arity(enum_name, variant).is_some()
     }
 
+    fn qualify_struct_name(&self, name: &str) -> String {
+        if let Some(std_error_id) = self.std_error_module_id {
+            // Check if explicitly imported from std.Error in the current module
+            if let Some(import_items) = self.module_import_items.get(&self.current_module) {
+                if let Some(link) = import_items.get(name) {
+                    if link.id == std_error_id {
+                        if name == "Error" {
+                            return "std.Error".to_string();
+                        }
+                        return format!("std.Error.{}", name);
+                    }
+                }
+            }
+            // Also handle the globally-builtin Error type (usable without explicit import)
+            if name == "Error" {
+                return "std.Error".to_string();
+            }
+        }
+        name.to_string()
+    }
+
     fn eval_struct_lit(&mut self, name: &Ident, fields: &[StructField]) -> ExecResult<Value> {
         let decl = match self.types.get(&name.name) {
             Some(decl) => decl.clone(),
@@ -3859,7 +4145,7 @@ impl Interpreter {
             }
         }
         Ok(Value::Struct {
-            name: name.name.clone(),
+            name: self.qualify_struct_name(&name.name),
             fields: values,
         })
     }
@@ -4074,6 +4360,10 @@ impl Interpreter {
         let left = left.unboxed();
         let right = right.unboxed();
         match (left, right) {
+            (Value::List(mut a), Value::List(mut b)) => {
+                a.append(&mut b);
+                Ok(Value::List(a))
+            }
             (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
             (Value::String(a), b) => Ok(Value::String(format!("{a}{}", b.to_string_value()))),
             (a, Value::String(b)) => Ok(Value::String(format!("{}{}", a.to_string_value(), b))),
@@ -5009,6 +5299,82 @@ fn normalize_openapi_ui_path(raw: &str) -> String {
         path.pop();
     }
     path
+}
+
+/// Synthesise a `FnDecl` from a `ComponentDecl`, binding the implicit
+/// `attrs: Map<String, String>` and `children: List<Html>` parameters and
+/// an `Html` return type.
+fn component_decl_to_fn(decl: &ComponentDecl) -> FnDecl {
+    let span = decl.span;
+    let mk_ident = |name: &str| Ident {
+        name: name.to_string(),
+        span,
+    };
+    let mk_simple = |name: &str| TypeRef {
+        kind: TypeRefKind::Simple(mk_ident(name)),
+        span,
+    };
+    let mk_generic = |base: &str, args: Vec<TypeRef>| TypeRef {
+        kind: TypeRefKind::Generic {
+            base: mk_ident(base),
+            args,
+        },
+        span,
+    };
+    let attrs_param = Param {
+        name: mk_ident("attrs"),
+        ty: mk_generic("Map", vec![mk_simple("String"), mk_simple("String")]),
+        default: None,
+        span,
+    };
+    let children_param = Param {
+        name: mk_ident("children"),
+        ty: mk_generic("List", vec![mk_simple("Html")]),
+        default: None,
+        span,
+    };
+    FnDecl {
+        name: decl.name.clone(),
+        params: vec![attrs_param, children_param],
+        ret: Some(mk_simple("Html")),
+        body: decl.body.clone(),
+        doc: decl.doc.clone(),
+        span,
+    }
+}
+
+/// Collect HTML child nodes from a list value, supporting:
+/// - `Html` items: added directly
+/// - `String` items: coerced to `HtmlNode::Text`
+/// - `List<Html|String>` items: spread (recursive flatten one level)
+fn collect_html_children(items: &[Value], out: &mut Vec<HtmlNode>, ctx: &str) -> ExecResult<()> {
+    for item in items {
+        match item {
+            Value::Html(node) => out.push(node.clone()),
+            Value::String(text) => out.push(HtmlNode::Text(text.clone())),
+            Value::List(subitems) => {
+                for subitem in subitems {
+                    match subitem {
+                        Value::Html(node) => out.push(node.clone()),
+                        Value::String(text) => out.push(HtmlNode::Text(text.clone())),
+                        other => {
+                            return Err(ExecError::Runtime(format!(
+                                "{} children must be Html or String, got {:?}",
+                                ctx, other
+                            )));
+                        }
+                    }
+                }
+            }
+            other => {
+                return Err(ExecError::Runtime(format!(
+                    "{} children must be Html or String, got {:?}",
+                    ctx, other
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn openapi_ui_html(spec_url: &str) -> String {

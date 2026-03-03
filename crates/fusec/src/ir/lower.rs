@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::{
-    AppDecl, BinaryOp, Block, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item, Literal, Pattern,
-    PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, TypeRef, TypeRefKind, UnaryOp,
+    AppDecl, BinaryOp, Block, ComponentDecl, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item,
+    Literal, Param, Pattern, PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, TypeRef,
+    TypeRefKind, UnaryOp,
 };
 use crate::callbind::{CallArgSpec, CallBindError, ParamBinding, ParamSpec, bind_call_args};
 use crate::frontend::html_shorthand::{CanonicalizationPhase, validate_named_args_for_phase};
@@ -26,6 +27,7 @@ fn is_query_method(name: &str) -> bool {
             | "order_by"
             | "limit"
             | "insert"
+            | "upsert"
             | "update"
             | "delete"
             | "count"
@@ -88,9 +90,17 @@ fn rewrite_predicate_name_in_refined_arg(
     import_items: &HashMap<String, ModuleLink>,
     fn_decls: &HashMap<String, FnDecl>,
 ) {
-    let ExprKind::Call { callee, args } = &mut expr.kind else {
+    let ExprKind::Call {
+        callee,
+        args,
+        type_args,
+    } = &mut expr.kind
+    else {
         return;
     };
+    if !type_args.is_empty() {
+        return;
+    }
     let ExprKind::Ident(callee_ident) = &callee.kind else {
         return;
     };
@@ -120,7 +130,14 @@ pub fn lower_program(program: &Program, modules: &ModuleMap) -> Result<IrProgram
     let import_items = HashMap::new();
     let mut module_fn_decls = HashMap::new();
     module_fn_decls.insert(0, collect_function_decls(program));
-    let mut lowerer = Lowerer::new(program, 0, modules, &import_items, Rc::new(module_fn_decls));
+    let mut lowerer = Lowerer::new(
+        program,
+        0,
+        modules,
+        &import_items,
+        Rc::new(module_fn_decls),
+        None,
+    );
     lowerer.lower();
     if lowerer.errors.is_empty() {
         Ok(IrProgram {
@@ -142,8 +159,16 @@ fn lower_program_in_module(
     modules: &ModuleMap,
     import_items: &HashMap<String, ModuleLink>,
     module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
+    std_error_module_id: Option<ModuleId>,
 ) -> Result<IrProgram, Vec<String>> {
-    let mut lowerer = Lowerer::new(program, module_id, modules, import_items, module_fn_decls);
+    let mut lowerer = Lowerer::new(
+        program,
+        module_id,
+        modules,
+        import_items,
+        module_fn_decls,
+        std_error_module_id,
+    );
     lowerer.lower();
     if lowerer.errors.is_empty() {
         Ok(IrProgram {
@@ -165,6 +190,11 @@ pub fn lower_registry(registry: &ModuleRegistry) -> Result<IrProgram, Vec<String
         module_fn_decls.insert(*id, collect_function_decls(&unit.program));
     }
     let module_fn_decls = Rc::new(module_fn_decls);
+    let std_error_module_id = registry
+        .modules
+        .iter()
+        .find(|(_, u)| u.path.to_string_lossy() == "<std.Error>")
+        .map(|(id, _)| *id);
 
     let mut merged = IrProgram {
         functions: HashMap::new(),
@@ -182,6 +212,7 @@ pub fn lower_registry(registry: &ModuleRegistry) -> Result<IrProgram, Vec<String
             &unit.modules,
             &unit.import_items,
             module_fn_decls.clone(),
+            std_error_module_id,
         ) {
             Ok(ir) => {
                 merge_named("function", ir.functions, &mut merged.functions, &mut errors);
@@ -221,6 +252,7 @@ struct Lowerer<'a> {
     imported_names: HashSet<String>,
     builtin_names: HashSet<String>,
     default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
+    std_error_module_id: Option<ModuleId>,
 }
 
 struct LoopContext {
@@ -248,6 +280,7 @@ impl<'a> Lowerer<'a> {
         modules: &'a ModuleMap,
         import_items: &'a HashMap<String, ModuleLink>,
         module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
+        std_error_module_id: Option<ModuleId>,
     ) -> Self {
         let mut config_names = HashSet::new();
         let mut enum_names = HashSet::new();
@@ -264,6 +297,8 @@ impl<'a> Lowerer<'a> {
                 }
             } else if let Item::Fn(decl) = item {
                 fn_decls.insert(decl.name.name.clone(), decl.clone());
+            } else if let Item::Component(decl) = item {
+                fn_decls.insert(decl.name.name.clone(), component_decl_to_fn(decl));
             } else if let Item::Import(decl) = item {
                 match &decl.spec {
                     crate::ast::ImportSpec::Module { name }
@@ -308,6 +343,7 @@ impl<'a> Lowerer<'a> {
             imported_names,
             builtin_names,
             default_helpers: Rc::new(RefCell::new(HashMap::new())),
+            std_error_module_id,
         }
     }
 
@@ -315,6 +351,7 @@ impl<'a> Lowerer<'a> {
         for item in &self.program.items {
             match item {
                 Item::Fn(decl) => self.lower_fn(decl),
+                Item::Component(decl) => self.lower_component(decl),
                 Item::App(app) => self.lower_app(app),
                 Item::Config(cfg) => self.lower_config(cfg),
                 Item::Type(ty) => self.lower_type(ty),
@@ -360,6 +397,7 @@ impl<'a> Lowerer<'a> {
             self.fn_decls.clone(),
             self.module_fn_decls.clone(),
             self.default_helpers.clone(),
+            self.std_error_module_id,
         );
         for param in &decl.params {
             builder.declare_param(&param.name);
@@ -372,6 +410,10 @@ impl<'a> Lowerer<'a> {
         }
         self.errors.extend(errors);
         self.insert_extra_functions(extra);
+    }
+
+    fn lower_component(&mut self, decl: &ComponentDecl) {
+        self.lower_fn(&component_decl_to_fn(decl));
     }
 
     fn lower_app(&mut self, app: &AppDecl) {
@@ -389,6 +431,7 @@ impl<'a> Lowerer<'a> {
             self.fn_decls.clone(),
             self.module_fn_decls.clone(),
             self.default_helpers.clone(),
+            self.std_error_module_id,
         );
         builder.lower_block(&app.body);
         builder.ensure_return();
@@ -418,6 +461,7 @@ impl<'a> Lowerer<'a> {
                 self.fn_decls.clone(),
                 self.module_fn_decls.clone(),
                 self.default_helpers.clone(),
+                self.std_error_module_id,
             );
             builder.lower_expr(&field.value);
             builder.emit(Instr::Return);
@@ -466,6 +510,7 @@ impl<'a> Lowerer<'a> {
                     self.fn_decls.clone(),
                     self.module_fn_decls.clone(),
                     self.default_helpers.clone(),
+                    self.std_error_module_id,
                 );
                 builder.lower_expr(expr);
                 builder.emit(Instr::Return);
@@ -490,13 +535,28 @@ impl<'a> Lowerer<'a> {
                 default_fn,
             });
         }
-        self.types.insert(
-            decl.name.name.clone(),
-            TypeInfo {
-                name: decl.name.name.clone(),
-                fields,
-            },
-        );
+        let bare_name = decl.name.name.clone();
+        let qualified_name = if let Some(std_error_id) = self.std_error_module_id {
+            if self.module_id == std_error_id {
+                if bare_name == "Error" {
+                    "std.Error".to_string()
+                } else {
+                    format!("std.Error.{}", bare_name)
+                }
+            } else {
+                bare_name.clone()
+            }
+        } else {
+            bare_name.clone()
+        };
+        let type_info = TypeInfo {
+            name: qualified_name.clone(),
+            fields,
+        };
+        self.types.insert(qualified_name.clone(), type_info.clone());
+        if qualified_name != bare_name {
+            self.types.insert(bare_name, type_info);
+        }
     }
 
     fn lower_enum(&mut self, decl: &EnumDecl) {
@@ -552,6 +612,7 @@ impl<'a> Lowerer<'a> {
                 self.fn_decls.clone(),
                 self.module_fn_decls.clone(),
                 self.default_helpers.clone(),
+                self.std_error_module_id,
             );
             for name in &params {
                 let ident = Ident {
@@ -658,11 +719,57 @@ fn merge_named<T>(
 fn collect_function_decls(program: &Program) -> HashMap<String, FnDecl> {
     let mut out = HashMap::new();
     for item in &program.items {
-        if let Item::Fn(decl) = item {
-            out.insert(decl.name.name.clone(), decl.clone());
+        match item {
+            Item::Fn(decl) => {
+                out.insert(decl.name.name.clone(), decl.clone());
+            }
+            Item::Component(decl) => {
+                out.insert(decl.name.name.clone(), component_decl_to_fn(decl));
+            }
+            _ => {}
         }
     }
     out
+}
+
+fn component_decl_to_fn(decl: &ComponentDecl) -> FnDecl {
+    let span = decl.span;
+    let mk_ident = |name: &str| Ident {
+        name: name.to_string(),
+        span,
+    };
+    let mk_simple = |name: &str| TypeRef {
+        kind: TypeRefKind::Simple(mk_ident(name)),
+        span,
+    };
+    let mk_generic = |base: &str, args: Vec<TypeRef>| TypeRef {
+        kind: TypeRefKind::Generic {
+            base: mk_ident(base),
+            args,
+        },
+        span,
+    };
+    FnDecl {
+        name: decl.name.clone(),
+        params: vec![
+            Param {
+                name: mk_ident("attrs"),
+                ty: mk_generic("Map", vec![mk_simple("String"), mk_simple("String")]),
+                default: None,
+                span,
+            },
+            Param {
+                name: mk_ident("children"),
+                ty: mk_generic("List", vec![mk_simple("Html")]),
+                default: None,
+                span,
+            },
+        ],
+        ret: Some(mk_simple("Html")),
+        body: decl.body.clone(),
+        doc: decl.doc.clone(),
+        span,
+    }
 }
 
 struct FuncBuilder {
@@ -687,6 +794,7 @@ struct FuncBuilder {
     fn_decls: Rc<HashMap<String, FnDecl>>,
     module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
     default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
+    std_error_module_id: Option<ModuleId>,
 }
 
 impl FuncBuilder {
@@ -704,6 +812,7 @@ impl FuncBuilder {
         fn_decls: Rc<HashMap<String, FnDecl>>,
         module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
         default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
+        std_error_module_id: Option<ModuleId>,
     ) -> Self {
         Self {
             module_id,
@@ -727,6 +836,7 @@ impl FuncBuilder {
             fn_decls,
             module_fn_decls,
             default_helpers,
+            std_error_module_id,
         }
     }
 
@@ -758,6 +868,25 @@ impl FuncBuilder {
         if self.scopes.is_empty() {
             self.scopes.push(HashMap::new());
         }
+    }
+
+    fn qualify_struct_name(&self, name: &str) -> String {
+        if let Some(std_error_id) = self.std_error_module_id {
+            // Check if explicitly imported from std.Error in this module
+            if let Some(link) = self.import_items.get(name) {
+                if link.id == std_error_id {
+                    if name == "Error" {
+                        return "std.Error".to_string();
+                    }
+                    return format!("std.Error.{}", name);
+                }
+            }
+            // Error is a globally-builtin type usable without explicit import
+            if name == "Error" {
+                return "std.Error".to_string();
+            }
+        }
+        name.to_string()
     }
 
     fn declare(&mut self, ident: &Ident) -> usize {
@@ -1141,6 +1270,98 @@ impl FuncBuilder {
         }
     }
 
+    fn lower_html_children_list(&mut self, items: &[Expr]) {
+        for item in items {
+            self.lower_expr(item);
+        }
+        self.emit(Instr::MakeList { len: items.len() });
+    }
+
+    fn lower_html_if_expr(
+        &mut self,
+        cond: &Expr,
+        then_children: &[Expr],
+        else_if: &[(Expr, Vec<Expr>)],
+        else_children: &[Expr],
+    ) {
+        let mut end_jumps = Vec::new();
+
+        self.lower_expr(cond);
+        let jump_to_else = self.emit_placeholder();
+        self.emit(Instr::JumpIfFalse(0));
+        self.lower_html_children_list(then_children);
+        end_jumps.push(self.emit_placeholder());
+        self.emit(Instr::Jump(0));
+        self.patch_jump(jump_to_else, self.code.len());
+
+        for (branch_cond, branch_children) in else_if {
+            self.lower_expr(branch_cond);
+            let jump_next = self.emit_placeholder();
+            self.emit(Instr::JumpIfFalse(0));
+            self.lower_html_children_list(branch_children);
+            end_jumps.push(self.emit_placeholder());
+            self.emit(Instr::Jump(0));
+            self.patch_jump(jump_next, self.code.len());
+        }
+
+        self.lower_html_children_list(else_children);
+
+        let end = self.code.len();
+        for jump in end_jumps {
+            self.patch_jump(jump, end);
+        }
+    }
+
+    fn lower_html_for_expr(&mut self, pat: &Pattern, iter: &Expr, body_children: &[Expr]) {
+        // Accumulate per-iteration children into a single list using list concatenation.
+        self.emit(Instr::MakeList { len: 0 });
+        let out_slot = self.declare_temp();
+        self.emit(Instr::StoreLocal(out_slot));
+
+        self.lower_expr(iter);
+        self.emit(Instr::IterInit);
+        let iter_slot = self.declare_temp();
+        self.emit(Instr::StoreLocal(iter_slot));
+        let item_slot = self.declare_temp();
+
+        self.enter_scope();
+        let mut bindings = Vec::new();
+        self.collect_bindings(pat, &mut bindings);
+        let mut binding_slots = Vec::new();
+        let mut seen = HashSet::new();
+        for ident in bindings {
+            if seen.insert(ident.name.clone()) {
+                let slot = self.declare(&ident);
+                binding_slots.push((ident.name.clone(), slot));
+            }
+        }
+
+        let loop_start = self.code.len();
+        self.emit(Instr::LoadLocal(iter_slot));
+        let iter_next = self.emit_placeholder();
+        self.emit(Instr::IterNext { jump: 0 });
+        self.emit(Instr::StoreLocal(iter_slot));
+        self.emit(Instr::StoreLocal(item_slot));
+
+        let match_idx = self.emit_match(item_slot, pat.clone(), binding_slots);
+        self.emit(Instr::LoadLocal(out_slot));
+        self.lower_html_children_list(body_children);
+        self.emit(Instr::Add);
+        self.emit(Instr::StoreLocal(out_slot));
+        self.emit(Instr::Jump(loop_start));
+
+        let pattern_error = self.code.len();
+        self.emit(Instr::RuntimeError(
+            "for pattern did not match value".to_string(),
+        ));
+
+        let end = self.code.len();
+        self.patch_jump(iter_next, end);
+        self.patch_match_jump(match_idx, pattern_error);
+        self.exit_scope();
+        self.emit(Instr::LoadLocal(out_slot));
+    }
+
     fn lower_while(&mut self, cond: &Expr, block: &Block) {
         let loop_start = self.code.len();
         self.lower_expr(cond);
@@ -1359,8 +1580,18 @@ impl FuncBuilder {
                     UnaryOp::Not => self.emit(Instr::Not),
                 }
             }
-            ExprKind::Call { callee, args } => match &callee.kind {
+            ExprKind::Call {
+                callee,
+                args,
+                type_args,
+            } => match &callee.kind {
                 ExprKind::Ident(ident) => {
+                    if !type_args.is_empty() {
+                        self.errors.push(
+                            "type arguments are only supported on query.one<T>() and query.all<T>()"
+                                .to_string(),
+                        );
+                    }
                     if self.should_use_html_tag_builtin(&ident.name)
                         || force_html_input_tag_call(&ident.name, args)
                     {
@@ -1426,6 +1657,39 @@ impl FuncBuilder {
                         }
                     }
                     if is_query_method(&name.name) {
+                        if !type_args.is_empty() {
+                            if !matches!(name.name.as_str(), "one" | "all") {
+                                self.errors.push(
+                                    "type arguments are only supported on query.one<T>() and query.all<T>()"
+                                        .to_string(),
+                                );
+                            } else if type_args.len() != 1 {
+                                self.errors.push(
+                                    "typed query methods expect exactly one type argument"
+                                        .to_string(),
+                                );
+                            } else if !args.is_empty() {
+                                self.errors.push(
+                                    "typed query methods do not accept arguments".to_string(),
+                                );
+                            } else if let Some(type_name) =
+                                self.query_type_arg_name_for_builtin(&type_args[0])
+                            {
+                                self.lower_expr(base);
+                                self.emit(Instr::Push(Const::String(type_name)));
+                                self.emit(Instr::Call {
+                                    name: format!("query.{}_typed", name.name),
+                                    argc: 2,
+                                    kind: CallKind::Builtin,
+                                });
+                                return;
+                            } else {
+                                self.errors.push(
+                                    "typed query result type must be a declared type name"
+                                        .to_string(),
+                                );
+                            }
+                        }
                         self.lower_expr(base);
                         for arg in args {
                             self.lower_expr(&arg.value);
@@ -1596,7 +1860,7 @@ impl FuncBuilder {
                     field_names.push(field.name.name.clone());
                 }
                 self.emit(Instr::MakeStruct {
-                    name: name.name.clone(),
+                    name: self.qualify_struct_name(&name.name),
                     fields: field_names,
                 });
             }
@@ -1668,6 +1932,7 @@ impl FuncBuilder {
                     self.fn_decls.clone(),
                     self.module_fn_decls.clone(),
                     self.default_helpers.clone(),
+                    self.std_error_module_id,
                 );
                 for (name, _) in &captured {
                     let ident = Ident {
@@ -1692,6 +1957,21 @@ impl FuncBuilder {
                     name: spawn_name,
                     argc: captured.len(),
                 });
+            }
+            ExprKind::HtmlIf {
+                cond,
+                then_children,
+                else_if,
+                else_children,
+            } => {
+                self.lower_html_if_expr(cond, then_children, else_if, else_children);
+            }
+            ExprKind::HtmlFor {
+                pat,
+                iter,
+                body_children,
+            } => {
+                self.lower_html_for_expr(pat, iter, body_children);
             }
             ExprKind::Await { expr } => {
                 self.lower_expr(expr);
@@ -1809,6 +2089,17 @@ impl FuncBuilder {
         self.emit(Instr::RuntimeError(
             "call target is not callable".to_string(),
         ));
+    }
+
+    fn query_type_arg_name_for_builtin(&self, ty: &TypeRef) -> Option<String> {
+        match &ty.kind {
+            TypeRefKind::Simple(ident) => ident
+                .name
+                .rsplit('.')
+                .next()
+                .map(std::string::ToString::to_string),
+            _ => None,
+        }
     }
 
     fn lower_call_with_defaults(
@@ -1957,6 +2248,7 @@ impl FuncBuilder {
             self.fn_decls.clone(),
             self.module_fn_decls.clone(),
             self.default_helpers.clone(),
+            self.std_error_module_id,
         );
         for param in decl.params.iter().take(param_index) {
             builder.declare_param(&param.name);

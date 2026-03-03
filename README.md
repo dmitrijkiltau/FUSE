@@ -58,14 +58,14 @@ The runtime applies those contracts at boundaries instead of requiring repeated 
 
 ## Status
 
-FUSE `v0.8.0` release prep is active. This minor deepens runtime/tooling ergonomics:
-capability-runtime completion (`time`/`crypto`), native-lowering parity closure,
-workflow hardening, and GitHub-first guide coverage.
+FUSE `v0.9.0` release prep is active. This breaking minor simplifies HTML attribute syntax:
+expression values are allowed in shorthand attrs, comma-separated HTML attrs are rejected,
+and map-literal HTML attrs are rejected with coded diagnostics.
 
 Compatibility is defined by documented behavior in `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, and
 `governance/VERSIONING_POLICY.md`.
-Historical upgrade guidance for the `0.1.x -> 0.2.0` breaking minor is in
-`guides/migrations/0.1-to-0.2.md`.
+Historical upgrade guidance is in:
+`guides/migrations/0.8-to-0.9.md` and `guides/migrations/0.1-to-0.2.md`.
 
 ## Requirements
 
@@ -88,6 +88,21 @@ Historical upgrade guidance for the `0.1.x -> 0.2.0` breaking minor is in
 ./scripts/fuse lsp
 ```
 
+## Strings
+
+FUSE supports both single-line and multiline string literals:
+
+- `"..."` for standard strings
+- `"""..."""` for multiline text (useful for SQL/query text)
+- `${expr}` interpolation works in both forms
+
+```fuse
+db.exec("""create table if not exists users (
+  id int primary key,
+  name text
+)""")
+```
+
 ## Module capabilities
 
 Capability boundaries are declared at module top-level and enforced at compile-time:
@@ -99,7 +114,8 @@ requires network
 
 Current capability checks:
 
-- `db.exec/query/one/from` require `requires db`
+- `db.exec/query/one/from` and `db.from(...).{select,where,order_by,limit,insert,upsert,update,delete,count,one,all,exec}` require `requires db`
+- typed query forms `db.from(...).select([...]).one<T>()` / `.all<T>()` validate rows into declared `type` values
 - `serve(...)` requires `requires network`
 - `time(...)` / `time.*` require `requires time`
 - `crypto.*` requires `requires crypto`
@@ -180,7 +196,7 @@ Global CLI output option:
   `auto` is default and respects `NO_COLOR`.
 - `--diagnostics json` switches CLI diagnostics on stderr to JSON Lines suitable for editor/CI
   consumers. Diagnostic entries use fields:
-  `kind="diagnostic"`, `level`, `message`, `path?`, `line?`, `column?`, `span_start`, `span_end`.
+  `kind="diagnostic"`, `level`, `code?`, `message`, `path?`, `line?`, `column?`, `span_start`, `span_end`.
   Command-step entries use:
   `kind="command_step"`, `command`, `message`.
 - `fuse check|run|build|test` emit consistent stderr step markers:
@@ -449,6 +465,7 @@ If two documents disagree, defer to the owning document listed for that tier.
 |---|---|
 | `guides/onboarding.md` | Onboarding walkthrough |
 | `guides/reference.md` | Generated developer reference |
+| `guides/migrations/0.8-to-0.9.md` | Migration guide for `0.8.x -> 0.9.0` |
 | `guides/migrations/0.1-to-0.2.md` | Migration guide for `0.1.x -> 0.2.0` |
 
 ### Operations contracts

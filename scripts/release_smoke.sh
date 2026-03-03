@@ -3,48 +3,54 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 ROOT="$(fuse_repo_root "${BASH_SOURCE[0]}")"
+USE_CASE_BENCH_MAX_ATTEMPTS="${FUSE_USE_CASE_BENCH_MAX_ATTEMPTS:-3}"
 
-step "1/23" "Run AST authority/parity gates"
-"$ROOT/scripts/authority_parity.sh"
+if ! [[ "$USE_CASE_BENCH_MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "invalid FUSE_USE_CASE_BENCH_MAX_ATTEMPTS: $USE_CASE_BENCH_MAX_ATTEMPTS" >&2
+  exit 1
+fi
 
-step "2/23" "Run fusec test suite"
+step "1/22" "Check all example files"
+"$ROOT/scripts/check_examples.sh"
+
+step "2/22" "Run fusec test suite (includes authority/parity gates)"
 "$ROOT/scripts/cargo_env.sh" cargo test -p fusec
 
-step "3/23" "Run fuse CLI test suite"
+step "3/22" "Run fuse CLI test suite"
 "$ROOT/scripts/cargo_env.sh" cargo test -p fuse
 
-step "4/23" "Run LSP contract/perf suite"
+step "4/22" "Run LSP contract/perf suite"
 "$ROOT/scripts/lsp_suite.sh"
 
-step "5/23" "Release-mode compile check (fuse CLI)"
+step "5/22" "Release-mode compile check (fuse CLI)"
 "$ROOT/scripts/cargo_env.sh" cargo build -p fuse --release
 
-step "6/23" "Release-mode compile check (fusec binaries)"
+step "6/22" "Release-mode compile check (fusec binaries)"
 "$ROOT/scripts/cargo_env.sh" cargo build -p fusec --release --bins
 
-step "7/23" "Build package from clean state"
+step "7/22" "Build package from clean state"
 "$ROOT/scripts/fuse" build --clean
 
-step "8/23" "Build package with warm cache"
+step "8/22" "Build package with warm cache"
 "$ROOT/scripts/fuse" build
 
-step "9/23" "Build package with AOT output path"
+step "9/22" "Build package with AOT output path"
 "$ROOT/scripts/fuse" build --aot
 
-step "10/23" "Run built AOT binary directly"
+step "10/22" "Run built AOT binary directly"
 "$ROOT/build/app"
 
-step "11/23" "Backend smoke run (AST)"
+step "11/22" "Backend smoke run (AST)"
 "$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --run "$ROOT/examples/task_api.fuse" --backend ast
 
-step "12/23" "Backend smoke run (native)"
+step "12/22" "Backend smoke run (native)"
 "$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --run "$ROOT/examples/task_api.fuse" --backend native
 
-step "13/23" "DB query-builder backend smoke run"
+step "13/22" "DB query-builder backend smoke run"
 FUSE_DB_URL=sqlite::memory: "$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --run "$ROOT/examples/db_query_builder.fuse" --backend ast
 FUSE_DB_URL=sqlite::memory: "$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --run "$ROOT/examples/db_query_builder.fuse" --backend native
 
-step "14/23" "Native spawn error propagation smoke"
+step "14/22" "Native spawn error propagation smoke"
 set +e
 native_spawn_output="$("$ROOT/scripts/cargo_env.sh" cargo run -p fusec -- --run "$ROOT/examples/spawn_error.fuse" --backend native 2>&1)"
 native_spawn_status=$?
@@ -59,24 +65,31 @@ if [[ "$native_spawn_output" != *"assert failed: boom"* ]]; then
   exit 1
 fi
 
-step "15/23" "Collect use-case benchmark metrics"
+step "15/22" "Collect use-case benchmark metrics"
 "$ROOT/scripts/use_case_bench.sh"
 
-step "16/23" "Enforce benchmark regression thresholds"
-set +e
-"$ROOT/scripts/check_use_case_bench_regression.sh"
-bench_status=$?
-set -e
-if [[ "$bench_status" -ne 0 ]]; then
-  echo "benchmark regression gate failed; retrying once to filter transient host jitter"
-  "$ROOT/scripts/use_case_bench.sh"
+step "16/22" "Enforce benchmark regression thresholds"
+bench_attempt=1
+while true; do
+  set +e
   "$ROOT/scripts/check_use_case_bench_regression.sh"
-fi
+  bench_status=$?
+  set -e
+  if [[ "$bench_status" -eq 0 ]]; then
+    break
+  fi
+  if (( bench_attempt >= USE_CASE_BENCH_MAX_ATTEMPTS )); then
+    exit "$bench_status"
+  fi
+  bench_attempt=$((bench_attempt + 1))
+  echo "benchmark regression gate failed; retrying (${bench_attempt}/${USE_CASE_BENCH_MAX_ATTEMPTS}) to filter transient host jitter"
+  "$ROOT/scripts/use_case_bench.sh"
+done
 
-step "17/23" "Collect AOT startup/throughput benchmark metrics"
+step "17/22" "Collect AOT startup/throughput benchmark metrics"
 "$ROOT/scripts/aot_perf_bench.sh"
 
-step "18/23" "Enforce AOT cold-start SLO thresholds"
+step "18/22" "Enforce AOT cold-start SLO thresholds"
 set +e
 "$ROOT/scripts/check_aot_perf_slo.sh"
 aot_perf_status=$?
@@ -87,21 +100,19 @@ if [[ "$aot_perf_status" -ne 0 ]]; then
   "$ROOT/scripts/check_aot_perf_slo.sh"
 fi
 
-step "19/23" "Ensure VS Code extension dependencies are installed"
+step "19/22" "Ensure VS Code extension dependencies are installed"
 if [[ ! -d "$ROOT/tools/vscode/node_modules" ]]; then
   (cd "$ROOT/tools/vscode" && npm ci)
 fi
 
-step "20/23" "Build and validate VS Code VSIX package"
+step "20/22" "Build and validate VS Code VSIX package"
 "$ROOT/scripts/package_vscode_extension.sh" --release
 
-step "21/23" "Run packaging verifier regression checks"
+step "21/22" "Run packaging verifier regression checks"
 "$ROOT/scripts/packaging_verifier_regression.sh"
 
-step "22/23" "Build host CLI release artifact"
+step "22/22" "Build host CLI release artifact and checksum metadata"
 "$ROOT/scripts/package_cli_artifacts.sh" --release
-
-step "23/23" "Build host AOT release artifact and checksum metadata"
 "$ROOT/scripts/package_aot_artifact.sh" --release --manifest-path .
 SOURCE_DATE_EPOCH="$(git -C "$ROOT" show -s --format=%ct HEAD)" "$ROOT/scripts/generate_release_checksums.sh"
 

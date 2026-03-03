@@ -41,7 +41,6 @@ fn run_program(backend: &str, path: &PathBuf, db_url: &str, pool_size: Option<&s
         .arg(path)
         .env("FUSE_DB_URL", db_url)
         .env("FUSE_CONFIG", empty_config_path())
-        .env_remove("DATABASE_URL")
         .env_remove("FUSE_DB_POOL_SIZE")
         .env_remove("APP_DB_POOL_SIZE");
     if let Some(size) = pool_size {

@@ -69,6 +69,13 @@ Recent release-line notes:
 - `0.8.0` is a non-breaking ergonomics/runtime-depth minor focused on:
   capability-runtime completion (`time`/`crypto`), native lowering completeness,
   LSP maintainability, expanded examples/docs coverage, and workflow hardening.
+- `0.9.0` is a performance/workflow hardening minor focused on:
+  native hot-path/runtime throughput gains, concurrency observability,
+  multi-package workflow correctness, large-workspace LSP scalability,
+  release automation simplification, HTML DSL/component ergonomics,
+  and DB boundary-model completion (`all<T>/one<T>`, `upsert`, migration namespacing).
+  It includes a documented HTML attribute syntax cleanup with diagnostics-assisted migration
+  (`FUSE_HTML_ATTR_MAP`, `FUSE_HTML_ATTR_COMMA`).
 
 - semantic regressions across AST/native are release blockers on all active release lines. (VM removed per RFC 0007.)
 
@@ -84,6 +91,7 @@ Recent release-line notes:
 - Programs valid on `0.6.0` must remain valid and equivalent on `0.6.x`.
 - Programs valid on `0.7.0` must remain valid and equivalent on `0.7.x`.
 - Programs valid on `0.8.0` must remain valid and equivalent on `0.8.x`.
+- Programs valid on `0.9.0` must remain valid and equivalent on `0.9.x`.
 - If behavior must change incompatibly, release must bump at least `MINOR` and include migration guidance.
 
 ### Runtime behavior compatibility

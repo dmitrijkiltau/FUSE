@@ -1,6 +1,6 @@
 requires db
 
-import { Unauthorized, Forbidden } from "./errors"
+import { Unauthorized, Forbidden } from "std.Error"
 import { RequestContext, request_context } from "./domain"
 import { require_auth, require_scope, auth_user_id } from "./auth"
 

@@ -16,8 +16,8 @@ mod runtime_env;
 pub(crate) use cache::{
     FileStamp, affected_modules_for_incremental_check, build_dir, build_ir_meta,
     changed_modules_since_meta, check_meta_files_unchanged, clean_build_dir, file_stamp,
-    ir_meta_base_is_valid, ir_meta_is_valid, load_check_ir_meta, load_ir_meta, sha1_digest,
-    write_check_ir_meta, write_ir_meta,
+    ir_meta_base_is_valid, ir_meta_is_valid, is_virtual_module_path, load_check_ir_meta,
+    load_ir_meta, sha1_digest, write_check_ir_meta, write_ir_meta,
 };
 pub(crate) use cli_output::{
     apply_color_choice, apply_diagnostics_format, dev_prefix, emit_aot_build_progress,

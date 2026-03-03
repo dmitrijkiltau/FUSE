@@ -70,3 +70,43 @@ app "demo":
     };
     assert_eq!(children.len(), 1, "expected one lowered child");
 }
+
+#[test]
+fn html_attr_shorthand_expression_values_are_canonicalized() {
+    let src = r#"
+app "demo":
+  let css = "/assets/main.css"
+  let view = link(rel="stylesheet" href=css)
+  print(html.render(view))
+"#;
+    let path = write_temp_file("fuse_canonicalize_expr", "fuse", src);
+    let (registry, diags) = fusec::load_program_with_modules(&path, src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+    let root = registry.root().expect("root module");
+    let app = root
+        .program
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::App(app) => Some(app),
+            _ => None,
+        })
+        .expect("app item");
+    let value_expr = match &app.body.stmts[1].kind {
+        StmtKind::Let { expr, .. } => expr,
+        other => panic!("expected let statement, got {other:?}"),
+    };
+    let ExprKind::Call { args, .. } = &value_expr.kind else {
+        panic!("expected call expression");
+    };
+    let ExprKind::MapLit(entries) = &args[0].value.kind else {
+        panic!("expected canonical attrs map");
+    };
+    assert_eq!(entries.len(), 2, "expected rel + href attrs");
+    let (_, href_value) = &entries[1];
+    let ExprKind::Ident(ident) = &href_value.kind else {
+        panic!("expected href attr value to remain expression");
+    };
+    assert_eq!(ident.name, "css");
+}

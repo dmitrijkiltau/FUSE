@@ -1,4 +1,4 @@
-use fusec::ast::{Capability, ExprKind, Item, Literal, StmtKind};
+use fusec::ast::{Capability, ExprKind, Item, Literal, StmtKind, TypeRefKind};
 use fusec::parse_source;
 
 fn assert_parse_ok(src: &str) {
@@ -137,6 +137,56 @@ fn main(name: String):
 }
 
 #[test]
+fn parses_triple_quoted_multiline_string_literals() {
+    let src = r#"
+fn main():
+  let sql = """select id
+from users"""
+"#;
+    let program = parse_ok(src);
+    let Some(Item::Fn(main_fn)) = program.items.first() else {
+        panic!("expected first item to be fn");
+    };
+    let Some(stmt) = main_fn.body.stmts.first() else {
+        panic!("expected function body statement");
+    };
+    let StmtKind::Let { expr, .. } = &stmt.kind else {
+        panic!("expected let statement");
+    };
+    let ExprKind::Literal(Literal::String(value)) = &expr.kind else {
+        panic!("expected string literal");
+    };
+    assert_eq!(value, "select id\nfrom users");
+}
+
+#[test]
+fn parses_triple_quoted_multiline_interpolation() {
+    let src = r#"
+fn main(name: String):
+  let sql = """select id
+from users
+where name = ${name}"""
+"#;
+    let program = parse_ok(src);
+    let Some(Item::Fn(main_fn)) = program.items.first() else {
+        panic!("expected first item to be fn");
+    };
+    let Some(stmt) = main_fn.body.stmts.first() else {
+        panic!("expected function body statement");
+    };
+    let StmtKind::Let { expr, .. } = &stmt.kind else {
+        panic!("expected let statement");
+    };
+    let ExprKind::InterpString(parts) = &expr.kind else {
+        panic!("expected interpolated string expression");
+    };
+    assert!(
+        parts.len() >= 2,
+        "expected text + interpolation parts, got {parts:?}"
+    );
+}
+
+#[test]
 fn parses_spawn_await_box() {
     let src = r#"
 fn main():
@@ -195,6 +245,89 @@ fn get_note(id: Id) -> Map<String, String>!std.Error.NotFound:
     ?! std.Error.NotFound(message="not found")
 "#;
     assert_parse_ok(src);
+}
+
+#[test]
+fn parses_typed_query_method_calls() {
+    let src = r#"
+requires db
+
+type User:
+  id: Int
+  name: String
+
+fn main():
+  let users = db.from("users").select(["id", "name"]).all<User>()
+  let first = db.from("users").select(["id", "name"]).one<User>()
+"#;
+    let program = parse_ok(src);
+    let Some(Item::Fn(main_fn)) = program
+        .items
+        .iter()
+        .find(|item| matches!(item, Item::Fn(decl) if decl.name.name == "main"))
+    else {
+        panic!("expected main function");
+    };
+    let Some(first_stmt) = main_fn.body.stmts.first() else {
+        panic!("expected first statement");
+    };
+    let StmtKind::Let {
+        expr: first_expr, ..
+    } = &first_stmt.kind
+    else {
+        panic!("expected first let statement");
+    };
+    let ExprKind::Call {
+        callee: first_callee,
+        type_args: first_type_args,
+        ..
+    } = &first_expr.kind
+    else {
+        panic!("expected typed all<User>() call");
+    };
+    let ExprKind::Member {
+        name: first_method, ..
+    } = &first_callee.kind
+    else {
+        panic!("expected member call for all<User>()");
+    };
+    assert_eq!(first_method.name, "all");
+    assert_eq!(first_type_args.len(), 1);
+    match &first_type_args[0].kind {
+        TypeRefKind::Simple(ident) => assert_eq!(ident.name, "User"),
+        other => panic!("expected simple type argument, got {other:?}"),
+    }
+
+    let Some(second_stmt) = main_fn.body.stmts.get(1) else {
+        panic!("expected second statement");
+    };
+    let StmtKind::Let {
+        expr: second_expr, ..
+    } = &second_stmt.kind
+    else {
+        panic!("expected second let statement");
+    };
+    let ExprKind::Call {
+        callee: second_callee,
+        type_args: second_type_args,
+        ..
+    } = &second_expr.kind
+    else {
+        panic!("expected typed one<User>() call");
+    };
+    let ExprKind::Member {
+        name: second_method,
+        ..
+    } = &second_callee.kind
+    else {
+        panic!("expected member call for one<User>()");
+    };
+    assert_eq!(second_method.name, "one");
+    assert_eq!(second_type_args.len(), 1);
+    match &second_type_args[0].kind {
+        TypeRefKind::Simple(ident) => assert_eq!(ident.name, "User"),
+        other => panic!("expected simple type argument, got {other:?}"),
+    }
 }
 
 #[test]
@@ -318,6 +451,62 @@ fn page() -> Html:
 }
 
 #[test]
+fn parses_html_attr_shorthand_expression_values() {
+    let src = r#"
+fn page(name: String, suffix: String) -> Html:
+  return div(class=name + suffix data_view=name):
+    "ok"
+"#;
+    assert_parse_ok(src);
+}
+
+#[test]
+fn parser_rejects_commas_between_html_attrs() {
+    let src = r#"
+fn page() -> Html:
+  return div(class="hero", id="main")
+"#;
+    assert_parse_err_contains(src, "commas are not allowed between HTML tag attributes");
+}
+
+#[test]
+fn parser_rejects_map_literal_html_attrs() {
+    let src = r#"
+fn page(css: String) -> Html:
+  return link({"rel": "stylesheet", "href": css})
+"#;
+    assert_parse_err_contains(src, "map literal is not valid for HTML tag attributes");
+}
+
+#[test]
+fn parser_rejects_commas_between_component_attrs() {
+    let src = r#"
+component Card:
+  return div(attrs):
+    children
+
+fn page() -> Html:
+  return Card(title="A", id="x"):
+    "ok"
+"#;
+    assert_parse_err_contains(src, "commas are not allowed between HTML tag attributes");
+}
+
+#[test]
+fn parser_rejects_map_literal_component_attrs() {
+    let src = r#"
+component Card:
+  return div(attrs):
+    children
+
+fn page() -> Html:
+  return Card({"title": "A"}):
+    "ok"
+"#;
+    assert_parse_err_contains(src, "map literal is not valid for HTML tag attributes");
+}
+
+#[test]
 fn parses_module_requires_capabilities() {
     let src = r#"
 requires db
@@ -350,7 +539,7 @@ fn page() -> Html:
     let StmtKind::Return { expr: Some(expr) } = &stmt.kind else {
         panic!("expected return expression");
     };
-    let ExprKind::Call { callee, args } = &expr.kind else {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
         panic!("expected call expression");
     };
     let ExprKind::Ident(callee_ident) = &callee.kind else {
@@ -380,6 +569,7 @@ fn page() -> Html:
     let ExprKind::Call {
         callee: text_callee,
         args: text_args,
+        ..
     } = &children[0].kind
     else {
         panic!("expected lowered html.text call for string child");
@@ -414,13 +604,67 @@ fn page() -> Html:
 }
 
 #[test]
-fn parser_html_block_rejects_non_expression_child_stmt() {
+fn lowers_html_if_for_children_to_internal_control_exprs() {
+    let src = r#"
+fn page(show: Bool, items: List<String>) -> Html:
+  return ul():
+    if show:
+      li(): "Visible"
+    else:
+      li(): "Hidden"
+    for item in items:
+      li(): item
+"#;
+    let program = parse_ok(src);
+    let Some(Item::Fn(page)) = program.items.first() else {
+        panic!("expected first item to be fn");
+    };
+    let Some(stmt) = page.body.stmts.first() else {
+        panic!("expected function body statement");
+    };
+    let StmtKind::Return { expr: Some(expr) } = &stmt.kind else {
+        panic!("expected return expression");
+    };
+    let ExprKind::Call { args, .. } = &expr.kind else {
+        panic!("expected call expression");
+    };
+    assert_eq!(args.len(), 2, "expected attrs + children arguments");
+    let ExprKind::ListLit(children) = &args[1].value.kind else {
+        panic!("expected html children list");
+    };
+    assert_eq!(children.len(), 2, "expected if + for child entries");
+    match &children[0].kind {
+        ExprKind::HtmlIf {
+            then_children,
+            else_if,
+            else_children,
+            ..
+        } => {
+            assert_eq!(then_children.len(), 1);
+            assert!(else_if.is_empty());
+            assert_eq!(else_children.len(), 1);
+        }
+        other => panic!("expected first child to be HtmlIf, got {other:?}"),
+    }
+    match &children[1].kind {
+        ExprKind::HtmlFor { body_children, .. } => {
+            assert_eq!(body_children.len(), 1);
+        }
+        other => panic!("expected second child to be HtmlFor, got {other:?}"),
+    }
+}
+
+#[test]
+fn parser_html_block_rejects_unsupported_child_stmt() {
     let src = r#"
 fn page() -> Html:
   return div():
     let x = "bad"
 "#;
-    assert_parse_err_contains(src, "html block children must be expressions");
+    assert_parse_err_contains(
+        src,
+        "html block children only support expressions, if, and for",
+    );
 }
 
 #[test]
@@ -452,6 +696,16 @@ fn main():
   let msg = "sum ${1 2}"
 "#;
     assert_parse_err_contains(src, "unexpected tokens in interpolation");
+}
+
+#[test]
+fn parser_reports_unterminated_triple_quoted_string() {
+    let src = r#"
+fn main():
+  let sql = """select id
+from users
+"#;
+    assert_parse_err_contains(src, "unterminated string literal");
 }
 
 #[test]

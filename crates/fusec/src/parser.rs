@@ -1,5 +1,11 @@
+use std::collections::HashSet;
+
 use crate::ast::*;
 use crate::diag::Diagnostics;
+use crate::frontend::html_shorthand::{
+    HTML_ATTR_COMMA_DIAG_CODE, HTML_ATTR_COMMA_MESSAGE, HTML_ATTR_MAP_DIAG_CODE,
+    HTML_ATTR_MAP_MESSAGE,
+};
 use crate::html_tags;
 use crate::lexer;
 use crate::span::Span;
@@ -9,14 +15,17 @@ pub struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
     diags: &'a mut Diagnostics,
+    component_names: HashSet<String>,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token], diags: &'a mut Diagnostics) -> Self {
+        let component_names = collect_top_level_component_names(tokens);
         Self {
             tokens,
             pos: 0,
             diags,
+            component_names,
         }
     }
 
@@ -114,6 +123,10 @@ impl<'a> Parser<'a> {
         if self.eat_keyword(Keyword::Test).is_some() {
             let decl = self.parse_test_decl(doc);
             return Some(Item::Test(decl));
+        }
+        if self.eat_keyword(Keyword::Component).is_some() {
+            let decl = self.parse_component_decl(doc);
+            return Some(Item::Component(decl));
         }
 
         self.error_here("expected a top-level declaration");
@@ -306,6 +319,19 @@ impl<'a> Parser<'a> {
             name,
             params,
             ret,
+            body,
+            doc,
+            span,
+        }
+    }
+
+    fn parse_component_decl(&mut self, doc: Option<Doc>) -> ComponentDecl {
+        let name = self.expect_ident();
+        self.expect_punct(Punct::Colon);
+        let body = self.parse_block();
+        let span = name.span.merge(body.span);
+        ComponentDecl {
+            name,
             body,
             doc,
             span,
@@ -620,16 +646,7 @@ impl<'a> Parser<'a> {
         let colon = self.expect_punct(Punct::Colon);
         let (children, block_span, output_span) = if self.at_newline() {
             let block = self.parse_block();
-            let mut children = Vec::new();
-            for stmt in block.stmts {
-                match stmt.kind {
-                    StmtKind::Expr(child) => children.push(self.lower_html_block_child(child)),
-                    _ => {
-                        self.diags
-                            .error(stmt.span, "html block children must be expressions");
-                    }
-                }
-            }
+            let children = self.lower_html_block_children(block.stmts);
             (children, block.span, expr.span.merge(block.span))
         } else {
             let child_expr = self.parse_expr_with_html_block();
@@ -638,7 +655,11 @@ impl<'a> Parser<'a> {
             (vec![child], child_span, expr.span.merge(child_span))
         };
         match expr.kind {
-            ExprKind::Call { callee, mut args } => {
+            ExprKind::Call {
+                callee,
+                mut args,
+                type_args,
+            } => {
                 let all_named_attrs = !args.is_empty() && args.iter().all(|arg| arg.name.is_some());
                 if args.len() > 1 && !all_named_attrs {
                     self.diags.error(
@@ -655,6 +676,7 @@ impl<'a> Parser<'a> {
                         name: None,
                         value: attrs,
                         span: block_span,
+                        comma_before: None,
                         is_block_sugar: true,
                     });
                 }
@@ -666,10 +688,63 @@ impl<'a> Parser<'a> {
                     name: None,
                     value: children_expr,
                     span: block_span,
+                    comma_before: None,
                     is_block_sugar: true,
                 });
                 Expr {
-                    kind: ExprKind::Call { callee, args },
+                    kind: ExprKind::Call {
+                        callee,
+                        args,
+                        type_args,
+                    },
+                    span: output_span,
+                }
+            }
+            // A component call with named-attr shorthand is initially parsed as
+            // StructLit (e.g. `Button(type="button" aria_label="x")`).
+            // When followed by an HTML block suffix, re-interpret it as a Call so
+            // the canonicalize pass can apply the component attrs+children contract.
+            ExprKind::StructLit { name, fields } => {
+                let callee = Expr {
+                    kind: ExprKind::Ident(name.clone()),
+                    span: name.span,
+                };
+                let mut args: Vec<CallArg> = fields
+                    .into_iter()
+                    .map(|f| CallArg {
+                        name: Some(f.name),
+                        value: f.value,
+                        span: f.span,
+                        comma_before: f.comma_before,
+                        is_block_sugar: false,
+                    })
+                    .collect();
+                for arg in &args {
+                    if let Some(comma_span) = arg.comma_before {
+                        self.diags.error_with_code(
+                            comma_span,
+                            HTML_ATTR_COMMA_DIAG_CODE,
+                            HTML_ATTR_COMMA_MESSAGE,
+                        );
+                    }
+                }
+                let children_expr = Expr {
+                    kind: ExprKind::ListLit(children),
+                    span: block_span,
+                };
+                args.push(CallArg {
+                    name: None,
+                    value: children_expr,
+                    span: block_span,
+                    comma_before: None,
+                    is_block_sugar: true,
+                });
+                Expr {
+                    kind: ExprKind::Call {
+                        callee: Box::new(callee),
+                        args,
+                        type_args: Vec::new(),
+                    },
                     span: output_span,
                 }
             }
@@ -682,6 +757,61 @@ impl<'a> Parser<'a> {
                     kind,
                     span: expr.span,
                 }
+            }
+        }
+    }
+
+    fn lower_html_block_children(&mut self, stmts: Vec<Stmt>) -> Vec<Expr> {
+        let mut children = Vec::new();
+        for stmt in stmts {
+            if let Some(child) = self.lower_html_block_child_stmt(stmt) {
+                children.push(child);
+            }
+        }
+        children
+    }
+
+    fn lower_html_block_child_stmt(&mut self, stmt: Stmt) -> Option<Expr> {
+        match stmt.kind {
+            StmtKind::Expr(child) => Some(self.lower_html_block_child(child)),
+            StmtKind::If {
+                cond,
+                then_block,
+                else_if,
+                else_block,
+            } => {
+                let then_children = self.lower_html_block_children(then_block.stmts);
+                let else_if = else_if
+                    .into_iter()
+                    .map(|(cond, block)| (cond, self.lower_html_block_children(block.stmts)))
+                    .collect();
+                let else_children = else_block
+                    .map(|block| self.lower_html_block_children(block.stmts))
+                    .unwrap_or_default();
+                Some(Expr {
+                    kind: ExprKind::HtmlIf {
+                        cond: Box::new(cond),
+                        then_children,
+                        else_if,
+                        else_children,
+                    },
+                    span: stmt.span,
+                })
+            }
+            StmtKind::For { pat, iter, block } => Some(Expr {
+                kind: ExprKind::HtmlFor {
+                    pat,
+                    iter: Box::new(iter),
+                    body_children: self.lower_html_block_children(block.stmts),
+                },
+                span: stmt.span,
+            }),
+            _ => {
+                self.diags.error(
+                    stmt.span,
+                    "html block children only support expressions, if, and for",
+                );
+                None
             }
         }
     }
@@ -715,8 +845,10 @@ impl<'a> Parser<'a> {
                             name: None,
                             value: child,
                             span,
+                            comma_before: None,
                             is_block_sugar: false,
                         }],
+                        type_args: Vec::new(),
                     },
                     span,
                 }
@@ -1213,14 +1345,25 @@ impl<'a> Parser<'a> {
             ) {
                 break;
             }
-            if self.eat_punct(Punct::LParen).is_some() {
+            let type_args = if self.is_type_arg_call_start() {
+                self.parse_call_type_args()
+            } else {
+                Vec::new()
+            };
+            if !type_args.is_empty() || self.eat_punct(Punct::LParen).is_some() {
+                if !type_args.is_empty() {
+                    self.expect_punct(Punct::LParen);
+                }
                 let args = self.parse_call_args();
                 let end = self.expect_punct(Punct::RParen);
                 let span = expr.span.merge(end);
+                self.validate_html_attr_call_syntax(&expr, &args);
                 let has_named = args.iter().any(|arg| arg.name.is_some());
-                let struct_name = if has_named {
-                    self.struct_literal_name(&expr)
-                        .filter(|name| !html_tags::is_html_tag(&name.name))
+                let struct_name = if has_named && type_args.is_empty() {
+                    self.struct_literal_name(&expr).filter(|name| {
+                        !html_tags::is_html_tag(&name.name)
+                            && !self.component_names.contains(&name.name)
+                    })
                 } else {
                     None
                 };
@@ -1232,6 +1375,7 @@ impl<'a> Parser<'a> {
                                 name: n,
                                 value: arg.value,
                                 span: arg.span,
+                                comma_before: arg.comma_before,
                             })
                         })
                         .collect();
@@ -1244,6 +1388,7 @@ impl<'a> Parser<'a> {
                         kind: ExprKind::Call {
                             callee: Box::new(expr),
                             args,
+                            type_args,
                         },
                         span,
                     };
@@ -1324,6 +1469,57 @@ impl<'a> Parser<'a> {
             break;
         }
         expr
+    }
+
+    fn is_type_arg_call_start(&self) -> bool {
+        if !self.at_punct(Punct::Lt) {
+            return false;
+        }
+        let mut idx = 0usize;
+        let mut depth = 0usize;
+        loop {
+            let kind = self.peek_kind_n(idx);
+            match kind {
+                TokenKind::Punct(Punct::Lt) => {
+                    depth += 1;
+                }
+                TokenKind::Punct(Punct::Gt) => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        idx += 1;
+                        break;
+                    }
+                }
+                TokenKind::Eof | TokenKind::Newline => return false,
+                _ => {}
+            }
+            idx += 1;
+        }
+        while matches!(
+            self.peek_kind_n(idx),
+            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
+        ) {
+            idx += 1;
+        }
+        matches!(self.peek_kind_n(idx), TokenKind::Punct(Punct::LParen))
+    }
+
+    fn parse_call_type_args(&mut self) -> Vec<TypeRef> {
+        self.expect_punct(Punct::Lt);
+        let mut args = Vec::new();
+        if !self.at_punct(Punct::Gt) {
+            loop {
+                args.push(self.parse_type_ref());
+                if self.eat_punct(Punct::Comma).is_none() {
+                    break;
+                }
+            }
+        }
+        self.expect_punct(Punct::Gt);
+        args
     }
 
     fn parse_primary(&mut self) -> Expr {
@@ -1488,6 +1684,7 @@ impl<'a> Parser<'a> {
 
     fn parse_call_args(&mut self) -> Vec<CallArg> {
         let mut args = Vec::new();
+        let mut comma_before_next: Option<Span> = None;
         self.consume_call_layout();
         if self.at_punct(Punct::RParen) {
             return args;
@@ -1509,22 +1706,56 @@ impl<'a> Parser<'a> {
                 name,
                 value,
                 span: start.merge(end),
+                comma_before: comma_before_next.take(),
                 is_block_sugar: false,
             });
             self.consume_call_layout();
-            if self.eat_punct(Punct::Comma).is_none() {
+            if let Some(comma) = self.eat_punct(Punct::Comma) {
+                comma_before_next = Some(comma.span);
+                self.consume_call_layout();
+                if self.at_punct(Punct::RParen) {
+                    break;
+                }
+                continue;
+            } else {
                 if was_named && self.is_named_arg() && self.peek_span().start > end.end {
                     // Permit named args without commas when separated by layout.
                     continue;
                 }
                 break;
             }
-            self.consume_call_layout();
-            if self.at_punct(Punct::RParen) {
-                break;
-            }
         }
         args
+    }
+
+    fn validate_html_attr_call_syntax(&mut self, callee: &Expr, args: &[CallArg]) {
+        let ExprKind::Ident(ident) = &callee.kind else {
+            return;
+        };
+        if !html_tags::is_html_tag(&ident.name) && !self.component_names.contains(&ident.name) {
+            return;
+        }
+        if let Some(attrs) = args.first() {
+            if attrs.name.is_none() && matches!(attrs.value.kind, ExprKind::MapLit(_)) {
+                self.diags.error_with_code(
+                    attrs.span,
+                    HTML_ATTR_MAP_DIAG_CODE,
+                    HTML_ATTR_MAP_MESSAGE,
+                );
+            }
+        }
+        for arg in args {
+            if arg.name.is_none() {
+                continue;
+            }
+            if let Some(comma_span) = arg.comma_before {
+                self.diags.error_with_code(
+                    comma_span,
+                    HTML_ATTR_COMMA_DIAG_CODE,
+                    HTML_ATTR_COMMA_MESSAGE,
+                );
+            }
+        }
     }
 
     fn can_continue_postfix_after_layout(&self) -> bool {
@@ -1959,6 +2190,30 @@ impl<'a> Parser<'a> {
     }
 }
 
+fn collect_top_level_component_names(tokens: &[Token]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut depth = 0usize;
+    let mut idx = 0usize;
+    while idx < tokens.len() {
+        match &tokens[idx].kind {
+            TokenKind::Indent => depth = depth.saturating_add(1),
+            TokenKind::Dedent => depth = depth.saturating_sub(1),
+            TokenKind::Keyword(Keyword::Component) if depth == 0 => {
+                if let Some(Token {
+                    kind: TokenKind::Ident(name),
+                    ..
+                }) = tokens.get(idx + 1)
+                {
+                    out.insert(name.clone());
+                }
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+    out
+}
+
 trait ItemStart {
     fn is_keyword_item_start(&self) -> bool;
 }
@@ -1972,6 +2227,7 @@ impl ItemStart for TokenKind {
                 | TokenKind::Keyword(Keyword::Type)
                 | TokenKind::Keyword(Keyword::Enum)
                 | TokenKind::Keyword(Keyword::Fn)
+                | TokenKind::Keyword(Keyword::Component)
                 | TokenKind::Keyword(Keyword::Service)
                 | TokenKind::Keyword(Keyword::Config)
                 | TokenKind::Keyword(Keyword::App)

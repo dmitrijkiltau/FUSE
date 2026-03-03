@@ -1,6 +1,6 @@
 requires db
 
-import { Unauthorized, Forbidden } from "./errors"
+import { Unauthorized, Forbidden } from "std.Error"
 import { AuthSession, LoginInput, RegisterInput, SessionToken, UserId } from "./domain"
 
 type Auth:

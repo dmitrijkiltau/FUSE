@@ -2,6 +2,65 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.0] - 2026-03-03
+
+### Breaking
+
+- HTML tag/component attribute shorthand is now canonicalized:
+  - commas between HTML attrs are rejected
+  - map-literal attrs in HTML call position are rejected
+  - named attrs stay expression-valued (`div(class=name)`)
+
+### Added
+
+- Native backend performance and throughput upgrades:
+  - route segment cache for HTTP matching (fewer per-request path splits)
+  - GC allocation-count guard to skip full mark/sweep on non-allocating paths
+  - JSON encoding fast paths (`encode_string` ASCII fast path, integer number formatting fast path)
+  - tighter perf SLO/regression gates in release scripts and benchmark baselines
+- Concurrency runtime throughput and observability upgrades:
+  - lower-contention round-robin task scheduling
+  - JIT/native `spawn` dispatch now executes asynchronously through task pool
+  - runtime concurrency snapshot metrics surfaced in `--diagnostics json` and `FUSE_METRICS_HOOK=stderr`
+  - `examples/spawn_bench.fuse` benchmark workload
+- Multi-package workflow hardening:
+  - shared manifest parser + transitive `dep:`/`root:` dependency expansion
+  - cross-package cycle/unknown-dependency diagnostics with actionable hints
+  - `fuse check --workspace` with per-package incremental cache correctness
+  - LSP manifest-change invalidation + expanded dependency syntax coverage
+- LSP scalability improvements for larger workspaces:
+  - progressive focus-file indexing for diagnostics
+  - persisted workspace index cache across restarts
+  - latency SLO coverage for diagnostics/completion/workspace symbols (50-file fixture)
+  - dedicated regression gate (`scripts/check_lsp_latency_slo.sh`) integrated into `scripts/lsp_suite.sh`
+- Release automation simplification:
+  - `scripts/bump_version.sh` for Cargo + VS Code version updates
+  - `scripts/release_preflight.sh` for one-command pre-tag checks
+  - `scripts/package_release.sh` as unified artifact packaging entry point
+  - release workflow dry-run mode for packaging validation without publishing
+- HTML DSL enhancements:
+  - `component` declaration form with typed implicit `attrs`/`children` contract
+  - compile-time `aria-*` attribute validation
+  - machine-readable diagnostics for HTML attr migration errors:
+  - `FUSE_HTML_ATTR_MAP`
+  - `FUSE_HTML_ATTR_COMMA`
+- DB layer boundary-model completion:
+  - typed query result decoding (`query.all<T>()`, `query.one<T>()`)
+  - `query.upsert(struct)` support
+  - migration namespace key upgrade from `name` to `(package, name)` with backward-compatible bootstrap
+
+### Changed
+
+- Reference-service UI examples now use no-comma named HTML attrs and expression-valued attrs.
+- Diagnostics JSON schema includes optional `code` for compiler diagnostics.
+- `scripts/lsp_suite.sh` now runs the LSP latency SLO gate as part of the default suite.
+
+### Migration
+
+- Replace map-literal HTML attrs with named attrs and remove commas between HTML attrs.
+- See `guides/migrations/0.8-to-0.9.md`.
+- No additional language/runtime migration is required from `0.8.x` to `0.9.0`.
+
 ## [0.8.0] - 2026-03-02
 
 ### Added

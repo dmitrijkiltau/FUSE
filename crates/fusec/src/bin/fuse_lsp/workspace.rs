@@ -8,13 +8,14 @@ use fusec::loader::{
     ModuleExports, ModuleLink, ModuleMap, ModuleRegistry,
     load_program_with_modules_and_deps_and_overrides,
 };
+use fusec::manifest::{build_transitive_deps, parse_manifest};
 use fusec::parse_source;
 use fusec::span::Span;
 
 use super::super::{
-    Index, IndexBuilder, LspState, STD_ERROR_MODULE_SOURCE, SymbolDef, SymbolKind,
-    collect_qualified_refs, line_col_to_offset, line_offsets, location_json, offset_to_line_col,
-    path_to_uri, range_json, span_contains, span_range_json, uri_to_path,
+    CallRef, Index, IndexBuilder, LspState, QualifiedCallRef, STD_ERROR_MODULE_SOURCE, SymbolDef,
+    SymbolKind, SymbolRef, collect_qualified_refs, line_col_to_offset, line_offsets, location_json,
+    offset_to_line_col, path_to_uri, range_json, span_contains, span_range_json, uri_to_path,
 };
 
 pub(crate) struct WorkspaceCache {
@@ -31,6 +32,9 @@ pub(crate) struct WorkspaceSnapshot {
     pub(crate) loader_diags: Vec<Diag>,
     pub(crate) module_ids_by_path: HashMap<PathBuf, usize>,
     pub(crate) index: Option<WorkspaceIndex>,
+    /// Mtimes (seconds since UNIX epoch) of every `fuse.toml` contributing to
+    /// this snapshot.  Used to detect manifest edits and trigger full rebuilds.
+    pub(crate) manifest_mtimes: HashMap<PathBuf, u64>,
 }
 
 pub(crate) fn try_incremental_module_update(
@@ -42,6 +46,10 @@ pub(crate) fn try_incremental_module_update(
         return true;
     };
     cache.docs_revision = state.docs_revision;
+    // Check if any watched fuse.toml has changed on disk; if so force full rebuild.
+    if any_manifest_changed(&cache.snapshot) {
+        return false;
+    }
     let Some(path) = uri_to_path(uri) else {
         return true;
     };
@@ -560,12 +568,14 @@ fn build_module_links_for_registry(
                     if let Some(prev_span) = import_item_spans.get(&name.name).copied() {
                         diags.push(Diag {
                             level: Level::Error,
+                            code: None,
                             message: format!("duplicate import {}", name.name),
                             span: name.span,
                             path: Some(unit_path.clone()),
                         });
                         diags.push(Diag {
                             level: Level::Error,
+                            code: None,
                             message: format!("previous import of {} here", name.name),
                             span: prev_span,
                             path: Some(unit_path.clone()),
@@ -575,6 +585,7 @@ fn build_module_links_for_registry(
                     if !module_exports_contains(target_exports, &name.name) {
                         diags.push(Diag {
                             level: Level::Error,
+                            code: None,
                             message: format!("unknown import {} in {}", name.name, path.value),
                             span: name.span,
                             path: Some(unit_path.clone()),
@@ -609,6 +620,7 @@ fn resolve_import_target_for_relink(
         let Some((dep, rel)) = parse_dep_import(raw) else {
             diags.push(Diag {
                 level: Level::Error,
+                code: None,
                 message: "dependency imports require dep:<name>/<path>".to_string(),
                 span,
                 path: None,
@@ -618,6 +630,7 @@ fn resolve_import_target_for_relink(
         let Some(dep_root) = snapshot.dep_roots.get(dep) else {
             diags.push(Diag {
                 level: Level::Error,
+                code: None,
                 message: format!("unknown dependency {dep}"),
                 span,
                 path: None,
@@ -636,6 +649,7 @@ fn resolve_import_target_for_relink(
         let Some(rel) = parse_root_import(raw) else {
             diags.push(Diag {
                 level: Level::Error,
+                code: None,
                 message: "root imports require root:<path>".to_string(),
                 span,
                 path: None,
@@ -645,6 +659,7 @@ fn resolve_import_target_for_relink(
         let Some(path) = resolve_root_import_path(&snapshot.workspace_root, rel) else {
             diags.push(Diag {
                 level: Level::Error,
+                code: None,
                 message: "root import path escapes workspace root".to_string(),
                 span,
                 path: None,
@@ -797,12 +812,14 @@ fn collect_global_duplicate_symbol_diags(registry: &ModuleRegistry) -> Vec<Diag>
                 if *prev_id != module_id {
                     out.push(Diag {
                         level: Level::Error,
+                        code: None,
                         message: format!("duplicate symbol: {name}"),
                         span,
                         path: Some(unit.path.clone()),
                     });
                     out.push(Diag {
                         level: Level::Error,
+                        code: None,
                         message: format!("previous definition of {name} here"),
                         span: *prev_span,
                         path: Some(prev_path.clone()),
@@ -980,6 +997,14 @@ pub(crate) fn workspace_stats_result(state: &LspState) -> JsonValue {
     out.insert(
         "cachePresent".to_string(),
         JsonValue::Bool(state.workspace_cache.is_some()),
+    );
+    out.insert(
+        "progressiveBuilds".to_string(),
+        JsonValue::Number(state.progressive_builds as f64),
+    );
+    out.insert(
+        "progressiveCachePresent".to_string(),
+        JsonValue::Bool(state.progressive_cache.is_some()),
     );
     JsonValue::Object(out)
 }
@@ -1290,7 +1315,7 @@ pub(crate) fn build_index_with_program(text: &str, program: &Program) -> Index {
     builder.finish()
 }
 
-fn workspace_index_key(state: &LspState, focus_uri: &str) -> Option<String> {
+pub(crate) fn workspace_index_key(state: &LspState, focus_uri: &str) -> Option<String> {
     let focus_path = if !focus_uri.is_empty() {
         uri_to_path(focus_uri)
     } else {
@@ -1330,13 +1355,50 @@ pub(crate) fn build_workspace_snapshot_cached<'a>(
         .map(|cache| &mut cache.snapshot)
 }
 
+/// Return a cached focus-file-only snapshot, building it if necessary.
+///
+/// Unlike `build_workspace_snapshot_cached` (which loads the entire workspace
+/// from the manifest entry), this only loads the focus file and its transitive
+/// imports.  This makes the very first LSP response fast for large workspaces
+/// where the full snapshot has not yet been built.
+///
+/// The progressive cache is keyed by (docs_revision, focus_uri) so it is
+/// automatically invalidated on any document change.
+pub(crate) fn build_progressive_snapshot_cached<'a>(
+    state: &'a mut LspState,
+    focus_uri: &str,
+) -> Option<&'a WorkspaceSnapshot> {
+    let cache_hit = state.progressive_cache.as_ref().is_some_and(|cache| {
+        cache.docs_revision == state.docs_revision && cache.workspace_key == focus_uri
+    });
+    if !cache_hit {
+        let snapshot = build_focus_workspace_snapshot(state, focus_uri)?;
+        state.progressive_cache = Some(WorkspaceCache {
+            docs_revision: state.docs_revision,
+            workspace_key: focus_uri.to_string(),
+            snapshot,
+        });
+        state.progressive_builds = state.progressive_builds.saturating_add(1);
+    }
+    state.progressive_cache.as_ref().map(|c| &c.snapshot)
+}
+
 pub(crate) fn build_workspace_index_cached<'a>(
     state: &'a mut LspState,
     focus_uri: &str,
 ) -> Option<&'a WorkspaceIndex> {
     let snapshot = build_workspace_snapshot_cached(state, focus_uri)?;
     if snapshot.index.is_none() {
-        snapshot.index = build_workspace_from_registry(&snapshot.registry, &snapshot.overrides);
+        let fingerprint = workspace_fingerprint(snapshot);
+        let workspace_root = snapshot.workspace_root.clone();
+        if let Some(cached_index) = load_persisted_workspace_index(&workspace_root, &fingerprint) {
+            snapshot.index = Some(cached_index);
+        } else {
+            snapshot.index = build_workspace_from_registry(&snapshot.registry, &snapshot.overrides);
+            if let Some(index) = &snapshot.index {
+                persist_workspace_index(&workspace_root, &fingerprint, index);
+            }
+        }
     }
     snapshot.index.as_ref()
 }
@@ -1381,7 +1443,29 @@ fn build_workspace_snapshot_from_entry(
     workspace_root: PathBuf,
     overrides: HashMap<PathBuf, String>,
 ) -> Option<WorkspaceSnapshot> {
-    let dep_roots = resolve_dependency_roots_for_workspace(&workspace_root);
+    // Use the shared manifest parser for dep resolution (supports transitive deps).
+    let direct_deps = parse_manifest(&workspace_root)
+        .map(|m| m.deps)
+        .unwrap_or_default();
+    let (dep_roots, _cycle_errors) = build_transitive_deps(&direct_deps);
+
+    // Record fuse.toml mtimes for manifest-change detection.
+    let mut manifest_mtimes: HashMap<PathBuf, u64> = HashMap::new();
+    {
+        let root_manifest = workspace_root.join("fuse.toml");
+        if root_manifest.exists() {
+            manifest_mtimes.insert(root_manifest.clone(), manifest_mtime(&root_manifest));
+        }
+        for dep_root in dep_roots.values() {
+            let dep_manifest = dep_root.join("fuse.toml");
+            if dep_manifest.exists() {
+                manifest_mtimes
+                    .entry(dep_manifest.clone())
+                    .or_insert_with(|| manifest_mtime(&dep_manifest));
+            }
+        }
+    }
+
     let entry_key = entry_path
         .canonicalize()
         .unwrap_or_else(|_| entry_path.clone());
@@ -1411,6 +1495,7 @@ fn build_workspace_snapshot_from_entry(
         loader_diags,
         module_ids_by_path,
         index: None,
+        manifest_mtimes,
     })
 }
 
@@ -1490,200 +1575,31 @@ fn resolve_entry_path(root_path: &Path, focus: Option<&Path>) -> Option<PathBuf>
 }
 
 fn read_manifest_entry(root: &Path) -> Option<PathBuf> {
-    let manifest = root.join("fuse.toml");
-    let contents = std::fs::read_to_string(&manifest).ok()?;
-    let mut in_package = false;
-    for raw_line in contents.lines() {
-        let line = strip_toml_comment(raw_line).trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if line.starts_with('[') && line.ends_with(']') {
-            in_package = line == "[package]";
-            continue;
-        }
-        if !in_package {
-            continue;
-        }
-        let mut parts = line.splitn(2, '=');
-        let key = parts.next()?.trim();
-        if key != "entry" {
-            continue;
-        }
-        let value = parts.next()?.trim();
-        let value = value.trim_matches('"').trim_matches('\'');
-        if value.is_empty() {
-            continue;
-        }
-        return Some(root.join(value));
-    }
-    None
+    parse_manifest(root).and_then(|m| m.entry)
 }
 
-fn resolve_dependency_roots_for_workspace(workspace_root: &Path) -> HashMap<String, PathBuf> {
-    let manifest = workspace_root.join("fuse.toml");
-    let contents = match std::fs::read_to_string(&manifest) {
-        Ok(contents) => contents,
-        Err(_) => return HashMap::new(),
-    };
-
-    let mut roots = HashMap::new();
-    let mut in_dependencies = false;
-    let mut dependency_table: Option<String> = None;
-
-    for raw_line in contents.lines() {
-        let line = strip_toml_comment(raw_line).trim();
-        if line.is_empty() {
-            continue;
+/// Compare stored manifest mtimes to current on-disk mtimes.
+/// Returns `true` if any manifest has changed (full workspace rebuild needed).
+fn any_manifest_changed(snapshot: &WorkspaceSnapshot) -> bool {
+    for (path, &stored_mtime) in &snapshot.manifest_mtimes {
+        if manifest_mtime(path) != stored_mtime {
+            return true;
         }
-
-        if line.starts_with('[') && line.ends_with(']') {
-            in_dependencies = false;
-            dependency_table = None;
-            let header = line[1..line.len() - 1].trim();
-            if header == "dependencies" {
-                in_dependencies = true;
-            } else if let Some(dep_name) = header.strip_prefix("dependencies.") {
-                let dep_name = unquote_toml_key(dep_name.trim());
-                if !dep_name.is_empty() {
-                    dependency_table = Some(dep_name);
-                }
-            }
-            continue;
-        }
-
-        if let Some(dep_name) = dependency_table.as_deref() {
-            let Some((key, value)) = split_toml_assignment(line) else {
-                continue;
-            };
-            if unquote_toml_key(key) != "path" {
-                continue;
-            }
-            let Some(path) = parse_toml_string(value) else {
-                continue;
-            };
-            roots.insert(
-                dep_name.to_string(),
-                dependency_root_path(workspace_root, &path),
-            );
-            continue;
-        }
-
-        if !in_dependencies {
-            continue;
-        }
-        let Some((dep_name_raw, dep_value_raw)) = split_toml_assignment(line) else {
-            continue;
-        };
-        let dep_name = unquote_toml_key(dep_name_raw);
-        if dep_name.is_empty() {
-            continue;
-        }
-        let Some(path) = resolve_dependency_path_value(dep_value_raw) else {
-            continue;
-        };
-        roots.insert(dep_name, dependency_root_path(workspace_root, &path));
     }
-
-    roots
+    false
 }
 
-fn resolve_dependency_path_value(value: &str) -> Option<String> {
-    let value = value.trim();
-    if let Some(path) = parse_toml_string(value) {
-        if looks_like_path_dependency(&path) {
-            return Some(path);
-        }
-        return None;
-    }
-    if !(value.starts_with('{') && value.ends_with('}')) {
-        return None;
-    }
-    let inner = &value[1..value.len() - 1];
-    for part in inner.split(',') {
-        let Some((key, path_value)) = split_toml_assignment(part) else {
-            continue;
-        };
-        if unquote_toml_key(key) != "path" {
-            continue;
-        }
-        return parse_toml_string(path_value);
-    }
-    None
-}
-
-fn dependency_root_path(workspace_root: &Path, raw_path: &str) -> PathBuf {
-    let path = PathBuf::from(raw_path);
-    let joined = if path.is_absolute() {
-        path
-    } else {
-        workspace_root.join(path)
-    };
-    normalized_path(joined.as_path())
-}
-
-fn split_toml_assignment(line: &str) -> Option<(&str, &str)> {
-    let mut parts = line.splitn(2, '=');
-    let key = parts.next()?.trim();
-    let value = parts.next()?.trim();
-    if key.is_empty() || value.is_empty() {
-        return None;
-    }
-    Some((key, value))
-}
-
-fn parse_toml_string(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.len() < 2 {
-        return None;
-    }
-    let quote = value.chars().next()?;
-    if quote != '"' && quote != '\'' {
-        return None;
-    }
-    if !value.ends_with(quote) {
-        return None;
-    }
-    Some(value[1..value.len() - 1].to_string())
-}
-
-fn unquote_toml_key(key: &str) -> String {
-    let key = key.trim();
-    if key.len() >= 2
-        && ((key.starts_with('"') && key.ends_with('"'))
-            || (key.starts_with('\'') && key.ends_with('\'')))
-    {
-        return key[1..key.len() - 1].to_string();
-    }
-    key.to_string()
-}
-
-fn strip_toml_comment(line: &str) -> &str {
-    let mut in_quote: Option<char> = None;
-    for (idx, ch) in line.char_indices() {
-        if ch == '"' || ch == '\'' {
-            if let Some(active) = in_quote {
-                if active == ch {
-                    in_quote = None;
-                }
-            } else {
-                in_quote = Some(ch);
-            }
-            continue;
-        }
-        if ch == '#' && in_quote.is_none() {
-            return &line[..idx];
-        }
-    }
-    line
-}
-
-fn looks_like_path_dependency(value: &str) -> bool {
-    value.starts_with("./")
-        || value.starts_with("../")
-        || value.starts_with('/')
-        || value.contains('/')
-        || value.contains('\\')
+/// Read the last-modified time of a file as nanoseconds since UNIX epoch.
+/// Returns 0 on error (missing file treated as mtime 0 → always triggers rebuild).
+/// Nanosecond resolution avoids false cache-hits when a file is rewritten within
+/// the same wall-clock second.
+fn manifest_mtime(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
 }
 
 fn find_first_fuse_file(root: &Path) -> Option<PathBuf> {
@@ -1716,6 +1632,620 @@ fn find_first_fuse_file(root: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+// ─── Index persistence ────────────────────────────────────────────────────────
+
+/// Coarse fingerprint of all source files in the snapshot.
+/// Each entry is "<canonical_path>:<mtime_nanos>" sorted lexicographically.
+fn workspace_fingerprint(snapshot: &WorkspaceSnapshot) -> String {
+    let mut parts: Vec<String> = snapshot
+        .module_ids_by_path
+        .keys()
+        .map(|path| {
+            let mtime = std::fs::metadata(path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            format!("{}:{}", path.to_string_lossy(), mtime)
+        })
+        .collect();
+    parts.sort();
+    parts.join(";")
+}
+
+/// FNV-1a 64-bit hash of a string, used to derive the cache file name.
+fn fingerprint_hash(fp: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in fp.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+fn lsp_cache_dir(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(".fuse-cache")
+}
+
+/// Try to load a previously persisted `WorkspaceIndex` whose fingerprint hash
+/// matches the current workspace state.  Returns `None` if no valid cache
+/// exists or the cache cannot be decoded.
+fn load_persisted_workspace_index(
+    workspace_root: &Path,
+    fingerprint: &str,
+) -> Option<WorkspaceIndex> {
+    let hash = fingerprint_hash(fingerprint);
+    let path = lsp_cache_dir(workspace_root).join(format!("lsp-index-{hash:016x}.json"));
+    let text = std::fs::read_to_string(&path).ok()?;
+    deserialize_workspace_index(&text)
+}
+
+/// Persist the workspace index to `.fuse-cache/lsp-index-<hash>.json`.
+/// Silently ignores I/O errors (persistence is best-effort).
+fn persist_workspace_index(workspace_root: &Path, fingerprint: &str, index: &WorkspaceIndex) {
+    let hash = fingerprint_hash(fingerprint);
+    let cache_dir = lsp_cache_dir(workspace_root);
+    if std::fs::create_dir_all(&cache_dir).is_err() {
+        return;
+    }
+    let path = cache_dir.join(format!("lsp-index-{hash:016x}.json"));
+    if let Some(json) = serialize_workspace_index(index) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+// ─── WorkspaceIndex serialization ────────────────────────────────────────────
+
+fn serialize_symbol_def(def: &SymbolDef) -> JsonValue {
+    let mut m = BTreeMap::new();
+    m.insert("n".to_string(), JsonValue::String(def.name.clone()));
+    m.insert("s".to_string(), JsonValue::Number(def.span.start as f64));
+    m.insert("e".to_string(), JsonValue::Number(def.span.end as f64));
+    m.insert("k".to_string(), JsonValue::Number(def.kind.to_u8() as f64));
+    m.insert("d".to_string(), JsonValue::String(def.detail.clone()));
+    m.insert(
+        "c".to_string(),
+        def.container
+            .as_deref()
+            .map_or(JsonValue::Null, |c| JsonValue::String(c.to_string())),
+    );
+    m.insert(
+        "doc".to_string(),
+        def.doc
+            .as_deref()
+            .map_or(JsonValue::Null, |d| JsonValue::String(d.to_string())),
+    );
+    JsonValue::Object(m)
+}
+
+fn deserialize_symbol_def(v: &JsonValue) -> Option<SymbolDef> {
+    let JsonValue::Object(m) = v else {
+        return None;
+    };
+    let name = match m.get("n") {
+        Some(JsonValue::String(s)) => s.clone(),
+        _ => return None,
+    };
+    let span_start = match m.get("s") {
+        Some(JsonValue::Number(n)) => *n as usize,
+        _ => return None,
+    };
+    let span_end = match m.get("e") {
+        Some(JsonValue::Number(n)) => *n as usize,
+        _ => return None,
+    };
+    let kind_u8 = match m.get("k") {
+        Some(JsonValue::Number(n)) => *n as u8,
+        _ => return None,
+    };
+    let kind = SymbolKind::from_u8(kind_u8)?;
+    let detail = match m.get("d") {
+        Some(JsonValue::String(s)) => s.clone(),
+        _ => String::new(),
+    };
+    let container = match m.get("c") {
+        Some(JsonValue::String(s)) => Some(s.clone()),
+        _ => None,
+    };
+    let doc = match m.get("doc") {
+        Some(JsonValue::String(s)) => Some(s.clone()),
+        _ => None,
+    };
+    Some(SymbolDef {
+        name,
+        span: fusec::span::Span::new(span_start, span_end),
+        kind,
+        detail,
+        container,
+        doc,
+    })
+}
+
+fn serialize_workspace_index(index: &WorkspaceIndex) -> Option<String> {
+    let files_json: Vec<JsonValue> = index
+        .files
+        .iter()
+        .map(|file| {
+            let defs_json: Vec<JsonValue> =
+                file.index.defs.iter().map(serialize_symbol_def).collect();
+            let refs_json: Vec<JsonValue> = file
+                .index
+                .refs
+                .iter()
+                .map(|r| {
+                    let mut m = BTreeMap::new();
+                    m.insert("s".to_string(), JsonValue::Number(r.span.start as f64));
+                    m.insert("e".to_string(), JsonValue::Number(r.span.end as f64));
+                    m.insert("t".to_string(), JsonValue::Number(r.target as f64));
+                    JsonValue::Object(m)
+                })
+                .collect();
+            let calls_json: Vec<JsonValue> = file
+                .index
+                .calls
+                .iter()
+                .map(|c| {
+                    let mut m = BTreeMap::new();
+                    m.insert("s".to_string(), JsonValue::Number(c.span.start as f64));
+                    m.insert("e".to_string(), JsonValue::Number(c.span.end as f64));
+                    m.insert("from".to_string(), JsonValue::Number(c.caller as f64));
+                    m.insert("to".to_string(), JsonValue::Number(c.callee as f64));
+                    JsonValue::Object(m)
+                })
+                .collect();
+            let qcalls_json: Vec<JsonValue> = file
+                .index
+                .qualified_calls
+                .iter()
+                .map(|q| {
+                    let mut m = BTreeMap::new();
+                    m.insert("s".to_string(), JsonValue::Number(q.span.start as f64));
+                    m.insert("e".to_string(), JsonValue::Number(q.span.end as f64));
+                    m.insert("from".to_string(), JsonValue::Number(q.caller as f64));
+                    m.insert("mod".to_string(), JsonValue::String(q.module.clone()));
+                    m.insert("item".to_string(), JsonValue::String(q.item.clone()));
+                    JsonValue::Object(m)
+                })
+                .collect();
+            let def_map_json: Vec<JsonValue> = file
+                .def_map
+                .iter()
+                .map(|&id| JsonValue::Number(id as f64))
+                .collect();
+            let qrefs_json: Vec<JsonValue> = file
+                .qualified_refs
+                .iter()
+                .map(|q| {
+                    let mut m = BTreeMap::new();
+                    m.insert("s".to_string(), JsonValue::Number(q.span.start as f64));
+                    m.insert("e".to_string(), JsonValue::Number(q.span.end as f64));
+                    m.insert("t".to_string(), JsonValue::Number(q.target as f64));
+                    JsonValue::Object(m)
+                })
+                .collect();
+            let mut fm = BTreeMap::new();
+            fm.insert("uri".to_string(), JsonValue::String(file.uri.clone()));
+            fm.insert("text".to_string(), JsonValue::String(file.text.clone()));
+            fm.insert("defs".to_string(), JsonValue::Array(defs_json));
+            fm.insert("refs".to_string(), JsonValue::Array(refs_json));
+            fm.insert("calls".to_string(), JsonValue::Array(calls_json));
+            fm.insert("qcalls".to_string(), JsonValue::Array(qcalls_json));
+            fm.insert("def_map".to_string(), JsonValue::Array(def_map_json));
+            fm.insert("qrefs".to_string(), JsonValue::Array(qrefs_json));
+            JsonValue::Object(fm)
+        })
+        .collect();
+
+    let global_defs_json: Vec<JsonValue> = index
+        .defs
+        .iter()
+        .map(|wd| {
+            let mut m = BTreeMap::new();
+            m.insert("id".to_string(), JsonValue::Number(wd.id as f64));
+            m.insert("uri".to_string(), JsonValue::String(wd.uri.clone()));
+            let def_json = match serialize_symbol_def(&wd.def) {
+                JsonValue::Object(obj) => obj,
+                _ => return JsonValue::Null,
+            };
+            for (k, v) in def_json {
+                m.insert(k, v);
+            }
+            JsonValue::Object(m)
+        })
+        .collect();
+
+    let global_refs_json: Vec<JsonValue> = index
+        .refs
+        .iter()
+        .map(|r| {
+            let mut m = BTreeMap::new();
+            m.insert("uri".to_string(), JsonValue::String(r.uri.clone()));
+            m.insert("s".to_string(), JsonValue::Number(r.span.start as f64));
+            m.insert("e".to_string(), JsonValue::Number(r.span.end as f64));
+            m.insert("t".to_string(), JsonValue::Number(r.target as f64));
+            JsonValue::Object(m)
+        })
+        .collect();
+
+    let global_calls_json: Vec<JsonValue> = index
+        .calls
+        .iter()
+        .map(|c| {
+            let mut m = BTreeMap::new();
+            m.insert("uri".to_string(), JsonValue::String(c.uri.clone()));
+            m.insert("s".to_string(), JsonValue::Number(c.span.start as f64));
+            m.insert("e".to_string(), JsonValue::Number(c.span.end as f64));
+            m.insert("from".to_string(), JsonValue::Number(c.from as f64));
+            m.insert("to".to_string(), JsonValue::Number(c.to as f64));
+            JsonValue::Object(m)
+        })
+        .collect();
+
+    // module_alias_exports: HashMap<String, HashMap<String, HashSet<String>>>
+    let mut aliases_obj = BTreeMap::new();
+    for (file_uri, alias_map) in &index.module_alias_exports {
+        let mut inner = BTreeMap::new();
+        for (alias, exports) in alias_map {
+            let mut sorted: Vec<String> = exports.iter().cloned().collect();
+            sorted.sort();
+            inner.insert(
+                alias.clone(),
+                JsonValue::Array(sorted.into_iter().map(JsonValue::String).collect()),
+            );
+        }
+        aliases_obj.insert(file_uri.clone(), JsonValue::Object(inner));
+    }
+
+    // redirects: HashMap<usize, usize> — stored as {"<from>": <to>}
+    let mut redirects_obj = BTreeMap::new();
+    for (from, to) in &index.redirects {
+        redirects_obj.insert(format!("{from}"), JsonValue::Number(*to as f64));
+    }
+
+    let mut root = BTreeMap::new();
+    root.insert("v".to_string(), JsonValue::Number(1.0));
+    root.insert("files".to_string(), JsonValue::Array(files_json));
+    root.insert("defs".to_string(), JsonValue::Array(global_defs_json));
+    root.insert("refs".to_string(), JsonValue::Array(global_refs_json));
+    root.insert("calls".to_string(), JsonValue::Array(global_calls_json));
+    root.insert("aliases".to_string(), JsonValue::Object(aliases_obj));
+    root.insert("redirects".to_string(), JsonValue::Object(redirects_obj));
+
+    Some(fuse_rt::json::encode(&JsonValue::Object(root)))
+}
+
+fn deserialize_workspace_index(json: &str) -> Option<WorkspaceIndex> {
+    let root = fuse_rt::json::decode(json).ok()?;
+    let JsonValue::Object(root) = root else {
+        return None;
+    };
+    match root.get("v") {
+        Some(JsonValue::Number(v)) if *v as u32 == 1 => {}
+        _ => return None,
+    }
+
+    let JsonValue::Array(files_arr) = root.get("files")? else {
+        return None;
+    };
+    let mut files = Vec::new();
+    let mut file_by_uri = HashMap::new();
+
+    for fv in files_arr {
+        let JsonValue::Object(fm) = fv else {
+            return None;
+        };
+        let uri = match fm.get("uri") {
+            Some(JsonValue::String(s)) => s.clone(),
+            _ => return None,
+        };
+        let text = match fm.get("text") {
+            Some(JsonValue::String(s)) => s.clone(),
+            _ => return None,
+        };
+
+        let defs: Vec<SymbolDef> = match fm.get("defs") {
+            Some(JsonValue::Array(arr)) => arr.iter().filter_map(deserialize_symbol_def).collect(),
+            _ => return None,
+        };
+        let refs: Vec<SymbolRef> = match fm.get("refs") {
+            Some(JsonValue::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| {
+                    let JsonValue::Object(m) = v else {
+                        return None;
+                    };
+                    let s = match m.get("s") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let e = match m.get("e") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let t = match m.get("t") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    Some(SymbolRef {
+                        span: fusec::span::Span::new(s, e),
+                        target: t,
+                    })
+                })
+                .collect(),
+            _ => return None,
+        };
+        let calls: Vec<CallRef> = match fm.get("calls") {
+            Some(JsonValue::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| {
+                    let JsonValue::Object(m) = v else {
+                        return None;
+                    };
+                    let s = match m.get("s") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let e = match m.get("e") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let from = match m.get("from") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let to = match m.get("to") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    Some(CallRef {
+                        caller: from,
+                        callee: to,
+                        span: fusec::span::Span::new(s, e),
+                    })
+                })
+                .collect(),
+            _ => return None,
+        };
+        let qcalls: Vec<QualifiedCallRef> = match fm.get("qcalls") {
+            Some(JsonValue::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| {
+                    let JsonValue::Object(m) = v else {
+                        return None;
+                    };
+                    let s = match m.get("s") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let e = match m.get("e") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let from = match m.get("from") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let module = match m.get("mod") {
+                        Some(JsonValue::String(s)) => s.clone(),
+                        _ => return None,
+                    };
+                    let item = match m.get("item") {
+                        Some(JsonValue::String(s)) => s.clone(),
+                        _ => return None,
+                    };
+                    Some(QualifiedCallRef {
+                        caller: from,
+                        module,
+                        item,
+                        span: fusec::span::Span::new(s, e),
+                    })
+                })
+                .collect(),
+            _ => return None,
+        };
+        let def_map: Vec<usize> = match fm.get("def_map") {
+            Some(JsonValue::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| match v {
+                    JsonValue::Number(n) => Some(*n as usize),
+                    _ => None,
+                })
+                .collect(),
+            _ => return None,
+        };
+        let qualified_refs: Vec<QualifiedRef> = match fm.get("qrefs") {
+            Some(JsonValue::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| {
+                    let JsonValue::Object(m) = v else {
+                        return None;
+                    };
+                    let s = match m.get("s") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let e = match m.get("e") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let t = match m.get("t") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    Some(QualifiedRef {
+                        span: fusec::span::Span::new(s, e),
+                        target: t,
+                    })
+                })
+                .collect(),
+            _ => return None,
+        };
+        let file_idx = files.len();
+        file_by_uri.insert(uri.clone(), file_idx);
+        files.push(WorkspaceFile {
+            uri,
+            text,
+            index: Index {
+                defs,
+                refs,
+                calls,
+                qualified_calls: qcalls,
+            },
+            def_map,
+            qualified_refs,
+        });
+    }
+
+    let JsonValue::Array(defs_arr) = root.get("defs")? else {
+        return None;
+    };
+    let defs: Vec<WorkspaceDef> = defs_arr
+        .iter()
+        .filter_map(|v| {
+            let JsonValue::Object(m) = v else {
+                return None;
+            };
+            let id = match m.get("id") {
+                Some(JsonValue::Number(n)) => *n as usize,
+                _ => return None,
+            };
+            let uri = match m.get("uri") {
+                Some(JsonValue::String(s)) => s.clone(),
+                _ => return None,
+            };
+            let def = deserialize_symbol_def(v)?;
+            Some(WorkspaceDef { id, uri, def })
+        })
+        .collect();
+
+    let JsonValue::Array(refs_arr) = root.get("refs")? else {
+        return None;
+    };
+    let refs: Vec<WorkspaceRef> = refs_arr
+        .iter()
+        .filter_map(|v| {
+            let JsonValue::Object(m) = v else {
+                return None;
+            };
+            let uri = match m.get("uri") {
+                Some(JsonValue::String(s)) => s.clone(),
+                _ => return None,
+            };
+            let s = match m.get("s") {
+                Some(JsonValue::Number(n)) => *n as usize,
+                _ => return None,
+            };
+            let e = match m.get("e") {
+                Some(JsonValue::Number(n)) => *n as usize,
+                _ => return None,
+            };
+            let t = match m.get("t") {
+                Some(JsonValue::Number(n)) => *n as usize,
+                _ => return None,
+            };
+            Some(WorkspaceRef {
+                uri,
+                span: fusec::span::Span::new(s, e),
+                target: t,
+            })
+        })
+        .collect();
+
+    let JsonValue::Array(calls_arr) = root.get("calls")? else {
+        return None;
+    };
+    let calls: Vec<WorkspaceCall> = calls_arr
+        .iter()
+        .filter_map(|v| {
+            let JsonValue::Object(m) = v else {
+                return None;
+            };
+            let uri = match m.get("uri") {
+                Some(JsonValue::String(s)) => s.clone(),
+                _ => return None,
+            };
+            let s = match m.get("s") {
+                Some(JsonValue::Number(n)) => *n as usize,
+                _ => return None,
+            };
+            let e = match m.get("e") {
+                Some(JsonValue::Number(n)) => *n as usize,
+                _ => return None,
+            };
+            let from = match m.get("from") {
+                Some(JsonValue::Number(n)) => *n as usize,
+                _ => return None,
+            };
+            let to = match m.get("to") {
+                Some(JsonValue::Number(n)) => *n as usize,
+                _ => return None,
+            };
+            Some(WorkspaceCall {
+                uri,
+                span: fusec::span::Span::new(s, e),
+                from,
+                to,
+            })
+        })
+        .collect();
+
+    let module_alias_exports: HashMap<String, HashMap<String, HashSet<String>>> =
+        match root.get("aliases") {
+            Some(JsonValue::Object(outer)) => outer
+                .iter()
+                .map(|(file_uri, inner_v)| {
+                    let inner_map = match inner_v {
+                        JsonValue::Object(inner) => inner
+                            .iter()
+                            .map(|(alias, exports_v)| {
+                                let exports: HashSet<String> = match exports_v {
+                                    JsonValue::Array(arr) => arr
+                                        .iter()
+                                        .filter_map(|v| match v {
+                                            JsonValue::String(s) => Some(s.clone()),
+                                            _ => None,
+                                        })
+                                        .collect(),
+                                    _ => HashSet::new(),
+                                };
+                                (alias.clone(), exports)
+                            })
+                            .collect(),
+                        _ => HashMap::new(),
+                    };
+                    (file_uri.clone(), inner_map)
+                })
+                .collect(),
+            _ => HashMap::new(),
+        };
+
+    let redirects: HashMap<usize, usize> = match root.get("redirects") {
+        Some(JsonValue::Object(m)) => m
+            .iter()
+            .filter_map(|(k, v)| {
+                let from: usize = k.parse().ok()?;
+                let to = match v {
+                    JsonValue::Number(n) => *n as usize,
+                    _ => return None,
+                };
+                Some((from, to))
+            })
+            .collect(),
+        _ => HashMap::new(),
+    };
+
+    Some(WorkspaceIndex {
+        files,
+        file_by_uri,
+        defs,
+        refs,
+        calls,
+        module_alias_exports,
+        redirects,
+    })
 }
 
 fn build_workspace_from_registry(

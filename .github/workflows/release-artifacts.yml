@@ -5,6 +5,12 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run — build and package artifacts but skip publishing (GitHub Release, container image push, checksum verification)"
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
@@ -134,6 +140,19 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Dry-run notice
+        if: inputs.dry_run
+        shell: bash
+        run: |
+          {
+            echo "## Dry Run"
+            echo
+            echo "Artifacts were built and packaged successfully."
+            echo "Publishing (GitHub Release, container image push, checksum verification) was **skipped** because \`dry_run\` is enabled."
+            echo
+            echo "To publish, re-run this workflow with \`dry_run\` unchecked, or push the release tag."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload release bundle
         uses: actions/upload-artifact@v4
         with:
@@ -149,7 +168,7 @@ jobs:
 
   publish-container:
     name: Publish Reference AOT Container
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: aggregate
@@ -196,7 +215,7 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: aggregate
@@ -229,7 +248,7 @@ jobs:
 
   verify-published:
     name: Verify Published Release Assets
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: publish

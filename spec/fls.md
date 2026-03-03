@@ -35,7 +35,7 @@ Normative terms in this document:
 - Literals:
   - integers (`123`)
   - floats (`3.14`)
-  - strings (`"hello"`)
+  - strings (`"hello"`, `"""hello\nworld"""`)
   - booleans (`true`, `false`)
   - `null`
 - Punctuation/operators:
@@ -44,9 +44,11 @@ Normative terms in this document:
 
 ### Strings + interpolation
 
-- Double-quoted strings only (no multiline strings).
+- String forms:
+  - standard double-quoted strings: `"hello"`
+  - triple-quoted strings: `"""hello\nworld"""` (multiline allowed)
 - Escapes: `\n`, `\t`, `\r`, `\\`, `\"`. Unknown escapes pass through (`\$` produces `$`).
-- Interpolation: `${expr}` inside double quotes.
+- Interpolation: `${expr}` inside both string forms.
 
 ### Significant indentation
 
@@ -97,6 +99,7 @@ TopDecl        := ImportDecl
                 | MigrationDecl
                 | TestDecl
                 | FnDecl
+                | ComponentDecl
 
 ImportDecl     := "import" ImportSpec NEWLINE
 ImportSpec     := Ident
@@ -158,6 +161,7 @@ ConfigField    := Ident ":" TypeRef "=" Expr NEWLINE
 
 MigrationDecl  := "migration" ( Ident | StringLit | Int ) ":" NEWLINE Block
 TestDecl       := "test" StringLit ":" NEWLINE Block
+ComponentDecl  := "component" Ident ":" NEWLINE Block
 ```
 
 Types:
@@ -213,6 +217,14 @@ SpawnExpr      := "spawn" ":" NEWLINE Block
 
 HtmlBlockSuffix := ":" ( NEWLINE INDENT HtmlChildStmt* DEDENT | Expr )
 HtmlChildStmt   := Expr NEWLINE
+                | IfStmt
+                | ForStmt
+
+# HTML attribute shorthand in HTML tag/component call positions:
+# - no commas between attrs
+# - map literal attrs are rejected
+# - attr values are full Expr
+HtmlAttr        := Ident "=" Expr
 ```
 
 Patterns:
@@ -231,21 +243,37 @@ Notes:
 - `HtmlBlockSuffix` is enabled only in statement value positions (`let`/`var` RHS, `return` expr,
   assignment RHS, expression statements). It is parsed only for call expressions and lowered to a call
   with block-sugar args (`{}` attrs if omitted, plus `List<Html>` children).
-- HTML block children must be expression statements; bare string literals in HTML blocks are lowered to
-  `html.text(...)`, while non-literal expressions are not coerced.
-- HTML tag calls accept attribute shorthand (`div(class="hero")`) with string literals only; it lowers
-  to a standard attrs map argument (`div({"class": "hero"})`).
+- HTML block children support expressions, `if`, and `for` statements. Bare string literals in HTML
+  blocks are lowered to `html.text(...)`, while non-literal expressions are not coerced.
+- `if`/`for` HTML child statements are parser sugar lowered to internal list-producing control
+  expressions used only within HTML children lowering.
+- HTML tag and component calls accept attribute shorthand (`div(class="hero")`) with full expression
+  values; it lowers to a standard attrs map argument (`div({"class": expr})`).
+- Commas are not allowed between HTML attributes; use layout-separated attributes
+  (`div(class="hero" id="main")`).
+- Map literal attrs in HTML tag/component call positions are rejected; use named attrs instead.
+- Diagnostics for these rejections include codes `FUSE_HTML_ATTR_COMMA` and `FUSE_HTML_ATTR_MAP`
+  in JSON diagnostics output.
 - Named call args can use keyword names (`type="button"`, `for="x"`), and named args may omit commas
   when separated by layout (`button(class="x" id="y")` split across lines).
 - In HTML attribute shorthand, `_` in attribute names is normalized to `-`
   (`aria_label` -> `aria-label`, `data_view` -> `data-view`).
 - Postfix chains can continue across line breaks when the next token is a postfix continuation
   (`(`, `.`, `[`, `?`, `?!`), so long call/member/index chains can be wrapped line-by-line.
+- Call-site type arguments are supported only for typed query reads:
+  `db.from(...).select([...]).one<T>()` and `.all<T>()`.
 - Call argument lists allow line breaks and trailing commas before `)`.
 - Function parameter lists allow line breaks and a trailing comma before `)`.
 - `if` / `else if` / `else` bodies can use either a normal indented block or an inline single statement
   (`if flag: x = 1`).
 - `HtmlBlockSuffix` also supports an inline single child expression (`span(): "FUSE"`).
+- `component Name:` declares an HTML component with implicit params `attrs: Map<String,String>` and
+  `children: List<Html>`; its body must return `Html`. Components are called like functions and accept
+  the same HTML attribute shorthand as built-in tags.
+- In HTML attribute shorthand, `aria-*` attribute names and values are validated at compile time:
+  unknown `aria-*` attributes are rejected; `aria-role` is not a valid attribute (use `role`);
+  `aria-hidden`, `aria-expanded`, `aria-checked`, and `aria-pressed` only accept `"true"` or `"false"`;
+  `aria-level` only accepts a numeric string.
 
 See also: [AST model (structural spec)](#ast-model-structural-spec), [Type system (current static model)](#type-system-current-static-model), [Runtime semantics](runtime.md).
 
@@ -266,6 +294,7 @@ Items:
 - `Type(TypeDecl)`
 - `Enum(EnumDecl)`
 - `Fn(FnDecl)`
+- `Component(ComponentDecl)`
 - `Service(ServiceDecl)`
 - `Config(ConfigDecl)`
 - `App(AppDecl)`
@@ -280,6 +309,7 @@ Declarations:
 - `EnumDecl { name, variants, doc }`
 - `EnumVariant { name, payload }`
 - `FnDecl { name, params, ret, body, doc }`
+- `ComponentDecl { name, body, doc }` — implicit params `attrs: Map<String, String>` and `children: List<Html>` are injected into the body scope; return type is `Html`
 - `ServiceDecl { name, base_path, routes, doc }`
 - `RouteDecl { verb, path, body_type, ret_type, body }`
 - `ConfigDecl { name, fields, doc }`
@@ -309,7 +339,7 @@ Expressions:
 - `Ident`
 - `Binary(op, left, right)`
 - `Unary(op, expr)`
-- `Call(callee, args)` where args are `CallArg { name, value, is_block_sugar }`
+- `Call(callee, args, type_args)` where args are `CallArg { name, value, is_block_sugar }`
 - `Member(base, name)`
 - `OptionalMember(base, name)`
 - `Index(base, index)`
@@ -321,6 +351,8 @@ Expressions:
 - `Coalesce(left, right)`
 - `BangChain(expr, error?)`
 - `Spawn(block)`
+- `HtmlIf(cond, then_children, else_if, else_children)` (internal parser-sugar node)
+- `HtmlFor(pat, iter, body_children)` (internal parser-sugar node)
 - `Await(expr)`
 - `Box(expr)`
 
@@ -410,7 +442,7 @@ with listed fields removed. Field types/defaults are preserved for retained fiel
 
 Base types can be module-qualified (`Foo.User`). Unknown base types or fields are errors.
 
-### Spawn static restrictions (v0.2.0)
+### Spawn static restrictions
 
 Inside a `spawn` block, semantic analysis rejects:
 
@@ -428,7 +460,7 @@ These restrictions are part of the language contract for deterministic cross-bac
 
 See also: [Imports and modules (current)](#imports-and-modules-current), [Runtime semantics](runtime.md), [Scope + constraints](../governance/scope.md).
 
-### Transaction static restrictions (v0.6.0)
+### Transaction static restrictions
 
 `transaction:` defines a compiler-constrained block for deterministic DB transaction scope.
 
@@ -477,6 +509,27 @@ Notes:
 - dependency modules use `dep:` import paths (for example, `dep:Auth/lib`)
 - root-qualified modules use `root:` import paths (for example, `root:lib/auth`)
 
+Package dependency resolution (`dep:` imports):
+
+- dependencies are declared in `fuse.toml` under `[dependencies]` using any of three syntaxes:
+  `Auth = "./deps/auth"` (bare path), `Auth = { path = "./deps/auth" }` (inline table),
+  `[dependencies.Auth] path = "./deps/auth"` (section table).
+- `dep:<Name>/<module-path>` resolves to `<dep-root>/<module-path>.fuse` (`.fuse` added if missing).
+- dependency resolution is transitive: each dependency's own `fuse.toml` is read and its
+  named sub-dependencies are merged into the consumer's dep map; the direct consumer's deps
+  always shadow any same-named sub-dependencies.
+- cross-package dependency cycles are a load-time error; the diagnostic identifies the full
+  cycle path with `→` separators (for example, `circular import: A → B → A`).
+- attempting to use an undeclared dependency name emits a structured error naming the unknown
+  dep and listing all declared deps (for example, `unknown dependency 'Foo' — available: Auth, Math`).
+- the `fuse check --workspace` flag walks the directory tree from the current working directory,
+  discovers all `fuse.toml` manifests that declare a `[package].entry`, and checks each package
+  independently; results are summarised with a per-package pass/fail line followed by a total.
+- in `--workspace` mode, a lightweight file-timestamp cache (`.fuse-cache/check-<hash>.tsv`) is
+  maintained per entry point; a workspace check that hits a valid cache prints
+  `check: ok (cached, no changes)` and exits immediately; the cache is invalidated after any
+  diagnostic error.
+
 Module capabilities:
 
 - modules may declare capability requirements with top-level `requires` declarations
@@ -484,6 +537,10 @@ Module capabilities:
 - duplicate capability declarations in one module are semantic errors
 - capability checks are compile-time only (no runtime capability guard)
 - calls requiring capabilities are rejected when the current module does not declare them
+- `requires db` gates `db.exec/query/one/from` and query-builder calls reachable from `db.from(...)`
+  (`select`, `where`, `order_by`, `limit`, `insert`, `upsert`, `update`, `delete`, `count`, `one`, `all`, `exec`, `sql`, `params`)
+- typed query forms (`one<T>()`, `all<T>()`) are compile-time checked:
+  the type argument must be a declared `type`, and `select([...])` columns must match its fields
 - `requires time` gates access to runtime `time.*` builtins (`now`, `format`, `parse`, `sleep`)
 - `requires crypto` gates access to runtime `crypto.*` builtins (`hash`, `hmac`, `random_bytes`, `constant_time_eq`)
 - call sites to imported module functions must declare every capability required by the callee module

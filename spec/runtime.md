@@ -143,6 +143,12 @@ Comparison behavior is shared across AST/native backends:
 - `<`, `<=`, `>`, `>=` support numeric pairs (`Int`, `Float`) only.
 - unsupported comparison operand pairs produce runtime errors.
 
+## String runtime behavior
+
+- both `"..."` and `"""..."""` literals evaluate to `String` values.
+- triple-quoted strings preserve embedded newlines as authored.
+- interpolation `${expr}` is evaluated left-to-right and concatenated into the final string.
+
 ---
 
 ## Error model
@@ -152,7 +158,7 @@ Comparison behavior is shared across AST/native backends:
 The runtime recognizes a small set of error struct names for standardized HTTP status mapping
 and error JSON formatting.
 
-Preferred canonical names (from `std.Error`):
+Canonical names (from `std.Error`):
 
 - `std.Error.Validation`
 - `std.Error`
@@ -162,8 +168,6 @@ Preferred canonical names (from `std.Error`):
 - `std.Error.NotFound`
 - `std.Error.Conflict`
 
-Compatibility short names are also recognized (`Validation`, `Error`, `BadRequest`,
-`Unauthorized`, `Forbidden`, `NotFound`, `Conflict`), which commonly occur after named imports.
 Other names do not participate in standardized mapping/formatting behavior.
 
 ### Error JSON shape
@@ -184,25 +188,25 @@ Errors are rendered as JSON with a single `error` object:
 
 Rules:
 
-- `std.Error.Validation` / `Validation` uses `message` and `fields`
+- `std.Error.Validation` uses `message` and `fields`
   (list of structs with `path`, `code`, `message`).
-- `std.Error` / `Error` uses `code` and `message`. Other fields are ignored for JSON output.
-- `std.Error.BadRequest` / `BadRequest`, `std.Error.Unauthorized` / `Unauthorized`,
-  `std.Error.Forbidden` / `Forbidden`, `std.Error.NotFound` / `NotFound`,
-  `std.Error.Conflict` / `Conflict` use their `message` field if present, otherwise a default message.
+- `std.Error` uses `code` and `message`. Other fields are ignored for JSON output.
+- `std.Error.BadRequest`, `std.Error.Unauthorized`,
+  `std.Error.Forbidden`, `std.Error.NotFound`,
+  `std.Error.Conflict` use their `message` field if present, otherwise a default message.
 - Any other error value renders as `internal_error`.
 
 ### HTTP status mapping
 
 Status mapping uses the error name first, then `std.Error.status` if present:
 
-- `std.Error.Validation` / `Validation` -> 400
-- `std.Error.BadRequest` / `BadRequest` -> 400
-- `std.Error.Unauthorized` / `Unauthorized` -> 401
-- `std.Error.Forbidden` / `Forbidden` -> 403
-- `std.Error.NotFound` / `NotFound` -> 404
-- `std.Error.Conflict` / `Conflict` -> 409
-- `std.Error` / `Error` with `status: Int` -> that status
+- `std.Error.Validation` -> 400
+- `std.Error.BadRequest` -> 400
+- `std.Error.Unauthorized` -> 401
+- `std.Error.Forbidden` -> 403
+- `std.Error.NotFound` -> 404
+- `std.Error.Conflict` -> 409
+- `std.Error` with `status: Int` -> that status
 - anything else -> 500
 
 ### Result types + `?!`
@@ -358,7 +362,7 @@ Compatibility notes:
 CLI binding is enabled when program args are passed after the file (or after `--`):
 
 ```bash
-fusec --run file.fuse -- --name=Codex
+fuse run file.fuse -- --name=Codex
 ```
 
 Rules:
@@ -472,6 +476,8 @@ Metrics hook extension point (non-semantic):
 - unsupported/empty hook values are treated as no-op
 - hook emission is best-effort and must not change request/response behavior
 
+#### AOT and deployment notes
+
 Deterministic panic taxonomy:
 
 - fatal envelope class remains `runtime_fatal` for handled runtime errors and `panic` for
@@ -541,7 +547,10 @@ Compile-time sugar affecting HTML builtins:
 
 - HTML block syntax (`div(): ...`) lowers to normal calls with explicit attrs + `List<Html>` children
 - bare string literals in HTML blocks lower to `html.text(...)`
-- attribute shorthand (`div(class="hero")`) lowers to attrs maps
+- `if`/`for` child statements in HTML blocks lower to internal list-producing control expressions
+- attribute shorthand (`div(class=expr)`) lowers to attrs maps
+- comma-separated HTML attrs and map-literal HTML attrs are compile-time parser errors
+  (`FUSE_HTML_ATTR_COMMA`, `FUSE_HTML_ATTR_MAP`); runtime semantics are unchanged
 
 ### Compile-time capability requirements
 
@@ -568,7 +577,7 @@ connections.
 
 Configuration sources:
 
-- `FUSE_DB_URL` (preferred) or `DATABASE_URL`
+- `FUSE_DB_URL`
 - `App.dbUrl` if config has been loaded
 - `FUSE_DB_POOL_SIZE` (default `1`) for pool sizing
 - `App.dbPoolSize` as optional fallback when `FUSE_DB_POOL_SIZE` is unset
@@ -593,13 +602,23 @@ Query builder methods (immutable style; each returns a new `Query`):
 - `Query.order_by(column, dir)` where `dir` is `asc`/`desc`
 - `Query.limit(n)` where `n >= 0`
 - `Query.insert(structValue)` builds `insert into ...` from struct fields
+- `Query.upsert(structValue)` builds `insert or replace into ...` from struct fields
 - `Query.update(column, value)` builds/extends `set` clauses
 - `Query.delete()` builds `delete from ...`
 - `Query.count()` executes a `count(*)` query and returns `Int`
-- `Query.one()`
-- `Query.all()`
+- `Query.one()` returns first row `Map<String, Value>?`
+- `Query.all()` returns `List<Map<String, Value>>`
+- `Query.one<T>()` returns `T?` using boundary-style struct decode/validation for each row
+- `Query.all<T>()` returns `List<T>` using boundary-style struct decode/validation for each row
 - `Query.exec()`
 - `Query.sql()` and `Query.params()` for inspection/debugging
+
+Typed query constraints:
+
+- typed query forms are valid only on `one<T>()` and `all<T>()`
+- the type argument must be a declared `type`
+- typed query forms require `select([...])` with string-literal columns before `one<T>()`/`all<T>()`
+- selected column names must match the target type field names at compile time
 
 Parameter binding:
 
@@ -636,14 +655,18 @@ Connection pool behavior:
 Run migrations with:
 
 ```bash
-fusec --migrate path/to/file.fuse
+fuse migrate path/to/file.fuse
 ```
 
 Rules:
 
 - migrations are collected from all loaded modules
 - run order is ascending by migration name
-- applied migrations are tracked in `__fuse_migrations`
+- applied migrations are tracked in `__fuse_migrations(package, name)` with a composite primary key
+- migration package namespace is sourced from `[package].name` in the nearest `fuse.toml`
+  (defaults to empty string when absent)
+- legacy single-column history tables (`id` primary key) are upgraded in-place to `(package, name)`
+  without re-running already-applied single-package migrations
 - only up migrations exist today (no down/rollback)
 - migrations execute via AST interpreter
 
@@ -654,8 +677,8 @@ Rules:
 Run tests with:
 
 ```bash
-fusec --test path/to/file.fuse
-fusec --test --filter smoke path/to/file.fuse
+fuse test path/to/file.fuse
+fuse test --filter smoke path/to/file.fuse
 ```
 
 Rules:
@@ -686,14 +709,10 @@ Structured concurrency is enforced at compile time:
 - spawned task bindings cannot be reassigned before `await`
 - `transaction:` blocks reject `spawn` and `await`
 
-Task surface (v0.2.0):
-
-- `Task<T>` remains an opaque runtime type
-- task helper builtins were removed (`task.id`, `task.done`, `task.cancel`)
-- task values are consumed via `await` only
+`Task<T>` is an opaque runtime type; task values are consumed via `await` only.
 
 Spawn determinism restrictions are enforced at compile time by semantic analysis.
-See [Spawn static restrictions](fls.md#spawn-static-restrictions-v020) for the full list.
+See [Spawn static restrictions](fls.md#spawn-static-restrictions) for the full list.
 
 `box expr` creates a shared mutable cell. Boxed values are transparently dereferenced in most
 expressions; assigning boxed bindings updates shared cell state. `spawn` blocks cannot capture or
@@ -701,7 +720,7 @@ use boxed state.
 
 ### Loops
 
-- `for` iterates over `List<T>` and `Map<K, V>` values (map iteration yields values)
+- `for` iterates over `List<T>` (yields each element) and `Map<K, V>` (yields values only; keys are not available in `for` loop bodies)
 - `break` exits nearest loop
 - `continue` skips to next iteration
 

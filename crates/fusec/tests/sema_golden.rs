@@ -462,6 +462,42 @@ fn main():
 }
 
 #[test]
+fn checks_typed_query_result_forms() {
+    let src = r#"
+requires db
+
+type User:
+  id: Int
+  name: String
+
+fn main():
+  let users = db.from("users").select(["id", "name"]).all<User>()
+  let first = db.from("users").select(["id", "name"]).one<User>()
+  let _users_typed: List<User> = users
+  let _first_typed: User? = first
+"#;
+    assert_diags(src, &[]);
+}
+
+#[test]
+fn rejects_typed_query_column_field_mismatch() {
+    let src = r#"
+requires db
+
+type User:
+  id: Int
+  name: String
+
+fn main():
+  let _bad = db.from("users").select(["id"]).all<User>()
+"#;
+    assert_diags(
+        src,
+        &["Error: typed query column mismatch for User: selected [id], expected [id, name]"],
+    );
+}
+
+#[test]
 fn requires_db_capability_for_db_calls() {
     let src = r#"
 fn main():
@@ -630,7 +666,7 @@ fn main():
 }
 
 #[test]
-fn html_block_children_must_be_html() {
+fn html_block_children_allow_strings() {
     let src = r#"
 fn div(attrs: Map<String, String>, children: List<Html>) -> Html:
   return html.node("div", attrs, children)
@@ -639,10 +675,22 @@ fn page(name: String) -> Html:
   return div():
     name
 "#;
-    assert_diags(
-        src,
-        &["Error: type mismatch: expected List<Html>, found List<String>"],
-    );
+    assert_diags(src, &[]);
+}
+
+#[test]
+fn html_block_children_allow_if_and_for_control_flow() {
+    let src = r#"
+fn page(show: Bool, items: List<String>) -> Html:
+  return ul():
+    if show:
+      li(): "Visible"
+    else:
+      li(): "Hidden"
+    for item in items:
+      li(): item
+"#;
+    assert_diags(src, &[]);
 }
 
 #[test]
@@ -656,28 +704,26 @@ fn page() -> Html:
 }
 
 #[test]
-fn html_tag_attr_shorthand_rejects_non_literal_values() {
+fn html_tag_attr_shorthand_accepts_expression_values() {
     let src = r#"
 fn page(name: String) -> Html:
   return div(class=name):
     "hello"
 "#;
-    assert_diags(
-        src,
-        &["Error: html attribute shorthand only supports string literals"],
-    );
+    assert_diags(src, &[]);
 }
 
 #[test]
-fn html_tag_attr_shorthand_rejects_mixing_positional() {
+fn html_tag_attrs_map_expression_remains_supported() {
     let src = r#"
+fn attrs() -> Map<String, String>:
+  return {"class": "hero"}
+
 fn page() -> Html:
-  return div({"class": "hero"}, id="main")
+  return div(attrs()):
+    "hello"
 "#;
-    assert_diags(
-        src,
-        &["Error: cannot mix html attribute shorthand with positional arguments"],
-    );
+    assert_diags(src, &[]);
 }
 
 #[test]

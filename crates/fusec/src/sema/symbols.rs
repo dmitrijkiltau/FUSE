@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    ConfigDecl, EnumDecl, FnDecl, ImportDecl, ImportSpec, Item, Program, ServiceDecl, TypeDecl,
-    TypeRef,
+    ComponentDecl, ConfigDecl, EnumDecl, FnDecl, Ident, ImportDecl, ImportSpec, Item, Program,
+    ServiceDecl, TypeDecl, TypeRef, TypeRefKind,
 };
 use crate::diag::Diagnostics;
 use crate::span::Span;
@@ -122,6 +122,7 @@ pub fn collect(program: &Program, diags: &mut Diagnostics) -> ModuleSymbols {
             Item::Type(decl) => collect_type(decl, &mut types, &mut names, diags),
             Item::Enum(decl) => collect_enum(decl, &mut enums, &mut names, diags),
             Item::Fn(decl) => collect_fn(decl, &mut functions, &mut names, diags),
+            Item::Component(decl) => collect_component(decl, &mut functions, &mut names, diags),
             Item::Config(decl) => collect_config(decl, &mut configs, &mut names, diags),
             Item::Service(decl) => collect_service(decl, &mut services, &mut names, diags),
             _ => {}
@@ -308,6 +309,56 @@ fn collect_fn(
             params,
             ret: decl.ret.clone(),
             span: decl.span,
+        },
+    );
+}
+
+fn collect_component(
+    decl: &ComponentDecl,
+    functions: &mut HashMap<String, FnSigRef>,
+    names: &mut HashMap<String, Span>,
+    diags: &mut Diagnostics,
+) {
+    if !register_name(&decl.name.name, decl.name.span, names, diags) {
+        return;
+    }
+    let span = decl.span;
+    let mk_ident = |name: &str| Ident {
+        name: name.to_string(),
+        span,
+    };
+    let mk_simple = |name: &str| TypeRef {
+        kind: TypeRefKind::Simple(mk_ident(name)),
+        span,
+    };
+    let mk_generic = |base: &str, args: Vec<TypeRef>| TypeRef {
+        kind: TypeRefKind::Generic {
+            base: mk_ident(base),
+            args,
+        },
+        span,
+    };
+    let params = vec![
+        ParamRef {
+            name: "attrs".to_string(),
+            ty: mk_generic("Map", vec![mk_simple("String"), mk_simple("String")]),
+            has_default: false,
+            span,
+        },
+        ParamRef {
+            name: "children".to_string(),
+            ty: mk_generic("List", vec![mk_simple("Html")]),
+            has_default: false,
+            span,
+        },
+    ];
+    functions.insert(
+        decl.name.name.clone(),
+        FnSigRef {
+            name: decl.name.name.clone(),
+            params,
+            ret: Some(mk_simple("Html")),
+            span,
         },
     );
 }

@@ -385,7 +385,7 @@ app "demo":
 }
 
 #[test]
-fn html_attr_shorthand_non_literal_rejected_across_backends() {
+fn html_attr_shorthand_non_literal_accepted_across_backends() {
     let program = r#"
 fn page(name: String) -> Html:
   return div(class=name):
@@ -398,23 +398,80 @@ app "demo":
     for backend in ["ast", "native"] {
         let output = run_program(backend, program, &[]);
         assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            stdout.trim(),
+            r#"<div class="Ada">hello</div>"#,
+            "{backend} stdout"
+        );
+    }
+}
+
+#[test]
+fn html_tag_attrs_map_expression_supported_across_backends() {
+    let program = r#"
+fn attrs() -> Map<String, String>:
+  return {"class": "hero"}
+
+fn page() -> Html:
+  return div(attrs()):
+    "hello"
+
+app "demo":
+  print(html.render(page()))
+"#;
+
+    for backend in ["ast", "native"] {
+        let output = run_program(backend, program, &[]);
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            stdout.trim(),
+            r#"<div class="hero">hello</div>"#,
+            "{backend} stdout"
+        );
+    }
+}
+
+#[test]
+fn html_attr_map_literal_rejected_across_backends() {
+    let program = r#"
+fn page(css: String) -> Html:
+  return link({"rel": "stylesheet", "href": css})
+
+app "demo":
+  print(html.render(page("/assets/main.css")))
+"#;
+
+    for backend in ["ast", "native"] {
+        let output = run_program(backend, program, &[]);
+        assert!(
             !output.status.success(),
             "{backend} unexpectedly succeeded: {}",
             String::from_utf8_lossy(&output.stdout)
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("html attribute shorthand only supports string literals"),
+            stderr.contains("map literal is not valid for HTML tag attributes"),
             "{backend} stderr: {stderr}"
         );
     }
 }
 
 #[test]
-fn html_attr_shorthand_mixed_positional_rejected_across_backends() {
+fn html_attr_commas_rejected_across_backends() {
     let program = r#"
 fn page() -> Html:
-  return div({"class": "hero"}, id="main")
+  return div(class="hero", id="main"):
+    "ok"
 
 app "demo":
   print(html.render(page()))
@@ -429,7 +486,7 @@ app "demo":
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("cannot mix html attribute shorthand with positional arguments"),
+            stderr.contains("commas are not allowed between HTML tag attributes"),
             "{backend} stderr: {stderr}"
         );
     }

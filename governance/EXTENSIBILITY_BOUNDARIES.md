@@ -14,6 +14,9 @@ Companion references:
 Semantic authority stays in parser + frontend canonicalization + semantic analysis.
 Backends execute canonical forms; they do not define language behavior.
 
+Recent example: `0.9.0` HTML attr syntax simplification is implemented entirely in parser/frontend
+canonicalization with no backend-specific behavior.
+
 ## Extension classes
 
 ### 1) User macros and syntax plugins

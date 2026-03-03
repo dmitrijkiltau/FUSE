@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/common.sh"
 CHANGELOG="$ROOT/CHANGELOG.md"
 OUTPUT="$ROOT/dist/RELEASE_NOTES.md"
 VERSION=""
@@ -18,13 +19,6 @@ Options:
   --output <path>      Output markdown file (default: dist/RELEASE_NOTES.md)
   -h, --help           Show this help
 EOF
-}
-
-abspath() {
-  case "$1" in
-    /*) printf '%s\n' "$1" ;;
-    *) printf '%s/%s\n' "$ROOT" "$1" ;;
-  esac
 }
 
 while [[ $# -gt 0 ]]; do

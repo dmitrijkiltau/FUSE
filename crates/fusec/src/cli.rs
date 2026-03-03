@@ -8,9 +8,10 @@ use fuse_rt::json;
 use crate::ast::{Item, TypeRefKind};
 use crate::diag::Diag;
 use crate::interp::{Interpreter, MigrationJob, TestJob, TestOutcome};
+use crate::manifest::{find_workspace_manifests, find_workspace_root_for_entry, parse_manifest};
 use crate::{load_program_with_modules, load_program_with_modules_and_deps};
 
-const USAGE: &str = "usage: fusec [--dump-ast] [--check] [--fmt] [--openapi] [--run] [--migrate] [--test] [--filter PATTERN] [--strict-architecture] [--diagnostics json|text] [--backend ast|native] [--app NAME] <file>";
+const USAGE: &str = "usage: fusec [--dump-ast] [--check] [--workspace] [--fmt] [--openapi] [--run] [--migrate] [--test] [--filter PATTERN] [--strict-architecture] [--diagnostics json|text] [--backend ast|native] [--app NAME] <file>";
 
 #[derive(Copy, Clone)]
 enum Backend {
@@ -61,6 +62,7 @@ where
     let mut strict_architecture = false;
     let mut diagnostics_format = diagnostics_format_from_env();
     let mut path = None;
+    let mut workspace_mode = false;
 
     while let Some(arg) = args.next() {
         if arg == "--" {
@@ -72,6 +74,11 @@ where
             continue;
         }
         if arg == "--check" {
+            check = true;
+            continue;
+        }
+        if arg == "--workspace" {
+            workspace_mode = true;
             check = true;
             continue;
         }
@@ -177,6 +184,15 @@ where
         }
     }
 
+    // --workspace does not require a file argument; dispatch and return early.
+    if workspace_mode {
+        let root = match path.as_deref() {
+            Some(p) => PathBuf::from(p),
+            None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        };
+        return run_workspace_check(&root, strict_architecture, diagnostics_format, deps);
+    }
+
     let path = match path {
         Some(p) => p,
         None => {
@@ -244,11 +260,37 @@ where
     }
 
     if check {
+        // Timestamp cache: only used for pure check invocations (no run/test/migrate/fmt).
+        let check_only = !run && !migrate && !test && !fmt && !openapi && !dump_ast;
+        let entry_path = Path::new(&path);
+        if check_only {
+            if let Some(cache) = CheckCache::load(entry_path) {
+                if cache.is_valid(&registry) {
+                    if matches!(diagnostics_format, DiagnosticFormat::Json) {
+                        // Emit a machine-readable cache-hit event.
+                        eprintln!("{{\"event\":\"check.cached\",\"entry\":\"{path}\"}}");
+                    } else {
+                        eprintln!("check: ok (cached, no changes)");
+                    }
+                    return 0;
+                }
+            }
+        }
         let (_analysis, diags) =
             crate::sema::analyze_registry_with_options(&registry, sema_options);
         if !diags.is_empty() {
-            emit_diags(&diags, diagnostics_format, Some((Path::new(&path), &src)));
+            // Invalidate stale cache on error.
+            if check_only {
+                CheckCache::invalidate(entry_path);
+            }
+            emit_diags(&diags, diagnostics_format, Some((entry_path, &src)));
             return 1;
+        }
+        if check_only {
+            CheckCache::save(entry_path, &registry);
+        }
+        if !run && !migrate && !test && !fmt && !openapi && !dump_ast {
+            return 0;
         }
     }
 
@@ -495,6 +537,14 @@ where
         }
     }
 
+    if run {
+        let snap = crate::concurrency_metrics::snapshot();
+        crate::observability::emit_concurrency_metrics(
+            &snap,
+            diagnostics_format == DiagnosticFormat::Json,
+        );
+    }
+
     if dump_ast {
         println!("{:#?}", program);
     }
@@ -506,33 +556,67 @@ fn collect_migrations<'a>(
     registry: &'a crate::ModuleRegistry,
 ) -> Result<Vec<MigrationJob<'a>>, String> {
     let mut jobs = Vec::new();
-    let mut seen: HashMap<String, String> = HashMap::new();
+    let mut seen: HashMap<(String, String), String> = HashMap::new();
+    let mut package_cache: HashMap<PathBuf, String> = HashMap::new();
     for (id, unit) in &registry.modules {
         let module_path = unit.path.display().to_string();
+        let package = migration_package_name(&unit.path, &mut package_cache);
         for item in &unit.program.items {
             if let Item::Migration(decl) = item {
                 if decl.name.trim().is_empty() {
                     return Err("migration name cannot be empty".to_string());
                 }
-                if let Some(prev) = seen.insert(decl.name.clone(), module_path.clone()) {
+                let key = (package.clone(), decl.name.clone());
+                if let Some(prev) = seen.insert(key, module_path.clone()) {
+                    let package_label = if package.is_empty() {
+                        "<default>"
+                    } else {
+                        package.as_str()
+                    };
                     return Err(format!(
-                        "duplicate migration {} (also declared in {})",
-                        decl.name, prev
+                        "duplicate migration {} in package {} (also declared in {})",
+                        decl.name, package_label, prev
                     ));
                 }
-                jobs.push((decl.name.clone(), module_path.clone(), *id, decl));
+                jobs.push((
+                    decl.name.clone(),
+                    package.clone(),
+                    module_path.clone(),
+                    *id,
+                    decl,
+                ));
             }
         }
     }
-    jobs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    jobs.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
     Ok(jobs
         .into_iter()
-        .map(|(id, _path, module_id, decl)| MigrationJob {
+        .map(|(id, package, _path, module_id, decl)| MigrationJob {
+            package,
             id,
             module_id,
             decl,
         })
         .collect())
+}
+
+fn migration_package_name(path: &Path, cache: &mut HashMap<PathBuf, String>) -> String {
+    let root = find_workspace_root_for_entry(path);
+    if !root.join("fuse.toml").exists() {
+        return String::new();
+    }
+    if let Some(existing) = cache.get(&root) {
+        return existing.clone();
+    }
+    let package = parse_manifest(&root)
+        .and_then(|manifest| manifest.package_name)
+        .unwrap_or_default();
+    cache.insert(root, package.clone());
+    package
 }
 
 fn collect_tests<'a>(registry: &'a crate::ModuleRegistry) -> Result<Vec<TestJob<'a>>, String> {
@@ -711,4 +795,228 @@ fn emit_diag(diag: &Diag, format: DiagnosticFormat, fallback: Option<(&Path, &st
         include_fallback_path: false,
     };
     crate::diag_render::emit_diag_text(diag, fallback, &style);
+}
+
+// ─── Workspace check ─────────────────────────────────────────────────────────
+
+/// Run `fuse check` over every package found under `root`.
+///
+/// Discovers packages by walking the directory tree for `fuse.toml` files
+/// (skipping `target/`, hidden dirs, etc.) and checking each one that has a
+/// `[package].entry`.  Results are aggregated and the exit code is non-zero if
+/// any package reports errors.
+fn run_workspace_check(
+    root: &Path,
+    strict_architecture: bool,
+    diagnostics_format: DiagnosticFormat,
+    external_deps: Option<&HashMap<String, PathBuf>>,
+) -> i32 {
+    let manifest_dirs = find_workspace_manifests(root);
+    if manifest_dirs.is_empty() {
+        eprintln!(
+            "workspace check: no fuse.toml files found under {}",
+            root.display()
+        );
+        return 1;
+    }
+
+    let mut total = 0usize;
+    let mut failed = 0usize;
+    let sema_options = crate::sema::AnalyzeOptions {
+        strict_architecture,
+    };
+
+    for manifest_dir in &manifest_dirs {
+        let manifest = match parse_manifest(manifest_dir) {
+            Some(m) => m,
+            None => continue,
+        };
+        let Some(entry_path) = manifest.entry else {
+            continue; // no [package].entry — skip utility manifests
+        };
+        let src = match fs::read_to_string(&entry_path) {
+            Ok(s) => s,
+            Err(err) => {
+                eprintln!(
+                    "workspace check: failed to read {} — {err}",
+                    entry_path.display()
+                );
+                failed += 1;
+                total += 1;
+                continue;
+            }
+        };
+
+        // Merge manifest deps with any externally provided deps (external takes precedence).
+        let mut pkg_deps = manifest.deps.clone();
+        if let Some(ext) = external_deps {
+            for (k, v) in ext {
+                pkg_deps.insert(k.clone(), v.clone());
+            }
+        }
+
+        // Timestamp cache: skip if unchanged.
+        let cache = CheckCache::load(&entry_path);
+        let (registry, load_diags) =
+            load_program_with_modules_and_deps(&entry_path, &src, &pkg_deps);
+        if !load_diags.is_empty() {
+            emit_diags(&load_diags, diagnostics_format, Some((&entry_path, &src)));
+            CheckCache::invalidate(&entry_path);
+            failed += 1;
+            total += 1;
+            continue;
+        }
+
+        if let Some(ref c) = cache {
+            if c.is_valid(&registry) {
+                if matches!(diagnostics_format, DiagnosticFormat::Json) {
+                    eprintln!(
+                        "{{\"event\":\"check.cached\",\"package\":\"{}\"}}",
+                        manifest_dir.display()
+                    );
+                } else {
+                    eprintln!("check: {} — ok (cached)", manifest_dir.display());
+                }
+                total += 1;
+                continue;
+            }
+        }
+
+        let (_analysis, sema_diags) =
+            crate::sema::analyze_registry_with_options(&registry, sema_options);
+        total += 1;
+        if !sema_diags.is_empty() {
+            emit_diags(&sema_diags, diagnostics_format, Some((&entry_path, &src)));
+            CheckCache::invalidate(&entry_path);
+            failed += 1;
+        } else {
+            if matches!(diagnostics_format, DiagnosticFormat::Json) {
+                eprintln!(
+                    "{{\"event\":\"check.ok\",\"package\":\"{}\"}}",
+                    manifest_dir.display()
+                );
+            } else {
+                eprintln!("check: {} — ok", manifest_dir.display());
+            }
+            CheckCache::save(&entry_path, &registry);
+        }
+    }
+
+    if !matches!(diagnostics_format, DiagnosticFormat::Json) {
+        if failed == 0 {
+            eprintln!("workspace check: {total} package(s) — all ok");
+        } else {
+            eprintln!("workspace check: {failed} of {total} package(s) failed");
+        }
+    }
+
+    if failed > 0 { 1 } else { 0 }
+}
+
+// ─── Lightweight file-timestamp cache ────────────────────────────────────────
+
+/// Fingerprint of a successful `fuse check` run: maps each loaded source file
+/// path to its last-modified time (nanoseconds since UNIX epoch).
+struct CheckCache {
+    /// `file_path → mtime_nanos`
+    mtimes: HashMap<PathBuf, u64>,
+}
+
+impl CheckCache {
+    /// Try to load a saved fingerprint for `entry`.
+    fn load(entry: &Path) -> Option<Self> {
+        let cache_path = Self::cache_path(entry)?;
+        let text = fs::read_to_string(&cache_path).ok()?;
+        let mut mtimes = HashMap::new();
+        for line in text.lines() {
+            let (mtime_str, path_str) = line.split_once('\t')?;
+            let mtime: u64 = mtime_str.parse().ok()?;
+            mtimes.insert(PathBuf::from(path_str), mtime);
+        }
+        Some(Self { mtimes })
+    }
+
+    /// Write a new fingerprint from `registry` for the given `entry`.
+    fn save(entry: &Path, registry: &crate::ModuleRegistry) {
+        let Some(cache_path) = Self::cache_path(entry) else {
+            return;
+        };
+        if let Some(parent) = cache_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let mut lines = Vec::new();
+        for unit in registry.modules.values() {
+            if unit.path.to_string_lossy().starts_with('<') {
+                continue; // virtual modules (std.Error)
+            }
+            if let Ok(meta) = fs::metadata(&unit.path) {
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0);
+                lines.push(format!("{}\t{}", mtime, unit.path.display()));
+            }
+        }
+        lines.sort(); // deterministic output
+        let _ = fs::write(&cache_path, lines.join("\n"));
+    }
+
+    /// Remove the fingerprint file (e.g. after a check error).
+    fn invalidate(entry: &Path) {
+        if let Some(cache_path) = Self::cache_path(entry) {
+            let _ = fs::remove_file(cache_path);
+        }
+    }
+
+    /// Returns `true` if every file in the loaded registry has the same mtime
+    /// as was recorded in the cache.
+    fn is_valid(&self, registry: &crate::ModuleRegistry) -> bool {
+        for unit in registry.modules.values() {
+            if unit.path.to_string_lossy().starts_with('<') {
+                continue;
+            }
+            let recorded = match self.mtimes.get(&unit.path) {
+                Some(m) => *m,
+                None => return false,
+            };
+            let current = fs::metadata(&unit.path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            if current != recorded {
+                return false;
+            }
+        }
+        // Also make sure the cache covers exactly the same set of files.
+        let live_paths: HashSet<&PathBuf> = registry
+            .modules
+            .values()
+            .filter(|u| !u.path.to_string_lossy().starts_with('<'))
+            .map(|u| &u.path)
+            .collect();
+        let cached_paths: HashSet<&PathBuf> = self.mtimes.keys().collect();
+        live_paths == cached_paths
+    }
+
+    fn cache_path(entry: &Path) -> Option<PathBuf> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let entry_abs = entry.canonicalize().unwrap_or_else(|_| entry.to_path_buf());
+        let mut hasher = DefaultHasher::new();
+        entry_abs.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        // Place the cache file next to the entry's workspace root.
+        let workspace_root = crate::manifest::find_workspace_root_for_entry(&entry_abs);
+        Some(
+            workspace_root
+                .join(".fuse-cache")
+                .join(format!("check-{hash:016x}.tsv")),
+        )
+    }
 }

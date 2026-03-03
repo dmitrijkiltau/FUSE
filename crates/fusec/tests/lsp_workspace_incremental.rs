@@ -592,6 +592,72 @@ fn lsp_uses_nearest_manifest_for_nested_docs_workspace() {
 }
 
 #[test]
+fn lsp_full_rebuild_triggered_by_manifest_change() {
+    // When fuse.toml is updated on disk and a doc-change notification arrives,
+    // the LSP should detect the manifest mtime change and trigger a full
+    // workspace rebuild so the new dependency set is visible.
+    let dir = temp_project_dir("fuse_lsp_manifest_invalidation");
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let dep_root = dir.join("deps").join("utils");
+
+    // Initial manifest: no dependencies.
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    );
+    write_project_file(&dir.join("main.fuse"), "fn main():\n  print(\"hello\")\n");
+    write_project_file(
+        &dep_root.join("lib.fuse"),
+        "fn helper() -> Int:\n  return 42\n",
+    );
+
+    let main_path = dir.join("main.fuse");
+    let main_uri = path_to_uri(&main_path);
+    let manifest_path = dir.join("fuse.toml");
+
+    let root_uri = path_to_uri(&dir);
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+
+    // Seed the workspace (clean build).
+    lsp.open_document(&main_uri, "fn main():\n  print(\"hello\")\n", 1);
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+    let builds_before = workspace_builds(&mut lsp);
+    assert_eq!(builds_before, 1);
+
+    // Update fuse.toml on disk to add the Utils dependency.
+    // Sleep briefly to ensure the OS clock advances so the mtime differs from the
+    // initial write (kernel coarse clock resolution is ~1ms on Linux).
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let updated_manifest = format!(
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n\n[dependencies]\nUtils = \"{}\"\n",
+        dep_root.display()
+    );
+    write_project_file(&manifest_path, &updated_manifest);
+
+    // Update main.fuse to use the new dep (this triggers LSP didChange,
+    // which is how the mtime check fires).
+    let new_main = "import Utils from \"dep:Utils/lib\"\nfn main():\n  print(Utils.helper())\n";
+    lsp.change_document(&main_uri, new_main, 2);
+
+    // After the manifest change the workspace should be rebuilt, making the
+    // Utils dep available so main.fuse compiles cleanly.
+    let diags = lsp.wait_diagnostics(&main_uri);
+    assert!(
+        diags.is_empty(),
+        "main should compile cleanly after manifest update; diags: {diags:?}"
+    );
+    let builds_after = workspace_builds(&mut lsp);
+    assert!(
+        builds_after > builds_before,
+        "manifest change should trigger a workspace rebuild (builds: {builds_before} → {builds_after})"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn lsp_reports_module_aware_diagnostics_for_standalone_non_entry_files() {
     let dir = temp_project_dir("fuse_lsp_standalone_docs_file");
     fs::create_dir_all(&dir).expect("create temp dir");

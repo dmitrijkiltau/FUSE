@@ -1,7 +1,9 @@
-use crate::ast::{CallArg, ExprKind, Literal};
+use crate::ast::CallArg;
 
-pub const HTML_ATTR_SHORTHAND_STRING_ONLY: &str =
-    "html attribute shorthand only supports string literals";
+pub const HTML_ATTR_MAP_DIAG_CODE: &str = "FUSE_HTML_ATTR_MAP";
+pub const HTML_ATTR_COMMA_DIAG_CODE: &str = "FUSE_HTML_ATTR_COMMA";
+pub const HTML_ATTR_MAP_MESSAGE: &str = "map literal is not valid for HTML tag attributes";
+pub const HTML_ATTR_COMMA_MESSAGE: &str = "commas are not allowed between HTML tag attributes";
 pub const HTML_ATTR_SHORTHAND_MIXED_POSITIONAL: &str =
     "cannot mix html attribute shorthand with positional arguments";
 
@@ -22,9 +24,6 @@ pub fn validate_named_args_for_phase(
     let mut child_seen = false;
     for arg in args {
         if arg.name.is_some() {
-            if !matches!(&arg.value.kind, ExprKind::Literal(Literal::String(_))) {
-                return Some(HTML_ATTR_SHORTHAND_STRING_ONLY);
-            }
             continue;
         }
         if arg.is_block_sugar && !child_seen {

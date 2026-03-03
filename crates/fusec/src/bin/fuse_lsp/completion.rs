@@ -272,6 +272,7 @@ fn collect_call_context_item(item: &Item, cursor: usize, best: &mut Option<CallC
                 collect_call_context_expr(&field.value, cursor, best);
             }
         }
+        Item::Component(decl) => collect_call_context_block(&decl.body, cursor, best),
         Item::App(decl) => collect_call_context_block(&decl.body, cursor, best),
         Item::Migration(decl) => collect_call_context_block(&decl.body, cursor, best),
         Item::Test(decl) => collect_call_context_block(&decl.body, cursor, best),
@@ -348,7 +349,7 @@ fn collect_call_context_expr(expr: &Expr, cursor: usize, best: &mut Option<CallC
         return;
     }
     match &expr.kind {
-        ExprKind::Call { callee, args } => {
+        ExprKind::Call { callee, args, .. } => {
             consider_call_context(best, expr.span, callee, args, cursor);
             collect_call_context_expr(callee, cursor, best);
             for arg in args {
@@ -403,6 +404,36 @@ fn collect_call_context_expr(expr: &Expr, cursor: usize, best: &mut Option<CallC
             }
         }
         ExprKind::Spawn { block } => collect_call_context_block(block, cursor, best),
+        ExprKind::HtmlIf {
+            cond,
+            then_children,
+            else_if,
+            else_children,
+        } => {
+            collect_call_context_expr(cond, cursor, best);
+            for child in then_children {
+                collect_call_context_expr(child, cursor, best);
+            }
+            for (branch_cond, branch_children) in else_if {
+                collect_call_context_expr(branch_cond, cursor, best);
+                for child in branch_children {
+                    collect_call_context_expr(child, cursor, best);
+                }
+            }
+            for child in else_children {
+                collect_call_context_expr(child, cursor, best);
+            }
+        }
+        ExprKind::HtmlFor {
+            iter,
+            body_children,
+            ..
+        } => {
+            collect_call_context_expr(iter, cursor, best);
+            for child in body_children {
+                collect_call_context_expr(child, cursor, best);
+            }
+        }
         ExprKind::Literal(_) | ExprKind::Ident(_) => {}
     }
 }
@@ -897,6 +928,17 @@ fn completion_callable_name_at_cursor(program: &Program, cursor: usize) -> Optio
                     }
                 }
             }
+            Item::Component(decl) => {
+                if span_contains(decl.body.span, cursor) {
+                    let size = decl.body.span.end.saturating_sub(decl.body.span.start);
+                    if best
+                        .as_ref()
+                        .map_or(true, |(_, best_size)| size < *best_size)
+                    {
+                        best = Some((decl.name.name.clone(), size));
+                    }
+                }
+            }
             Item::Import(_) | Item::Type(_) | Item::Enum(_) | Item::Config(_) => {}
         }
     }
@@ -957,6 +999,7 @@ fn builtin_receiver_methods(receiver: &str) -> &'static [&'static str] {
             "offset",
             "order_by",
             "insert",
+            "upsert",
             "update",
             "delete",
             "set",

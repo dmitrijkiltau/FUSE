@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/common.sh"
 DIST_DIR="$ROOT/dist"
 OUTPUT=""
 METADATA=""
@@ -17,13 +18,6 @@ Options:
   SOURCE_DATE_EPOCH  Optional unix timestamp for deterministic generatedAtUtc metadata
   -h, --help         Show this help
 USAGE
-}
-
-abspath() {
-  case "$1" in
-    /*) printf '%s\n' "$1" ;;
-    *) printf '%s/%s\n' "$ROOT" "$1" ;;
-  esac
 }
 
 while [[ $# -gt 0 ]]; do

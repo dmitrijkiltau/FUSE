@@ -299,6 +299,10 @@ pub struct NativeVm<'a> {
     regex_cache: HashMap<String, regex::Regex>,
     current_http_request: Option<HttpRequestContext>,
     current_http_response: Option<HttpResponseMeta>,
+    /// Pre-computed path segments for every service base path and route path.
+    /// Populated once at construction time; eliminates repeated `split_path`
+    /// calls on the hot per-request `match_route` path.
+    route_segment_cache: HashMap<String, Vec<String>>,
 }
 
 pub struct NativeRuntimeContextGuard {
@@ -359,6 +363,19 @@ impl<'a> NativeVm<'a> {
     pub fn new(program: &'a NativeProgram) -> Self {
         let mut heap = NativeHeap::new();
         heap.set_types(program.ir.types.clone());
+        // Pre-compute route segment splits once so match_route doesn't need to
+        // call split_path on every HTTP request.
+        let mut route_segment_cache: HashMap<String, Vec<String>> = HashMap::new();
+        for service in program.ir.services.values() {
+            route_segment_cache
+                .entry(service.base_path.clone())
+                .or_insert_with(|| split_path(&service.base_path));
+            for route in &service.routes {
+                route_segment_cache
+                    .entry(route.path.clone())
+                    .or_insert_with(|| split_path(&route.path));
+            }
+        }
         Self {
             program,
             jit: JitRuntime::build(),
@@ -367,6 +384,7 @@ impl<'a> NativeVm<'a> {
             regex_cache: HashMap::new(),
             current_http_request: None,
             current_http_response: None,
+            route_segment_cache,
         }
     }
 
@@ -1158,7 +1176,13 @@ impl<'a> NativeVm<'a> {
         verb: &HttpVerb,
         path: &str,
     ) -> NativeResult<Option<(&'r ServiceRoute, Vec<Value>)>> {
-        let base_segments = split_path(&service.base_path);
+        // Clone segments out of the cache so that `self` is free for mutable
+        // calls (parse_env_value, validate_value) later in the same scope.
+        let base_segments: Vec<String> = self
+            .route_segment_cache
+            .get(&service.base_path)
+            .cloned()
+            .unwrap_or_default();
         let req_segments = split_path(path);
         if req_segments.len() < base_segments.len()
             || req_segments[..base_segments.len()] != base_segments[..]
@@ -1170,7 +1194,11 @@ impl<'a> NativeVm<'a> {
             if &route.verb != verb {
                 continue;
             }
-            let route_segments = split_path(&route.path);
+            let route_segments: Vec<String> = self
+                .route_segment_cache
+                .get(&route.path)
+                .cloned()
+                .unwrap_or_default();
             if route_segments.len() != req_segments.len() {
                 continue;
             }
@@ -1399,13 +1427,13 @@ impl<'a> NativeVm<'a> {
     fn http_status_for_error_value(&self, value: &Value) -> u16 {
         match value {
             Value::Struct { name, fields } => match name.as_str() {
-                "std.Error.Validation" | "Validation" => 400,
-                "std.Error.BadRequest" | "BadRequest" => 400,
-                "std.Error.Unauthorized" | "Unauthorized" => 401,
-                "std.Error.Forbidden" | "Forbidden" => 403,
-                "std.Error.NotFound" | "NotFound" => 404,
-                "std.Error.Conflict" | "Conflict" => 409,
-                "std.Error" | "Error" => fields
+                "std.Error.Validation" => 400,
+                "std.Error.BadRequest" => 400,
+                "std.Error.Unauthorized" => 401,
+                "std.Error.Forbidden" => 403,
+                "std.Error.NotFound" => 404,
+                "std.Error.Conflict" => 409,
+                "std.Error" => fields
                     .get("status")
                     .and_then(|v| match v {
                         Value::Int(n) => (*n).try_into().ok(),
@@ -1891,7 +1919,9 @@ fn call_function_native_only_with(
     ))
 }
 
-fn run_native_spawn_task(
+/// Visible to `jit.rs` (sibling submodule) so the JIT async-spawn hostcall
+/// can dispatch tasks to the thread pool without duplicating this logic.
+pub(super) fn run_native_spawn_task(
     program: NativeProgram,
     configs: HashMap<String, HashMap<String, Value>>,
     name: String,
@@ -2486,7 +2516,7 @@ fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
     };
     let name = name.as_str();
     match name {
-        "std.Error.Validation" | "Validation" => {
+        "std.Error.Validation" => {
             let message = match fields.get("message") {
                 Some(Value::String(msg)) => msg.as_str(),
                 _ => "validation failed",
@@ -2494,7 +2524,7 @@ fn error_json_for_value(value: &Value) -> Option<rt_json::JsonValue> {
             let field_items = extract_validation_fields(fields.get("fields"));
             Some(rt_error::validation_error_json(message, &field_items))
         }
-        "std.Error" | "Error" => {
+        "std.Error" => {
             let code = match fields.get("code") {
                 Some(Value::String(code)) => code.as_str(),
                 _ => "error",
@@ -2523,11 +2553,6 @@ fn builtin_error_defaults(name: &str) -> Option<(&'static str, &'static str)> {
         "std.Error.Forbidden" => Some(("forbidden", "forbidden")),
         "std.Error.NotFound" => Some(("not_found", "not found")),
         "std.Error.Conflict" => Some(("conflict", "conflict")),
-        "BadRequest" => Some(("bad_request", "bad request")),
-        "Unauthorized" => Some(("unauthorized", "unauthorized")),
-        "Forbidden" => Some(("forbidden", "forbidden")),
-        "NotFound" => Some(("not_found", "not found")),
-        "Conflict" => Some(("conflict", "conflict")),
         _ => None,
     }
 }
