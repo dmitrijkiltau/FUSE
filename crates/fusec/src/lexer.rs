@@ -7,6 +7,7 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
     let mut indent_stack: Vec<usize> = vec![0];
     let mut nesting: i32 = 0;
     let mut offset: usize = 0;
+    let mut string_resume_at: Option<usize> = None;
 
     for raw_line in src.split_inclusive('\n') {
         let has_newline = raw_line.ends_with('\n');
@@ -17,26 +18,41 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
         };
         let line_start = offset;
         offset += raw_line.len();
+        let line_end = line_start + line.len();
 
         let indent_active = nesting == 0;
         let mut idx = 0usize;
         let mut col = 0usize;
         let mut saw_tab = false;
+        let mut resumed_from_multiline = false;
 
-        for (i, ch) in line.char_indices() {
-            match ch {
-                ' ' => {
-                    col += 1;
-                    idx = i + ch.len_utf8();
-                }
-                '\t' => {
-                    saw_tab = true;
-                    col += 1;
-                    idx = i + ch.len_utf8();
-                }
-                _ => {
-                    idx = i;
-                    break;
+        if let Some(resume) = string_resume_at {
+            if resume >= line_start + raw_line.len() {
+                continue;
+            }
+            if resume > line_start {
+                idx = resume - line_start;
+                resumed_from_multiline = true;
+            }
+            string_resume_at = None;
+        }
+
+        if !resumed_from_multiline {
+            for (i, ch) in line.char_indices() {
+                match ch {
+                    ' ' => {
+                        col += 1;
+                        idx = i + ch.len_utf8();
+                    }
+                    '\t' => {
+                        saw_tab = true;
+                        col += 1;
+                        idx = i + ch.len_utf8();
+                    }
+                    _ => {
+                        idx = i;
+                        break;
+                    }
                 }
             }
         }
@@ -44,11 +60,17 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
         let rest = if idx <= line.len() { &line[idx..] } else { "" };
         let rest_trim = rest.trim_start();
         if rest_trim.is_empty() {
+            if resumed_from_multiline && has_newline && nesting == 0 {
+                tokens.push(Token {
+                    kind: TokenKind::Newline,
+                    span: Span::new(line_end, line_end),
+                });
+            }
             continue;
         }
         let postfix_continuation = is_postfix_continuation_line(rest_trim);
 
-        if saw_tab {
+        if saw_tab && !resumed_from_multiline {
             diags.error(
                 Span::new(line_start, line_start + line.len()),
                 "tabs are not allowed for indentation",
@@ -59,10 +81,16 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
         let is_doc_comment = rest_trim.starts_with("##");
 
         if is_comment && !is_doc_comment {
+            if resumed_from_multiline && has_newline && nesting == 0 {
+                tokens.push(Token {
+                    kind: TokenKind::Newline,
+                    span: Span::new(line_end, line_end),
+                });
+            }
             continue;
         }
 
-        if indent_active && !postfix_continuation {
+        if indent_active && !postfix_continuation && !resumed_from_multiline {
             let current = *indent_stack.last().unwrap();
             if col > current {
                 indent_stack.push(col);
@@ -109,6 +137,7 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
         }
 
         let mut i = idx;
+        let mut line_ends_inside_multiline_string = false;
         while i < line.len() {
             let ch = line[i..].chars().next().unwrap();
             if ch.is_whitespace() {
@@ -205,117 +234,17 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
             }
 
             if ch == '"' {
-                let mut j = i + 1;
-                let mut out = String::new();
-                let mut segments = Vec::new();
-                let mut has_interp = false;
-                let mut terminated = false;
-                while j < line.len() {
-                    let c = line[j..].chars().next().unwrap();
-                    if c == '"' {
-                        terminated = true;
-                        j += 1;
-                        break;
-                    }
-                    if c == '\\' {
-                        j += 1;
-                        if j >= line.len() {
-                            break;
-                        }
-                        let esc = line[j..].chars().next().unwrap();
-                        match esc {
-                            'n' => out.push('\n'),
-                            't' => out.push('\t'),
-                            'r' => out.push('\r'),
-                            '\\' => out.push('\\'),
-                            '"' => out.push('"'),
-                            _ => out.push(esc),
-                        }
-                        j += esc.len_utf8();
-                        continue;
-                    }
-                    if c == '$' {
-                        let next_idx = j + c.len_utf8();
-                        if next_idx < line.len() {
-                            let next = line[next_idx..].chars().next().unwrap();
-                            if next == '{' {
-                                has_interp = true;
-                                if !out.is_empty() {
-                                    segments.push(InterpSegment::Text(out));
-                                    out = String::new();
-                                }
-                                let expr_start = next_idx + next.len_utf8();
-                                let mut k = expr_start;
-                                let mut depth = 1;
-                                let mut in_string = false;
-                                let mut escape = false;
-                                while k < line.len() {
-                                    let ch = line[k..].chars().next().unwrap();
-                                    if in_string {
-                                        if escape {
-                                            escape = false;
-                                        } else if ch == '\\' {
-                                            escape = true;
-                                        } else if ch == '"' {
-                                            in_string = false;
-                                        }
-                                    } else {
-                                        if ch == '"' {
-                                            in_string = true;
-                                        } else if ch == '{' {
-                                            depth += 1;
-                                        } else if ch == '}' {
-                                            depth -= 1;
-                                            if depth == 0 {
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    k += ch.len_utf8();
-                                }
-                                if depth != 0 {
-                                    diags.error(
-                                        Span::new(start, line_start + k),
-                                        "unterminated interpolation",
-                                    );
-                                    j = k;
-                                    break;
-                                }
-                                let expr_src = unescape_fragment(&line[expr_start..k]);
-                                let offset = line_start + expr_start;
-                                segments.push(InterpSegment::Expr {
-                                    src: expr_src,
-                                    offset,
-                                });
-                                j = k + 1;
-                                continue;
-                            }
-                        }
-                    }
-                    out.push(c);
-                    j += c.len_utf8();
+                let (kind, end) = lex_string_literal(src, start, diags);
+                tokens.push(Token {
+                    kind,
+                    span: Span::new(start, end),
+                });
+                if end > line_end {
+                    string_resume_at = Some(end);
+                    line_ends_inside_multiline_string = true;
+                    break;
                 }
-                if !terminated {
-                    diags.error(
-                        Span::new(start, line_start + j),
-                        "unterminated string literal",
-                    );
-                }
-                if has_interp {
-                    if !out.is_empty() {
-                        segments.push(InterpSegment::Text(out));
-                    }
-                    tokens.push(Token {
-                        kind: TokenKind::InterpString(segments),
-                        span: Span::new(start, line_start + j),
-                    });
-                } else {
-                    tokens.push(Token {
-                        kind: TokenKind::String(out),
-                        span: Span::new(start, line_start + j),
-                    });
-                }
-                i = j;
+                i = end - line_start;
                 continue;
             }
 
@@ -347,10 +276,10 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
             i += ch.len_utf8();
         }
 
-        if nesting == 0 {
+        if nesting == 0 && !line_ends_inside_multiline_string {
             tokens.push(Token {
                 kind: TokenKind::Newline,
-                span: Span::new(line_start + line.len(), line_start + line.len()),
+                span: Span::new(line_end, line_end),
             });
         }
     }
@@ -373,6 +302,116 @@ pub fn lex(src: &str, diags: &mut Diagnostics) -> Vec<Token> {
     });
 
     tokens
+}
+
+fn lex_string_literal(src: &str, start: usize, diags: &mut Diagnostics) -> (TokenKind, usize) {
+    let multiline = src[start..].starts_with("\"\"\"");
+    let mut j = if multiline { start + 3 } else { start + 1 };
+    let mut out = String::new();
+    let mut segments = Vec::new();
+    let mut has_interp = false;
+    let mut terminated = false;
+
+    while j < src.len() {
+        if multiline && src[j..].starts_with("\"\"\"") {
+            terminated = true;
+            j += 3;
+            break;
+        }
+
+        let c = src[j..].chars().next().unwrap();
+        if !multiline && c == '\n' {
+            break;
+        }
+        if !multiline && c == '"' {
+            terminated = true;
+            j += 1;
+            break;
+        }
+        if c == '\\' {
+            j += 1;
+            if j >= src.len() {
+                break;
+            }
+            let esc = src[j..].chars().next().unwrap();
+            match esc {
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                'r' => out.push('\r'),
+                '\\' => out.push('\\'),
+                '"' => out.push('"'),
+                _ => out.push(esc),
+            }
+            j += esc.len_utf8();
+            continue;
+        }
+        if c == '$' {
+            let next_idx = j + c.len_utf8();
+            if next_idx < src.len() {
+                let next = src[next_idx..].chars().next().unwrap();
+                if next == '{' {
+                    has_interp = true;
+                    if !out.is_empty() {
+                        segments.push(InterpSegment::Text(out));
+                        out = String::new();
+                    }
+                    let expr_start = next_idx + next.len_utf8();
+                    let mut k = expr_start;
+                    let mut depth = 1;
+                    let mut in_string = false;
+                    let mut escape = false;
+                    while k < src.len() {
+                        let ch = src[k..].chars().next().unwrap();
+                        if in_string {
+                            if escape {
+                                escape = false;
+                            } else if ch == '\\' {
+                                escape = true;
+                            } else if ch == '"' {
+                                in_string = false;
+                            }
+                        } else if ch == '"' {
+                            in_string = true;
+                        } else if ch == '{' {
+                            depth += 1;
+                        } else if ch == '}' {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        k += ch.len_utf8();
+                    }
+                    if depth != 0 {
+                        diags.error(Span::new(start, k), "unterminated interpolation");
+                        j = k;
+                        break;
+                    }
+                    let expr_src = unescape_fragment(&src[expr_start..k]);
+                    segments.push(InterpSegment::Expr {
+                        src: expr_src,
+                        offset: expr_start,
+                    });
+                    j = k + 1;
+                    continue;
+                }
+            }
+        }
+        out.push(c);
+        j += c.len_utf8();
+    }
+
+    if !terminated {
+        diags.error(Span::new(start, j), "unterminated string literal");
+    }
+    if has_interp {
+        if !out.is_empty() {
+            segments.push(InterpSegment::Text(out));
+        }
+        (TokenKind::InterpString(segments), j)
+    } else {
+        (TokenKind::String(out), j)
+    }
 }
 
 fn unescape_fragment(raw: &str) -> String {

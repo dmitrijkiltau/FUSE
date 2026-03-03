@@ -143,6 +143,12 @@ Comparison behavior is shared across AST/native backends:
 - `<`, `<=`, `>`, `>=` support numeric pairs (`Int`, `Float`) only.
 - unsupported comparison operand pairs produce runtime errors.
 
+## String runtime behavior
+
+- both `"..."` and `"""..."""` literals evaluate to `String` values.
+- triple-quoted strings preserve embedded newlines as authored.
+- interpolation `${expr}` is evaluated left-to-right and concatenated into the final string.
+
 ---
 
 ## Error model

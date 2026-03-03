@@ -8,7 +8,10 @@ type User:
   name: String
 
 fn db_init() -> Int:
-  db.exec("create table if not exists users (id int primary key, name text)")
+  db.exec("""create table if not exists users (
+  id int primary key,
+  name text
+)""")
   db.exec("delete from users")
   db.exec("insert into users (id, name) values (1, 'Ada')")
   db.exec("insert into users (id, name) values (2, 'Bob')")

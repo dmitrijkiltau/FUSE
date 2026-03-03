@@ -35,7 +35,7 @@ Normative terms in this document:
 - Literals:
   - integers (`123`)
   - floats (`3.14`)
-  - strings (`"hello"`)
+  - strings (`"hello"`, `"""hello\nworld"""`)
   - booleans (`true`, `false`)
   - `null`
 - Punctuation/operators:
@@ -44,9 +44,11 @@ Normative terms in this document:
 
 ### Strings + interpolation
 
-- Double-quoted strings only (no multiline strings).
+- String forms:
+  - standard double-quoted strings: `"hello"`
+  - triple-quoted strings: `"""hello\nworld"""` (multiline allowed)
 - Escapes: `\n`, `\t`, `\r`, `\\`, `\"`. Unknown escapes pass through (`\$` produces `$`).
-- Interpolation: `${expr}` inside double quotes.
+- Interpolation: `${expr}` inside both string forms.
 
 ### Significant indentation
 

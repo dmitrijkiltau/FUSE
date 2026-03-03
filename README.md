@@ -88,6 +88,21 @@ Historical upgrade guidance is in:
 ./scripts/fuse lsp
 ```
 
+## Strings
+
+FUSE supports both single-line and multiline string literals:
+
+- `"..."` for standard strings
+- `"""..."""` for multiline text (useful for SQL/query text)
+- `${expr}` interpolation works in both forms
+
+```fuse
+db.exec("""create table if not exists users (
+  id int primary key,
+  name text
+)""")
+```
+
 ## Module capabilities
 
 Capability boundaries are declared at module top-level and enforced at compile-time:

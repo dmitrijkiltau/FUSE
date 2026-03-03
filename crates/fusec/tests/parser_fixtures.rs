@@ -137,6 +137,56 @@ fn main(name: String):
 }
 
 #[test]
+fn parses_triple_quoted_multiline_string_literals() {
+    let src = r#"
+fn main():
+  let sql = """select id
+from users"""
+"#;
+    let program = parse_ok(src);
+    let Some(Item::Fn(main_fn)) = program.items.first() else {
+        panic!("expected first item to be fn");
+    };
+    let Some(stmt) = main_fn.body.stmts.first() else {
+        panic!("expected function body statement");
+    };
+    let StmtKind::Let { expr, .. } = &stmt.kind else {
+        panic!("expected let statement");
+    };
+    let ExprKind::Literal(Literal::String(value)) = &expr.kind else {
+        panic!("expected string literal");
+    };
+    assert_eq!(value, "select id\nfrom users");
+}
+
+#[test]
+fn parses_triple_quoted_multiline_interpolation() {
+    let src = r#"
+fn main(name: String):
+  let sql = """select id
+from users
+where name = ${name}"""
+"#;
+    let program = parse_ok(src);
+    let Some(Item::Fn(main_fn)) = program.items.first() else {
+        panic!("expected first item to be fn");
+    };
+    let Some(stmt) = main_fn.body.stmts.first() else {
+        panic!("expected function body statement");
+    };
+    let StmtKind::Let { expr, .. } = &stmt.kind else {
+        panic!("expected let statement");
+    };
+    let ExprKind::InterpString(parts) = &expr.kind else {
+        panic!("expected interpolated string expression");
+    };
+    assert!(
+        parts.len() >= 2,
+        "expected text + interpolation parts, got {parts:?}"
+    );
+}
+
+#[test]
 fn parses_spawn_await_box() {
     let src = r#"
 fn main():
@@ -646,6 +696,16 @@ fn main():
   let msg = "sum ${1 2}"
 "#;
     assert_parse_err_contains(src, "unexpected tokens in interpolation");
+}
+
+#[test]
+fn parser_reports_unterminated_triple_quoted_string() {
+    let src = r#"
+fn main():
+  let sql = """select id
+from users
+"#;
+    assert_parse_err_contains(src, "unterminated string literal");
 }
 
 #[test]

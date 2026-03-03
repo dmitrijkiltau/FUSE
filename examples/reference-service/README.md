@@ -3,6 +3,7 @@
 This is the canonical Fuse reference service package.
 It includes registration/login auth, session-scoped CRUD routes, DB migrations, OpenAPI generation,
 native CSS assets, and a server-rendered HTMX UI implemented in Fuse HTML DSL.
+Long SQL statements in this project use multiline triple-quoted strings (`"""..."""`) for readability.
 
 ## Requirements
 

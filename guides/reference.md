@@ -119,9 +119,11 @@ Base types can be module-qualified (`Foo.User`). Unknown base types or fields ar
 
 ## Strings, Interpolation, and Comments
 
-- Double-quoted strings only (no multiline strings).
+- String forms:
+  - standard double-quoted strings: `"hello"`
+  - triple-quoted strings: `"""hello\nworld"""` (multiline allowed)
 - Escapes: `\n`, `\t`, `\r`, `\\`, `\"`. Unknown escapes pass through (`\$` produces `$`).
-- Interpolation: `${expr}` inside double quotes.
+- Interpolation: `${expr}` inside both string forms.
 
 - Line comment: `# ...`
 - Doc comment: `## ...` attaches to the next declaration
