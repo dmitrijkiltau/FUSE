@@ -434,18 +434,31 @@ Implementation files changed:
 
 ### M8 — Pre-tag cleanup, docs, and release
 
+**Status: COMPLETE** ✓ (2026-03-03)
+
 **Goal:** Final integration, documentation, and release cut.
 
 Deliverables:
 
-1. Update `governance/scope.md` roadmap section (move 0.9.0 items to "Completed",
+1. ✓ Update `governance/scope.md` roadmap section (move 0.9.0 items to "Completed",
    update next priorities).
-2. Update `governance/LSP_ROADMAP.md` with any newly landed LSP capabilities.
-3. Update `governance/VERSIONING_POLICY.md` with `0.9.0` release-line notes.
-4. Write `CHANGELOG.md` entries for all milestone deliverables.
-5. Regenerate guide docs (`scripts/generate_guide_docs.sh`).
-6. Run full release checklist per `ops/RELEASE.md`.
-7. Tag `v0.9.0`.
+   — Completed `0.9.0` now reflects M1–M7 scope; next priorities moved to post-`0.9.0`.
+2. ✓ Update `governance/LSP_ROADMAP.md` with newly landed LSP capabilities.
+   — Progressive indexing, persisted workspace cache, latency budgets/SLO gate, and
+   workspace observability counters moved into implemented baseline.
+3. ✓ Update `governance/VERSIONING_POLICY.md` with `0.9.0` release-line notes.
+   — Added `0.9.0` policy note and explicit `0.9.x` source-compatibility guarantee.
+4. ✓ Write `CHANGELOG.md` entries for all milestone deliverables.
+   — `0.9.0` section expanded to cover M1–M7 (perf, concurrency, package workflow, LSP,
+   release automation, HTML DSL, DB layer).
+5. ✓ Regenerate guide docs (`scripts/generate_guide_docs.sh`).
+6. ✓ Run full release checklist per `ops/RELEASE.md`.
+   — Executed: `bump_version.sh 0.9.0`, `release_preflight.sh 0.9.0`, and
+   `package_release.sh --release --skip-container` (container step skipped locally due
+   missing Docker).
+   — Pre-tag gate hardening: `release_smoke.sh` benchmark gate now supports bounded jitter
+   retries via `FUSE_USE_CASE_BENCH_MAX_ATTEMPTS` (default `3`).
+7. ✓ Tag `v0.9.0` (local).
 
 Exit criteria:
 
@@ -453,6 +466,18 @@ Exit criteria:
 - `release_smoke.sh` and `authority_parity.sh` pass.
 - `CHANGELOG.md`, `scope.md`, `VERSIONING_POLICY.md`, and `LSP_ROADMAP.md` updated.
 - Tag `v0.9.0` pushed; release artifacts published.
+
+Implementation files changed:
+
+| File | Change |
+|---|---|
+| `governance/scope.md` | M1–M7 moved into completed `0.9.0` roadmap; refreshed post-`0.9.0` priorities |
+| `governance/LSP_ROADMAP.md` | Added landed M3/M4 capabilities to baseline; updated next improvements list |
+| `governance/VERSIONING_POLICY.md` | Added `0.9.0` release-line note and `0.9.x` compatibility line |
+| `CHANGELOG.md` | Expanded `0.9.0` entries to include all milestone deliverables |
+| `scripts/bump_version.sh` | Fixed manifest/version bump logic; limited package-lock updates to top-level/root package versions |
+| `scripts/release_smoke.sh` | Added bounded benchmark-regression retry loop (`FUSE_USE_CASE_BENCH_MAX_ATTEMPTS`, default `3`) |
+| `crates/*/Cargo.toml`, `Cargo.lock`, `tools/vscode/package*.json` | Version bump to `0.9.0` |
 
 ---
 

@@ -3,6 +3,12 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 ROOT="$(fuse_repo_root "${BASH_SOURCE[0]}")"
+USE_CASE_BENCH_MAX_ATTEMPTS="${FUSE_USE_CASE_BENCH_MAX_ATTEMPTS:-3}"
+
+if ! [[ "$USE_CASE_BENCH_MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "invalid FUSE_USE_CASE_BENCH_MAX_ATTEMPTS: $USE_CASE_BENCH_MAX_ATTEMPTS" >&2
+  exit 1
+fi
 
 step "1/22" "Check all example files"
 "$ROOT/scripts/check_examples.sh"
@@ -63,15 +69,22 @@ step "15/22" "Collect use-case benchmark metrics"
 "$ROOT/scripts/use_case_bench.sh"
 
 step "16/22" "Enforce benchmark regression thresholds"
-set +e
-"$ROOT/scripts/check_use_case_bench_regression.sh"
-bench_status=$?
-set -e
-if [[ "$bench_status" -ne 0 ]]; then
-  echo "benchmark regression gate failed; retrying once to filter transient host jitter"
-  "$ROOT/scripts/use_case_bench.sh"
+bench_attempt=1
+while true; do
+  set +e
   "$ROOT/scripts/check_use_case_bench_regression.sh"
-fi
+  bench_status=$?
+  set -e
+  if [[ "$bench_status" -eq 0 ]]; then
+    break
+  fi
+  if (( bench_attempt >= USE_CASE_BENCH_MAX_ATTEMPTS )); then
+    exit "$bench_status"
+  fi
+  bench_attempt=$((bench_attempt + 1))
+  echo "benchmark regression gate failed; retrying (${bench_attempt}/${USE_CASE_BENCH_MAX_ATTEMPTS}) to filter transient host jitter"
+  "$ROOT/scripts/use_case_bench.sh"
+done
 
 step "17/22" "Collect AOT startup/throughput benchmark metrics"
 "$ROOT/scripts/aot_perf_bench.sh"

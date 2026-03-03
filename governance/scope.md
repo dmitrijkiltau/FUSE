@@ -98,16 +98,28 @@ Completed in `0.8.0`:
 
 Completed in `0.9.0`:
 
-1. HTML attr syntax simplification (expression-valued shorthand, no-comma attrs, map-literal rejection)
-2. Compiler diagnostics JSON code surface for HTML attr migration errors (`FUSE_HTML_ATTR_MAP`, `FUSE_HTML_ATTR_COMMA`)
+1. Native backend performance hardening (hot-path lowering, JSON encoding fast paths,
+   route matching cache, GC allocation guard, tighter perf regression gates)
+2. Concurrency throughput and observability upgrades (true async native `spawn`,
+   lower-contention task scheduling, structured concurrency metrics output)
+3. Dependency/package workflow hardening for larger multi-package repositories
+   (`dep:`/`root:` transitive resolution, cycle diagnostics, `fuse check --workspace`)
+4. LSP scalability for large workspaces (progressive indexing, persisted workspace
+   index cache, 50-file latency budget enforcement harness)
+5. Release automation simplification (`bump_version.sh`, `release_preflight.sh`,
+   unified `package_release.sh`, workflow dry-run support)
+6. HTML DSL expansion and cleanup (`component` declarations, compile-time `aria-*`
+   checks, canonicalized no-comma attribute shorthand with migration diagnostics)
+7. DB layer boundary-first upgrades (typed query row decoding via `.all<T>()`/`.one<T>()`,
+   `upsert`, migration namespace isolation by `(package, name)`)
 
-Next priorities (post-`0.8.0`):
+Next priorities (post-`0.9.0`):
 
-1. Native backend performance work focused on hot-path lowering/runtime overhead reduction
-2. Concurrency throughput + observability improvements on the existing deterministic `spawn` model
-3. Dependency and package workflow hardening for larger multi-package repositories
-4. LSP UX refinement for very large workspaces (latency budgets + progressive indexing)
-5. Release automation simplification across packaging/verifier pipelines
+1. Broaden component/UI ergonomics while keeping the static boundary model strict.
+2. Continue package/dependency workflow evolution for publishable multi-package repos.
+3. Refine LSP relevance and indexing UX beyond current latency/scalability gates.
+4. Expand DB/runtime ergonomics without crossing into full ORM territory.
+5. Strengthen release artifact integrity/provenance automation in CI.
 
 Likely future candidates (not committed MVP scope):
 

@@ -62,34 +62,50 @@ if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
-
-do_sed() {
-  local pattern="$1"
-  local file="$2"
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    if grep -qP "$pattern" "$file" 2>/dev/null || grep -qE "$pattern" "$file" 2>/dev/null; then
-      echo "  [dry-run] would patch: $file"
-    fi
-    return 0
-  fi
-  # Use perl for portable in-place regex (avoids GNU vs BSD sed -i differences)
-  perl -i -pe "$pattern" "$file"
-}
-
 bump_cargo_toml() {
   local file="$1"
   echo "  bumping $file"
-  do_sed "s/^(version\\s*=\\s*\")([^\"]+)(\")/\${1}${VERSION}\${3}/ if 1..1" "$file"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "  [dry-run] would patch: $file"
+    return 0
+  fi
+  # Only patch the package version declaration.
+  perl -i -pe \
+    "if (!\$done && s/^(version\\s*=\\s*\")[^\"]+(\")/\${1}${VERSION}\${2}/) { \$done = 1; }" \
+    "$file"
 }
 
-bump_json_version() {
+bump_package_json_version() {
   local file="$1"
   echo "  bumping $file"
-  # Replace first occurrence of "version": "x.y.z" in the JSON
-  do_sed "s/(\"version\"\\s*:\\s*\")([^\"]+)(\")/\${1}${VERSION}\${3}/g" "$file"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "  [dry-run] would patch: $file"
+    return 0
+  fi
+  # Replace only the top-level package.json version.
+  perl -i -pe \
+    "if (!\$done && s/(\"version\"\\s*:\\s*\")[^\"]+(\")/\${1}${VERSION}\${2}/) { \$done = 1; }" \
+    "$file"
+}
+
+bump_package_lock_version() {
+  local file="$1"
+  echo "  bumping $file"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "  [dry-run] would patch: $file"
+    return 0
+  fi
+  # Update only:
+  # - top-level "version"
+  # - packages[""].version
+  # and leave dependency versions unchanged.
+  perl -i -pe '
+    if (/^\s*"packages"\s*:\s*{\s*$/) { $in_packages = 1; }
+    if ($in_packages && /^\s*""\s*:\s*{\s*$/) { $in_root_pkg = 1; }
+    if ($in_root_pkg && /^\s*},\s*$/) { $in_root_pkg = 0; }
+    if (!$top_done && s/^(\s*"version"\s*:\s*")[^"]+(")/${1}'"$VERSION"'${2}/) { $top_done = 1; }
+    if ($in_root_pkg && !$root_done && s/^(\s*"version"\s*:\s*")[^"]+(")/${1}'"$VERSION"'${2}/) { $root_done = 1; }
+  ' "$file"
 }
 
 # ---------------------------------------------------------------------------
@@ -130,8 +146,8 @@ fi
 # VS Code extension
 # ---------------------------------------------------------------------------
 
-bump_json_version "$ROOT/tools/vscode/package.json"
-bump_json_version "$ROOT/tools/vscode/package-lock.json"
+bump_package_json_version "$ROOT/tools/vscode/package.json"
+bump_package_lock_version "$ROOT/tools/vscode/package-lock.json"
 
 # ---------------------------------------------------------------------------
 # summary
