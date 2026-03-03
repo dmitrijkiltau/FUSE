@@ -568,12 +568,14 @@ fn build_module_links_for_registry(
                     if let Some(prev_span) = import_item_spans.get(&name.name).copied() {
                         diags.push(Diag {
                             level: Level::Error,
+                            code: None,
                             message: format!("duplicate import {}", name.name),
                             span: name.span,
                             path: Some(unit_path.clone()),
                         });
                         diags.push(Diag {
                             level: Level::Error,
+                            code: None,
                             message: format!("previous import of {} here", name.name),
                             span: prev_span,
                             path: Some(unit_path.clone()),
@@ -583,6 +585,7 @@ fn build_module_links_for_registry(
                     if !module_exports_contains(target_exports, &name.name) {
                         diags.push(Diag {
                             level: Level::Error,
+                            code: None,
                             message: format!("unknown import {} in {}", name.name, path.value),
                             span: name.span,
                             path: Some(unit_path.clone()),
@@ -617,6 +620,7 @@ fn resolve_import_target_for_relink(
         let Some((dep, rel)) = parse_dep_import(raw) else {
             diags.push(Diag {
                 level: Level::Error,
+                code: None,
                 message: "dependency imports require dep:<name>/<path>".to_string(),
                 span,
                 path: None,
@@ -626,6 +630,7 @@ fn resolve_import_target_for_relink(
         let Some(dep_root) = snapshot.dep_roots.get(dep) else {
             diags.push(Diag {
                 level: Level::Error,
+                code: None,
                 message: format!("unknown dependency {dep}"),
                 span,
                 path: None,
@@ -644,6 +649,7 @@ fn resolve_import_target_for_relink(
         let Some(rel) = parse_root_import(raw) else {
             diags.push(Diag {
                 level: Level::Error,
+                code: None,
                 message: "root imports require root:<path>".to_string(),
                 span,
                 path: None,
@@ -653,6 +659,7 @@ fn resolve_import_target_for_relink(
         let Some(path) = resolve_root_import_path(&snapshot.workspace_root, rel) else {
             diags.push(Diag {
                 level: Level::Error,
+                code: None,
                 message: "root import path escapes workspace root".to_string(),
                 span,
                 path: None,
@@ -805,12 +812,14 @@ fn collect_global_duplicate_symbol_diags(registry: &ModuleRegistry) -> Vec<Diag>
                 if *prev_id != module_id {
                     out.push(Diag {
                         level: Level::Error,
+                        code: None,
                         message: format!("duplicate symbol: {name}"),
                         span,
                         path: Some(unit.path.clone()),
                     });
                     out.push(Diag {
                         level: Level::Error,
+                        code: None,
                         message: format!("previous definition of {name} here"),
                         span: *prev_span,
                         path: Some(prev_path.clone()),

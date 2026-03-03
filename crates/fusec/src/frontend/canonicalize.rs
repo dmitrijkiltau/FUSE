@@ -385,16 +385,13 @@ fn canonicalize_html_attr_shorthand(args: &mut Vec<CallArg>) {
         return;
     }
 
-    let mut attrs: Vec<(String, String, crate::span::Span)> = Vec::new();
+    let mut attrs: Vec<(String, Expr, crate::span::Span)> = Vec::new();
     let mut child_expr: Option<Expr> = None;
     for arg in args.iter() {
         if let Some(name) = &arg.name {
-            let ExprKind::Literal(Literal::String(value)) = &arg.value.kind else {
-                return;
-            };
             attrs.push((
                 html_tags::normalize_attr_name(&name.name),
-                value.clone(),
+                arg.value.clone(),
                 arg.span,
             ));
             continue;
@@ -416,13 +413,9 @@ fn canonicalize_html_attr_shorthand(args: &mut Vec<CallArg>) {
         .unwrap_or_default();
     let map_entries = attrs
         .into_iter()
-        .map(|(key, value, span)| {
+        .map(|(key, value_expr, span)| {
             let key_expr = Expr {
                 kind: ExprKind::Literal(Literal::String(key)),
-                span,
-            };
-            let value_expr = Expr {
-                kind: ExprKind::Literal(Literal::String(value)),
                 span,
             };
             (key_expr, value_expr)
@@ -435,6 +428,7 @@ fn canonicalize_html_attr_shorthand(args: &mut Vec<CallArg>) {
             span: map_span,
         },
         span: map_span,
+        comma_before: None,
         is_block_sugar: false,
     }];
     if let Some(child) = child_expr {
@@ -443,6 +437,7 @@ fn canonicalize_html_attr_shorthand(args: &mut Vec<CallArg>) {
             name: None,
             value: child,
             span,
+            comma_before: None,
             is_block_sugar: true,
         });
     }

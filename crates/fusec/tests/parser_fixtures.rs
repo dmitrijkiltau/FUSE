@@ -318,6 +318,62 @@ fn page() -> Html:
 }
 
 #[test]
+fn parses_html_attr_shorthand_expression_values() {
+    let src = r#"
+fn page(name: String, suffix: String) -> Html:
+  return div(class=name + suffix data_view=name):
+    "ok"
+"#;
+    assert_parse_ok(src);
+}
+
+#[test]
+fn parser_rejects_commas_between_html_attrs() {
+    let src = r#"
+fn page() -> Html:
+  return div(class="hero", id="main")
+"#;
+    assert_parse_err_contains(src, "commas are not allowed between HTML tag attributes");
+}
+
+#[test]
+fn parser_rejects_map_literal_html_attrs() {
+    let src = r#"
+fn page(css: String) -> Html:
+  return link({"rel": "stylesheet", "href": css})
+"#;
+    assert_parse_err_contains(src, "map literal is not valid for HTML tag attributes");
+}
+
+#[test]
+fn parser_rejects_commas_between_component_attrs() {
+    let src = r#"
+component Card:
+  return div(attrs):
+    children
+
+fn page() -> Html:
+  return Card(title="A", id="x"):
+    "ok"
+"#;
+    assert_parse_err_contains(src, "commas are not allowed between HTML tag attributes");
+}
+
+#[test]
+fn parser_rejects_map_literal_component_attrs() {
+    let src = r#"
+component Card:
+  return div(attrs):
+    children
+
+fn page() -> Html:
+  return Card({"title": "A"}):
+    "ok"
+"#;
+    assert_parse_err_contains(src, "map literal is not valid for HTML tag attributes");
+}
+
+#[test]
 fn parses_module_requires_capabilities() {
     let src = r#"
 requires db

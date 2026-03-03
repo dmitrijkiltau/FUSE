@@ -1,5 +1,11 @@
+use std::collections::HashSet;
+
 use crate::ast::*;
 use crate::diag::Diagnostics;
+use crate::frontend::html_shorthand::{
+    HTML_ATTR_COMMA_DIAG_CODE, HTML_ATTR_COMMA_MESSAGE, HTML_ATTR_MAP_DIAG_CODE,
+    HTML_ATTR_MAP_MESSAGE,
+};
 use crate::html_tags;
 use crate::lexer;
 use crate::span::Span;
@@ -9,14 +15,17 @@ pub struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
     diags: &'a mut Diagnostics,
+    component_names: HashSet<String>,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token], diags: &'a mut Diagnostics) -> Self {
+        let component_names = collect_top_level_component_names(tokens);
         Self {
             tokens,
             pos: 0,
             diags,
+            component_names,
         }
     }
 
@@ -663,6 +672,7 @@ impl<'a> Parser<'a> {
                         name: None,
                         value: attrs,
                         span: block_span,
+                        comma_before: None,
                         is_block_sugar: true,
                     });
                 }
@@ -674,6 +684,7 @@ impl<'a> Parser<'a> {
                     name: None,
                     value: children_expr,
                     span: block_span,
+                    comma_before: None,
                     is_block_sugar: true,
                 });
                 Expr {
@@ -696,9 +707,19 @@ impl<'a> Parser<'a> {
                         name: Some(f.name),
                         value: f.value,
                         span: f.span,
+                        comma_before: f.comma_before,
                         is_block_sugar: false,
                     })
                     .collect();
+                for arg in &args {
+                    if let Some(comma_span) = arg.comma_before {
+                        self.diags.error_with_code(
+                            comma_span,
+                            HTML_ATTR_COMMA_DIAG_CODE,
+                            HTML_ATTR_COMMA_MESSAGE,
+                        );
+                    }
+                }
                 let children_expr = Expr {
                     kind: ExprKind::ListLit(children),
                     span: block_span,
@@ -707,6 +728,7 @@ impl<'a> Parser<'a> {
                     name: None,
                     value: children_expr,
                     span: block_span,
+                    comma_before: None,
                     is_block_sugar: true,
                 });
                 Expr {
@@ -814,6 +836,7 @@ impl<'a> Parser<'a> {
                             name: None,
                             value: child,
                             span,
+                            comma_before: None,
                             is_block_sugar: false,
                         }],
                     },
@@ -1316,10 +1339,14 @@ impl<'a> Parser<'a> {
                 let args = self.parse_call_args();
                 let end = self.expect_punct(Punct::RParen);
                 let span = expr.span.merge(end);
+                self.validate_html_attr_call_syntax(&expr, &args);
                 let has_named = args.iter().any(|arg| arg.name.is_some());
                 let struct_name = if has_named {
                     self.struct_literal_name(&expr)
-                        .filter(|name| !html_tags::is_html_tag(&name.name))
+                        .filter(|name| {
+                            !html_tags::is_html_tag(&name.name)
+                                && !self.component_names.contains(&name.name)
+                        })
                 } else {
                     None
                 };
@@ -1331,6 +1358,7 @@ impl<'a> Parser<'a> {
                                 name: n,
                                 value: arg.value,
                                 span: arg.span,
+                                comma_before: arg.comma_before,
                             })
                         })
                         .collect();
@@ -1587,6 +1615,7 @@ impl<'a> Parser<'a> {
 
     fn parse_call_args(&mut self) -> Vec<CallArg> {
         let mut args = Vec::new();
+        let mut comma_before_next: Option<Span> = None;
         self.consume_call_layout();
         if self.at_punct(Punct::RParen) {
             return args;
@@ -1608,22 +1637,56 @@ impl<'a> Parser<'a> {
                 name,
                 value,
                 span: start.merge(end),
+                comma_before: comma_before_next.take(),
                 is_block_sugar: false,
             });
             self.consume_call_layout();
-            if self.eat_punct(Punct::Comma).is_none() {
+            if let Some(comma) = self.eat_punct(Punct::Comma) {
+                comma_before_next = Some(comma.span);
+                self.consume_call_layout();
+                if self.at_punct(Punct::RParen) {
+                    break;
+                }
+                continue;
+            } else {
                 if was_named && self.is_named_arg() && self.peek_span().start > end.end {
                     // Permit named args without commas when separated by layout.
                     continue;
                 }
                 break;
             }
-            self.consume_call_layout();
-            if self.at_punct(Punct::RParen) {
-                break;
-            }
         }
         args
+    }
+
+    fn validate_html_attr_call_syntax(&mut self, callee: &Expr, args: &[CallArg]) {
+        let ExprKind::Ident(ident) = &callee.kind else {
+            return;
+        };
+        if !html_tags::is_html_tag(&ident.name) && !self.component_names.contains(&ident.name) {
+            return;
+        }
+        if let Some(attrs) = args.first() {
+            if attrs.name.is_none() && matches!(attrs.value.kind, ExprKind::MapLit(_)) {
+                self.diags.error_with_code(
+                    attrs.span,
+                    HTML_ATTR_MAP_DIAG_CODE,
+                    HTML_ATTR_MAP_MESSAGE,
+                );
+            }
+        }
+        for arg in args {
+            if arg.name.is_none() {
+                continue;
+            }
+            if let Some(comma_span) = arg.comma_before {
+                self.diags.error_with_code(
+                    comma_span,
+                    HTML_ATTR_COMMA_DIAG_CODE,
+                    HTML_ATTR_COMMA_MESSAGE,
+                );
+            }
+        }
     }
 
     fn can_continue_postfix_after_layout(&self) -> bool {
@@ -2056,6 +2119,30 @@ impl<'a> Parser<'a> {
             self.tokens[self.pos - 1].span
         }
     }
+}
+
+fn collect_top_level_component_names(tokens: &[Token]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut depth = 0usize;
+    let mut idx = 0usize;
+    while idx < tokens.len() {
+        match &tokens[idx].kind {
+            TokenKind::Indent => depth = depth.saturating_add(1),
+            TokenKind::Dedent => depth = depth.saturating_sub(1),
+            TokenKind::Keyword(Keyword::Component) if depth == 0 => {
+                if let Some(Token {
+                    kind: TokenKind::Ident(name),
+                    ..
+                }) = tokens.get(idx + 1)
+                {
+                    out.insert(name.clone());
+                }
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+    out
 }
 
 trait ItemStart {

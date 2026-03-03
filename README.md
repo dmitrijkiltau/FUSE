@@ -58,14 +58,14 @@ The runtime applies those contracts at boundaries instead of requiring repeated 
 
 ## Status
 
-FUSE `v0.8.0` release prep is active. This minor deepens runtime/tooling ergonomics:
-capability-runtime completion (`time`/`crypto`), native-lowering parity closure,
-workflow hardening, and GitHub-first guide coverage.
+FUSE `v0.9.0` release prep is active. This breaking minor simplifies HTML attribute syntax:
+expression values are allowed in shorthand attrs, comma-separated HTML attrs are rejected,
+and map-literal HTML attrs are rejected with coded diagnostics.
 
 Compatibility is defined by documented behavior in `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, and
 `governance/VERSIONING_POLICY.md`.
-Historical upgrade guidance for the `0.1.x -> 0.2.0` breaking minor is in
-`guides/migrations/0.1-to-0.2.md`.
+Historical upgrade guidance is in:
+`guides/migrations/0.8-to-0.9.md` and `guides/migrations/0.1-to-0.2.md`.
 
 ## Requirements
 
@@ -180,7 +180,7 @@ Global CLI output option:
   `auto` is default and respects `NO_COLOR`.
 - `--diagnostics json` switches CLI diagnostics on stderr to JSON Lines suitable for editor/CI
   consumers. Diagnostic entries use fields:
-  `kind="diagnostic"`, `level`, `message`, `path?`, `line?`, `column?`, `span_start`, `span_end`.
+  `kind="diagnostic"`, `level`, `code?`, `message`, `path?`, `line?`, `column?`, `span_start`, `span_end`.
   Command-step entries use:
   `kind="command_step"`, `command`, `message`.
 - `fuse check|run|build|test` emit consistent stderr step markers:
@@ -449,6 +449,7 @@ If two documents disagree, defer to the owning document listed for that tier.
 |---|---|
 | `guides/onboarding.md` | Onboarding walkthrough |
 | `guides/reference.md` | Generated developer reference |
+| `guides/migrations/0.8-to-0.9.md` | Migration guide for `0.8.x -> 0.9.0` |
 | `guides/migrations/0.1-to-0.2.md` | Migration guide for `0.1.x -> 0.2.0` |
 
 ### Operations contracts

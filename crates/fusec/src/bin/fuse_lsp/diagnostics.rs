@@ -135,6 +135,9 @@ fn to_lsp_diags(text: &str, diags: &[Diag]) -> Vec<JsonValue> {
                 "message".to_string(),
                 JsonValue::String(diag.message.clone()),
             );
+            if let Some(code) = &diag.code {
+                out.insert("code".to_string(), JsonValue::String(code.clone()));
+            }
             out.insert("source".to_string(), JsonValue::String("fusec".to_string()));
             JsonValue::Object(out)
         })

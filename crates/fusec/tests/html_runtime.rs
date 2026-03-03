@@ -237,6 +237,29 @@ app "html":
 }
 
 #[test]
+fn html_tag_sugar_expression_attrs_render_across_backends() {
+    let program = r#"
+app "html":
+  let kind = "card"
+  let view = div(class=kind):
+    "Hello"
+  print(html.render(view))
+"#;
+
+    let expected = r#"<div class="card">Hello</div>"#;
+    for backend in ["ast", "native"] {
+        let output = run_program(backend, program);
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(stdout.trim(), expected, "{backend} stdout");
+    }
+}
+
+#[test]
 fn html_tag_attr_underscore_maps_to_hyphen() {
     let program = r#"
 app "html":

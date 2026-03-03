@@ -40,6 +40,8 @@ FUSE is not:
    - "Magic" implicit behavior at boundaries is out of scope.
 4. Small surface area:
    - New syntax/features must justify complexity against core mission.
+   - `0.9.0` HTML attr simplification (remove map/comma forms, keep one canonical form) is a
+     reference example of preferred direction.
 
 ## Explicit "Will Not Do" List
 

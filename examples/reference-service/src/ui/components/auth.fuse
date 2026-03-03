@@ -5,66 +5,66 @@ fn auth_form(prefix: String, action: String, button_label: String, button_class:
   let email_id = "${prefix}-email"
   let password_id = "${prefix}-password"
 
-  return form({
-    "class": "create-form auth-form",
-    "hx-post": action,
-    "hx-ext": "json-enc",
-    "hx-target": "#app-shell",
-    "hx-swap": "outerHTML"
-  }):
-    div({"class": "form-group"}):
-      label({"class": "form-label", "for": email_id}):
+  return form(
+    class="create-form auth-form"
+    hx_post=action
+    hx_ext="json-enc"
+    hx_target="#app-shell"
+    hx_swap="outerHTML"
+  ):
+    div(class="form-group"):
+      label(class="form-label" for=email_id):
         "Email"
-      input({
-        "class": "form-input",
-        "type": "email",
-        "id": email_id,
-        "name": "email",
-        "placeholder": "you@example.com",
-        "required": "required"
-      })
-    div({"class": "form-group"}):
-      label({"class": "form-label", "for": password_id}):
+      input(
+        class="form-input"
+        type="email"
+        id=email_id
+        name="email"
+        placeholder="you@example.com"
+        required="required"
+      )
+    div(class="form-group"):
+      label(class="form-label" for=password_id):
         "Password"
-      input({
-        "class": "form-input",
-        "type": "password",
-        "id": password_id,
-        "name": "password",
-        "minlength": "8",
-        "required": "required"
-      })
-    div({"class": "create-form__footer"}):
-      button({"type": "submit", "class": button_class}):
+      input(
+        class="form-input"
+        type="password"
+        id=password_id
+        name="password"
+        minlength="8"
+        required="required"
+      )
+    div(class="create-form__footer"):
+      button(type="submit" class=button_class):
         html.text(button_label)
 
 fn render_session_section(ctx: RequestContext) -> Html:
   let session_token = request_context_session_token(ctx)
   if session_token == "":
-    return section({"class": "section"}):
-      h2({"class": "section__title"}):
+    return section(class="section"):
+      h2(class="section__title"):
         "Session"
-      div({"class": "auth-panel"}):
+      div(class="auth-panel"):
         Base.state_block("Not signed in.", true, false)
-        div({"class": "auth-grid"}):
+        div(class="auth-grid"):
           auth_form("register", "/ui/auth/register", "Register", "btn btn--primary")
           auth_form("login", "/ui/auth/login", "Login", "btn btn--ghost")
 
   let logout_url = "/ui/auth/logout"
   let uid = request_context_user_id(ctx)
 
-  return section({"class": "section"}):
-    h2({"class": "section__title"}):
+  return section(class="section"):
+    h2(class="section__title"):
       "Session"
-    div({"class": "auth-panel"}):
+    div(class="auth-panel"):
       Base.state_block("Signed in as ${uid}.", true, false)
-      div({"class": "auth-actions"}):
-        button({
-          "type": "button",
-          "id": "logout-btn",
-          "class": "btn btn--ghost btn--sm",
-          "hx-delete": logout_url,
-          "hx-target": "#app-shell",
-          "hx-swap": "outerHTML"
-        }):
+      div(class="auth-actions"):
+        button(
+          type="button"
+          id="logout-btn"
+          class="btn btn--ghost btn--sm"
+          hx_delete=logout_url
+          hx_target="#app-shell"
+          hx_swap="outerHTML"
+        ):
           "Logout"

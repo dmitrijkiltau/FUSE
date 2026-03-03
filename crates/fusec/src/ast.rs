@@ -386,6 +386,8 @@ pub struct CallArg {
     pub value: Expr,
     pub span: Span,
     #[serde(default)]
+    pub comma_before: Option<Span>,
+    #[serde(default)]
     pub is_block_sugar: bool,
 }
 
@@ -394,6 +396,8 @@ pub struct StructField {
     pub name: Ident,
     pub value: Expr,
     pub span: Span,
+    #[serde(default)]
+    pub comma_before: Option<Span>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -74,6 +74,9 @@ pub fn diagnostic_json_value(diag: &Diag, fallback: Option<(&Path, &str)>) -> js
         "message".to_string(),
         json::JsonValue::String(diag.message.clone()),
     );
+    if let Some(code) = &diag.code {
+        object.insert("code".to_string(), json::JsonValue::String(code.clone()));
+    }
     object.insert(
         "span_start".to_string(),
         json::JsonValue::Number(diag.span.start as f64),

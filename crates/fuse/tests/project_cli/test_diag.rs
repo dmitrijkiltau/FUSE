@@ -365,3 +365,47 @@ app "Demo":
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn diagnostics_json_includes_html_attr_codes() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let entry = dir.join("main.fuse");
+    fs::write(
+        &entry,
+        r#"
+fn page(css: String) -> Html:
+  let one = link({"rel": "stylesheet", "href": css})
+  let two = div(class="hero", id="main")
+  return two
+
+app "Demo":
+  print(html.render(page("/assets/main.css")))
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--diagnostics")
+        .arg("json")
+        .arg("--color")
+        .arg("never")
+        .arg(&entry)
+        .output()
+        .expect("run fuse check --diagnostics json");
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("\"code\":\"FUSE_HTML_ATTR_MAP\""),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"code\":\"FUSE_HTML_ATTR_COMMA\""),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

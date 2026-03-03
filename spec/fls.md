@@ -217,6 +217,12 @@ HtmlBlockSuffix := ":" ( NEWLINE INDENT HtmlChildStmt* DEDENT | Expr )
 HtmlChildStmt   := Expr NEWLINE
                 | IfStmt
                 | ForStmt
+
+# HTML attribute shorthand in HTML tag/component call positions:
+# - no commas between attrs
+# - map literal attrs are rejected
+# - attr values are full Expr
+HtmlAttr        := Ident "=" Expr
 ```
 
 Patterns:
@@ -239,8 +245,13 @@ Notes:
   blocks are lowered to `html.text(...)`, while non-literal expressions are not coerced.
 - `if`/`for` HTML child statements are parser sugar lowered to internal list-producing control
   expressions used only within HTML children lowering.
-- HTML tag calls accept attribute shorthand (`div(class="hero")`) with string literals only; it lowers
-  to a standard attrs map argument (`div({"class": "hero"})`).
+- HTML tag and component calls accept attribute shorthand (`div(class="hero")`) with full expression
+  values; it lowers to a standard attrs map argument (`div({"class": expr})`).
+- Commas are not allowed between HTML attributes; use layout-separated attributes
+  (`div(class="hero" id="main")`).
+- Map literal attrs in HTML tag/component call positions are rejected; use named attrs instead.
+- Diagnostics for these rejections include codes `FUSE_HTML_ATTR_COMMA` and `FUSE_HTML_ATTR_MAP`
+  in JSON diagnostics output.
 - Named call args can use keyword names (`type="button"`, `for="x"`), and named args may omit commas
   when separated by layout (`button(class="x" id="y")` split across lines).
 - In HTML attribute shorthand, `_` in attribute names is normalized to `-`

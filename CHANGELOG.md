@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.0] - 2026-03-03
+
+### Breaking
+
+- HTML attribute shorthand syntax is now canonicalized to a single form:
+  - expression values are allowed in shorthand attrs (`div(class=name)`)
+  - commas between HTML attrs are rejected
+  - map-literal HTML attrs are rejected
+
+### Added
+
+- Machine-readable diagnostic codes for HTML attr migration errors in JSON diagnostics:
+  - `FUSE_HTML_ATTR_MAP`
+  - `FUSE_HTML_ATTR_COMMA`
+
+### Changed
+
+- Reference-service UI examples now use no-comma named HTML attrs and expression-valued attrs.
+- Diagnostics JSON schema now includes optional `code` for compiler diagnostics.
+
+### Migration
+
+- Replace map-literal HTML attrs with named attrs.
+- Remove commas between HTML attrs.
+- See `guides/migrations/0.8-to-0.9.md`.
+
 ## [0.8.0] - 2026-03-02
 
 ### Added

@@ -47,36 +47,36 @@ fn render_private_note_card(note: Map<String, String>) -> Html:
       html.text(title)
     p(class="note-card__body"):
       html.text(content)
-    form({
-      "class": "note-card__edit-form",
-      "hx-put": edit_url,
-      "hx-ext": "json-enc",
-      "hx-target": "#app-shell",
-      "hx-swap": "outerHTML"
-    }):
+    form(
+      class="note-card__edit-form"
+      hx_put=edit_url
+      hx_ext="json-enc"
+      hx_target="#app-shell"
+      hx_swap="outerHTML"
+    ):
       div(class="form-group"):
-        label({"class": "form-label", "for": title_id}):
+        label(class="form-label" for=title_id):
           "Edit title"
-        input({
-          "class": "form-input",
-          "type": "text",
-          "id": title_id,
-          "name": "title",
-          "required": "required",
-          "value": title
-        })
+        input(
+          class="form-input"
+          type="text"
+          id=title_id
+          name="title"
+          required="required"
+          value=title
+        )
       div(class="form-group"):
-        label({"class": "form-label", "for": content_id}):
+        label(class="form-label" for=content_id):
           "Edit content"
-        textarea({
-          "class": "form-textarea",
-          "id": content_id,
-          "name": "content",
-          "required": "required"
-        }):
+        textarea(
+          class="form-textarea"
+          id=content_id
+          name="content"
+          required="required"
+        ):
           html.text(content)
       div(class="create-form__footer"):
-        button(type="submit", class="btn btn--ghost btn--sm"):
+        button(type="submit" class="btn btn--ghost btn--sm"):
           "Save"
     div(class="note-card__meta-line"):
       div(class="note-card__meta"):
@@ -84,28 +84,28 @@ fn render_private_note_card(note: Map<String, String>) -> Html:
       span(class="note-card__pill"):
         html.text(visibility)
     div(class="note-card__actions"):
-      form({
-        "class": "inline-form note-card__publish-btn",
-        "hx-put": visibility_url,
-        "hx-ext": "json-enc",
-        "hx-target": "#app-shell",
-        "hx-swap": "outerHTML"
-      }):
-        input({"type": "hidden", "name": "published", "value": next_published})
-        button(type="submit", class="btn btn--ghost btn--sm"):
+      form(
+        class="inline-form note-card__publish-btn"
+        hx_put=visibility_url
+        hx_ext="json-enc"
+        hx_target="#app-shell"
+        hx_swap="outerHTML"
+      ):
+        input(type="hidden" name="published" value=next_published)
+        button(type="submit" class="btn btn--ghost btn--sm"):
           html.text(publish_label)
       label():
         span(class="btn btn--ghost btn--sm btn--checkbox"):
           "Edit"
-        input(type="checkbox", class="btn btn--sm btn--checkbox", hidden="hidden")
-      button({
-        "type": "button",
-        "class": "btn btn--danger btn--sm",
-        "hx-delete": delete_url,
-        "hx-confirm": "Delete note?",
-        "hx-target": "#app-shell",
-        "hx-swap": "outerHTML"
-      }):
+        input(type="checkbox" class="btn btn--sm btn--checkbox" hidden="hidden")
+      button(
+        type="button"
+        class="btn btn--danger btn--sm"
+        hx_delete=delete_url
+        hx_confirm="Delete note?"
+        hx_target="#app-shell"
+        hx_swap="outerHTML"
+      ):
         "Delete"
 
 fn render_private_notes_section(ctx: RequestContext) -> Html:
@@ -115,7 +115,7 @@ fn render_private_notes_section(ctx: RequestContext) -> Html:
     return section(class="section"):
       h2(class="section__title"):
         "Your notes"
-      div(class="notes-list", id="private-notes-list"):
+      div(class="notes-list" id="private-notes-list"):
         Base.state_block("Sign in to load your private notes.", false, false)
 
   let rows = private_note_rows(owner_id)
@@ -132,13 +132,13 @@ fn render_private_notes_section(ctx: RequestContext) -> Html:
     return section(class="section"):
       h2(class="section__title"):
         "Your notes"
-      div(class="notes-list", id="private-notes-list"):
+      div(class="notes-list" id="private-notes-list"):
         Base.state_block("No private notes yet - create one above.", false, false)
 
   return section(class="section"):
     h2(class="section__title"):
       "Your notes"
-    div(class="notes-list", id="private-notes-list"):
+    div(class="notes-list" id="private-notes-list"):
       cards
 
 fn render_public_note_actions(ctx: RequestContext, note: Map<String, String>) -> Html:
@@ -151,20 +151,20 @@ fn render_public_note_actions(ctx: RequestContext, note: Map<String, String>) ->
 
   if viewer_id == "" or owner_id == viewer_id:
     return div(class="note-card__actions note-card__actions--public"):
-      button(type="button", class="btn btn--ghost btn--sm", disabled="disabled"):
+      button(type="button" class="btn btn--ghost btn--sm" disabled="disabled"):
         "Your note"
 
   let id = note["id"]
   let like_url = "/ui/public/notes/${id}/likes"
 
   return div(class="note-card__actions note-card__actions--public"):
-    button({
-      "type": "button",
-      "class": "btn btn--ghost btn--sm",
-      "hx-post": like_url,
-      "hx-target": "#app-shell",
-      "hx-swap": "outerHTML"
-    }):
+    button(
+      type="button"
+      class="btn btn--ghost btn--sm"
+      hx_post=like_url
+      hx_target="#app-shell"
+      hx_swap="outerHTML"
+    ):
       "Like"
 
 fn render_public_note_card(ctx: RequestContext, note: Map<String, String>) -> Html:
@@ -206,15 +206,15 @@ fn render_public_notes_inner(ctx: RequestContext) -> Html:
 
 fn render_public_section(ctx: RequestContext) -> Html:
   let feed_url = "/ui/public/notes"
-  return section(class="section", id="public-notes-section"):
+  return section(class="section" id="public-notes-section"):
     h2(class="section__title"):
       "Public notes"
-    div({
-      "class": "notes-list",
-      "id": "public-notes-list",
-      "hx-get": feed_url,
-      "hx-trigger": "load, every 5s",
-      "hx-swap": "innerHTML",
-      "hx-sync": "this:replace"
-    }):
+    div(
+      class="notes-list"
+      id="public-notes-list"
+      hx_get=feed_url
+      hx_trigger="load, every 5s"
+      hx_swap="innerHTML"
+      hx_sync="this:replace"
+    ):
       render_public_notes_inner(ctx)

@@ -668,28 +668,26 @@ fn page() -> Html:
 }
 
 #[test]
-fn html_tag_attr_shorthand_rejects_non_literal_values() {
+fn html_tag_attr_shorthand_accepts_expression_values() {
     let src = r#"
 fn page(name: String) -> Html:
   return div(class=name):
     "hello"
 "#;
-    assert_diags(
-        src,
-        &["Error: html attribute shorthand only supports string literals"],
-    );
+    assert_diags(src, &[]);
 }
 
 #[test]
-fn html_tag_attr_shorthand_rejects_mixing_positional() {
+fn html_tag_attrs_map_expression_remains_supported() {
     let src = r#"
+fn attrs() -> Map<String, String>:
+  return {"class": "hero"}
+
 fn page() -> Html:
-  return div({"class": "hero"}, id="main")
+  return div(attrs()):
+    "hello"
 "#;
-    assert_diags(
-        src,
-        &["Error: cannot mix html attribute shorthand with positional arguments"],
-    );
+    assert_diags(src, &[]);
 }
 
 #[test]

@@ -96,6 +96,11 @@ Completed in `0.8.0`:
 6. Developer workflow upgrades (`fuse check` incremental, `fuse dev` compile overlay, diagnostics JSON, AOT progress)
 7. Pre-tag cleanup and redundancy removal (`M7A`) plus docs-to-guides migration (`M7B`)
 
+Completed in `0.9.0`:
+
+1. HTML attr syntax simplification (expression-valued shorthand, no-comma attrs, map-literal rejection)
+2. Compiler diagnostics JSON code surface for HTML attr migration errors (`FUSE_HTML_ATTR_MAP`, `FUSE_HTML_ATTR_COMMA`)
+
 Next priorities (post-`0.8.0`):
 
 1. Native backend performance work focused on hot-path lowering/runtime overhead reduction

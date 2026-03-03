@@ -4,5 +4,5 @@ fn state_block(message: String, compact: Bool, error: Bool) -> Html:
     class_name = class_name + " state--compact"
   if error:
     class_name = class_name + " state--error"
-  return p({"class": class_name}):
+  return p(class=class_name):
     html.text(message)
