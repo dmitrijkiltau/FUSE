@@ -27,6 +27,7 @@ fn is_query_method(name: &str) -> bool {
             | "order_by"
             | "limit"
             | "insert"
+            | "upsert"
             | "update"
             | "delete"
             | "count"

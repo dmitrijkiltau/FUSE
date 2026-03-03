@@ -85,4 +85,16 @@ fn native_db_smoke() {
         }
         other => panic!("unexpected db_query_names value: {other:?}"),
     }
+
+    let upsert = vm
+        .call_function("db_upsert_name", vec![])
+        .expect("db_upsert_name failed");
+    assert!(vm.has_jit_function("db_upsert_name"));
+    match upsert {
+        Value::Map(map) => match map.get("name") {
+            Some(Value::String(text)) => assert_eq!(text, "Bobby"),
+            other => panic!("unexpected db_upsert_name map value: {other:?}"),
+        },
+        other => panic!("unexpected db_upsert_name value: {other:?}"),
+    }
 }

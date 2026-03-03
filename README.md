@@ -99,7 +99,7 @@ requires network
 
 Current capability checks:
 
-- `db.exec/query/one/from` require `requires db`
+- `db.exec/query/one/from` and `db.from(...).{select,where,order_by,limit,insert,upsert,update,delete,count,one,all,exec}` require `requires db`
 - `serve(...)` requires `requires network`
 - `time(...)` / `time.*` require `requires time`
 - `crypto.*` requires `requires crypto`

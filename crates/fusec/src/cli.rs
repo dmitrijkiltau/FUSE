@@ -8,7 +8,7 @@ use fuse_rt::json;
 use crate::ast::{Item, TypeRefKind};
 use crate::diag::Diag;
 use crate::interp::{Interpreter, MigrationJob, TestJob, TestOutcome};
-use crate::manifest::{find_workspace_manifests, parse_manifest};
+use crate::manifest::{find_workspace_manifests, find_workspace_root_for_entry, parse_manifest};
 use crate::{load_program_with_modules, load_program_with_modules_and_deps};
 
 const USAGE: &str = "usage: fusec [--dump-ast] [--check] [--workspace] [--fmt] [--openapi] [--run] [--migrate] [--test] [--filter PATTERN] [--strict-architecture] [--diagnostics json|text] [--backend ast|native] [--app NAME] <file>";
@@ -556,33 +556,61 @@ fn collect_migrations<'a>(
     registry: &'a crate::ModuleRegistry,
 ) -> Result<Vec<MigrationJob<'a>>, String> {
     let mut jobs = Vec::new();
-    let mut seen: HashMap<String, String> = HashMap::new();
+    let mut seen: HashMap<(String, String), String> = HashMap::new();
+    let mut package_cache: HashMap<PathBuf, String> = HashMap::new();
     for (id, unit) in &registry.modules {
         let module_path = unit.path.display().to_string();
+        let package = migration_package_name(&unit.path, &mut package_cache);
         for item in &unit.program.items {
             if let Item::Migration(decl) = item {
                 if decl.name.trim().is_empty() {
                     return Err("migration name cannot be empty".to_string());
                 }
-                if let Some(prev) = seen.insert(decl.name.clone(), module_path.clone()) {
+                let key = (package.clone(), decl.name.clone());
+                if let Some(prev) = seen.insert(key, module_path.clone()) {
+                    let package_label = if package.is_empty() {
+                        "<default>"
+                    } else {
+                        package.as_str()
+                    };
                     return Err(format!(
-                        "duplicate migration {} (also declared in {})",
-                        decl.name, prev
+                        "duplicate migration {} in package {} (also declared in {})",
+                        decl.name, package_label, prev
                     ));
                 }
-                jobs.push((decl.name.clone(), module_path.clone(), *id, decl));
+                jobs.push((decl.name.clone(), package.clone(), module_path.clone(), *id, decl));
             }
         }
     }
-    jobs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    jobs.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
     Ok(jobs
         .into_iter()
-        .map(|(id, _path, module_id, decl)| MigrationJob {
+        .map(|(id, package, _path, module_id, decl)| MigrationJob {
+            package,
             id,
             module_id,
             decl,
         })
         .collect())
+}
+
+fn migration_package_name(path: &Path, cache: &mut HashMap<PathBuf, String>) -> String {
+    let root = find_workspace_root_for_entry(path);
+    if !root.join("fuse.toml").exists() {
+        return String::new();
+    }
+    if let Some(existing) = cache.get(&root) {
+        return existing.clone();
+    }
+    let package = parse_manifest(&root)
+        .and_then(|manifest| manifest.package_name)
+        .unwrap_or_default();
+    cache.insert(root, package.clone());
+    package
 }
 
 fn collect_tests<'a>(registry: &'a crate::ModuleRegistry) -> Result<Vec<TestJob<'a>>, String> {

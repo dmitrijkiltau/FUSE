@@ -1460,6 +1460,14 @@ impl<'a> Checker<'a> {
                 }],
                 ret: Box::new(Ty::External("query".to_string())),
             }),
+            "upsert" => Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "value".to_string(),
+                    ty: Ty::Unknown,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::External("query".to_string())),
+            }),
             "update" => Ty::Fn(FnSig {
                 params: vec![
                     ParamSig {

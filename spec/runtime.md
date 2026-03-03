@@ -596,6 +596,7 @@ Query builder methods (immutable style; each returns a new `Query`):
 - `Query.order_by(column, dir)` where `dir` is `asc`/`desc`
 - `Query.limit(n)` where `n >= 0`
 - `Query.insert(structValue)` builds `insert into ...` from struct fields
+- `Query.upsert(structValue)` builds `insert or replace into ...` from struct fields
 - `Query.update(column, value)` builds/extends `set` clauses
 - `Query.delete()` builds `delete from ...`
 - `Query.count()` executes a `count(*)` query and returns `Int`
@@ -646,7 +647,11 @@ Rules:
 
 - migrations are collected from all loaded modules
 - run order is ascending by migration name
-- applied migrations are tracked in `__fuse_migrations`
+- applied migrations are tracked in `__fuse_migrations(package, name)` with a composite primary key
+- migration package namespace is sourced from `[package].name` in the nearest `fuse.toml`
+  (defaults to empty string when absent)
+- legacy single-column history tables (`id` primary key) are upgraded in-place to `(package, name)`
+  without re-running already-applied single-package migrations
 - only up migrations exist today (no down/rollback)
 - migrations execute via AST interpreter
 

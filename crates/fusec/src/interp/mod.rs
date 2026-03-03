@@ -464,6 +464,7 @@ fn is_query_method(name: &str) -> bool {
             | "order_by"
             | "limit"
             | "insert"
+            | "upsert"
             | "update"
             | "delete"
             | "count"
@@ -628,6 +629,7 @@ pub struct Interpreter {
 }
 
 pub struct MigrationJob<'a> {
+    pub package: String,
     pub id: String,
     pub module_id: ModuleId,
     pub decl: &'a MigrationDecl,
@@ -943,25 +945,28 @@ impl Interpreter {
                 Ok(db) => db,
                 Err(err) => return Err(self.render_exec_error(err)),
             };
-            db.exec(
-                "CREATE TABLE IF NOT EXISTS __fuse_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
-            )?;
+            Self::ensure_migration_history_schema(db)?;
         }
         let applied_rows = {
             let db = match self.db_mut() {
                 Ok(db) => db,
                 Err(err) => return Err(self.render_exec_error(err)),
             };
-            db.query("SELECT id FROM __fuse_migrations")?
+            db.query("SELECT package, name FROM __fuse_migrations")?
         };
-        let mut applied = HashSet::new();
+        let mut applied: HashSet<(String, String)> = HashSet::new();
         for row in applied_rows {
-            if let Some(Value::String(id)) = row.get("id") {
-                applied.insert(id.clone());
+            let package = row
+                .get("package")
+                .and_then(Self::value_as_string)
+                .unwrap_or_default();
+            if let Some(name) = row.get("name").and_then(Self::value_as_string) {
+                applied.insert((package, name));
             }
         }
         for job in migrations {
-            if applied.contains(&job.id) {
+            let key = (job.package.clone(), job.id.clone());
+            if applied.contains(&key) {
                 continue;
             }
             {
@@ -996,8 +1001,8 @@ impl Interpreter {
                     Err(err) => return Err(self.render_exec_error(err)),
                 };
                 if let Err(err) = db.execute(
-                    "INSERT INTO __fuse_migrations (id, applied_at) VALUES (?1, CURRENT_TIMESTAMP)",
-                    (&job.id,),
+                    "INSERT INTO __fuse_migrations (package, name, applied_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)",
+                    (&job.package, &job.id),
                 ) {
                     let _ = db.rollback_transaction();
                     return Err(err);
@@ -1007,8 +1012,66 @@ impl Interpreter {
                     return Err(err);
                 }
             }
+            applied.insert(key);
         }
         Ok(())
+    }
+
+    fn ensure_migration_history_schema(db: &Db) -> Result<(), String> {
+        db.exec(
+            "CREATE TABLE IF NOT EXISTS __fuse_migrations (package TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, applied_at TEXT NOT NULL, PRIMARY KEY (package, name))",
+        )?;
+        let info_rows = db.query("PRAGMA table_info(__fuse_migrations)")?;
+        let mut has_package = false;
+        let mut has_name = false;
+        let mut has_legacy_id = false;
+        for row in info_rows {
+            let Some(column) = row.get("name").and_then(Self::value_as_string) else {
+                continue;
+            };
+            match column.as_str() {
+                "package" => has_package = true,
+                "name" => has_name = true,
+                "id" => has_legacy_id = true,
+                _ => {}
+            }
+        }
+        if has_package && has_name {
+            return Ok(());
+        }
+        if !has_legacy_id {
+            return Err(
+                "unsupported __fuse_migrations schema; expected columns (package, name) or legacy id"
+                    .to_string(),
+            );
+        }
+
+        db.begin_transaction()?;
+        let result = (|| -> Result<(), String> {
+            db.exec("ALTER TABLE __fuse_migrations RENAME TO __fuse_migrations_legacy")?;
+            db.exec(
+                "CREATE TABLE __fuse_migrations (package TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, applied_at TEXT NOT NULL, PRIMARY KEY (package, name))",
+            )?;
+            db.exec(
+                "INSERT INTO __fuse_migrations (package, name, applied_at) SELECT '' as package, id as name, applied_at FROM __fuse_migrations_legacy",
+            )?;
+            db.exec("DROP TABLE __fuse_migrations_legacy")?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => db.commit_transaction(),
+            Err(err) => {
+                let _ = db.rollback_transaction();
+                Err(err)
+            }
+        }
+    }
+
+    fn value_as_string(value: &Value) -> Option<String> {
+        match value {
+            Value::String(text) => Some(text.clone()),
+            _ => None,
+        }
     }
 
     pub fn run_tests(&mut self, tests: &[TestJob<'_>]) -> Result<Vec<TestOutcome>, String> {
@@ -2527,6 +2590,26 @@ impl Interpreter {
                     ExecError::Runtime("query.insert expects a struct".to_string())
                 })?;
                 let next = query.insert_struct(value).map_err(ExecError::Runtime)?;
+                Ok(Value::Query(next))
+            }
+            "query.upsert" => {
+                if args.len() != 2 {
+                    return Err(ExecError::Runtime(
+                        "query.upsert expects 2 arguments".to_string(),
+                    ));
+                }
+                let query = match args.get(0) {
+                    Some(Value::Query(query)) => query.clone(),
+                    _ => {
+                        return Err(ExecError::Runtime(
+                            "query.upsert expects a Query".to_string(),
+                        ));
+                    }
+                };
+                let value = args.get(1).cloned().ok_or_else(|| {
+                    ExecError::Runtime("query.upsert expects a struct".to_string())
+                })?;
+                let next = query.upsert_struct(value).map_err(ExecError::Runtime)?;
                 Ok(Value::Query(next))
             }
             "query.update" => {

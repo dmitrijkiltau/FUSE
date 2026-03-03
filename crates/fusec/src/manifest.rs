@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 /// Parsed contents of a single `fuse.toml` manifest.
 #[derive(Debug, Clone, Default)]
 pub struct Manifest {
+    /// Optional package name from `[package].name`.
+    pub package_name: Option<String>,
     /// Path to the package entry file (`[package].entry`), resolved relative
     /// to the directory that contains `fuse.toml`.
     pub entry: Option<PathBuf>,
@@ -72,14 +74,26 @@ pub fn parse_manifest_contents(manifest_dir: &Path, contents: &str) -> Manifest 
             continue;
         };
 
-        // [package] section: look for `entry = "..."`.
-        if in_package && unquote_toml_key(key) == "entry" {
-            if let Some(entry_str) = parse_toml_string(value) {
-                if !entry_str.is_empty() {
-                    manifest.entry = Some(manifest_dir.join(&entry_str));
+        // [package] section: look for `name = "..."` and `entry = "..."`.
+        if in_package {
+            let package_key = unquote_toml_key(key);
+            if package_key == "name" {
+                if let Some(name) = parse_toml_string(value) {
+                    let trimmed = name.trim();
+                    if !trimmed.is_empty() {
+                        manifest.package_name = Some(trimmed.to_string());
+                    }
                 }
+                continue;
             }
-            continue;
+            if package_key == "entry" {
+                if let Some(entry_str) = parse_toml_string(value) {
+                    if !entry_str.is_empty() {
+                        manifest.entry = Some(manifest_dir.join(&entry_str));
+                    }
+                }
+                continue;
+            }
         }
 
         // [dependencies.DepName] section table: look for `path = "..."`.
@@ -404,5 +418,16 @@ Auth = "./deps/auth" # inline comment
         let manifest = parse_manifest_contents(Path::new("/project"), contents);
         assert!(manifest.entry.is_some());
         assert!(manifest.deps.contains_key("Auth"));
+    }
+
+    #[test]
+    fn parse_package_name() {
+        let contents = r#"
+[package]
+name = "Auth"
+entry = "main.fuse"
+"#;
+        let manifest = parse_manifest_contents(Path::new("/project"), contents);
+        assert_eq!(manifest.package_name.as_deref(), Some("Auth"));
     }
 }

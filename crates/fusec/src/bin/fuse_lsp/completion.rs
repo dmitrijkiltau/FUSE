@@ -999,6 +999,7 @@ fn builtin_receiver_methods(receiver: &str) -> &'static [&'static str] {
             "offset",
             "order_by",
             "insert",
+            "upsert",
             "update",
             "delete",
             "set",

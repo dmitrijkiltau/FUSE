@@ -258,6 +258,7 @@ pub(crate) struct HostCalls {
     query_order_by: FuncId,
     query_limit: FuncId,
     query_insert: FuncId,
+    query_upsert: FuncId,
     query_update: FuncId,
     query_delete: FuncId,
     query_count: FuncId,
@@ -487,6 +488,10 @@ impl JitRuntime {
         builder.symbol(
             "fuse_native_query_insert",
             fuse_native_query_insert as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_query_upsert",
+            fuse_native_query_upsert as *const u8,
         );
         builder.symbol(
             "fuse_native_query_update",
@@ -1034,6 +1039,9 @@ impl HostCalls {
         let query_insert = module
             .declare_function("fuse_native_query_insert", Linkage::Import, &builtin_sig)
             .expect("declare query insert hostcall");
+        let query_upsert = module
+            .declare_function("fuse_native_query_upsert", Linkage::Import, &builtin_sig)
+            .expect("declare query upsert hostcall");
         let query_update = module
             .declare_function("fuse_native_query_update", Linkage::Import, &builtin_sig)
             .expect("declare query update hostcall");
@@ -1148,6 +1156,7 @@ impl HostCalls {
             query_order_by,
             query_limit,
             query_insert,
+            query_upsert,
             query_update,
             query_delete,
             query_count,
@@ -4721,6 +4730,46 @@ extern "C" fn fuse_native_query_insert(
 }
 
 #[unsafe(no_mangle)]
+extern "C" fn fuse_native_query_upsert(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len != 2 {
+        return builtin_runtime_error(out, heap, "query.upsert expects 2 arguments");
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(query_val) = args.get(0).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.upsert expects a Query");
+    };
+    let Value::Query(query) = query_val else {
+        return builtin_runtime_error(out, heap, "query.upsert expects a Query");
+    };
+    let Some(value) = args.get(1).and_then(|v| v.to_value(heap_ref)) else {
+        return builtin_runtime_error(out, heap, "query.upsert expects a struct");
+    };
+    let next = match query.upsert_struct(value) {
+        Ok(next) => next,
+        Err(err) => return builtin_runtime_error(out, heap, err),
+    };
+    let value = Value::Query(next);
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "query.upsert result unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn fuse_native_query_update(
     heap: *mut NativeHeap,
     args: *const NativeValue,
@@ -6426,6 +6475,7 @@ fn compile_function<M: Module>(
                                 "query.order_by" => hostcalls.query_order_by,
                                 "query.limit" => hostcalls.query_limit,
                                 "query.insert" => hostcalls.query_insert,
+                                "query.upsert" => hostcalls.query_upsert,
                                 "query.update" => hostcalls.query_update,
                                 "query.delete" => hostcalls.query_delete,
                                 "query.count" => hostcalls.query_count,
@@ -7359,6 +7409,7 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     | "query.order_by"
                     | "query.limit"
                     | "query.insert"
+                    | "query.upsert"
                     | "query.update"
                     | "query.delete"
                     | "query.count"
@@ -7934,6 +7985,7 @@ fn analyze_types(
                                 | "query.order_by"
                                 | "query.limit"
                                 | "query.insert"
+                                | "query.upsert"
                                 | "query.update"
                                 | "query.delete"
                                 | "query.count"

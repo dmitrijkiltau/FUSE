@@ -533,6 +533,8 @@ Module capabilities:
 - duplicate capability declarations in one module are semantic errors
 - capability checks are compile-time only (no runtime capability guard)
 - calls requiring capabilities are rejected when the current module does not declare them
+- `requires db` gates `db.exec/query/one/from` and query-builder calls reachable from `db.from(...)`
+  (`select`, `where`, `order_by`, `limit`, `insert`, `upsert`, `update`, `delete`, `count`, `one`, `all`, `exec`, `sql`, `params`)
 - `requires time` gates access to runtime `time.*` builtins (`now`, `format`, `parse`, `sleep`)
 - `requires crypto` gates access to runtime `crypto.*` builtins (`hash`, `hmac`, `random_bytes`, `constant_time_eq`)
 - call sites to imported module functions must declare every capability required by the callee module
