@@ -172,6 +172,56 @@ fn other() -> String:
 }
 
 #[test]
+fn check_meta_excludes_virtual_std_error_modules() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let manifest = r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#;
+    fs::write(dir.join("fuse.toml"), manifest).expect("write fuse.toml");
+
+    let main_src = r#"
+import { BadRequest } from "std.Error"
+
+app "Demo":
+  print("ok")
+"#;
+    fs::write(dir.join("main.fuse"), main_src).expect("write main.fuse");
+
+    let first = run_check_project(&dir);
+    assert!(
+        first.status.success(),
+        "check stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let cache_path = dir.join(".fuse").join("build").join("check.meta");
+    let first_cache = fs::read(&cache_path).expect("read check meta");
+    let first_meta: TestIrMeta = bincode::deserialize(&first_cache).expect("decode check meta");
+    assert!(
+        first_meta
+            .files
+            .iter()
+            .all(|file| !file.path.starts_with('<')),
+        "virtual module path leaked into check.meta: {first_meta:?}"
+    );
+
+    let second = run_check_project(&dir);
+    assert!(
+        second.status.success(),
+        "check stderr: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second_cache = fs::read(&cache_path).expect("read check meta second run");
+    assert_eq!(first_cache, second_cache, "incremental cache changed");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn dev_emits_compile_error_overlay_event_for_syntax_error() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");

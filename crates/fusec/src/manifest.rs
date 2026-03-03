@@ -86,9 +86,10 @@ pub fn parse_manifest_contents(manifest_dir: &Path, contents: &str) -> Manifest 
         if let Some(dep_name) = current_dep_table.as_deref() {
             if unquote_toml_key(key) == "path" {
                 if let Some(path_str) = parse_toml_string(value) {
-                    manifest
-                        .deps
-                        .insert(dep_name.to_string(), resolve_dep_path(manifest_dir, &path_str));
+                    manifest.deps.insert(
+                        dep_name.to_string(),
+                        resolve_dep_path(manifest_dir, &path_str),
+                    );
                 }
             }
             continue;
@@ -178,7 +179,10 @@ pub fn find_workspace_root_for_entry(entry: &Path) -> PathBuf {
     let start = if entry.is_dir() {
         entry.to_path_buf()
     } else {
-        entry.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+        entry
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
     };
     for ancestor in start.ancestors() {
         if ancestor.join("fuse.toml").exists() {
@@ -334,7 +338,10 @@ entry = "src/main.fuse"
 Auth = "./deps/auth"
 "#;
         let manifest = parse_manifest_contents(Path::new("/project"), contents);
-        assert_eq!(manifest.entry, Some(PathBuf::from("/project/src/main.fuse")));
+        assert_eq!(
+            manifest.entry,
+            Some(PathBuf::from("/project/src/main.fuse"))
+        );
         assert_eq!(
             manifest.deps.get("Auth"),
             Some(&PathBuf::from("/project/deps/auth"))

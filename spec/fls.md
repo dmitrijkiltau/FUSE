@@ -97,6 +97,7 @@ TopDecl        := ImportDecl
                 | MigrationDecl
                 | TestDecl
                 | FnDecl
+                | ComponentDecl
 
 ImportDecl     := "import" ImportSpec NEWLINE
 ImportSpec     := Ident
@@ -158,6 +159,7 @@ ConfigField    := Ident ":" TypeRef "=" Expr NEWLINE
 
 MigrationDecl  := "migration" ( Ident | StringLit | Int ) ":" NEWLINE Block
 TestDecl       := "test" StringLit ":" NEWLINE Block
+ComponentDecl  := "component" Ident ":" NEWLINE Block
 ```
 
 Types:
@@ -213,6 +215,8 @@ SpawnExpr      := "spawn" ":" NEWLINE Block
 
 HtmlBlockSuffix := ":" ( NEWLINE INDENT HtmlChildStmt* DEDENT | Expr )
 HtmlChildStmt   := Expr NEWLINE
+                | IfStmt
+                | ForStmt
 ```
 
 Patterns:
@@ -231,8 +235,10 @@ Notes:
 - `HtmlBlockSuffix` is enabled only in statement value positions (`let`/`var` RHS, `return` expr,
   assignment RHS, expression statements). It is parsed only for call expressions and lowered to a call
   with block-sugar args (`{}` attrs if omitted, plus `List<Html>` children).
-- HTML block children must be expression statements; bare string literals in HTML blocks are lowered to
-  `html.text(...)`, while non-literal expressions are not coerced.
+- HTML block children support expressions, `if`, and `for` statements. Bare string literals in HTML
+  blocks are lowered to `html.text(...)`, while non-literal expressions are not coerced.
+- `if`/`for` HTML child statements are parser sugar lowered to internal list-producing control
+  expressions used only within HTML children lowering.
 - HTML tag calls accept attribute shorthand (`div(class="hero")`) with string literals only; it lowers
   to a standard attrs map argument (`div({"class": "hero"})`).
 - Named call args can use keyword names (`type="button"`, `for="x"`), and named args may omit commas
@@ -246,6 +252,13 @@ Notes:
 - `if` / `else if` / `else` bodies can use either a normal indented block or an inline single statement
   (`if flag: x = 1`).
 - `HtmlBlockSuffix` also supports an inline single child expression (`span(): "FUSE"`).
+- `component Name:` declares an HTML component with implicit params `attrs: Map<String,String>` and
+  `children: List<Html>`; its body must return `Html`. Components are called like functions and accept
+  the same HTML attribute shorthand as built-in tags.
+- In HTML attribute shorthand, `aria-*` attribute names and values are validated at compile time:
+  unknown `aria-*` attributes are rejected; `aria-role` is not a valid attribute (use `role`);
+  `aria-hidden`, `aria-expanded`, `aria-checked`, and `aria-pressed` only accept `"true"` or `"false"`;
+  `aria-level` only accepts a numeric string.
 
 See also: [AST model (structural spec)](#ast-model-structural-spec), [Type system (current static model)](#type-system-current-static-model), [Runtime semantics](runtime.md).
 
@@ -266,6 +279,7 @@ Items:
 - `Type(TypeDecl)`
 - `Enum(EnumDecl)`
 - `Fn(FnDecl)`
+- `Component(ComponentDecl)`
 - `Service(ServiceDecl)`
 - `Config(ConfigDecl)`
 - `App(AppDecl)`
@@ -280,6 +294,7 @@ Declarations:
 - `EnumDecl { name, variants, doc }`
 - `EnumVariant { name, payload }`
 - `FnDecl { name, params, ret, body, doc }`
+- `ComponentDecl { name, body, doc }` — implicit params `attrs: Map<String, String>` and `children: List<Html>` are injected into the body scope; return type is `Html`
 - `ServiceDecl { name, base_path, routes, doc }`
 - `RouteDecl { verb, path, body_type, ret_type, body }`
 - `ConfigDecl { name, fields, doc }`
@@ -321,6 +336,8 @@ Expressions:
 - `Coalesce(left, right)`
 - `BangChain(expr, error?)`
 - `Spawn(block)`
+- `HtmlIf(cond, then_children, else_if, else_children)` (internal parser-sugar node)
+- `HtmlFor(pat, iter, body_children)` (internal parser-sugar node)
 - `Await(expr)`
 - `Box(expr)`
 

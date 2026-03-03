@@ -1,0 +1,44 @@
+# HTML DSL component demo
+
+# A reusable button component.
+# Implicit params: attrs: Map<String, String>, children: List<Html>
+component Button:
+  return button(attrs):
+    children
+
+# A card component with a titled header and body children.
+component Card:
+  let title = attrs["title"] ?? ""
+  return div(class="card"):
+    div(class="card-header"): title
+    div(class="card-body"):
+      children
+
+fn home_page(show_cta: Bool, highlights: List<String>) -> Html:
+  return div(class="container"):
+    h1(): "Welcome"
+    p(): "Components keep HTML structure reusable and typed."
+    if show_cta:
+      Button(
+        type="button"
+        aria_label="Get started"
+        aria_expanded="false"
+      ):
+        "Get Started"
+    else:
+      p(class="muted"): "CTA disabled for this render."
+    Card(title="About"):
+      p(): "Built with the Fuse component model."
+    Card(title="Highlights"):
+      for item in highlights:
+        p(class="feature-item"): item
+
+app "component_demo":
+  let show_cta = true
+  let highlights = [
+    "typed components",
+    "aria attribute checks",
+    "if/for HTML control flow"
+  ]
+  let page = home_page(show_cta, highlights)
+  html.render(page)

@@ -115,6 +115,10 @@ impl<'a> Parser<'a> {
             let decl = self.parse_test_decl(doc);
             return Some(Item::Test(decl));
         }
+        if self.eat_keyword(Keyword::Component).is_some() {
+            let decl = self.parse_component_decl(doc);
+            return Some(Item::Component(decl));
+        }
 
         self.error_here("expected a top-level declaration");
         None
@@ -306,6 +310,19 @@ impl<'a> Parser<'a> {
             name,
             params,
             ret,
+            body,
+            doc,
+            span,
+        }
+    }
+
+    fn parse_component_decl(&mut self, doc: Option<Doc>) -> ComponentDecl {
+        let name = self.expect_ident();
+        self.expect_punct(Punct::Colon);
+        let body = self.parse_block();
+        let span = name.span.merge(body.span);
+        ComponentDecl {
+            name,
             body,
             doc,
             span,
@@ -620,16 +637,7 @@ impl<'a> Parser<'a> {
         let colon = self.expect_punct(Punct::Colon);
         let (children, block_span, output_span) = if self.at_newline() {
             let block = self.parse_block();
-            let mut children = Vec::new();
-            for stmt in block.stmts {
-                match stmt.kind {
-                    StmtKind::Expr(child) => children.push(self.lower_html_block_child(child)),
-                    _ => {
-                        self.diags
-                            .error(stmt.span, "html block children must be expressions");
-                    }
-                }
-            }
+            let children = self.lower_html_block_children(block.stmts);
             (children, block.span, expr.span.merge(block.span))
         } else {
             let child_expr = self.parse_expr_with_html_block();
@@ -673,6 +681,42 @@ impl<'a> Parser<'a> {
                     span: output_span,
                 }
             }
+            // A component call with named-attr shorthand is initially parsed as
+            // StructLit (e.g. `Button(type="button" aria_label="x")`).
+            // When followed by an HTML block suffix, re-interpret it as a Call so
+            // the canonicalize pass can apply the component attrs+children contract.
+            ExprKind::StructLit { name, fields } => {
+                let callee = Expr {
+                    kind: ExprKind::Ident(name.clone()),
+                    span: name.span,
+                };
+                let mut args: Vec<CallArg> = fields
+                    .into_iter()
+                    .map(|f| CallArg {
+                        name: Some(f.name),
+                        value: f.value,
+                        span: f.span,
+                        is_block_sugar: false,
+                    })
+                    .collect();
+                let children_expr = Expr {
+                    kind: ExprKind::ListLit(children),
+                    span: block_span,
+                };
+                args.push(CallArg {
+                    name: None,
+                    value: children_expr,
+                    span: block_span,
+                    is_block_sugar: true,
+                });
+                Expr {
+                    kind: ExprKind::Call {
+                        callee: Box::new(callee),
+                        args,
+                    },
+                    span: output_span,
+                }
+            }
             kind => {
                 self.diags.error(
                     expr.span.merge(colon),
@@ -682,6 +726,61 @@ impl<'a> Parser<'a> {
                     kind,
                     span: expr.span,
                 }
+            }
+        }
+    }
+
+    fn lower_html_block_children(&mut self, stmts: Vec<Stmt>) -> Vec<Expr> {
+        let mut children = Vec::new();
+        for stmt in stmts {
+            if let Some(child) = self.lower_html_block_child_stmt(stmt) {
+                children.push(child);
+            }
+        }
+        children
+    }
+
+    fn lower_html_block_child_stmt(&mut self, stmt: Stmt) -> Option<Expr> {
+        match stmt.kind {
+            StmtKind::Expr(child) => Some(self.lower_html_block_child(child)),
+            StmtKind::If {
+                cond,
+                then_block,
+                else_if,
+                else_block,
+            } => {
+                let then_children = self.lower_html_block_children(then_block.stmts);
+                let else_if = else_if
+                    .into_iter()
+                    .map(|(cond, block)| (cond, self.lower_html_block_children(block.stmts)))
+                    .collect();
+                let else_children = else_block
+                    .map(|block| self.lower_html_block_children(block.stmts))
+                    .unwrap_or_default();
+                Some(Expr {
+                    kind: ExprKind::HtmlIf {
+                        cond: Box::new(cond),
+                        then_children,
+                        else_if,
+                        else_children,
+                    },
+                    span: stmt.span,
+                })
+            }
+            StmtKind::For { pat, iter, block } => Some(Expr {
+                kind: ExprKind::HtmlFor {
+                    pat,
+                    iter: Box::new(iter),
+                    body_children: self.lower_html_block_children(block.stmts),
+                },
+                span: stmt.span,
+            }),
+            _ => {
+                self.diags.error(
+                    stmt.span,
+                    "html block children only support expressions, if, and for",
+                );
+                None
             }
         }
     }
@@ -1972,6 +2071,7 @@ impl ItemStart for TokenKind {
                 | TokenKind::Keyword(Keyword::Type)
                 | TokenKind::Keyword(Keyword::Enum)
                 | TokenKind::Keyword(Keyword::Fn)
+                | TokenKind::Keyword(Keyword::Component)
                 | TokenKind::Keyword(Keyword::Service)
                 | TokenKind::Keyword(Keyword::Config)
                 | TokenKind::Keyword(Keyword::App)

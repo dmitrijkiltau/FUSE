@@ -152,6 +152,9 @@ pub fn run_project_check(
 
     let mut had_errors = false;
     for file in files {
+        if super::is_virtual_module_path(&file) {
+            continue;
+        }
         let src = match fs::read_to_string(&file) {
             Ok(src) => src,
             Err(err) => {

@@ -845,7 +845,6 @@ impl HostCalls {
         let task_await = module
             .declare_function("fuse_native_task_await", Linkage::Import, &iter_sig)
             .expect("declare task await hostcall");
-
         // fuse_native_spawn_async(heap: ptr, name_handle: i64, argc: i32, args: ptr) -> i64
         let mut spawn_async_sig = module.make_signature();
         spawn_async_sig.params.push(AbiParam::new(pointer_ty));
@@ -2419,17 +2418,13 @@ extern "C" fn fuse_native_task_await(
             crate::interp::TaskResult::Ok(value) => {
                 match NativeValue::from_value(&value, heap_ref) {
                     Some(nv) => TaskResultValue::Ok(nv),
-                    None => TaskResultValue::Runtime(
-                        "task result conversion failed".to_string(),
-                    ),
+                    None => TaskResultValue::Runtime("task result conversion failed".to_string()),
                 }
             }
             crate::interp::TaskResult::Error(value) => {
                 match NativeValue::from_value(&value, heap_ref) {
                     Some(nv) => TaskResultValue::Error(nv),
-                    None => TaskResultValue::Runtime(
-                        "task error conversion failed".to_string(),
-                    ),
+                    None => TaskResultValue::Runtime("task error conversion failed".to_string()),
                 }
             }
             crate::interp::TaskResult::Runtime(msg) => TaskResultValue::Runtime(msg),
@@ -2494,6 +2489,10 @@ extern "C" fn fuse_native_add(
     let left = left.unboxed();
     let right = right.unboxed();
     let value = match (left, right) {
+        (Value::List(mut a), Value::List(mut b)) => {
+            a.append(&mut b);
+            Value::List(a)
+        }
         (Value::String(a), Value::String(b)) => Value::String(format!("{a}{b}")),
         (Value::String(a), b) => Value::String(format!("{a}{}", b.to_string_value())),
         (a, Value::String(b)) => Value::String(format!("{}{}", a.to_string_value(), b)),
@@ -3979,14 +3978,32 @@ extern "C" fn fuse_native_html_node(
         Value::List(items) => {
             let mut children = Vec::with_capacity(items.len());
             for item in items {
-                let Value::Html(node) = item else {
-                    return builtin_runtime_error(
-                        out,
-                        heap,
-                        "html.node children must be List<Html>",
-                    );
-                };
-                children.push(node);
+                match item {
+                    Value::Html(node) => children.push(node),
+                    Value::String(text) => children.push(HtmlNode::Text(text)),
+                    Value::List(subitems) => {
+                        for subitem in subitems {
+                            match subitem {
+                                Value::Html(node) => children.push(node),
+                                Value::String(text) => children.push(HtmlNode::Text(text)),
+                                _ => {
+                                    return builtin_runtime_error(
+                                        out,
+                                        heap,
+                                        "html.node children must be Html or String",
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        return builtin_runtime_error(
+                            out,
+                            heap,
+                            "html.node children must be Html or String",
+                        );
+                    }
+                }
             }
             children
         }
@@ -6316,9 +6333,10 @@ fn compile_function<M: Module>(
                     let argc_val = builder.ins().iconst(types::I32, count as i64);
                     let spawn_async_ref =
                         module.declare_func_in_func(hostcalls.spawn_async, builder.func);
-                    let task_handle_inst = builder
-                        .ins()
-                        .call(spawn_async_ref, &[heap_ptr, name_handle_val, argc_val, base]);
+                    let task_handle_inst = builder.ins().call(
+                        spawn_async_ref,
+                        &[heap_ptr, name_handle_val, argc_val, base],
+                    );
                     let task_handle = builder.inst_results(task_handle_inst)[0];
                     let task_slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,

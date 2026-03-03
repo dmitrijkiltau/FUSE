@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::{
-    AppDecl, BinaryOp, Block, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item, Literal, Pattern,
-    PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, TypeRef, TypeRefKind, UnaryOp,
+    AppDecl, BinaryOp, Block, ComponentDecl, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item,
+    Literal, Param, Pattern, PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, TypeRef,
+    TypeRefKind, UnaryOp,
 };
 use crate::callbind::{CallArgSpec, CallBindError, ParamBinding, ParamSpec, bind_call_args};
 use crate::frontend::html_shorthand::{CanonicalizationPhase, validate_named_args_for_phase};
@@ -120,7 +121,14 @@ pub fn lower_program(program: &Program, modules: &ModuleMap) -> Result<IrProgram
     let import_items = HashMap::new();
     let mut module_fn_decls = HashMap::new();
     module_fn_decls.insert(0, collect_function_decls(program));
-    let mut lowerer = Lowerer::new(program, 0, modules, &import_items, Rc::new(module_fn_decls), None);
+    let mut lowerer = Lowerer::new(
+        program,
+        0,
+        modules,
+        &import_items,
+        Rc::new(module_fn_decls),
+        None,
+    );
     lowerer.lower();
     if lowerer.errors.is_empty() {
         Ok(IrProgram {
@@ -144,7 +152,14 @@ fn lower_program_in_module(
     module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
     std_error_module_id: Option<ModuleId>,
 ) -> Result<IrProgram, Vec<String>> {
-    let mut lowerer = Lowerer::new(program, module_id, modules, import_items, module_fn_decls, std_error_module_id);
+    let mut lowerer = Lowerer::new(
+        program,
+        module_id,
+        modules,
+        import_items,
+        module_fn_decls,
+        std_error_module_id,
+    );
     lowerer.lower();
     if lowerer.errors.is_empty() {
         Ok(IrProgram {
@@ -273,6 +288,8 @@ impl<'a> Lowerer<'a> {
                 }
             } else if let Item::Fn(decl) = item {
                 fn_decls.insert(decl.name.name.clone(), decl.clone());
+            } else if let Item::Component(decl) = item {
+                fn_decls.insert(decl.name.name.clone(), component_decl_to_fn(decl));
             } else if let Item::Import(decl) = item {
                 match &decl.spec {
                     crate::ast::ImportSpec::Module { name }
@@ -325,6 +342,7 @@ impl<'a> Lowerer<'a> {
         for item in &self.program.items {
             match item {
                 Item::Fn(decl) => self.lower_fn(decl),
+                Item::Component(decl) => self.lower_component(decl),
                 Item::App(app) => self.lower_app(app),
                 Item::Config(cfg) => self.lower_config(cfg),
                 Item::Type(ty) => self.lower_type(ty),
@@ -383,6 +401,10 @@ impl<'a> Lowerer<'a> {
         }
         self.errors.extend(errors);
         self.insert_extra_functions(extra);
+    }
+
+    fn lower_component(&mut self, decl: &ComponentDecl) {
+        self.lower_fn(&component_decl_to_fn(decl));
     }
 
     fn lower_app(&mut self, app: &AppDecl) {
@@ -688,11 +710,57 @@ fn merge_named<T>(
 fn collect_function_decls(program: &Program) -> HashMap<String, FnDecl> {
     let mut out = HashMap::new();
     for item in &program.items {
-        if let Item::Fn(decl) = item {
-            out.insert(decl.name.name.clone(), decl.clone());
+        match item {
+            Item::Fn(decl) => {
+                out.insert(decl.name.name.clone(), decl.clone());
+            }
+            Item::Component(decl) => {
+                out.insert(decl.name.name.clone(), component_decl_to_fn(decl));
+            }
+            _ => {}
         }
     }
     out
+}
+
+fn component_decl_to_fn(decl: &ComponentDecl) -> FnDecl {
+    let span = decl.span;
+    let mk_ident = |name: &str| Ident {
+        name: name.to_string(),
+        span,
+    };
+    let mk_simple = |name: &str| TypeRef {
+        kind: TypeRefKind::Simple(mk_ident(name)),
+        span,
+    };
+    let mk_generic = |base: &str, args: Vec<TypeRef>| TypeRef {
+        kind: TypeRefKind::Generic {
+            base: mk_ident(base),
+            args,
+        },
+        span,
+    };
+    FnDecl {
+        name: decl.name.clone(),
+        params: vec![
+            Param {
+                name: mk_ident("attrs"),
+                ty: mk_generic("Map", vec![mk_simple("String"), mk_simple("String")]),
+                default: None,
+                span,
+            },
+            Param {
+                name: mk_ident("children"),
+                ty: mk_generic("List", vec![mk_simple("Html")]),
+                default: None,
+                span,
+            },
+        ],
+        ret: Some(mk_simple("Html")),
+        body: decl.body.clone(),
+        doc: decl.doc.clone(),
+        span,
+    }
 }
 
 struct FuncBuilder {
@@ -1191,6 +1259,98 @@ impl FuncBuilder {
         for jump in end_jumps {
             self.patch_jump(jump, end);
         }
+    }
+
+    fn lower_html_children_list(&mut self, items: &[Expr]) {
+        for item in items {
+            self.lower_expr(item);
+        }
+        self.emit(Instr::MakeList { len: items.len() });
+    }
+
+    fn lower_html_if_expr(
+        &mut self,
+        cond: &Expr,
+        then_children: &[Expr],
+        else_if: &[(Expr, Vec<Expr>)],
+        else_children: &[Expr],
+    ) {
+        let mut end_jumps = Vec::new();
+
+        self.lower_expr(cond);
+        let jump_to_else = self.emit_placeholder();
+        self.emit(Instr::JumpIfFalse(0));
+        self.lower_html_children_list(then_children);
+        end_jumps.push(self.emit_placeholder());
+        self.emit(Instr::Jump(0));
+        self.patch_jump(jump_to_else, self.code.len());
+
+        for (branch_cond, branch_children) in else_if {
+            self.lower_expr(branch_cond);
+            let jump_next = self.emit_placeholder();
+            self.emit(Instr::JumpIfFalse(0));
+            self.lower_html_children_list(branch_children);
+            end_jumps.push(self.emit_placeholder());
+            self.emit(Instr::Jump(0));
+            self.patch_jump(jump_next, self.code.len());
+        }
+
+        self.lower_html_children_list(else_children);
+
+        let end = self.code.len();
+        for jump in end_jumps {
+            self.patch_jump(jump, end);
+        }
+    }
+
+    fn lower_html_for_expr(&mut self, pat: &Pattern, iter: &Expr, body_children: &[Expr]) {
+        // Accumulate per-iteration children into a single list using list concatenation.
+        self.emit(Instr::MakeList { len: 0 });
+        let out_slot = self.declare_temp();
+        self.emit(Instr::StoreLocal(out_slot));
+
+        self.lower_expr(iter);
+        self.emit(Instr::IterInit);
+        let iter_slot = self.declare_temp();
+        self.emit(Instr::StoreLocal(iter_slot));
+        let item_slot = self.declare_temp();
+
+        self.enter_scope();
+        let mut bindings = Vec::new();
+        self.collect_bindings(pat, &mut bindings);
+        let mut binding_slots = Vec::new();
+        let mut seen = HashSet::new();
+        for ident in bindings {
+            if seen.insert(ident.name.clone()) {
+                let slot = self.declare(&ident);
+                binding_slots.push((ident.name.clone(), slot));
+            }
+        }
+
+        let loop_start = self.code.len();
+        self.emit(Instr::LoadLocal(iter_slot));
+        let iter_next = self.emit_placeholder();
+        self.emit(Instr::IterNext { jump: 0 });
+        self.emit(Instr::StoreLocal(iter_slot));
+        self.emit(Instr::StoreLocal(item_slot));
+
+        let match_idx = self.emit_match(item_slot, pat.clone(), binding_slots);
+        self.emit(Instr::LoadLocal(out_slot));
+        self.lower_html_children_list(body_children);
+        self.emit(Instr::Add);
+        self.emit(Instr::StoreLocal(out_slot));
+        self.emit(Instr::Jump(loop_start));
+
+        let pattern_error = self.code.len();
+        self.emit(Instr::RuntimeError(
+            "for pattern did not match value".to_string(),
+        ));
+
+        let end = self.code.len();
+        self.patch_jump(iter_next, end);
+        self.patch_match_jump(match_idx, pattern_error);
+        self.exit_scope();
+        self.emit(Instr::LoadLocal(out_slot));
     }
 
     fn lower_while(&mut self, cond: &Expr, block: &Block) {
@@ -1745,6 +1905,21 @@ impl FuncBuilder {
                     name: spawn_name,
                     argc: captured.len(),
                 });
+            }
+            ExprKind::HtmlIf {
+                cond,
+                then_children,
+                else_if,
+                else_children,
+            } => {
+                self.lower_html_if_expr(cond, then_children, else_if, else_children);
+            }
+            ExprKind::HtmlFor {
+                pat,
+                iter,
+                body_children,
+            } => {
+                self.lower_html_for_expr(pat, iter, body_children);
             }
             ExprKind::Await { expr } => {
                 self.lower_expr(expr);

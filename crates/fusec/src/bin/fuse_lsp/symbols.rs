@@ -219,6 +219,7 @@ pub(crate) fn collect_qualified_refs(program: &Program) -> Vec<QualifiedNameRef>
                     collect_qualified_expr(&field.value, &mut out);
                 }
             }
+            Item::Component(decl) => collect_qualified_block(&decl.body, &mut out),
             Item::App(decl) => collect_qualified_block(&decl.body, &mut out),
             Item::Migration(decl) => collect_qualified_block(&decl.body, &mut out),
             Item::Test(decl) => collect_qualified_block(&decl.body, &mut out),
@@ -377,6 +378,37 @@ fn collect_qualified_expr(expr: &Expr, out: &mut Vec<QualifiedNameRef>) {
             }
         }
         ExprKind::Spawn { block } => collect_qualified_block(block, out),
+        ExprKind::HtmlIf {
+            cond,
+            then_children,
+            else_if,
+            else_children,
+        } => {
+            collect_qualified_expr(cond, out);
+            for child in then_children {
+                collect_qualified_expr(child, out);
+            }
+            for (branch_cond, branch_children) in else_if {
+                collect_qualified_expr(branch_cond, out);
+                for child in branch_children {
+                    collect_qualified_expr(child, out);
+                }
+            }
+            for child in else_children {
+                collect_qualified_expr(child, out);
+            }
+        }
+        ExprKind::HtmlFor {
+            pat,
+            iter,
+            body_children,
+        } => {
+            collect_qualified_pattern(pat, out);
+            collect_qualified_expr(iter, out);
+            for child in body_children {
+                collect_qualified_expr(child, out);
+            }
+        }
         ExprKind::Await { expr } => collect_qualified_expr(expr, out),
         ExprKind::Box { expr } => collect_qualified_expr(expr, out),
     }
@@ -587,6 +619,15 @@ impl<'a> IndexBuilder<'a> {
                     );
                     self.test_defs.insert(decl.name.value.clone(), def_id);
                 }
+                Item::Component(decl) => {
+                    self.define_global(
+                        &decl.name,
+                        SymbolKind::Function,
+                        format!("component {}", decl.name.name),
+                        decl.doc.as_ref(),
+                        None,
+                    );
+                }
             }
         }
     }
@@ -723,6 +764,12 @@ impl<'a> IndexBuilder<'a> {
             Item::Test(decl) => {
                 let prev = self.current_callable;
                 self.current_callable = self.test_defs.get(&decl.name.value).copied();
+                self.visit_block(&decl.body);
+                self.current_callable = prev;
+            }
+            Item::Component(decl) => {
+                let prev = self.current_callable;
+                self.current_callable = self.globals.get(&decl.name.name).copied();
                 self.visit_block(&decl.body);
                 self.current_callable = prev;
             }
@@ -995,6 +1042,39 @@ impl<'a> IndexBuilder<'a> {
                 }
             }
             ExprKind::Spawn { block } => self.visit_block(block),
+            ExprKind::HtmlIf {
+                cond,
+                then_children,
+                else_if,
+                else_children,
+            } => {
+                self.visit_expr(cond);
+                for child in then_children {
+                    self.visit_expr(child);
+                }
+                for (branch_cond, branch_children) in else_if {
+                    self.visit_expr(branch_cond);
+                    for child in branch_children {
+                        self.visit_expr(child);
+                    }
+                }
+                for child in else_children {
+                    self.visit_expr(child);
+                }
+            }
+            ExprKind::HtmlFor {
+                pat,
+                iter,
+                body_children,
+            } => {
+                self.visit_expr(iter);
+                self.enter_scope();
+                self.visit_pattern(pat);
+                for child in body_children {
+                    self.visit_expr(child);
+                }
+                self.exit_scope();
+            }
             ExprKind::Await { expr } => self.visit_expr(expr),
             ExprKind::Box { expr } => self.visit_expr(expr),
         }

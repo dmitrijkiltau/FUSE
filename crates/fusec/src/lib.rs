@@ -1,9 +1,9 @@
 pub mod ast;
 pub mod callbind;
 pub mod cli;
+pub mod concurrency_metrics;
 pub mod db;
 pub mod diag;
-pub mod manifest;
 pub mod diag_render;
 pub mod format;
 pub mod frontend;
@@ -12,6 +12,7 @@ pub mod interp;
 pub mod ir;
 pub mod lexer;
 pub mod loader;
+pub mod manifest;
 pub mod native;
 pub mod observability;
 pub mod openapi;
@@ -26,7 +27,6 @@ pub mod sema;
 pub mod span;
 mod task_pool;
 pub mod token;
-pub mod concurrency_metrics;
 
 use crate::diag::Diagnostics;
 

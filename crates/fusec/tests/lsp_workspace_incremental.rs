@@ -606,10 +606,7 @@ fn lsp_full_rebuild_triggered_by_manifest_change() {
         &dir.join("fuse.toml"),
         "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
     );
-    write_project_file(
-        &dir.join("main.fuse"),
-        "fn main():\n  print(\"hello\")\n",
-    );
+    write_project_file(&dir.join("main.fuse"), "fn main():\n  print(\"hello\")\n");
     write_project_file(
         &dep_root.join("lib.fuse"),
         "fn helper() -> Int:\n  return 42\n",

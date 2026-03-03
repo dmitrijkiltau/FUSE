@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -258,13 +259,18 @@ impl ModuleLoader {
         }
         if self.visiting.contains(&key) {
             // Build the cycle path for a readable error.
-            let cycle_path = self.visiting
+            let cycle_path = self
+                .visiting
                 .iter()
                 .map(|p| p.display().to_string())
                 .collect::<Vec<_>>();
             self.diags.error(
                 span,
-                format!("circular import: {} → {}", cycle_path.join(" → "), key.display()),
+                format!(
+                    "circular import: {} → {}",
+                    cycle_path.join(" → "),
+                    key.display()
+                ),
             );
             return self.by_path.get(&key).copied();
         }
@@ -272,6 +278,7 @@ impl ModuleLoader {
 
         let src = match src_override {
             Some(src) => src.to_string(),
+            None if is_std_error_virtual_path(&key) => STD_ERROR_MODULE.to_string(),
             None => {
                 if let Some(src) = self.source_overrides.get(&key) {
                     src.clone()
@@ -579,7 +586,7 @@ impl ModuleLoader {
         let Some(unit) = self.modules.get(&module_id) else {
             return;
         };
-        if unit.path.to_string_lossy() == "<std.Error>" {
+        if is_std_error_virtual_path(&unit.path) {
             return;
         }
         for item in &unit.program.items {
@@ -639,7 +646,8 @@ impl ModuleLoader {
                 } else {
                     format!(" — available: {}", available.join(", "))
                 };
-                self.diags.error(span, format!("unknown dependency '{dep}'{hint}"));
+                self.diags
+                    .error(span, format!("unknown dependency '{dep}'{hint}"));
                 return base_dir.join(raw);
             };
             let mut path = root.join(rel);
@@ -698,10 +706,10 @@ impl ModuleLoader {
     }
 
     fn load_std_module(&mut self, name: &str, span: Span) -> Option<ModuleId> {
-        if name != "std.Error" {
+        if name != "std.Error" && name != "<std.Error>" {
             return None;
         }
-        let path = PathBuf::from("<std.Error>");
+        let path = std_error_virtual_path();
         if let Some(id) = self.by_path.get(&path) {
             return Some(*id);
         }
@@ -709,6 +717,9 @@ impl ModuleLoader {
     }
 
     fn normalize_path(&self, path: &Path) -> PathBuf {
+        if is_std_error_virtual_path(path) {
+            return std_error_virtual_path();
+        }
         if let Ok(canon) = path.canonicalize() {
             canon
         } else {
@@ -746,4 +757,15 @@ fn split_qualified_name(name: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((module, item))
+}
+
+fn std_error_virtual_path() -> PathBuf {
+    PathBuf::from("<std.Error>")
+}
+
+fn is_std_error_virtual_path(path: &Path) -> bool {
+    if path.to_string_lossy() == "<std.Error>" {
+        return true;
+    }
+    matches!(path.file_name(), Some(name) if name == OsStr::new("<std.Error>"))
 }

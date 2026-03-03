@@ -658,6 +658,7 @@ Compile-time sugar affecting HTML builtins:
 
 - HTML block syntax (`div(): ...`) lowers to normal calls with explicit attrs + `List<Html>` children
 - bare string literals in HTML blocks lower to `html.text(...)`
+- `if`/`for` child statements in HTML blocks lower to internal list-producing control expressions
 - attribute shorthand (`div(class="hero")`) lowers to attrs maps
 
 ---

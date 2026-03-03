@@ -14,10 +14,10 @@ use fuse_rt::{
 };
 
 use crate::ast::{
-    AppDecl, BinaryOp, Block, ConfigDecl, EnumDecl, Expr, ExprKind, FnDecl, HttpVerb, Ident,
-    InterpPart, Item, Literal, MigrationDecl, Pattern, PatternField, PatternKind, Program,
-    RouteDecl, ServiceDecl, Stmt, StmtKind, StructField, TestDecl, TypeDecl, TypeRef, TypeRefKind,
-    UnaryOp,
+    AppDecl, BinaryOp, Block, ComponentDecl, ConfigDecl, EnumDecl, Expr, ExprKind, FnDecl,
+    HttpVerb, Ident, InterpPart, Item, Literal, MigrationDecl, Param, Pattern, PatternField,
+    PatternKind, Program, RouteDecl, ServiceDecl, Stmt, StmtKind, StructField, TestDecl, TypeDecl,
+    TypeRef, TypeRefKind, UnaryOp,
 };
 use crate::callbind::{
     CallArgSpec, CallBindError, ParamBinding, ParamSpec, bind_call_args, bind_positional_args,
@@ -722,6 +722,12 @@ impl Interpreter {
                         .or_default()
                         .insert(decl.name.name.clone(), decl.clone());
                 }
+                Item::Component(decl) => {
+                    functions
+                        .entry(0)
+                        .or_default()
+                        .insert(decl.name.name.clone(), component_decl_to_fn(decl));
+                }
                 Item::App(app) => {
                     apps.push(app.clone());
                     app_owner.insert(app.name.value.clone(), 0);
@@ -789,6 +795,12 @@ impl Interpreter {
                             .entry(*id)
                             .or_default()
                             .insert(decl.name.name.clone(), decl.clone());
+                    }
+                    Item::Component(decl) => {
+                        functions
+                            .entry(*id)
+                            .or_default()
+                            .insert(decl.name.name.clone(), component_decl_to_fn(decl));
                     }
                     Item::App(app) => {
                         apps.push(app.clone());
@@ -1631,6 +1643,59 @@ impl Interpreter {
                 });
                 Ok(Value::Task(task))
             }
+            ExprKind::HtmlIf {
+                cond,
+                then_children,
+                else_if,
+                else_children,
+            } => {
+                let cond_value = self.eval_expr(cond)?;
+                if self.as_bool(&cond_value)? {
+                    return Ok(Value::List(self.eval_html_child_values(then_children)?));
+                }
+                for (branch_cond, branch_children) in else_if {
+                    let branch_value = self.eval_expr(branch_cond)?;
+                    if self.as_bool(&branch_value)? {
+                        return Ok(Value::List(self.eval_html_child_values(branch_children)?));
+                    }
+                }
+                Ok(Value::List(self.eval_html_child_values(else_children)?))
+            }
+            ExprKind::HtmlFor {
+                pat,
+                iter,
+                body_children,
+            } => {
+                let iter_value = self.eval_expr(iter)?.unboxed();
+                let items = match iter_value {
+                    Value::List(items) => items,
+                    Value::Map(items) => items.into_values().collect(),
+                    other => {
+                        return Err(ExecError::Runtime(format!(
+                            "cannot iterate over {}",
+                            self.value_type_name(&other)
+                        )));
+                    }
+                };
+                let mut out = Vec::new();
+                for item in items {
+                    let mut bindings = HashMap::new();
+                    if !self.match_pattern(&item, pat, &mut bindings)? {
+                        return Err(ExecError::Runtime(
+                            "for pattern did not match value".to_string(),
+                        ));
+                    }
+                    self.env.push();
+                    for (name, value) in bindings {
+                        self.env.insert(&name, value);
+                    }
+                    let chunk = self.eval_html_child_values(body_children);
+                    self.env.pop();
+                    let mut chunk = chunk?;
+                    out.append(&mut chunk);
+                }
+                Ok(Value::List(out))
+            }
             ExprKind::Await { expr } => {
                 let value = self.eval_expr(expr)?;
                 match value {
@@ -1646,6 +1711,14 @@ impl Interpreter {
                 }
             }
         }
+    }
+
+    fn eval_html_child_values(&mut self, children: &[Expr]) -> ExecResult<Vec<Value>> {
+        let mut values = Vec::with_capacity(children.len());
+        for child in children {
+            values.push(self.eval_expr(child)?);
+        }
+        Ok(values)
     }
 
     fn db_url(&self) -> ExecResult<String> {
@@ -2116,14 +2189,7 @@ impl Interpreter {
                 let children = match args.get(2) {
                     Some(Value::List(items)) => {
                         let mut children = Vec::with_capacity(items.len());
-                        for item in items {
-                            let Value::Html(node) = item else {
-                                return Err(ExecError::Runtime(
-                                    "html.node children must be List<Html>".to_string(),
-                                ));
-                            };
-                            children.push(node.clone());
-                        }
+                        collect_html_children(items, &mut children, "html.node")?;
                         children
                     }
                     _ => {
@@ -2803,15 +2869,7 @@ impl Interpreter {
             HtmlTagKind::Normal => match args.get(1) {
                 Some(Value::List(items)) => {
                     let mut children = Vec::with_capacity(items.len());
-                    for item in items {
-                        let Value::Html(node) = item else {
-                            return Err(ExecError::Runtime(format!(
-                                "{} children must be List<Html>",
-                                name
-                            )));
-                        };
-                        children.push(node.clone());
-                    }
+                    collect_html_children(items, &mut children, name)?;
                     children
                 }
                 Some(_) => {
@@ -4095,6 +4153,10 @@ impl Interpreter {
         let left = left.unboxed();
         let right = right.unboxed();
         match (left, right) {
+            (Value::List(mut a), Value::List(mut b)) => {
+                a.append(&mut b);
+                Ok(Value::List(a))
+            }
             (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
             (Value::String(a), b) => Ok(Value::String(format!("{a}{}", b.to_string_value()))),
             (a, Value::String(b)) => Ok(Value::String(format!("{}{}", a.to_string_value(), b))),
@@ -5030,6 +5092,82 @@ fn normalize_openapi_ui_path(raw: &str) -> String {
         path.pop();
     }
     path
+}
+
+/// Synthesise a `FnDecl` from a `ComponentDecl`, binding the implicit
+/// `attrs: Map<String, String>` and `children: List<Html>` parameters and
+/// an `Html` return type.
+fn component_decl_to_fn(decl: &ComponentDecl) -> FnDecl {
+    let span = decl.span;
+    let mk_ident = |name: &str| Ident {
+        name: name.to_string(),
+        span,
+    };
+    let mk_simple = |name: &str| TypeRef {
+        kind: TypeRefKind::Simple(mk_ident(name)),
+        span,
+    };
+    let mk_generic = |base: &str, args: Vec<TypeRef>| TypeRef {
+        kind: TypeRefKind::Generic {
+            base: mk_ident(base),
+            args,
+        },
+        span,
+    };
+    let attrs_param = Param {
+        name: mk_ident("attrs"),
+        ty: mk_generic("Map", vec![mk_simple("String"), mk_simple("String")]),
+        default: None,
+        span,
+    };
+    let children_param = Param {
+        name: mk_ident("children"),
+        ty: mk_generic("List", vec![mk_simple("Html")]),
+        default: None,
+        span,
+    };
+    FnDecl {
+        name: decl.name.clone(),
+        params: vec![attrs_param, children_param],
+        ret: Some(mk_simple("Html")),
+        body: decl.body.clone(),
+        doc: decl.doc.clone(),
+        span,
+    }
+}
+
+/// Collect HTML child nodes from a list value, supporting:
+/// - `Html` items: added directly
+/// - `String` items: coerced to `HtmlNode::Text`
+/// - `List<Html|String>` items: spread (recursive flatten one level)
+fn collect_html_children(items: &[Value], out: &mut Vec<HtmlNode>, ctx: &str) -> ExecResult<()> {
+    for item in items {
+        match item {
+            Value::Html(node) => out.push(node.clone()),
+            Value::String(text) => out.push(HtmlNode::Text(text.clone())),
+            Value::List(subitems) => {
+                for subitem in subitems {
+                    match subitem {
+                        Value::Html(node) => out.push(node.clone()),
+                        Value::String(text) => out.push(HtmlNode::Text(text.clone())),
+                        other => {
+                            return Err(ExecError::Runtime(format!(
+                                "{} children must be Html or String, got {:?}",
+                                ctx, other
+                            )));
+                        }
+                    }
+                }
+            }
+            other => {
+                return Err(ExecError::Runtime(format!(
+                    "{} children must be Html or String, got {:?}",
+                    ctx, other
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn openapi_ui_html(spec_url: &str) -> String {

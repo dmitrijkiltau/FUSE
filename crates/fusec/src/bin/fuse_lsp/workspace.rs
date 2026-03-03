@@ -14,9 +14,8 @@ use fusec::span::Span;
 
 use super::super::{
     CallRef, Index, IndexBuilder, LspState, QualifiedCallRef, STD_ERROR_MODULE_SOURCE, SymbolDef,
-    SymbolKind, SymbolRef, collect_qualified_refs, line_col_to_offset, line_offsets,
-    location_json, offset_to_line_col, path_to_uri, range_json, span_contains, span_range_json,
-    uri_to_path,
+    SymbolKind, SymbolRef, collect_qualified_refs, line_col_to_offset, line_offsets, location_json,
+    offset_to_line_col, path_to_uri, range_json, span_contains, span_range_json, uri_to_path,
 };
 
 pub(crate) struct WorkspaceCache {
@@ -1386,8 +1385,7 @@ pub(crate) fn build_workspace_index_cached<'a>(
         if let Some(cached_index) = load_persisted_workspace_index(&workspace_root, &fingerprint) {
             snapshot.index = Some(cached_index);
         } else {
-            snapshot.index =
-                build_workspace_from_registry(&snapshot.registry, &snapshot.overrides);
+            snapshot.index = build_workspace_from_registry(&snapshot.registry, &snapshot.overrides);
             if let Some(index) = &snapshot.index {
                 persist_workspace_index(&workspace_root, &fingerprint, index);
             }
@@ -1666,7 +1664,10 @@ fn lsp_cache_dir(workspace_root: &Path) -> PathBuf {
 /// Try to load a previously persisted `WorkspaceIndex` whose fingerprint hash
 /// matches the current workspace state.  Returns `None` if no valid cache
 /// exists or the cache cannot be decoded.
-fn load_persisted_workspace_index(workspace_root: &Path, fingerprint: &str) -> Option<WorkspaceIndex> {
+fn load_persisted_workspace_index(
+    workspace_root: &Path,
+    fingerprint: &str,
+) -> Option<WorkspaceIndex> {
     let hash = fingerprint_hash(fingerprint);
     let path = lsp_cache_dir(workspace_root).join(format!("lsp-index-{hash:016x}.json"));
     let text = std::fs::read_to_string(&path).ok()?;
@@ -1698,107 +1699,181 @@ fn serialize_symbol_def(def: &SymbolDef) -> JsonValue {
     m.insert("d".to_string(), JsonValue::String(def.detail.clone()));
     m.insert(
         "c".to_string(),
-        def.container.as_deref().map_or(JsonValue::Null, |c| JsonValue::String(c.to_string())),
+        def.container
+            .as_deref()
+            .map_or(JsonValue::Null, |c| JsonValue::String(c.to_string())),
     );
     m.insert(
         "doc".to_string(),
-        def.doc.as_deref().map_or(JsonValue::Null, |d| JsonValue::String(d.to_string())),
+        def.doc
+            .as_deref()
+            .map_or(JsonValue::Null, |d| JsonValue::String(d.to_string())),
     );
     JsonValue::Object(m)
 }
 
 fn deserialize_symbol_def(v: &JsonValue) -> Option<SymbolDef> {
-    let JsonValue::Object(m) = v else { return None; };
-    let name = match m.get("n") { Some(JsonValue::String(s)) => s.clone(), _ => return None };
-    let span_start = match m.get("s") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-    let span_end = match m.get("e") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-    let kind_u8 = match m.get("k") { Some(JsonValue::Number(n)) => *n as u8, _ => return None };
+    let JsonValue::Object(m) = v else {
+        return None;
+    };
+    let name = match m.get("n") {
+        Some(JsonValue::String(s)) => s.clone(),
+        _ => return None,
+    };
+    let span_start = match m.get("s") {
+        Some(JsonValue::Number(n)) => *n as usize,
+        _ => return None,
+    };
+    let span_end = match m.get("e") {
+        Some(JsonValue::Number(n)) => *n as usize,
+        _ => return None,
+    };
+    let kind_u8 = match m.get("k") {
+        Some(JsonValue::Number(n)) => *n as u8,
+        _ => return None,
+    };
     let kind = SymbolKind::from_u8(kind_u8)?;
-    let detail = match m.get("d") { Some(JsonValue::String(s)) => s.clone(), _ => String::new() };
-    let container = match m.get("c") { Some(JsonValue::String(s)) => Some(s.clone()), _ => None };
-    let doc = match m.get("doc") { Some(JsonValue::String(s)) => Some(s.clone()), _ => None };
-    Some(SymbolDef { name, span: fusec::span::Span::new(span_start, span_end), kind, detail, container, doc })
+    let detail = match m.get("d") {
+        Some(JsonValue::String(s)) => s.clone(),
+        _ => String::new(),
+    };
+    let container = match m.get("c") {
+        Some(JsonValue::String(s)) => Some(s.clone()),
+        _ => None,
+    };
+    let doc = match m.get("doc") {
+        Some(JsonValue::String(s)) => Some(s.clone()),
+        _ => None,
+    };
+    Some(SymbolDef {
+        name,
+        span: fusec::span::Span::new(span_start, span_end),
+        kind,
+        detail,
+        container,
+        doc,
+    })
 }
 
 fn serialize_workspace_index(index: &WorkspaceIndex) -> Option<String> {
-    let files_json: Vec<JsonValue> = index.files.iter().map(|file| {
-        let defs_json: Vec<JsonValue> = file.index.defs.iter().map(serialize_symbol_def).collect();
-        let refs_json: Vec<JsonValue> = file.index.refs.iter().map(|r| {
+    let files_json: Vec<JsonValue> = index
+        .files
+        .iter()
+        .map(|file| {
+            let defs_json: Vec<JsonValue> =
+                file.index.defs.iter().map(serialize_symbol_def).collect();
+            let refs_json: Vec<JsonValue> = file
+                .index
+                .refs
+                .iter()
+                .map(|r| {
+                    let mut m = BTreeMap::new();
+                    m.insert("s".to_string(), JsonValue::Number(r.span.start as f64));
+                    m.insert("e".to_string(), JsonValue::Number(r.span.end as f64));
+                    m.insert("t".to_string(), JsonValue::Number(r.target as f64));
+                    JsonValue::Object(m)
+                })
+                .collect();
+            let calls_json: Vec<JsonValue> = file
+                .index
+                .calls
+                .iter()
+                .map(|c| {
+                    let mut m = BTreeMap::new();
+                    m.insert("s".to_string(), JsonValue::Number(c.span.start as f64));
+                    m.insert("e".to_string(), JsonValue::Number(c.span.end as f64));
+                    m.insert("from".to_string(), JsonValue::Number(c.caller as f64));
+                    m.insert("to".to_string(), JsonValue::Number(c.callee as f64));
+                    JsonValue::Object(m)
+                })
+                .collect();
+            let qcalls_json: Vec<JsonValue> = file
+                .index
+                .qualified_calls
+                .iter()
+                .map(|q| {
+                    let mut m = BTreeMap::new();
+                    m.insert("s".to_string(), JsonValue::Number(q.span.start as f64));
+                    m.insert("e".to_string(), JsonValue::Number(q.span.end as f64));
+                    m.insert("from".to_string(), JsonValue::Number(q.caller as f64));
+                    m.insert("mod".to_string(), JsonValue::String(q.module.clone()));
+                    m.insert("item".to_string(), JsonValue::String(q.item.clone()));
+                    JsonValue::Object(m)
+                })
+                .collect();
+            let def_map_json: Vec<JsonValue> = file
+                .def_map
+                .iter()
+                .map(|&id| JsonValue::Number(id as f64))
+                .collect();
+            let qrefs_json: Vec<JsonValue> = file
+                .qualified_refs
+                .iter()
+                .map(|q| {
+                    let mut m = BTreeMap::new();
+                    m.insert("s".to_string(), JsonValue::Number(q.span.start as f64));
+                    m.insert("e".to_string(), JsonValue::Number(q.span.end as f64));
+                    m.insert("t".to_string(), JsonValue::Number(q.target as f64));
+                    JsonValue::Object(m)
+                })
+                .collect();
+            let mut fm = BTreeMap::new();
+            fm.insert("uri".to_string(), JsonValue::String(file.uri.clone()));
+            fm.insert("text".to_string(), JsonValue::String(file.text.clone()));
+            fm.insert("defs".to_string(), JsonValue::Array(defs_json));
+            fm.insert("refs".to_string(), JsonValue::Array(refs_json));
+            fm.insert("calls".to_string(), JsonValue::Array(calls_json));
+            fm.insert("qcalls".to_string(), JsonValue::Array(qcalls_json));
+            fm.insert("def_map".to_string(), JsonValue::Array(def_map_json));
+            fm.insert("qrefs".to_string(), JsonValue::Array(qrefs_json));
+            JsonValue::Object(fm)
+        })
+        .collect();
+
+    let global_defs_json: Vec<JsonValue> = index
+        .defs
+        .iter()
+        .map(|wd| {
             let mut m = BTreeMap::new();
+            m.insert("id".to_string(), JsonValue::Number(wd.id as f64));
+            m.insert("uri".to_string(), JsonValue::String(wd.uri.clone()));
+            let def_json = match serialize_symbol_def(&wd.def) {
+                JsonValue::Object(obj) => obj,
+                _ => return JsonValue::Null,
+            };
+            for (k, v) in def_json {
+                m.insert(k, v);
+            }
+            JsonValue::Object(m)
+        })
+        .collect();
+
+    let global_refs_json: Vec<JsonValue> = index
+        .refs
+        .iter()
+        .map(|r| {
+            let mut m = BTreeMap::new();
+            m.insert("uri".to_string(), JsonValue::String(r.uri.clone()));
             m.insert("s".to_string(), JsonValue::Number(r.span.start as f64));
             m.insert("e".to_string(), JsonValue::Number(r.span.end as f64));
             m.insert("t".to_string(), JsonValue::Number(r.target as f64));
             JsonValue::Object(m)
-        }).collect();
-        let calls_json: Vec<JsonValue> = file.index.calls.iter().map(|c| {
+        })
+        .collect();
+
+    let global_calls_json: Vec<JsonValue> = index
+        .calls
+        .iter()
+        .map(|c| {
             let mut m = BTreeMap::new();
+            m.insert("uri".to_string(), JsonValue::String(c.uri.clone()));
             m.insert("s".to_string(), JsonValue::Number(c.span.start as f64));
             m.insert("e".to_string(), JsonValue::Number(c.span.end as f64));
-            m.insert("from".to_string(), JsonValue::Number(c.caller as f64));
-            m.insert("to".to_string(), JsonValue::Number(c.callee as f64));
+            m.insert("from".to_string(), JsonValue::Number(c.from as f64));
+            m.insert("to".to_string(), JsonValue::Number(c.to as f64));
             JsonValue::Object(m)
-        }).collect();
-        let qcalls_json: Vec<JsonValue> = file.index.qualified_calls.iter().map(|q| {
-            let mut m = BTreeMap::new();
-            m.insert("s".to_string(), JsonValue::Number(q.span.start as f64));
-            m.insert("e".to_string(), JsonValue::Number(q.span.end as f64));
-            m.insert("from".to_string(), JsonValue::Number(q.caller as f64));
-            m.insert("mod".to_string(), JsonValue::String(q.module.clone()));
-            m.insert("item".to_string(), JsonValue::String(q.item.clone()));
-            JsonValue::Object(m)
-        }).collect();
-        let def_map_json: Vec<JsonValue> = file.def_map.iter()
-            .map(|&id| JsonValue::Number(id as f64))
-            .collect();
-        let qrefs_json: Vec<JsonValue> = file.qualified_refs.iter().map(|q| {
-            let mut m = BTreeMap::new();
-            m.insert("s".to_string(), JsonValue::Number(q.span.start as f64));
-            m.insert("e".to_string(), JsonValue::Number(q.span.end as f64));
-            m.insert("t".to_string(), JsonValue::Number(q.target as f64));
-            JsonValue::Object(m)
-        }).collect();
-        let mut fm = BTreeMap::new();
-        fm.insert("uri".to_string(), JsonValue::String(file.uri.clone()));
-        fm.insert("text".to_string(), JsonValue::String(file.text.clone()));
-        fm.insert("defs".to_string(), JsonValue::Array(defs_json));
-        fm.insert("refs".to_string(), JsonValue::Array(refs_json));
-        fm.insert("calls".to_string(), JsonValue::Array(calls_json));
-        fm.insert("qcalls".to_string(), JsonValue::Array(qcalls_json));
-        fm.insert("def_map".to_string(), JsonValue::Array(def_map_json));
-        fm.insert("qrefs".to_string(), JsonValue::Array(qrefs_json));
-        JsonValue::Object(fm)
-    }).collect();
-
-    let global_defs_json: Vec<JsonValue> = index.defs.iter().map(|wd| {
-        let mut m = BTreeMap::new();
-        m.insert("id".to_string(), JsonValue::Number(wd.id as f64));
-        m.insert("uri".to_string(), JsonValue::String(wd.uri.clone()));
-        let def_json = match serialize_symbol_def(&wd.def) {
-            JsonValue::Object(obj) => obj,
-            _ => return JsonValue::Null,
-        };
-        for (k, v) in def_json { m.insert(k, v); }
-        JsonValue::Object(m)
-    }).collect();
-
-    let global_refs_json: Vec<JsonValue> = index.refs.iter().map(|r| {
-        let mut m = BTreeMap::new();
-        m.insert("uri".to_string(), JsonValue::String(r.uri.clone()));
-        m.insert("s".to_string(), JsonValue::Number(r.span.start as f64));
-        m.insert("e".to_string(), JsonValue::Number(r.span.end as f64));
-        m.insert("t".to_string(), JsonValue::Number(r.target as f64));
-        JsonValue::Object(m)
-    }).collect();
-
-    let global_calls_json: Vec<JsonValue> = index.calls.iter().map(|c| {
-        let mut m = BTreeMap::new();
-        m.insert("uri".to_string(), JsonValue::String(c.uri.clone()));
-        m.insert("s".to_string(), JsonValue::Number(c.span.start as f64));
-        m.insert("e".to_string(), JsonValue::Number(c.span.end as f64));
-        m.insert("from".to_string(), JsonValue::Number(c.from as f64));
-        m.insert("to".to_string(), JsonValue::Number(c.to as f64));
-        JsonValue::Object(m)
-    }).collect();
+        })
+        .collect();
 
     // module_alias_exports: HashMap<String, HashMap<String, HashSet<String>>>
     let mut aliases_obj = BTreeMap::new();
@@ -1835,73 +1910,168 @@ fn serialize_workspace_index(index: &WorkspaceIndex) -> Option<String> {
 
 fn deserialize_workspace_index(json: &str) -> Option<WorkspaceIndex> {
     let root = fuse_rt::json::decode(json).ok()?;
-    let JsonValue::Object(root) = root else { return None; };
+    let JsonValue::Object(root) = root else {
+        return None;
+    };
     match root.get("v") {
         Some(JsonValue::Number(v)) if *v as u32 == 1 => {}
         _ => return None,
     }
 
-    let JsonValue::Array(files_arr) = root.get("files")? else { return None; };
+    let JsonValue::Array(files_arr) = root.get("files")? else {
+        return None;
+    };
     let mut files = Vec::new();
     let mut file_by_uri = HashMap::new();
 
     for fv in files_arr {
-        let JsonValue::Object(fm) = fv else { return None; };
-        let uri = match fm.get("uri") { Some(JsonValue::String(s)) => s.clone(), _ => return None };
-        let text = match fm.get("text") { Some(JsonValue::String(s)) => s.clone(), _ => return None };
+        let JsonValue::Object(fm) = fv else {
+            return None;
+        };
+        let uri = match fm.get("uri") {
+            Some(JsonValue::String(s)) => s.clone(),
+            _ => return None,
+        };
+        let text = match fm.get("text") {
+            Some(JsonValue::String(s)) => s.clone(),
+            _ => return None,
+        };
 
         let defs: Vec<SymbolDef> = match fm.get("defs") {
             Some(JsonValue::Array(arr)) => arr.iter().filter_map(deserialize_symbol_def).collect(),
             _ => return None,
         };
         let refs: Vec<SymbolRef> = match fm.get("refs") {
-            Some(JsonValue::Array(arr)) => arr.iter().filter_map(|v| {
-                let JsonValue::Object(m) = v else { return None; };
-                let s = match m.get("s") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-                let e = match m.get("e") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-                let t = match m.get("t") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-                Some(SymbolRef { span: fusec::span::Span::new(s, e), target: t })
-            }).collect(),
+            Some(JsonValue::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| {
+                    let JsonValue::Object(m) = v else {
+                        return None;
+                    };
+                    let s = match m.get("s") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let e = match m.get("e") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let t = match m.get("t") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    Some(SymbolRef {
+                        span: fusec::span::Span::new(s, e),
+                        target: t,
+                    })
+                })
+                .collect(),
             _ => return None,
         };
         let calls: Vec<CallRef> = match fm.get("calls") {
-            Some(JsonValue::Array(arr)) => arr.iter().filter_map(|v| {
-                let JsonValue::Object(m) = v else { return None; };
-                let s = match m.get("s") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-                let e = match m.get("e") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-                let from = match m.get("from") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-                let to = match m.get("to") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-                Some(CallRef { caller: from, callee: to, span: fusec::span::Span::new(s, e) })
-            }).collect(),
+            Some(JsonValue::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| {
+                    let JsonValue::Object(m) = v else {
+                        return None;
+                    };
+                    let s = match m.get("s") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let e = match m.get("e") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let from = match m.get("from") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let to = match m.get("to") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    Some(CallRef {
+                        caller: from,
+                        callee: to,
+                        span: fusec::span::Span::new(s, e),
+                    })
+                })
+                .collect(),
             _ => return None,
         };
         let qcalls: Vec<QualifiedCallRef> = match fm.get("qcalls") {
-            Some(JsonValue::Array(arr)) => arr.iter().filter_map(|v| {
-                let JsonValue::Object(m) = v else { return None; };
-                let s = match m.get("s") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-                let e = match m.get("e") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-                let from = match m.get("from") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-                let module = match m.get("mod") { Some(JsonValue::String(s)) => s.clone(), _ => return None };
-                let item = match m.get("item") { Some(JsonValue::String(s)) => s.clone(), _ => return None };
-                Some(QualifiedCallRef { caller: from, module, item, span: fusec::span::Span::new(s, e) })
-            }).collect(),
+            Some(JsonValue::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| {
+                    let JsonValue::Object(m) = v else {
+                        return None;
+                    };
+                    let s = match m.get("s") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let e = match m.get("e") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let from = match m.get("from") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let module = match m.get("mod") {
+                        Some(JsonValue::String(s)) => s.clone(),
+                        _ => return None,
+                    };
+                    let item = match m.get("item") {
+                        Some(JsonValue::String(s)) => s.clone(),
+                        _ => return None,
+                    };
+                    Some(QualifiedCallRef {
+                        caller: from,
+                        module,
+                        item,
+                        span: fusec::span::Span::new(s, e),
+                    })
+                })
+                .collect(),
             _ => return None,
         };
         let def_map: Vec<usize> = match fm.get("def_map") {
-            Some(JsonValue::Array(arr)) => arr.iter().filter_map(|v| match v {
-                JsonValue::Number(n) => Some(*n as usize),
-                _ => None,
-            }).collect(),
+            Some(JsonValue::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| match v {
+                    JsonValue::Number(n) => Some(*n as usize),
+                    _ => None,
+                })
+                .collect(),
             _ => return None,
         };
         let qualified_refs: Vec<QualifiedRef> = match fm.get("qrefs") {
-            Some(JsonValue::Array(arr)) => arr.iter().filter_map(|v| {
-                let JsonValue::Object(m) = v else { return None; };
-                let s = match m.get("s") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-                let e = match m.get("e") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-                let t = match m.get("t") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-                Some(QualifiedRef { span: fusec::span::Span::new(s, e), target: t })
-            }).collect(),
+            Some(JsonValue::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| {
+                    let JsonValue::Object(m) = v else {
+                        return None;
+                    };
+                    let s = match m.get("s") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let e = match m.get("e") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    let t = match m.get("t") {
+                        Some(JsonValue::Number(n)) => *n as usize,
+                        _ => return None,
+                    };
+                    Some(QualifiedRef {
+                        span: fusec::span::Span::new(s, e),
+                        target: t,
+                    })
+                })
+                .collect(),
             _ => return None,
         };
         let file_idx = files.len();
@@ -1909,77 +2079,164 @@ fn deserialize_workspace_index(json: &str) -> Option<WorkspaceIndex> {
         files.push(WorkspaceFile {
             uri,
             text,
-            index: Index { defs, refs, calls, qualified_calls: qcalls },
+            index: Index {
+                defs,
+                refs,
+                calls,
+                qualified_calls: qcalls,
+            },
             def_map,
             qualified_refs,
         });
     }
 
-    let JsonValue::Array(defs_arr) = root.get("defs")? else { return None; };
-    let defs: Vec<WorkspaceDef> = defs_arr.iter().filter_map(|v| {
-        let JsonValue::Object(m) = v else { return None; };
-        let id = match m.get("id") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-        let uri = match m.get("uri") { Some(JsonValue::String(s)) => s.clone(), _ => return None };
-        let def = deserialize_symbol_def(v)?;
-        Some(WorkspaceDef { id, uri, def })
-    }).collect();
+    let JsonValue::Array(defs_arr) = root.get("defs")? else {
+        return None;
+    };
+    let defs: Vec<WorkspaceDef> = defs_arr
+        .iter()
+        .filter_map(|v| {
+            let JsonValue::Object(m) = v else {
+                return None;
+            };
+            let id = match m.get("id") {
+                Some(JsonValue::Number(n)) => *n as usize,
+                _ => return None,
+            };
+            let uri = match m.get("uri") {
+                Some(JsonValue::String(s)) => s.clone(),
+                _ => return None,
+            };
+            let def = deserialize_symbol_def(v)?;
+            Some(WorkspaceDef { id, uri, def })
+        })
+        .collect();
 
-    let JsonValue::Array(refs_arr) = root.get("refs")? else { return None; };
-    let refs: Vec<WorkspaceRef> = refs_arr.iter().filter_map(|v| {
-        let JsonValue::Object(m) = v else { return None; };
-        let uri = match m.get("uri") { Some(JsonValue::String(s)) => s.clone(), _ => return None };
-        let s = match m.get("s") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-        let e = match m.get("e") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-        let t = match m.get("t") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-        Some(WorkspaceRef { uri, span: fusec::span::Span::new(s, e), target: t })
-    }).collect();
+    let JsonValue::Array(refs_arr) = root.get("refs")? else {
+        return None;
+    };
+    let refs: Vec<WorkspaceRef> = refs_arr
+        .iter()
+        .filter_map(|v| {
+            let JsonValue::Object(m) = v else {
+                return None;
+            };
+            let uri = match m.get("uri") {
+                Some(JsonValue::String(s)) => s.clone(),
+                _ => return None,
+            };
+            let s = match m.get("s") {
+                Some(JsonValue::Number(n)) => *n as usize,
+                _ => return None,
+            };
+            let e = match m.get("e") {
+                Some(JsonValue::Number(n)) => *n as usize,
+                _ => return None,
+            };
+            let t = match m.get("t") {
+                Some(JsonValue::Number(n)) => *n as usize,
+                _ => return None,
+            };
+            Some(WorkspaceRef {
+                uri,
+                span: fusec::span::Span::new(s, e),
+                target: t,
+            })
+        })
+        .collect();
 
-    let JsonValue::Array(calls_arr) = root.get("calls")? else { return None; };
-    let calls: Vec<WorkspaceCall> = calls_arr.iter().filter_map(|v| {
-        let JsonValue::Object(m) = v else { return None; };
-        let uri = match m.get("uri") { Some(JsonValue::String(s)) => s.clone(), _ => return None };
-        let s = match m.get("s") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-        let e = match m.get("e") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-        let from = match m.get("from") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-        let to = match m.get("to") { Some(JsonValue::Number(n)) => *n as usize, _ => return None };
-        Some(WorkspaceCall { uri, span: fusec::span::Span::new(s, e), from, to })
-    }).collect();
+    let JsonValue::Array(calls_arr) = root.get("calls")? else {
+        return None;
+    };
+    let calls: Vec<WorkspaceCall> = calls_arr
+        .iter()
+        .filter_map(|v| {
+            let JsonValue::Object(m) = v else {
+                return None;
+            };
+            let uri = match m.get("uri") {
+                Some(JsonValue::String(s)) => s.clone(),
+                _ => return None,
+            };
+            let s = match m.get("s") {
+                Some(JsonValue::Number(n)) => *n as usize,
+                _ => return None,
+            };
+            let e = match m.get("e") {
+                Some(JsonValue::Number(n)) => *n as usize,
+                _ => return None,
+            };
+            let from = match m.get("from") {
+                Some(JsonValue::Number(n)) => *n as usize,
+                _ => return None,
+            };
+            let to = match m.get("to") {
+                Some(JsonValue::Number(n)) => *n as usize,
+                _ => return None,
+            };
+            Some(WorkspaceCall {
+                uri,
+                span: fusec::span::Span::new(s, e),
+                from,
+                to,
+            })
+        })
+        .collect();
 
     let module_alias_exports: HashMap<String, HashMap<String, HashSet<String>>> =
         match root.get("aliases") {
-            Some(JsonValue::Object(outer)) => {
-                outer.iter().map(|(file_uri, inner_v)| {
+            Some(JsonValue::Object(outer)) => outer
+                .iter()
+                .map(|(file_uri, inner_v)| {
                     let inner_map = match inner_v {
-                        JsonValue::Object(inner) => inner.iter().map(|(alias, exports_v)| {
-                            let exports: HashSet<String> = match exports_v {
-                                JsonValue::Array(arr) => arr.iter().filter_map(|v| match v {
-                                    JsonValue::String(s) => Some(s.clone()),
-                                    _ => None,
-                                }).collect(),
-                                _ => HashSet::new(),
-                            };
-                            (alias.clone(), exports)
-                        }).collect(),
+                        JsonValue::Object(inner) => inner
+                            .iter()
+                            .map(|(alias, exports_v)| {
+                                let exports: HashSet<String> = match exports_v {
+                                    JsonValue::Array(arr) => arr
+                                        .iter()
+                                        .filter_map(|v| match v {
+                                            JsonValue::String(s) => Some(s.clone()),
+                                            _ => None,
+                                        })
+                                        .collect(),
+                                    _ => HashSet::new(),
+                                };
+                                (alias.clone(), exports)
+                            })
+                            .collect(),
                         _ => HashMap::new(),
                     };
                     (file_uri.clone(), inner_map)
-                }).collect()
-            }
+                })
+                .collect(),
             _ => HashMap::new(),
         };
 
     let redirects: HashMap<usize, usize> = match root.get("redirects") {
-        Some(JsonValue::Object(m)) => {
-            m.iter().filter_map(|(k, v)| {
+        Some(JsonValue::Object(m)) => m
+            .iter()
+            .filter_map(|(k, v)| {
                 let from: usize = k.parse().ok()?;
-                let to = match v { JsonValue::Number(n) => *n as usize, _ => return None };
+                let to = match v {
+                    JsonValue::Number(n) => *n as usize,
+                    _ => return None,
+                };
                 Some((from, to))
-            }).collect()
-        }
+            })
+            .collect(),
         _ => HashMap::new(),
     };
 
-    Some(WorkspaceIndex { files, file_by_uri, defs, refs, calls, module_alias_exports, redirects })
+    Some(WorkspaceIndex {
+        files,
+        file_by_uri,
+        defs,
+        refs,
+        calls,
+        module_alias_exports,
+        redirects,
+    })
 }
 
 fn build_workspace_from_registry(

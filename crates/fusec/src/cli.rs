@@ -779,13 +779,18 @@ fn run_workspace_check(
 ) -> i32 {
     let manifest_dirs = find_workspace_manifests(root);
     if manifest_dirs.is_empty() {
-        eprintln!("workspace check: no fuse.toml files found under {}", root.display());
+        eprintln!(
+            "workspace check: no fuse.toml files found under {}",
+            root.display()
+        );
         return 1;
     }
 
     let mut total = 0usize;
     let mut failed = 0usize;
-    let sema_options = crate::sema::AnalyzeOptions { strict_architecture };
+    let sema_options = crate::sema::AnalyzeOptions {
+        strict_architecture,
+    };
 
     for manifest_dir in &manifest_dirs {
         let manifest = match parse_manifest(manifest_dir) {
@@ -974,6 +979,10 @@ impl CheckCache {
 
         // Place the cache file next to the entry's workspace root.
         let workspace_root = crate::manifest::find_workspace_root_for_entry(&entry_abs);
-        Some(workspace_root.join(".fuse-cache").join(format!("check-{hash:016x}.tsv")))
+        Some(
+            workspace_root
+                .join(".fuse-cache")
+                .join(format!("check-{hash:016x}.tsv")),
+        )
     }
 }

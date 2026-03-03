@@ -414,13 +414,67 @@ fn page() -> Html:
 }
 
 #[test]
-fn parser_html_block_rejects_non_expression_child_stmt() {
+fn lowers_html_if_for_children_to_internal_control_exprs() {
+    let src = r#"
+fn page(show: Bool, items: List<String>) -> Html:
+  return ul():
+    if show:
+      li(): "Visible"
+    else:
+      li(): "Hidden"
+    for item in items:
+      li(): item
+"#;
+    let program = parse_ok(src);
+    let Some(Item::Fn(page)) = program.items.first() else {
+        panic!("expected first item to be fn");
+    };
+    let Some(stmt) = page.body.stmts.first() else {
+        panic!("expected function body statement");
+    };
+    let StmtKind::Return { expr: Some(expr) } = &stmt.kind else {
+        panic!("expected return expression");
+    };
+    let ExprKind::Call { args, .. } = &expr.kind else {
+        panic!("expected call expression");
+    };
+    assert_eq!(args.len(), 2, "expected attrs + children arguments");
+    let ExprKind::ListLit(children) = &args[1].value.kind else {
+        panic!("expected html children list");
+    };
+    assert_eq!(children.len(), 2, "expected if + for child entries");
+    match &children[0].kind {
+        ExprKind::HtmlIf {
+            then_children,
+            else_if,
+            else_children,
+            ..
+        } => {
+            assert_eq!(then_children.len(), 1);
+            assert!(else_if.is_empty());
+            assert_eq!(else_children.len(), 1);
+        }
+        other => panic!("expected first child to be HtmlIf, got {other:?}"),
+    }
+    match &children[1].kind {
+        ExprKind::HtmlFor { body_children, .. } => {
+            assert_eq!(body_children.len(), 1);
+        }
+        other => panic!("expected second child to be HtmlFor, got {other:?}"),
+    }
+}
+
+#[test]
+fn parser_html_block_rejects_unsupported_child_stmt() {
     let src = r#"
 fn page() -> Html:
   return div():
     let x = "bad"
 "#;
-    assert_parse_err_contains(src, "html block children must be expressions");
+    assert_parse_err_contains(
+        src,
+        "html block children only support expressions, if, and for",
+    );
 }
 
 #[test]

@@ -70,6 +70,7 @@ pub enum Keyword {
     Spawn,
     Await,
     Box,
+    Component,
 }
 
 impl Keyword {
@@ -113,6 +114,7 @@ impl Keyword {
             "spawn" => Some(Keyword::Spawn),
             "await" => Some(Keyword::Await),
             "box" => Some(Keyword::Box),
+            "component" => Some(Keyword::Component),
             _ => None,
         }
     }
@@ -157,6 +159,7 @@ impl Keyword {
             Keyword::Spawn => "spawn",
             Keyword::Await => "await",
             Keyword::Box => "box",
+            Keyword::Component => "component",
         }
     }
 }

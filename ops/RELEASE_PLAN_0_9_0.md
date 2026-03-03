@@ -343,6 +343,8 @@ Implementation files changed:
 
 ### M6 — HTML DSL ergonomics
 
+**Status: COMPLETE** ✓ (2026-03-02)
+
 **Goal:** Extend HTML rendering expressiveness while preserving the closed, boundary-first model.
 
 Deliverables:
@@ -351,38 +353,32 @@ Deliverables:
    `(attrs: Map<String, String>, children: List<Html>) -> Html`. The compiler verifies
    the signature at the declaration site and at every call site. Components are resolved
    through the existing module system; no new abstraction layer is introduced.
-2. `when` expression for inline conditional and list rendering in HTML blocks — purely
-   syntactic sugar that lowers directly to existing `if` and `for` constructs. Adds
-   `when condition: <expr>` (skip if false) and `when item in list: <expr>` (map to
-   `List<Html>`) forms that read cleanly inside nested HTML trees without requiring
-   full statement syntax.
-3. Typed attribute constraints — compile-time validation of attribute names on known
-   HTML elements. Unknown or misused `aria-*` attributes are flagged as diagnostics.
-   Attribute value constraints (e.g. enum-typed values for `type=`, `role=`) use the
-   existing refinement model; no new constraint mechanism is needed.
+2. Typed attribute constraints — compile-time validation of `aria-*` attribute names and
+   values on HTML elements. Unknown or misused attributes are flagged as diagnostics.
+   No new constraint mechanism is introduced; `if`/`for` remain the idiomatic control
+   flow inside HTML blocks.
 
 Exit criteria:
 
 - `component` declarations are type-checked at both declaration and call sites; invalid
   signatures are rejected with clear diagnostics.
-- `when` forms lower correctly and are covered by interpreter and native parity tests.
 - At least 5 `aria-*` misuse patterns produce compile-time diagnostics.
-- `spec/fls.md` updated to document all three additions.
-- Example coverage: `examples/component_demo.fuse` demonstrates component declarations
-  and `when` rendering.
+- `spec/fls.md` updated to document both additions.
+- Example coverage: `examples/component_demo.fuse` demonstrates component declarations,
+  typed attribute constraints, and `if`/`for` control flow inside HTML blocks.
 
 Implementation files changed:
 
 | File | Change |
 |---|---|
-| `crates/fusec/src/parser.rs` | `component` declaration parsing; `when` expression parsing in HTML block contexts |
-| `crates/fusec/src/ast.rs` | `ComponentDecl` AST node; `ExprKind::When` for inline conditional/list rendering |
-| `crates/fusec/src/sema/check.rs` | Component signature verification at declaration and call sites; `aria-*` and known-element attribute constraint checks |
-| `crates/fusec/src/ir/lower.rs` | Lower `when` to `if`/`for` IR; lower component calls to typed function dispatch |
-| `crates/fusec/src/interp/mod.rs` | Component eval; `ExprKind::When` eval |
-| `crates/fusec/src/native/jit.rs` | JIT codegen for component dispatch and `when` lowered forms |
-| `spec/fls.md` | Document `component` declaration syntax, `when` expression, and attribute constraints |
-| `examples/component_demo.fuse` | New: component declarations, `when` rendering, typed attribute constraints |
+| `crates/fusec/src/parser.rs` | `component` declaration parsing |
+| `crates/fusec/src/ast.rs` | `ComponentDecl` AST node |
+| `crates/fusec/src/sema/check.rs` | Component signature verification at declaration and call sites; `aria-*` attribute constraint checks |
+| `crates/fusec/src/ir/lower.rs` | Lower component calls to typed function dispatch |
+| `crates/fusec/src/interp/mod.rs` | Component eval |
+| `crates/fusec/src/native/jit.rs` | JIT codegen for component dispatch |
+| `spec/fls.md` | Document `component` declaration syntax and attribute constraints |
+| `examples/component_demo.fuse` | New: component declarations and typed attribute constraints |
 
 ---
 

@@ -50,6 +50,7 @@ pub enum Item {
     Type(TypeDecl),
     Enum(EnumDecl),
     Fn(FnDecl),
+    Component(ComponentDecl),
     Service(ServiceDecl),
     Config(ConfigDecl),
     App(AppDecl),
@@ -149,6 +150,20 @@ pub struct Param {
     pub name: Ident,
     pub ty: TypeRef,
     pub default: Option<Expr>,
+    pub span: Span,
+}
+
+/// A component declaration: `component Name: Block`
+///
+/// The body has implicit bindings `attrs: Map<String, String>` and
+/// `children: List<Html>`. The component always returns `Html`.
+/// This is the enforced signature — equivalent to
+/// `fn Name(attrs: Map<String, String>, children: List<Html>) -> Html`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ComponentDecl {
+    pub name: Ident,
+    pub body: Block,
+    pub doc: Option<Doc>,
     pub span: Span,
 }
 
@@ -335,6 +350,21 @@ pub enum ExprKind {
     },
     Spawn {
         block: Block,
+    },
+    /// Internal-only HTML block control expression produced by parser sugar.
+    /// Evaluates to `List<Html>` at runtime.
+    HtmlIf {
+        cond: Box<Expr>,
+        then_children: Vec<Expr>,
+        else_if: Vec<(Expr, Vec<Expr>)>,
+        else_children: Vec<Expr>,
+    },
+    /// Internal-only HTML block control expression produced by parser sugar.
+    /// Evaluates to `List<Html>` at runtime.
+    HtmlFor {
+        pat: Pattern,
+        iter: Box<Expr>,
+        body_children: Vec<Expr>,
     },
     Await {
         expr: Box<Expr>,

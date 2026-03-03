@@ -636,6 +636,45 @@ fn collect_inlay_hints_expr(
         ExprKind::Spawn { block } => {
             collect_inlay_hints_block(index, uri, text, offsets, block, range, hints, seen);
         }
+        ExprKind::HtmlIf {
+            cond,
+            then_children,
+            else_if,
+            else_children,
+        } => {
+            collect_inlay_hints_expr(index, uri, text, offsets, cond, range, hints, seen);
+            for child in then_children {
+                collect_inlay_hints_expr(index, uri, text, offsets, child, range, hints, seen);
+            }
+            for (branch_cond, branch_children) in else_if {
+                collect_inlay_hints_expr(
+                    index,
+                    uri,
+                    text,
+                    offsets,
+                    branch_cond,
+                    range,
+                    hints,
+                    seen,
+                );
+                for child in branch_children {
+                    collect_inlay_hints_expr(index, uri, text, offsets, child, range, hints, seen);
+                }
+            }
+            for child in else_children {
+                collect_inlay_hints_expr(index, uri, text, offsets, child, range, hints, seen);
+            }
+        }
+        ExprKind::HtmlFor {
+            iter,
+            body_children,
+            ..
+        } => {
+            collect_inlay_hints_expr(index, uri, text, offsets, iter, range, hints, seen);
+            for child in body_children {
+                collect_inlay_hints_expr(index, uri, text, offsets, child, range, hints, seen);
+            }
+        }
         ExprKind::Literal(_) | ExprKind::Ident(_) => {}
     }
 }
@@ -840,6 +879,7 @@ fn infer_expr_type(index: &WorkspaceIndex, uri: &str, text: &str, expr: &Expr) -
         ExprKind::MapLit(_) => Some("Map".to_string()),
         ExprKind::InterpString(_) => Some("String".to_string()),
         ExprKind::Spawn { .. } => Some("Task".to_string()),
+        ExprKind::HtmlIf { .. } | ExprKind::HtmlFor { .. } => Some("List".to_string()),
         ExprKind::Coalesce { left, .. } => infer_expr_type(index, uri, text, left),
         ExprKind::Await { expr } | ExprKind::Box { expr } | ExprKind::BangChain { expr, .. } => {
             infer_expr_type(index, uri, text, expr)

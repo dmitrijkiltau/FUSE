@@ -69,7 +69,7 @@ impl TaskPool {
             crate::concurrency_metrics::record_task_started();
             job();
             crate::concurrency_metrics::record_task_completed(
-                enqueue_time.elapsed().as_micros() as u64,
+                enqueue_time.elapsed().as_micros() as u64
             );
         });
         // If send fails (worker thread has exited), the job is silently

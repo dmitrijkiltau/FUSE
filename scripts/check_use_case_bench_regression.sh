@@ -146,10 +146,12 @@ function profileMetricLimitFloors(profile) {
   }
   return {
     // WSL2 and hosted CI runners can add sizable loopback/network stack latency variance.
-    // Apply floor only for high-variance request paths on these host classes.
+    // Apply floor only for high-variance request paths (and derived request-overhead metric)
+    // on these host classes.
     "reference_service.request_get_notes_ms": 30.0,
     "reference_service.request_post_invalid_ms": 30.0,
-    "reference_service.request_frontend_root_ms": 30.0
+    "reference_service.request_frontend_root_ms": 30.0,
+    "reference_service.request_validation_error_overhead_abs_ms": 40.0
   };
 }
 

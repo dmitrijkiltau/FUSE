@@ -415,7 +415,9 @@ fn workspace_stats_params() -> JsonValue {
 /// Returns (dir, main_path, root_uri, main_src).
 /// Files file_00.fuse … file_49.fuse each export 3 small functions.
 /// main.fuse imports file_00 and file_01.
-fn build_50_file_workspace(prefix: &str) -> (std::path::PathBuf, std::path::PathBuf, String, String) {
+fn build_50_file_workspace(
+    prefix: &str,
+) -> (std::path::PathBuf, std::path::PathBuf, String, String) {
     let dir = temp_project_dir(prefix);
     fs::create_dir_all(&dir).expect("create temp dir");
     write_project_file(

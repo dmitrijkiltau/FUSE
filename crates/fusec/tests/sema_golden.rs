@@ -630,7 +630,7 @@ fn main():
 }
 
 #[test]
-fn html_block_children_must_be_html() {
+fn html_block_children_allow_strings() {
     let src = r#"
 fn div(attrs: Map<String, String>, children: List<Html>) -> Html:
   return html.node("div", attrs, children)
@@ -639,10 +639,22 @@ fn page(name: String) -> Html:
   return div():
     name
 "#;
-    assert_diags(
-        src,
-        &["Error: type mismatch: expected List<Html>, found List<String>"],
-    );
+    assert_diags(src, &[]);
+}
+
+#[test]
+fn html_block_children_allow_if_and_for_control_flow() {
+    let src = r#"
+fn page(show: Bool, items: List<String>) -> Html:
+  return ul():
+    if show:
+      li(): "Visible"
+    else:
+      li(): "Hidden"
+    for item in items:
+      li(): item
+"#;
+    assert_diags(src, &[]);
 }
 
 #[test]

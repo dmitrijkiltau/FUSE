@@ -102,6 +102,9 @@ pub(crate) fn build_ir_meta(
 ) -> Result<super::IrMeta, String> {
     let mut files = Vec::new();
     for unit in registry.modules.values() {
+        if is_virtual_module_path(&unit.path) {
+            continue;
+        }
         files.push(super::IrFileMeta {
             path: unit.path.to_string_lossy().to_string(),
             hash: file_hash_hex(&unit.path)?,
@@ -187,7 +190,11 @@ pub(crate) fn ir_meta_is_valid(meta: &super::IrMeta, manifest_dir: Option<&Path>
         return false;
     }
     for file in &meta.files {
-        let hash = match file_hash_hex(Path::new(&file.path)) {
+        let path = Path::new(&file.path);
+        if is_virtual_module_path(path) {
+            continue;
+        }
+        let hash = match file_hash_hex(path) {
             Ok(hash) => hash,
             Err(_) => return false,
         };
@@ -230,7 +237,11 @@ pub(crate) fn write_check_ir_meta(
 
 pub(crate) fn check_meta_files_unchanged(meta: &super::IrMeta) -> bool {
     for file in &meta.files {
-        let hash = match file_hash_hex(Path::new(&file.path)) {
+        let path = Path::new(&file.path);
+        if is_virtual_module_path(path) {
+            continue;
+        }
+        let hash = match file_hash_hex(path) {
             Ok(hash) => hash,
             Err(_) => return false,
         };
@@ -248,10 +259,18 @@ pub(crate) fn changed_modules_since_meta(
     manifest_dir: Option<&Path>,
 ) -> HashSet<usize> {
     let Some(cached_meta) = cached_meta else {
-        return registry.modules.keys().copied().collect();
+        return registry
+            .modules
+            .iter()
+            .filter_map(|(id, unit)| (!is_virtual_module_path(&unit.path)).then_some(*id))
+            .collect();
     };
     if !ir_meta_base_is_valid(cached_meta, manifest_dir) {
-        return registry.modules.keys().copied().collect();
+        return registry
+            .modules
+            .iter()
+            .filter_map(|(id, unit)| (!is_virtual_module_path(&unit.path)).then_some(*id))
+            .collect();
     }
 
     let mut changed = HashSet::new();
@@ -267,6 +286,9 @@ pub(crate) fn changed_modules_since_meta(
         .collect();
 
     for (id, unit) in &registry.modules {
+        if is_virtual_module_path(&unit.path) {
+            continue;
+        }
         let path = unit.path.to_string_lossy();
         let current = current_hashes.get(path.as_ref()).copied();
         let cached = cached_hashes.get(path.as_ref()).copied();
@@ -276,10 +298,18 @@ pub(crate) fn changed_modules_since_meta(
     }
 
     if changed.is_empty() && current_hashes.len() != cached_hashes.len() {
-        return registry.modules.keys().copied().collect();
+        return registry
+            .modules
+            .iter()
+            .filter_map(|(id, unit)| (!is_virtual_module_path(&unit.path)).then_some(*id))
+            .collect();
     }
 
     changed
+}
+
+pub(crate) fn is_virtual_module_path(path: &Path) -> bool {
+    path.to_string_lossy().starts_with('<')
 }
 
 pub(crate) fn affected_modules_for_incremental_check(

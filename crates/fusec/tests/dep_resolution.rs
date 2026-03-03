@@ -68,9 +68,15 @@ fn build_transitive_deps_expands_nested_deps() {
     fs::create_dir_all(&c_root).unwrap();
     write(
         &b_root.join("fuse.toml"),
-        &format!("[package]\nentry = \"lib.fuse\"\n\n[dependencies]\nC = \"{}\"\n", c_root.display()),
+        &format!(
+            "[package]\nentry = \"lib.fuse\"\n\n[dependencies]\nC = \"{}\"\n",
+            c_root.display()
+        ),
     );
-    write(&c_root.join("fuse.toml"), "[package]\nentry = \"lib.fuse\"\n");
+    write(
+        &c_root.join("fuse.toml"),
+        "[package]\nentry = \"lib.fuse\"\n",
+    );
 
     // Caller only knows about B.
     let mut direct: HashMap<String, PathBuf> = HashMap::new();
@@ -79,7 +85,10 @@ fn build_transitive_deps_expands_nested_deps() {
     let (merged, errors) = build_transitive_deps(&direct);
     assert!(errors.is_empty(), "unexpected cycle errors: {errors:?}");
     assert!(merged.contains_key("B"), "merged missing B");
-    assert!(merged.contains_key("C"), "C should be transitively discovered");
+    assert!(
+        merged.contains_key("C"),
+        "C should be transitively discovered"
+    );
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -97,11 +106,17 @@ fn build_transitive_deps_detects_cross_package_cycle() {
     // A depends on B, B depends on A → cycle.
     write(
         &a_root.join("fuse.toml"),
-        &format!("[package]\nentry = \"lib.fuse\"\n\n[dependencies]\nB = \"{}\"\n", b_root.display()),
+        &format!(
+            "[package]\nentry = \"lib.fuse\"\n\n[dependencies]\nB = \"{}\"\n",
+            b_root.display()
+        ),
     );
     write(
         &b_root.join("fuse.toml"),
-        &format!("[package]\nentry = \"lib.fuse\"\n\n[dependencies]\nA = \"{}\"\n", a_root.display()),
+        &format!(
+            "[package]\nentry = \"lib.fuse\"\n\n[dependencies]\nA = \"{}\"\n",
+            a_root.display()
+        ),
     );
 
     // Caller knows about B.
@@ -109,12 +124,12 @@ fn build_transitive_deps_detects_cross_package_cycle() {
     direct.insert("B".to_string(), b_root.clone());
 
     let (_merged, errors) = build_transitive_deps(&direct);
-    assert!(
-        !errors.is_empty(),
-        "expected cycle error, got none"
-    );
+    assert!(!errors.is_empty(), "expected cycle error, got none");
     let have_cycle = errors.iter().any(|e| e.contains("circular"));
-    assert!(have_cycle, "error should mention 'circular', got: {errors:?}");
+    assert!(
+        have_cycle,
+        "error should mention 'circular', got: {errors:?}"
+    );
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -170,7 +185,10 @@ fn loader_resolves_transitive_dep_imports() {
         &c_root.join("lib.fuse"),
         "fn add_ten(x: Int) -> Int:\n  return x + 10\n",
     );
-    write(&c_root.join("fuse.toml"), "[package]\nentry = \"lib.fuse\"\n");
+    write(
+        &c_root.join("fuse.toml"),
+        "[package]\nentry = \"lib.fuse\"\n",
+    );
 
     // Package B: imports from C.
     write(
@@ -179,7 +197,10 @@ fn loader_resolves_transitive_dep_imports() {
     );
     write(
         &b_root.join("fuse.toml"),
-        &format!("[package]\nentry = \"lib.fuse\"\n\n[dependencies]\nC = \"{}\"\n", c_root.display()),
+        &format!(
+            "[package]\nentry = \"lib.fuse\"\n\n[dependencies]\nC = \"{}\"\n",
+            c_root.display()
+        ),
     );
 
     // Entry program: imports from B. Only B is provided as a direct dep.
@@ -192,9 +213,15 @@ fn loader_resolves_transitive_dep_imports() {
     let mut direct_deps: HashMap<String, PathBuf> = HashMap::new();
     direct_deps.insert("B".to_string(), b_root);
 
-    let (registry, diags) =
-        fusec::load_program_with_modules_and_deps(&entry, "import B from \"dep:B/lib\"\nfn main():\n  print(B.add_c(1))\n", &direct_deps);
-    let error_diags: Vec<_> = diags.iter().filter(|d| d.message.contains("unknown")).collect();
+    let (registry, diags) = fusec::load_program_with_modules_and_deps(
+        &entry,
+        "import B from \"dep:B/lib\"\nfn main():\n  print(B.add_c(1))\n",
+        &direct_deps,
+    );
+    let error_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("unknown"))
+        .collect();
     assert!(
         error_diags.is_empty(),
         "transitive dep should resolve: {error_diags:?}"
@@ -219,13 +246,19 @@ fn loader_emits_structured_unknown_dep_diagnostic() {
     );
 
     let deps: HashMap<String, PathBuf> = HashMap::new();
-    let (_registry, diags) =
-        fusec::load_program_with_modules_and_deps(&entry, "import X from \"dep:Unknown/lib\"\nfn main():\n  pass\n", &deps);
+    let (_registry, diags) = fusec::load_program_with_modules_and_deps(
+        &entry,
+        "import X from \"dep:Unknown/lib\"\nfn main():\n  pass\n",
+        &deps,
+    );
 
     assert!(!diags.is_empty(), "expected diagnostics for unknown dep");
     let msg = &diags[0].message;
     // New diagnostic should mention the dep name and hint about available deps.
-    assert!(msg.contains("Unknown"), "message should name the dep: {msg}");
+    assert!(
+        msg.contains("Unknown"),
+        "message should name the dep: {msg}"
+    );
     assert!(
         msg.contains("available") || msg.contains("no dependencies"),
         "message should hint at available deps: {msg}"
@@ -308,14 +341,17 @@ fn workspace_check_fails_with_per_package_errors() {
 
     // Package that is clean.
     let good = root.join("good_pkg");
-    write(&good.join("fuse.toml"), "[package]\nentry = \"main.fuse\"\n");
     write(
-        &good.join("main.fuse"),
-        "fn main():\n  print(\"ok\")\n",
+        &good.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\n",
     );
+    write(&good.join("main.fuse"), "fn main():\n  print(\"ok\")\n");
 
     let (ok, _stderr) = run_workspace_check(&root);
-    assert!(!ok, "workspace check should fail when any package has errors");
+    assert!(
+        !ok,
+        "workspace check should fail when any package has errors"
+    );
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -337,7 +373,10 @@ fn workspace_check_skips_dirs_without_entry() {
     write(&app.join("main.fuse"), "fn main():\n  print(\"hello\")\n");
 
     let (ok, _stderr) = run_workspace_check(&root);
-    assert!(ok, "workspace check should succeed when only real packages are checked");
+    assert!(
+        ok,
+        "workspace check should succeed when only real packages are checked"
+    );
 
     let _ = fs::remove_dir_all(&root);
 }
