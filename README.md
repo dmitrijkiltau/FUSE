@@ -58,9 +58,9 @@ The runtime applies those contracts at boundaries instead of requiring repeated 
 
 ## Status
 
-FUSE `v0.9.0` release prep is active. This breaking minor simplifies HTML attribute syntax:
-expression values are allowed in shorthand attrs, comma-separated HTML attrs are rejected,
-and map-literal HTML attrs are rejected with coded diagnostics.
+FUSE `v0.9.x` is the current stable line. `v0.9.0` shipped with HTML attribute syntax
+simplifications, workspace incremental-check optimizations, and full LSP large-workspace support.
+Patch releases (`0.9.1`, …) stabilize this line with non-breaking improvements.
 
 Compatibility is defined by documented behavior in `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, and
 `governance/VERSIONING_POLICY.md`.
