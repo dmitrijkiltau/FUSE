@@ -133,3 +133,191 @@ fn main():
     lsp.shutdown();
     let _ = fs::remove_dir_all(dir);
 }
+
+// Two dependency modules (dep_a, dep_b), each with multiple functions.
+// main.fuse imports one function from each.  The remaining functions in those
+// modules are in the workspace but not imported.  Assert that:
+//   - a local variable in the current function   → group 00
+//   - symbols imported into main.fuse            → group 01
+//   - workspace symbols not imported into main   → group 02
+//   - builtins                                   → group 03
+//   - keywords                                   → group 04
+#[test]
+fn lsp_completion_ranking_stable_with_many_dep_modules() {
+    let dir = temp_project_dir("fuse_lsp_rank_many_deps");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    );
+
+    let dep_a_src = "fn alpha_fn(v: String) -> String:\n  return v\n\nfn alpha_run(v: String) -> String:\n  return v\n\nfn alpha_process(v: String) -> String:\n  return v\n";
+    let dep_b_src = "fn beta_fn(v: String) -> String:\n  return v\n\nfn beta_run(v: String) -> String:\n  return v\n\nfn beta_process(v: String) -> String:\n  return v\n";
+    let main_src = "import { alpha_fn } from \"./dep_a\"\nimport { beta_fn } from \"./dep_b\"\n\nfn compute(v: String) -> String:\n  let work_item = v\n\n  return work_item\n\nfn main():\n  print(compute(\"bench\"))\n";
+
+    let dep_a_path = dir.join("dep_a.fuse");
+    let dep_b_path = dir.join("dep_b.fuse");
+    let main_path = dir.join("main.fuse");
+    write_project_file(&dep_a_path, dep_a_src);
+    write_project_file(&dep_b_path, dep_b_src);
+    write_project_file(&main_path, main_src);
+
+    let root_uri = path_to_uri(&dir);
+    let dep_a_uri = path_to_uri(&dep_a_path);
+    let dep_b_uri = path_to_uri(&dep_b_path);
+    let main_uri = path_to_uri(&main_path);
+
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&dep_a_uri, dep_a_src, 1);
+    lsp.open_document(&dep_b_uri, dep_b_src, 1);
+    lsp.open_document(&main_uri, main_src, 1);
+    assert!(lsp.wait_diagnostics(&dep_a_uri).is_empty());
+    assert!(lsp.wait_diagnostics(&dep_b_uri).is_empty());
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+
+    // Trigger completion at the start of "  return work_item" — empty prefix,
+    // so all candidates are visible.
+    let (line, col) = line_col_of(main_src, "  return work_item");
+    let completion = lsp.request(
+        "textDocument/completion",
+        completion_params(&main_uri, line, col),
+    );
+    let completion_text = json::encode(&completion);
+
+    let local_sort = completion_sort_text(&completion, "work_item")
+        .expect("missing local variable completion for work_item");
+    let alpha_fn_sort = completion_sort_text(&completion, "alpha_fn")
+        .expect("missing imported completion for alpha_fn");
+    let beta_fn_sort = completion_sort_text(&completion, "beta_fn")
+        .expect("missing imported completion for beta_fn");
+    let alpha_run_sort = completion_sort_text(&completion, "alpha_run")
+        .expect("missing workspace completion for alpha_run");
+    let beta_run_sort = completion_sort_text(&completion, "beta_run")
+        .expect("missing workspace completion for beta_run");
+    let builtin_sort =
+        completion_sort_text(&completion, "print").expect("missing builtin completion for print");
+    let keyword_sort =
+        completion_sort_text(&completion, "if").expect("missing keyword completion for if");
+
+    assert!(
+        local_sort.starts_with("00_"),
+        "local work_item should be rank group 00, got {local_sort}; payload: {completion_text}"
+    );
+    assert!(
+        alpha_fn_sort.starts_with("01_"),
+        "imported alpha_fn should be rank group 01, got {alpha_fn_sort}; payload: {completion_text}"
+    );
+    assert!(
+        beta_fn_sort.starts_with("01_"),
+        "imported beta_fn should be rank group 01, got {beta_fn_sort}; payload: {completion_text}"
+    );
+    assert!(
+        alpha_run_sort.starts_with("02_"),
+        "workspace-only alpha_run should be rank group 02, got {alpha_run_sort}; payload: {completion_text}"
+    );
+    assert!(
+        beta_run_sort.starts_with("02_"),
+        "workspace-only beta_run should be rank group 02, got {beta_run_sort}; payload: {completion_text}"
+    );
+    assert!(
+        builtin_sort.starts_with("03_"),
+        "builtin print should be rank group 03, got {builtin_sort}; payload: {completion_text}"
+    );
+    assert!(
+        keyword_sort.starts_with("04_"),
+        "keyword if should be rank group 04, got {keyword_sort}; payload: {completion_text}"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
+// Both lib_alpha and lib_beta export a function named shared_proc.
+// main.fuse imports shared_proc only from lib_alpha (and beta_exclusive from lib_beta
+// to keep lib_beta reachable in the workspace index).
+// Assert that shared_proc resolves to rank group 01 (imported wins) rather than 02
+// (the non-imported copy from lib_beta), exercising the upsert dedup logic.
+#[test]
+fn lsp_completion_ranking_imported_wins_name_collision() {
+    let dir = temp_project_dir("fuse_lsp_rank_name_collision");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    );
+
+    let lib_alpha_src = "fn shared_proc(v: String) -> String:\n  return v\n\nfn alpha_exclusive(v: String) -> String:\n  return v\n";
+    let lib_beta_src = "fn shared_proc(v: String) -> String:\n  return v\n\nfn beta_exclusive(v: String) -> String:\n  return v\n";
+    let main_src = "import { shared_proc } from \"./lib_alpha\"\nimport { beta_exclusive } from \"./lib_beta\"\n\nfn work(v: String) -> String:\n  let local_result = v\n\n  return local_result\n\nfn main():\n  print(work(\"test\"))\n";
+
+    let lib_alpha_path = dir.join("lib_alpha.fuse");
+    let lib_beta_path = dir.join("lib_beta.fuse");
+    let main_path = dir.join("main.fuse");
+    write_project_file(&lib_alpha_path, lib_alpha_src);
+    write_project_file(&lib_beta_path, lib_beta_src);
+    write_project_file(&main_path, main_src);
+
+    let root_uri = path_to_uri(&dir);
+    let lib_alpha_uri = path_to_uri(&lib_alpha_path);
+    let lib_beta_uri = path_to_uri(&lib_beta_path);
+    let main_uri = path_to_uri(&main_path);
+
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&lib_alpha_uri, lib_alpha_src, 1);
+    lsp.open_document(&lib_beta_uri, lib_beta_src, 1);
+    lsp.open_document(&main_uri, main_src, 1);
+    assert!(lsp.wait_diagnostics(&lib_alpha_uri).is_empty());
+    assert!(lsp.wait_diagnostics(&lib_beta_uri).is_empty());
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+
+    let (line, col) = line_col_of(main_src, "  return local_result");
+    let completion = lsp.request(
+        "textDocument/completion",
+        completion_params(&main_uri, line, col),
+    );
+    let completion_text = json::encode(&completion);
+
+    let local_sort = completion_sort_text(&completion, "local_result")
+        .expect("missing local variable completion for local_result");
+    // shared_proc exists in both lib_alpha (imported → 01) and lib_beta (not imported → 02).
+    // The lower rank must win: 01.
+    let shared_proc_sort = completion_sort_text(&completion, "shared_proc")
+        .expect("missing completion for shared_proc");
+    let beta_exclusive_sort = completion_sort_text(&completion, "beta_exclusive")
+        .expect("missing imported completion for beta_exclusive");
+    // alpha_exclusive is defined in lib_alpha but NOT imported into main.fuse → 02.
+    let alpha_exclusive_sort = completion_sort_text(&completion, "alpha_exclusive")
+        .expect("missing workspace completion for alpha_exclusive");
+    let builtin_sort =
+        completion_sort_text(&completion, "print").expect("missing builtin completion for print");
+    let keyword_sort =
+        completion_sort_text(&completion, "if").expect("missing keyword completion for if");
+
+    assert!(
+        local_sort.starts_with("00_"),
+        "local_result should be rank group 00, got {local_sort}; payload: {completion_text}"
+    );
+    assert!(
+        shared_proc_sort.starts_with("01_"),
+        "shared_proc should be rank group 01 (imported from lib_alpha wins over non-imported from lib_beta), got {shared_proc_sort}; payload: {completion_text}"
+    );
+    assert!(
+        beta_exclusive_sort.starts_with("01_"),
+        "beta_exclusive should be rank group 01 (imported), got {beta_exclusive_sort}; payload: {completion_text}"
+    );
+    assert!(
+        alpha_exclusive_sort.starts_with("02_"),
+        "alpha_exclusive should be rank group 02 (in lib_alpha but not imported), got {alpha_exclusive_sort}; payload: {completion_text}"
+    );
+    assert!(
+        builtin_sort.starts_with("03_"),
+        "print should be rank group 03, got {builtin_sort}; payload: {completion_text}"
+    );
+    assert!(
+        keyword_sort.starts_with("04_"),
+        "keyword if should be rank group 04, got {keyword_sort}; payload: {completion_text}"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
