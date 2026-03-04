@@ -51,7 +51,50 @@ impl<'a> Checker<'a> {
         let mut env = TypeEnv::new();
         env.insert_builtin("log");
         env.insert_builtin_with_ty("db", Ty::External("db".to_string()));
-        env.insert_builtin("env");
+        env.insert_builtin_with_ty(
+            "env",
+            Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "name".to_string(),
+                    ty: Ty::String,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::Option(Box::new(Ty::String))),
+            }),
+        );
+        env.insert_builtin_with_ty(
+            "env_int",
+            Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "name".to_string(),
+                    ty: Ty::String,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::Option(Box::new(Ty::Int))),
+            }),
+        );
+        env.insert_builtin_with_ty(
+            "env_float",
+            Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "name".to_string(),
+                    ty: Ty::String,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::Option(Box::new(Ty::Float))),
+            }),
+        );
+        env.insert_builtin_with_ty(
+            "env_bool",
+            Ty::Fn(FnSig {
+                params: vec![ParamSig {
+                    name: "name".to_string(),
+                    ty: Ty::String,
+                    has_default: false,
+                }],
+                ret: Box::new(Ty::Option(Box::new(Ty::Bool))),
+            }),
+        );
         env.insert_builtin("json");
         env.insert_builtin_with_ty("time", Ty::External("time".to_string()));
         env.insert_builtin("print");
@@ -3034,6 +3077,9 @@ fn spawn_forbidden_builtin(callee: &Expr) -> Option<&'static str> {
             "input" => Some("input"),
             "log" => Some("log"),
             "env" => Some("env"),
+            "env_int" => Some("env_int"),
+            "env_float" => Some("env_float"),
+            "env_bool" => Some("env_bool"),
             "asset" => Some("asset"),
             "serve" => Some("serve"),
             _ => None,

@@ -1,0 +1,11 @@
+# Send only deployment inputs to the Docker build context.
+# Run `fuse build --manifest-path examples/reference-service --aot` first.
+*
+!.fuse/build/program.aot
+!.fuse/deps/
+!.fuse/deps/**
+!fuse.toml
+!src/
+!src/**
+!assets/
+!assets/**

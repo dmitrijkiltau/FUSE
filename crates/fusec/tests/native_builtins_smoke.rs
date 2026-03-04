@@ -24,6 +24,9 @@ fn load_native_example(name: &str) -> NativeProgram {
 fn native_builtins_smoke() {
     unsafe {
         std::env::set_var("FUSE_NATIVE_TEST", "on");
+        std::env::set_var("FUSE_NATIVE_INT", "42");
+        std::env::set_var("FUSE_NATIVE_FLOAT", "3.5");
+        std::env::set_var("FUSE_NATIVE_BOOL", "TrUe");
     }
     let native = load_native_example("native_builtins.fuse");
     let mut vm = NativeVm::new(&native);
@@ -35,6 +38,33 @@ fn native_builtins_smoke() {
     match env_val {
         Value::String(text) => assert_eq!(text, "on"),
         other => panic!("unexpected env_present value: {other:?}"),
+    }
+
+    let env_int = vm
+        .call_function("env_int_present", vec![])
+        .expect("env_int_present failed");
+    assert!(vm.has_jit_function("env_int_present"));
+    match env_int {
+        Value::Int(value) => assert_eq!(value, 42),
+        other => panic!("unexpected env_int_present value: {other:?}"),
+    }
+
+    let env_float = vm
+        .call_function("env_float_present", vec![])
+        .expect("env_float_present failed");
+    assert!(vm.has_jit_function("env_float_present"));
+    match env_float {
+        Value::Float(value) => assert!((value - 3.5).abs() < 1e-9),
+        other => panic!("unexpected env_float_present value: {other:?}"),
+    }
+
+    let env_bool = vm
+        .call_function("env_bool_present", vec![])
+        .expect("env_bool_present failed");
+    assert!(vm.has_jit_function("env_bool_present"));
+    match env_bool {
+        Value::Bool(value) => assert!(value),
+        other => panic!("unexpected env_bool_present value: {other:?}"),
     }
 
     let assert_ok = vm

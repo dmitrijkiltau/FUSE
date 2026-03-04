@@ -278,7 +278,7 @@ HTTP-specific route primitives (`request.header/cookie` and
 Inside a `spawn` block, semantic analysis rejects:
 
 - `box` capture/use (including captured outer boxed bindings)
-- runtime side-effect builtins (`db.*`, `serve`, `print`, `input`, `log`, `env`, `asset`, `svg.inline`)
+- runtime side-effect builtins (`db.*`, `serve`, `print`, `input`, `log`, `env`, `env_int`, `env_float`, `env_bool`, `asset`, `svg.inline`)
 - mutation of captured outer bindings
 
 Structured task lifetime checks are also enforced at compile time:
@@ -630,6 +630,9 @@ Metrics hook extension point (non-semantic):
 - `transaction:` opens a constrained DB transaction scope (`BEGIN`/`COMMIT`/`ROLLBACK`)
 - `assert(cond, message?)` throws runtime error when `cond` is false
 - `env(name: String) -> String?` returns env var or `null`
+- `env_int(name: String) -> Int?` returns parsed env var as `Int` or `null`
+- `env_float(name: String) -> Float?` returns parsed env var as `Float` or `null`
+- `env_bool(name: String) -> Bool?` returns parsed env var as `Bool` or `null`
 - `asset(path: String) -> String` resolves to hashed/static public URL when asset map is configured
 - `serve(port)` starts HTTP server on `FUSE_HOST:port`
 - `request.header(name: String) -> String?` reads inbound HTTP headers
@@ -659,6 +662,11 @@ Metrics hook extension point (non-semantic):
   `input requires stdin data in non-interactive mode`
 - `input()` / `input("...")` resolve to the CLI input builtin; HTML input tags remain available
   through tag-form calls such as `input(type="text")`
+
+Typed env parsing notes:
+
+- `env_int` / `env_float` / `env_bool` return `null` when the variable is unset.
+- when the variable is set but parsing fails, runtime raises a fatal error.
 
 Compile-time sugar affecting HTML builtins:
 

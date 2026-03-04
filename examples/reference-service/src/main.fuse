@@ -4,7 +4,7 @@ import Api from "./api"
 import Db from "./db"
 
 config App:
-  port: Int = env("PORT") ?? 3000
+  port: Int = env_int("APP_PORT") ?? 3000
   dbUrl: String = env("FUSE_DB_URL") ?? "sqlite://reference-service.db"
 
 app "Api":

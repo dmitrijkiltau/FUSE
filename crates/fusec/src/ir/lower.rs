@@ -317,8 +317,21 @@ impl<'a> Lowerer<'a> {
             }
         }
         let builtin_names = [
-            "print", "input", "env", "serve", "log", "assert", "asset", "svg", "request",
-            "response", "time", "crypto",
+            "print",
+            "input",
+            "env",
+            "env_int",
+            "env_float",
+            "env_bool",
+            "serve",
+            "log",
+            "assert",
+            "asset",
+            "svg",
+            "request",
+            "response",
+            "time",
+            "crypto",
         ]
         .into_iter()
         .map(|s| s.to_string())

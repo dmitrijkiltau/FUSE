@@ -402,7 +402,10 @@ fn resolve_target_dir_for_tests() -> PathBuf {
     root.join("target")
 }
 
-fn find_latest_rlib_for_tests(dir: &Path, prefix: &str) -> PathBuf {
+fn try_find_latest_rlib_for_tests(dir: &Path, prefix: &str) -> Option<PathBuf> {
+    if !dir.exists() {
+        return None;
+    }
     let entries = fs::read_dir(dir).expect("read deps dir");
     let mut best: Option<(SystemTime, PathBuf)> = None;
     for entry in entries {
@@ -428,7 +431,7 @@ fn find_latest_rlib_for_tests(dir: &Path, prefix: &str) -> PathBuf {
             _ => best = Some((modified, path)),
         }
     }
-    best.expect("find latest rlib").1
+    best.map(|(_, path)| path)
 }
 
 fn native_link_search_paths_for_tests(target_dir: &Path, profile: &str) -> Vec<PathBuf> {
@@ -458,12 +461,74 @@ fn native_link_search_paths_for_tests(target_dir: &Path, profile: &str) -> Vec<P
     out
 }
 
+fn probe_link_deps_for_tests(deps_dir: &Path, fusec_rlib: &Path, bincode_rlib: &Path) -> bool {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+    let mut probe_src = std::env::temp_dir();
+    probe_src.push(format!("fuse_project_cli_link_probe_{nanos}_{pid}.rs"));
+    let mut probe_bin = std::env::temp_dir();
+    let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
+    probe_bin.push(format!(
+        "fuse_project_cli_link_probe_{nanos}_{pid}{exe_suffix}"
+    ));
+    let src = r#"fn main() {
+    let _ = fusec::native::CACHE_VERSION;
+    let _ = bincode::serialize(&0u8);
+}
+"#;
+    fs::write(&probe_src, src).expect("write link probe source");
+    let output = Command::new("rustc")
+        .arg("--edition=2024")
+        .arg(&probe_src)
+        .arg("-o")
+        .arg(&probe_bin)
+        .arg("-L")
+        .arg(format!("dependency={}", deps_dir.display()))
+        .arg("--extern")
+        .arg(format!("fusec={}", fusec_rlib.display()))
+        .arg("--extern")
+        .arg(format!("bincode={}", bincode_rlib.display()))
+        .output()
+        .expect("run rustc link probe");
+    let _ = fs::remove_file(&probe_src);
+    let _ = fs::remove_file(&probe_bin);
+    output.status.success()
+}
+
+fn resolve_usable_link_deps_for_tests(
+    target_dir: &Path,
+    profile: &str,
+) -> Option<(PathBuf, PathBuf, PathBuf, Vec<PathBuf>)> {
+    let deps_dir = target_dir.join(profile).join("deps");
+    let fusec_rlib = try_find_latest_rlib_for_tests(&deps_dir, "libfusec")?;
+    let bincode_rlib = try_find_latest_rlib_for_tests(&deps_dir, "libbincode")?;
+    if !probe_link_deps_for_tests(&deps_dir, &fusec_rlib, &bincode_rlib) {
+        return None;
+    }
+    let link_searches = native_link_search_paths_for_tests(target_dir, profile);
+    Some((deps_dir, fusec_rlib, bincode_rlib, link_searches))
+}
+
 fn relink_aot_runner_for_tests(dir: &Path, release: bool) {
     let profile = if release { "release" } else { "debug" };
     let target_dir = resolve_target_dir_for_tests();
-    let deps_dir = target_dir.join(profile).join("deps");
-    let fusec_rlib = find_latest_rlib_for_tests(&deps_dir, "libfusec");
-    let bincode_rlib = find_latest_rlib_for_tests(&deps_dir, "libbincode");
+    let deps = resolve_usable_link_deps_for_tests(&target_dir, profile).or_else(|| {
+        if release {
+            resolve_usable_link_deps_for_tests(&target_dir, "debug")
+        } else {
+            None
+        }
+    });
+    let (deps_dir, fusec_rlib, bincode_rlib, link_searches) = deps.unwrap_or_else(|| {
+        let primary = target_dir.join(profile).join("deps");
+        panic!(
+            "no usable link deps for profile={profile} in {}; debug_fallback={release}",
+            primary.display()
+        )
+    });
     let runner = dir.join(".fuse").join("build").join("native_main.rs");
     let object = dir.join(".fuse").join("build").join("program.o");
     let output = default_aot_binary_path(dir);
@@ -482,7 +547,7 @@ fn relink_aot_runner_for_tests(dir: &Path, release: bool) {
         .arg(format!("bincode={}", bincode_rlib.display()))
         .arg("-C")
         .arg(format!("link-arg={}", object.display()));
-    for search in native_link_search_paths_for_tests(&target_dir, profile) {
+    for search in link_searches {
         rustc.arg("-L").arg(search);
     }
     if release {

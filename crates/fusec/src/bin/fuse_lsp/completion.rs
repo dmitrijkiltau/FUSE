@@ -161,6 +161,27 @@ fn builtin_signature_info(name: &str) -> Option<SignatureInfo> {
             params: vec!["name: String".to_string()],
             documentation: Some("Returns an environment variable value or null.".to_string()),
         }),
+        "env_int" => Some(SignatureInfo {
+            label: "fn env_int(name: String) -> Int?".to_string(),
+            params: vec!["name: String".to_string()],
+            documentation: Some(
+                "Returns an environment variable parsed as Int, or null when unset.".to_string(),
+            ),
+        }),
+        "env_float" => Some(SignatureInfo {
+            label: "fn env_float(name: String) -> Float?".to_string(),
+            params: vec!["name: String".to_string()],
+            documentation: Some(
+                "Returns an environment variable parsed as Float, or null when unset.".to_string(),
+            ),
+        }),
+        "env_bool" => Some(SignatureInfo {
+            label: "fn env_bool(name: String) -> Bool?".to_string(),
+            params: vec!["name: String".to_string()],
+            documentation: Some(
+                "Returns an environment variable parsed as Bool, or null when unset.".to_string(),
+            ),
+        }),
         "serve" => Some(SignatureInfo {
             label: "fn serve(port: Int)".to_string(),
             params: vec!["port: Int".to_string()],

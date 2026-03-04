@@ -15,7 +15,7 @@ app "hello":
 requires network
 
 config App:
-  port: Int = env("PORT") ?? 3000
+  port: Int = env_int("PORT") ?? 3000
 
 type UserCreate:
   email: Email

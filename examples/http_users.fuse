@@ -3,7 +3,7 @@
 requires network
 
 config App:
-  port: Int = env("PORT") ?? 3000
+  port: Int = env_int("PORT") ?? 3000
 
 type std.Error.NotFound:
   message: String

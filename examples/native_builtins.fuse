@@ -1,6 +1,15 @@
 fn env_present() -> String?:
   return env("FUSE_NATIVE_TEST")
 
+fn env_int_present() -> Int?:
+  return env_int("FUSE_NATIVE_INT")
+
+fn env_float_present() -> Float?:
+  return env_float("FUSE_NATIVE_FLOAT")
+
+fn env_bool_present() -> Bool?:
+  return env_bool("FUSE_NATIVE_BOOL")
+
 fn assert_ok() -> String:
   assert(true, "nope")
   return "ok"

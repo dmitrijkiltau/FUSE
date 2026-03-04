@@ -229,6 +229,9 @@ pub(crate) struct HostCalls {
     builtin_print: FuncId,
     builtin_input: FuncId,
     builtin_env: FuncId,
+    builtin_env_int: FuncId,
+    builtin_env_float: FuncId,
+    builtin_env_bool: FuncId,
     builtin_serve: FuncId,
     builtin_assert: FuncId,
     builtin_asset: FuncId,
@@ -363,6 +366,18 @@ impl JitRuntime {
         builder.symbol(
             "fuse_native_builtin_env",
             fuse_native_builtin_env as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_env_int",
+            fuse_native_builtin_env_int as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_env_float",
+            fuse_native_builtin_env_float as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_env_bool",
+            fuse_native_builtin_env_bool as *const u8,
         );
         builder.symbol(
             "fuse_native_builtin_serve",
@@ -910,6 +925,23 @@ impl HostCalls {
         let builtin_env = module
             .declare_function("fuse_native_builtin_env", Linkage::Import, &builtin_sig)
             .expect("declare builtin env hostcall");
+        let builtin_env_int = module
+            .declare_function("fuse_native_builtin_env_int", Linkage::Import, &builtin_sig)
+            .expect("declare builtin env_int hostcall");
+        let builtin_env_float = module
+            .declare_function(
+                "fuse_native_builtin_env_float",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin env_float hostcall");
+        let builtin_env_bool = module
+            .declare_function(
+                "fuse_native_builtin_env_bool",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin env_bool hostcall");
         let builtin_serve = module
             .declare_function("fuse_native_builtin_serve", Linkage::Import, &builtin_sig)
             .expect("declare builtin serve hostcall");
@@ -1143,6 +1175,9 @@ impl HostCalls {
             builtin_print,
             builtin_input,
             builtin_env,
+            builtin_env_int,
+            builtin_env_float,
+            builtin_env_bool,
             builtin_serve,
             builtin_assert,
             builtin_asset,
@@ -2908,6 +2943,112 @@ extern "C" fn fuse_native_builtin_env(
             0
         }
     }
+}
+
+fn typed_env_native_value(type_name: &str, key: &str, raw: &str) -> Result<NativeValue, String> {
+    let parsed = crate::runtime_types::parse_simple_env(type_name, raw.trim())
+        .map_err(|err| format!("{err} (env {key})"))?;
+    match parsed {
+        Value::Int(value) => Ok(NativeValue::int(value)),
+        Value::Float(value) => Ok(NativeValue::float(value)),
+        Value::Bool(value) => Ok(NativeValue::bool(value)),
+        _ => Err(format!(
+            "internal error: {type_name} parser returned unexpected value"
+        )),
+    }
+}
+
+fn eval_native_typed_env(
+    builtin_name: &str,
+    type_name: &str,
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    if len == 0 {
+        return builtin_runtime_error(
+            out,
+            heap,
+            format!("{builtin_name} expects a string argument"),
+        );
+    }
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    let heap_ref: &NativeHeap = heap;
+    let Some(value) = args.first() else {
+        return builtin_runtime_error(
+            out,
+            heap,
+            format!("{builtin_name} expects a string argument"),
+        );
+    };
+    let Some(value) = value.to_value(heap_ref) else {
+        return builtin_runtime_error(
+            out,
+            heap,
+            format!("{builtin_name} expects a string argument"),
+        );
+    };
+    let key = match value {
+        Value::String(text) => text,
+        _ => {
+            return builtin_runtime_error(
+                out,
+                heap,
+                format!("{builtin_name} expects a string argument"),
+            );
+        }
+    };
+    match std::env::var(&key) {
+        Ok(raw) => match typed_env_native_value(type_name, &key, &raw) {
+            Ok(value) => {
+                *out = value;
+                0
+            }
+            Err(err) => builtin_runtime_error(out, heap, err),
+        },
+        Err(_) => {
+            *out = NativeValue::null();
+            0
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_env_int(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    eval_native_typed_env("env_int", "Int", heap, args, len, out)
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_env_float(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    eval_native_typed_env("env_float", "Float", heap, args, len, out)
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_env_bool(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    eval_native_typed_env("env_bool", "Bool", heap, args, len, out)
 }
 
 #[unsafe(no_mangle)]
@@ -6657,6 +6798,9 @@ fn compile_function<M: Module>(
                                 "input" => hostcalls.builtin_input,
                                 "log" => hostcalls.builtin_log,
                                 "env" => hostcalls.builtin_env,
+                                "env_int" => hostcalls.builtin_env_int,
+                                "env_float" => hostcalls.builtin_env_float,
+                                "env_bool" => hostcalls.builtin_env_bool,
                                 "serve" => hostcalls.builtin_serve,
                                 "assert" => hostcalls.builtin_assert,
                                 "asset" => hostcalls.builtin_asset,
@@ -7597,6 +7741,9 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     | "input"
                     | "log"
                     | "env"
+                    | "env_int"
+                    | "env_float"
+                    | "env_bool"
                     | "serve"
                     | "assert"
                     | "asset"
@@ -8175,6 +8322,9 @@ fn analyze_types(
                                 | "input"
                                 | "log"
                                 | "env"
+                                | "env_int"
+                                | "env_float"
+                                | "env_bool"
                                 | "serve"
                                 | "assert"
                                 | "asset"
