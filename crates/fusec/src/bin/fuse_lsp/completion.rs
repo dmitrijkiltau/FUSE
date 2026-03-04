@@ -548,6 +548,11 @@ struct CompletionCandidate {
     kind: u32,
     detail: Option<String>,
     sort_group: u8,
+    /// Sub-rank within sort_group 2 (external workspace symbols):
+    /// 0 = symbol is in a module directly imported by the current file (locality-adjacent),
+    /// 1 = symbol is only transitively reachable (not directly imported).
+    /// Always 0 for other sort groups.
+    locality: u8,
 }
 
 pub(crate) fn handle_completion(
@@ -569,6 +574,7 @@ pub(crate) fn handle_completion(
     let index = build_workspace_index_cached(state, &uri);
     let current_container = completion_callable_name_at_cursor(&program, offset)
         .or_else(|| index.and_then(|index| completion_container_name(index, &uri, offset)));
+    let directly_imported = index.and_then(|idx| idx.imported_module_uris.get(uri.as_str()));
     let mut candidates: HashMap<String, CompletionCandidate> = HashMap::new();
 
     if let Some(base) = member_base {
@@ -586,7 +592,7 @@ pub(crate) fn handle_completion(
                         detail = Some(def.def.detail.clone());
                     }
                 }
-                upsert_completion_candidate(&mut candidates, &name, kind, detail, 0);
+                upsert_completion_candidate(&mut candidates, &name, kind, detail, 0, 0);
             }
         }
         for method in builtin_receiver_methods(&base) {
@@ -596,13 +602,26 @@ pub(crate) fn handle_completion(
                 2,
                 Some(format!("{base} builtin")),
                 0,
+                0,
             );
         }
     } else {
         if let Some(index) = index {
             for def in &index.defs {
-                let sort_group =
-                    completion_symbol_sort_group(def, &uri, current_container.as_deref());
+                // Skip import-binding defs in external files: the original def in the
+                // source module will be iterated separately and carries the correct
+                // locality.  Keeping the external import def would give a misleadingly
+                // low locality (0) because the intermediary file is directly imported,
+                // masking the fact that the true origin is only transitively reachable.
+                if def.uri != uri && def.def.detail.starts_with("import ") {
+                    continue;
+                }
+                let (sort_group, locality) = completion_symbol_sort_group(
+                    def,
+                    &uri,
+                    current_container.as_deref(),
+                    directly_imported,
+                );
                 let kind = completion_kind_for_symbol_kind(def.def.kind);
                 let detail = if def.def.detail.is_empty() {
                     None
@@ -615,6 +634,7 @@ pub(crate) fn handle_completion(
                     kind,
                     detail,
                     sort_group,
+                    locality,
                 );
             }
         }
@@ -625,6 +645,7 @@ pub(crate) fn handle_completion(
                 9,
                 Some("builtin namespace".to_string()),
                 3,
+                0,
             );
         }
         for builtin in COMPLETION_BUILTIN_FUNCTIONS {
@@ -634,6 +655,7 @@ pub(crate) fn handle_completion(
                 3,
                 Some("builtin function".to_string()),
                 3,
+                0,
             );
         }
         for builtin in COMPLETION_BUILTIN_TYPES {
@@ -643,6 +665,7 @@ pub(crate) fn handle_completion(
                 22,
                 Some("builtin type".to_string()),
                 3,
+                0,
             );
         }
         for tag in fusec::html_tags::all_html_tags() {
@@ -652,13 +675,14 @@ pub(crate) fn handle_completion(
                 3,
                 Some("html tag builtin".to_string()),
                 3,
+                0,
             );
         }
         for keyword in COMPLETION_KEYWORDS {
-            upsert_completion_candidate(&mut candidates, keyword, 14, None, 4);
+            upsert_completion_candidate(&mut candidates, keyword, 14, None, 4, 0);
         }
         for literal in ["true", "false", "null"] {
-            upsert_completion_candidate(&mut candidates, literal, 14, None, 4);
+            upsert_completion_candidate(&mut candidates, literal, 14, None, 4, 0);
         }
     }
 
@@ -669,6 +693,7 @@ pub(crate) fn handle_completion(
     entries.sort_by(|(left_label, left), (right_label, right)| {
         left.sort_group
             .cmp(&right.sort_group)
+            .then_with(|| left.locality.cmp(&right.locality))
             .then_with(|| left_label.to_lowercase().cmp(&right_label.to_lowercase()))
             .then_with(|| left_label.cmp(right_label))
     });
@@ -683,23 +708,35 @@ pub(crate) fn handle_completion(
                 candidate.kind,
                 candidate.detail.as_deref(),
                 candidate.sort_group,
+                candidate.locality,
             )
         })
         .collect();
     completion_list_json(items)
 }
 
-fn completion_item_json(label: &str, kind: u32, detail: Option<&str>, sort_group: u8) -> JsonValue {
+fn completion_item_json(
+    label: &str,
+    kind: u32,
+    detail: Option<&str>,
+    sort_group: u8,
+    locality: u8,
+) -> JsonValue {
     let mut item = BTreeMap::new();
     item.insert("label".to_string(), JsonValue::String(label.to_string()));
     item.insert("kind".to_string(), JsonValue::Number(kind as f64));
     if let Some(detail) = detail {
         item.insert("detail".to_string(), JsonValue::String(detail.to_string()));
     }
-    item.insert(
-        "sortText".to_string(),
-        JsonValue::String(format!("{sort_group:02}_{}", label.to_lowercase())),
-    );
+    // For external workspace symbols (group 02), embed the locality sub-rank so that
+    // symbols from directly-imported modules ("02_0_…") sort before symbols from
+    // transitively-imported modules ("02_1_…"), while both still start with "02_".
+    let sort_text = if sort_group == 2 {
+        format!("02_{locality}_{}", label.to_lowercase())
+    } else {
+        format!("{sort_group:02}_{}", label.to_lowercase())
+    };
+    item.insert("sortText".to_string(), JsonValue::String(sort_text));
     JsonValue::Object(item)
 }
 
@@ -716,6 +753,7 @@ fn upsert_completion_candidate(
     kind: u32,
     detail: Option<String>,
     sort_group: u8,
+    locality: u8,
 ) {
     use std::collections::hash_map::Entry;
     match candidates.entry(label.to_string()) {
@@ -724,19 +762,27 @@ fn upsert_completion_candidate(
                 kind,
                 detail,
                 sort_group,
+                locality,
             });
         }
         Entry::Occupied(mut slot) => {
             let existing = slot.get();
-            if sort_group < existing.sort_group {
+            let is_better = sort_group < existing.sort_group
+                || (sort_group == existing.sort_group && locality < existing.locality);
+            if is_better {
                 slot.insert(CompletionCandidate {
                     kind,
                     detail,
                     sort_group,
+                    locality,
                 });
                 return;
             }
-            if sort_group == existing.sort_group && existing.detail.is_none() && detail.is_some() {
+            if sort_group == existing.sort_group
+                && locality == existing.locality
+                && existing.detail.is_none()
+                && detail.is_some()
+            {
                 let existing = slot.get_mut();
                 existing.detail = detail;
                 existing.kind = kind;
@@ -967,17 +1013,32 @@ fn completion_callable_name_at_cursor(program: &Program, cursor: usize) -> Optio
     best.map(|(name, _)| name)
 }
 
-fn completion_symbol_sort_group(def: &WorkspaceDef, uri: &str, container: Option<&str>) -> u8 {
+/// Returns `(sort_group, locality)`.
+/// `sort_group` follows the standard 00–04 ranking bands.
+/// `locality` is only meaningful when `sort_group == 2`:
+///   0 = symbol's module is directly imported by the current file (locality-adjacent),
+///   1 = symbol's module is only transitively reachable.
+fn completion_symbol_sort_group(
+    def: &WorkspaceDef,
+    uri: &str,
+    container: Option<&str>,
+    directly_imported: Option<&std::collections::HashSet<String>>,
+) -> (u8, u8) {
     if def.uri != uri {
-        return 2;
+        let locality = if directly_imported.is_some_and(|set| set.contains(&def.uri)) {
+            0
+        } else {
+            1
+        };
+        return (2, locality);
     }
     if is_lexical_local_symbol(&def.def) {
         if container.is_some_and(|name| def.def.container.as_deref() == Some(name)) {
-            return 0;
+            return (0, 0);
         }
-        return 1;
+        return (1, 0);
     }
-    1
+    (1, 0)
 }
 
 fn is_lexical_local_symbol(def: &SymbolDef) -> bool {

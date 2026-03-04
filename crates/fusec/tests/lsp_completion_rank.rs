@@ -232,6 +232,85 @@ fn lsp_completion_ranking_stable_with_many_dep_modules() {
     let _ = fs::remove_dir_all(dir);
 }
 
+// Verify that within rank group 02 (external workspace symbols), locality weighting
+// correctly sub-ranks symbols:
+//   "02_0_…" — symbol is in a module directly imported by main.fuse
+//   "02_1_…" — symbol is only transitively reachable (imported by an import)
+//
+// Fixture layout:
+//   dep_util.fuse  — defines util_fn, util_helper (leaf module)
+//   dep_a.fuse     — imports util_fn from dep_util; defines alpha_fn, alpha_extra
+//   main.fuse      — imports alpha_fn from dep_a (direct); dep_util is NOT directly imported
+//
+// Expected sortText:
+//   alpha_extra → "02_0_alpha_extra"  (dep_a is directly imported by main)
+//   util_fn     → "02_1_util_fn"      (dep_util is only reachable via dep_a)
+#[test]
+fn lsp_completion_ranking_locality_weights_directly_imported_modules() {
+    let dir = temp_project_dir("fuse_lsp_rank_locality");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    );
+
+    let dep_util_src = "fn util_fn(v: String) -> String:\n  return v\n\nfn util_helper(v: String) -> String:\n  return v\n";
+    let dep_a_src = "import { util_fn } from \"./dep_util\"\n\nfn alpha_fn(v: String) -> String:\n  return util_fn(v)\n\nfn alpha_extra(v: String) -> String:\n  return v\n";
+    let main_src = "import { alpha_fn } from \"./dep_a\"\n\nfn run(v: String) -> String:\n  let task = v\n\n  return task\n\nfn main():\n  print(run(\"x\"))\n";
+
+    let dep_util_path = dir.join("dep_util.fuse");
+    let dep_a_path = dir.join("dep_a.fuse");
+    let main_path = dir.join("main.fuse");
+    write_project_file(&dep_util_path, dep_util_src);
+    write_project_file(&dep_a_path, dep_a_src);
+    write_project_file(&main_path, main_src);
+
+    let root_uri = path_to_uri(&dir);
+    let dep_util_uri = path_to_uri(&dep_util_path);
+    let dep_a_uri = path_to_uri(&dep_a_path);
+    let main_uri = path_to_uri(&main_path);
+
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&dep_util_uri, dep_util_src, 1);
+    lsp.open_document(&dep_a_uri, dep_a_src, 1);
+    lsp.open_document(&main_uri, main_src, 1);
+    assert!(lsp.wait_diagnostics(&dep_util_uri).is_empty());
+    assert!(lsp.wait_diagnostics(&dep_a_uri).is_empty());
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+
+    let (line, col) = line_col_of(main_src, "  return task");
+    let completion = lsp.request(
+        "textDocument/completion",
+        completion_params(&main_uri, line, col),
+    );
+    let completion_text = json::encode(&completion);
+
+    // alpha_extra is in dep_a.fuse, which is directly imported by main.fuse → locality 0.
+    let alpha_extra_sort = completion_sort_text(&completion, "alpha_extra")
+        .expect("missing workspace completion for alpha_extra");
+    // util_fn is in dep_util.fuse, which is NOT directly imported by main.fuse
+    // (only transitively via dep_a) → locality 1.
+    let util_fn_sort = completion_sort_text(&completion, "util_fn")
+        .expect("missing workspace completion for util_fn");
+
+    assert!(
+        alpha_extra_sort.starts_with("02_0_"),
+        "alpha_extra (directly-imported module) should be rank 02_0_, got {alpha_extra_sort}; payload: {completion_text}"
+    );
+    assert!(
+        util_fn_sort.starts_with("02_1_"),
+        "util_fn (transitively-imported module) should be rank 02_1_, got {util_fn_sort}; payload: {completion_text}"
+    );
+    // Locality-adjacent must sort before transitively-reachable within the same group.
+    assert!(
+        alpha_extra_sort < util_fn_sort,
+        "locality-adjacent alpha_extra ({alpha_extra_sort}) should sort before transitive util_fn ({util_fn_sort})"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
 // Both lib_alpha and lib_beta export a function named shared_proc.
 // main.fuse imports shared_proc only from lib_alpha (and beta_exclusive from lib_beta
 // to keep lib_beta reachable in the workspace index).
