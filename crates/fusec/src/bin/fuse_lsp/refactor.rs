@@ -1,8 +1,12 @@
 use std::collections::{BTreeMap, HashSet};
 
 use fuse_rt::json::JsonValue;
-use fusec::ast::{ConfigDecl, ImportDecl, ImportSpec, Item, Program};
+use fusec::ast::{
+    Block, Capability, ConfigDecl, Expr, ExprKind, ImportDecl, ImportSpec, Item, Literal, Program,
+    Stmt, StmtKind, TypeRef, TypeRefKind,
+};
 use fusec::diag::Level;
+use fusec::frontend::html_shorthand::{HTML_ATTR_COMMA_DIAG_CODE, HTML_ATTR_MAP_DIAG_CODE};
 use fusec::parse_source;
 use fusec::span::Span;
 
@@ -37,8 +41,26 @@ fn extract_workspace_query(obj: &BTreeMap<String, JsonValue>) -> Option<String> 
 
 #[derive(Clone)]
 struct CodeActionDiag {
+    code: Option<String>,
     message: String,
     span: Option<Span>,
+}
+
+#[derive(Clone, Copy)]
+struct WorkspaceSymbolMatch {
+    tier: u8,
+    start: usize,
+    span: usize,
+    gaps: usize,
+}
+
+struct WorkspaceSymbolCandidate {
+    score: WorkspaceSymbolMatch,
+    name: String,
+    name_lower: String,
+    uri: String,
+    span_start: usize,
+    symbol: JsonValue,
 }
 
 fn extract_code_action_diagnostics(
@@ -64,10 +86,18 @@ fn extract_code_action_diagnostics(
             Some(JsonValue::String(value)) => value.clone(),
             _ => continue,
         };
+        let code = match diag_obj.get("code") {
+            Some(JsonValue::String(value)) => Some(value.clone()),
+            _ => None,
+        };
         let span = diag_obj
             .get("range")
             .and_then(|range| lsp_range_to_span(range, text, &offsets));
-        out.push(CodeActionDiag { message, span });
+        out.push(CodeActionDiag {
+            code,
+            message,
+            span,
+        });
     }
     out
 }
@@ -76,26 +106,176 @@ pub(crate) fn handle_workspace_symbol(
     state: &mut LspState,
     obj: &BTreeMap<String, JsonValue>,
 ) -> JsonValue {
-    let query = extract_workspace_query(obj)
-        .unwrap_or_default()
-        .to_lowercase();
+    let query = extract_workspace_query(obj).unwrap_or_default();
     let mut symbols = Vec::new();
     let index = match build_workspace_index_cached(state, "") {
         Some(index) => index,
         None => return JsonValue::Array(Vec::new()),
     };
+    let mut candidates = Vec::new();
     for def in &index.defs {
-        if !query.is_empty() && !def.def.name.to_lowercase().contains(&query) {
+        let Some(score) = workspace_symbol_match_score(&def.def.name, &query) else {
             continue;
-        }
+        };
         let Some(file_idx) = index.file_by_uri.get(&def.uri) else {
             continue;
         };
         let file = &index.files[*file_idx];
         let symbol = symbol_info_json(&def.uri, &file.text, &def.def);
-        symbols.push(symbol);
+        candidates.push(WorkspaceSymbolCandidate {
+            score,
+            name: def.def.name.clone(),
+            name_lower: def.def.name.to_lowercase(),
+            uri: def.uri.clone(),
+            span_start: def.def.span.start,
+            symbol,
+        });
+    }
+    candidates.sort_by(|left, right| {
+        left.score
+            .tier
+            .cmp(&right.score.tier)
+            .then_with(|| left.score.start.cmp(&right.score.start))
+            .then_with(|| left.score.gaps.cmp(&right.score.gaps))
+            .then_with(|| left.score.span.cmp(&right.score.span))
+            .then_with(|| left.name.len().cmp(&right.name.len()))
+            .then_with(|| left.name_lower.cmp(&right.name_lower))
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.uri.cmp(&right.uri))
+            .then_with(|| left.span_start.cmp(&right.span_start))
+    });
+    for candidate in candidates {
+        symbols.push(candidate.symbol);
     }
     JsonValue::Array(symbols)
+}
+
+fn workspace_symbol_match_score(name: &str, query: &str) -> Option<WorkspaceSymbolMatch> {
+    if query.is_empty() {
+        return Some(WorkspaceSymbolMatch {
+            tier: 9,
+            start: 0,
+            span: 0,
+            gaps: 0,
+        });
+    }
+    if name == query {
+        return Some(WorkspaceSymbolMatch {
+            tier: 0,
+            start: 0,
+            span: query.chars().count(),
+            gaps: 0,
+        });
+    }
+
+    let name_lower = name.to_lowercase();
+    let query_lower = query.to_lowercase();
+
+    if name_lower == query_lower {
+        return Some(WorkspaceSymbolMatch {
+            tier: 1,
+            start: 0,
+            span: query_lower.chars().count(),
+            gaps: 0,
+        });
+    }
+    if name.starts_with(query) {
+        return Some(WorkspaceSymbolMatch {
+            tier: 2,
+            start: 0,
+            span: query.chars().count(),
+            gaps: 0,
+        });
+    }
+    if name_lower.starts_with(&query_lower) {
+        return Some(WorkspaceSymbolMatch {
+            tier: 3,
+            start: 0,
+            span: query_lower.chars().count(),
+            gaps: 0,
+        });
+    }
+
+    let initials = workspace_symbol_initials(name);
+    if initials.starts_with(&query_lower) {
+        return Some(WorkspaceSymbolMatch {
+            tier: 4,
+            start: 0,
+            span: query_lower.chars().count(),
+            gaps: 0,
+        });
+    }
+
+    if let Some(start) = name_lower.find(&query_lower) {
+        return Some(WorkspaceSymbolMatch {
+            tier: 5,
+            start,
+            span: query_lower.len(),
+            gaps: 0,
+        });
+    }
+
+    let (start, end, gaps) = workspace_symbol_subsequence_match(&name_lower, &query_lower)?;
+    Some(WorkspaceSymbolMatch {
+        tier: 6,
+        start,
+        span: end.saturating_sub(start),
+        gaps,
+    })
+}
+
+fn workspace_symbol_initials(name: &str) -> String {
+    let mut out = String::new();
+    let mut prev_is_alnum = false;
+    let mut prev_was_lower = false;
+    for (idx, ch) in name.chars().enumerate() {
+        if !ch.is_ascii_alphanumeric() {
+            prev_is_alnum = false;
+            prev_was_lower = false;
+            continue;
+        }
+        let boundary = idx == 0 || !prev_is_alnum || (ch.is_ascii_uppercase() && prev_was_lower);
+        if boundary {
+            out.push(ch.to_ascii_lowercase());
+        }
+        prev_is_alnum = true;
+        prev_was_lower = ch.is_ascii_lowercase();
+    }
+    out
+}
+
+fn workspace_symbol_subsequence_match(name: &str, query: &str) -> Option<(usize, usize, usize)> {
+    let mut query_chars = query.chars();
+    let mut needle = query_chars.next()?;
+    let mut start = None;
+    let mut end = 0usize;
+    let mut last_idx = 0usize;
+    let mut gaps = 0usize;
+    let mut matched = 0usize;
+
+    for (idx, ch) in name.chars().enumerate() {
+        if ch != needle {
+            continue;
+        }
+        if start.is_none() {
+            start = Some(idx);
+        } else {
+            gaps = gaps.saturating_add(idx.saturating_sub(last_idx.saturating_add(1)));
+        }
+        last_idx = idx;
+        end = idx.saturating_add(1);
+        matched = matched.saturating_add(1);
+        if let Some(next) = query_chars.next() {
+            needle = next;
+        } else {
+            return Some((start.unwrap_or(0), end, gaps));
+        }
+    }
+
+    if matched == query.chars().count() {
+        return Some((start.unwrap_or(0), end, gaps));
+    }
+    None
 }
 
 pub(crate) fn handle_rename(state: &mut LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
@@ -220,6 +400,30 @@ pub(crate) fn handle_code_action(
     let mut seen = HashSet::new();
 
     for diag in extract_code_action_diagnostics(obj, &text) {
+        if diag.code.as_deref() == Some(HTML_ATTR_MAP_DIAG_CODE) {
+            if let Some(span) = diag.span {
+                if let Some(edit) = html_attr_map_workspace_edit(&uri, &text, &program, span) {
+                    let title = "Rewrite HTML attrs from map literal";
+                    let key = format!("quickfix:{title}:{}:{}", span.start, span.end);
+                    if seen.insert(key) {
+                        actions.push(code_action_json(title, "quickfix", edit));
+                    }
+                }
+            }
+        }
+
+        if diag.code.as_deref() == Some(HTML_ATTR_COMMA_DIAG_CODE) {
+            if let Some(span) = diag.span {
+                if let Some(edit) = html_attr_comma_workspace_edit(&uri, &text, span) {
+                    let title = "Remove comma between HTML attrs";
+                    let key = format!("quickfix:{title}:{}:{}", span.start, span.end);
+                    if seen.insert(key) {
+                        actions.push(code_action_json(title, "quickfix", edit));
+                    }
+                }
+            }
+        }
+
         if let Some(symbol) = parse_unknown_symbol_name(&diag.message) {
             if is_valid_ident(&symbol) {
                 if let Some(span) = diag.span {
@@ -258,6 +462,19 @@ pub(crate) fn handle_code_action(
                 if seen.insert(key) {
                     actions.push(code_action_json(&title, "quickfix", edit));
                 }
+            }
+        }
+
+        if let Some(capability) = parse_missing_capability_diag(&diag.message) {
+            let Some(edit) =
+                missing_capability_requires_workspace_edit(&uri, &text, &program, capability)
+            else {
+                continue;
+            };
+            let title = format!("Add requires {}", capability.as_str());
+            let key = format!("quickfix:{title}");
+            if seen.insert(key) {
+                actions.push(code_action_json(&title, "quickfix", edit));
             }
         }
     }
@@ -305,6 +522,488 @@ fn parse_unknown_field_on_type(message: &str) -> Option<(String, String)> {
         return None;
     }
     Some((field.to_string(), ty.to_string()))
+}
+
+fn parse_missing_capability_diag(message: &str) -> Option<Capability> {
+    if !message.contains("module top-level") {
+        return None;
+    }
+    for marker in [
+        "requires capability ",
+        "require capability ",
+        "leaks capability ",
+    ] {
+        let Some((_, rest)) = message.split_once(marker) else {
+            continue;
+        };
+        let name: String = rest
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphabetic())
+            .collect();
+        if let Some(capability) = Capability::from_name(&name) {
+            return Some(capability);
+        }
+    }
+    None
+}
+
+fn html_attr_comma_workspace_edit(uri: &str, text: &str, span: Span) -> Option<JsonValue> {
+    let snippet = text.get(span.start..span.end)?;
+    if !snippet.contains(',') {
+        return None;
+    }
+    Some(workspace_edit_with_single_span(uri, text, span, ""))
+}
+
+fn html_attr_map_workspace_edit(
+    uri: &str,
+    text: &str,
+    program: &Program,
+    span: Span,
+) -> Option<JsonValue> {
+    let pairs = map_literal_attr_pairs_for_span(program, span)?;
+    let mut rendered = Vec::new();
+    for (attr_name, value_span) in pairs {
+        let value = text.get(value_span.start..value_span.end)?;
+        rendered.push(format!("{attr_name}={value}"));
+    }
+    let replacement = rendered.join(" ");
+    Some(workspace_edit_with_single_span(
+        uri,
+        text,
+        span,
+        &replacement,
+    ))
+}
+
+fn map_literal_attr_pairs_for_span(program: &Program, span: Span) -> Option<Vec<(String, Span)>> {
+    for item in &program.items {
+        if let Some(pairs) = map_literal_attr_pairs_in_item(item, span) {
+            return Some(pairs);
+        }
+    }
+    None
+}
+
+fn map_literal_attr_pairs_in_item(item: &Item, span: Span) -> Option<Vec<(String, Span)>> {
+    match item {
+        Item::Import(_) => None,
+        Item::Type(decl) => {
+            for field in &decl.fields {
+                if let Some(pairs) = map_literal_attr_pairs_in_type_ref(&field.ty, span) {
+                    return Some(pairs);
+                }
+                if let Some(default) = &field.default {
+                    if let Some(pairs) = map_literal_attr_pairs_in_expr(default, span) {
+                        return Some(pairs);
+                    }
+                }
+            }
+            None
+        }
+        Item::Enum(decl) => {
+            for variant in &decl.variants {
+                for payload in &variant.payload {
+                    if let Some(pairs) = map_literal_attr_pairs_in_type_ref(payload, span) {
+                        return Some(pairs);
+                    }
+                }
+            }
+            None
+        }
+        Item::Fn(decl) => {
+            for param in &decl.params {
+                if let Some(pairs) = map_literal_attr_pairs_in_type_ref(&param.ty, span) {
+                    return Some(pairs);
+                }
+                if let Some(default) = &param.default {
+                    if let Some(pairs) = map_literal_attr_pairs_in_expr(default, span) {
+                        return Some(pairs);
+                    }
+                }
+            }
+            if let Some(ret) = &decl.ret {
+                if let Some(pairs) = map_literal_attr_pairs_in_type_ref(ret, span) {
+                    return Some(pairs);
+                }
+            }
+            map_literal_attr_pairs_in_block(&decl.body, span)
+        }
+        Item::Service(decl) => {
+            for route in &decl.routes {
+                if let Some(pairs) = map_literal_attr_pairs_in_type_ref(&route.ret_type, span) {
+                    return Some(pairs);
+                }
+                if let Some(body_type) = &route.body_type {
+                    if let Some(pairs) = map_literal_attr_pairs_in_type_ref(body_type, span) {
+                        return Some(pairs);
+                    }
+                }
+                if let Some(pairs) = map_literal_attr_pairs_in_block(&route.body, span) {
+                    return Some(pairs);
+                }
+            }
+            None
+        }
+        Item::Config(decl) => {
+            for field in &decl.fields {
+                if let Some(pairs) = map_literal_attr_pairs_in_type_ref(&field.ty, span) {
+                    return Some(pairs);
+                }
+                if let Some(pairs) = map_literal_attr_pairs_in_expr(&field.value, span) {
+                    return Some(pairs);
+                }
+            }
+            None
+        }
+        Item::Component(decl) => map_literal_attr_pairs_in_block(&decl.body, span),
+        Item::App(decl) => map_literal_attr_pairs_in_block(&decl.body, span),
+        Item::Migration(decl) => map_literal_attr_pairs_in_block(&decl.body, span),
+        Item::Test(decl) => map_literal_attr_pairs_in_block(&decl.body, span),
+    }
+}
+
+fn map_literal_attr_pairs_in_block(block: &Block, span: Span) -> Option<Vec<(String, Span)>> {
+    if !span_contains(block.span, span.start) {
+        return None;
+    }
+    for stmt in &block.stmts {
+        if let Some(pairs) = map_literal_attr_pairs_in_stmt(stmt, span) {
+            return Some(pairs);
+        }
+    }
+    None
+}
+
+fn map_literal_attr_pairs_in_stmt(stmt: &Stmt, span: Span) -> Option<Vec<(String, Span)>> {
+    if !span_contains(stmt.span, span.start) {
+        return None;
+    }
+    match &stmt.kind {
+        StmtKind::Let { ty, expr, .. } | StmtKind::Var { ty, expr, .. } => {
+            if let Some(ty) = ty {
+                if let Some(pairs) = map_literal_attr_pairs_in_type_ref(ty, span) {
+                    return Some(pairs);
+                }
+            }
+            map_literal_attr_pairs_in_expr(expr, span)
+        }
+        StmtKind::Assign { target, expr } => map_literal_attr_pairs_in_expr(target, span)
+            .or_else(|| map_literal_attr_pairs_in_expr(expr, span)),
+        StmtKind::Return { expr } => expr
+            .as_ref()
+            .and_then(|expr| map_literal_attr_pairs_in_expr(expr, span)),
+        StmtKind::If {
+            cond,
+            then_block,
+            else_if,
+            else_block,
+        } => {
+            if let Some(pairs) = map_literal_attr_pairs_in_expr(cond, span) {
+                return Some(pairs);
+            }
+            if let Some(pairs) = map_literal_attr_pairs_in_block(then_block, span) {
+                return Some(pairs);
+            }
+            for (branch_cond, branch_block) in else_if {
+                if let Some(pairs) = map_literal_attr_pairs_in_expr(branch_cond, span) {
+                    return Some(pairs);
+                }
+                if let Some(pairs) = map_literal_attr_pairs_in_block(branch_block, span) {
+                    return Some(pairs);
+                }
+            }
+            else_block
+                .as_ref()
+                .and_then(|block| map_literal_attr_pairs_in_block(block, span))
+        }
+        StmtKind::Match { expr, cases } => {
+            if let Some(pairs) = map_literal_attr_pairs_in_expr(expr, span) {
+                return Some(pairs);
+            }
+            for (_, block) in cases {
+                if let Some(pairs) = map_literal_attr_pairs_in_block(block, span) {
+                    return Some(pairs);
+                }
+            }
+            None
+        }
+        StmtKind::For { iter, block, .. } => map_literal_attr_pairs_in_expr(iter, span)
+            .or_else(|| map_literal_attr_pairs_in_block(block, span)),
+        StmtKind::While { cond, block } => map_literal_attr_pairs_in_expr(cond, span)
+            .or_else(|| map_literal_attr_pairs_in_block(block, span)),
+        StmtKind::Transaction { block } => map_literal_attr_pairs_in_block(block, span),
+        StmtKind::Expr(expr) => map_literal_attr_pairs_in_expr(expr, span),
+        StmtKind::Break | StmtKind::Continue => None,
+    }
+}
+
+fn map_literal_attr_pairs_in_expr(expr: &Expr, span: Span) -> Option<Vec<(String, Span)>> {
+    if expr.span.start == span.start && expr.span.end == span.end {
+        if let ExprKind::MapLit(items) = &expr.kind {
+            return map_literal_attr_pairs_from_items(items);
+        }
+    }
+    if !span_contains(expr.span, span.start) {
+        return None;
+    }
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            if let Some(pairs) = map_literal_attr_pairs_in_expr(callee, span) {
+                return Some(pairs);
+            }
+            for arg in args {
+                if let Some(pairs) = map_literal_attr_pairs_in_expr(&arg.value, span) {
+                    return Some(pairs);
+                }
+            }
+            None
+        }
+        ExprKind::Binary { left, right, .. } => map_literal_attr_pairs_in_expr(left, span)
+            .or_else(|| map_literal_attr_pairs_in_expr(right, span)),
+        ExprKind::Unary { expr, .. } | ExprKind::Await { expr } | ExprKind::Box { expr } => {
+            map_literal_attr_pairs_in_expr(expr, span)
+        }
+        ExprKind::Member { base, .. } | ExprKind::OptionalMember { base, .. } => {
+            map_literal_attr_pairs_in_expr(base, span)
+        }
+        ExprKind::Index { base, index } | ExprKind::OptionalIndex { base, index } => {
+            map_literal_attr_pairs_in_expr(base, span)
+                .or_else(|| map_literal_attr_pairs_in_expr(index, span))
+        }
+        ExprKind::StructLit { fields, .. } => {
+            for field in fields {
+                if let Some(pairs) = map_literal_attr_pairs_in_expr(&field.value, span) {
+                    return Some(pairs);
+                }
+            }
+            None
+        }
+        ExprKind::ListLit(items) => {
+            for item in items {
+                if let Some(pairs) = map_literal_attr_pairs_in_expr(item, span) {
+                    return Some(pairs);
+                }
+            }
+            None
+        }
+        ExprKind::MapLit(items) => {
+            for (key, value) in items {
+                if let Some(pairs) = map_literal_attr_pairs_in_expr(key, span) {
+                    return Some(pairs);
+                }
+                if let Some(pairs) = map_literal_attr_pairs_in_expr(value, span) {
+                    return Some(pairs);
+                }
+            }
+            None
+        }
+        ExprKind::InterpString(parts) => {
+            for part in parts {
+                if let fusec::ast::InterpPart::Expr(part_expr) = part {
+                    if let Some(pairs) = map_literal_attr_pairs_in_expr(part_expr, span) {
+                        return Some(pairs);
+                    }
+                }
+            }
+            None
+        }
+        ExprKind::Coalesce { left, right } => map_literal_attr_pairs_in_expr(left, span)
+            .or_else(|| map_literal_attr_pairs_in_expr(right, span)),
+        ExprKind::BangChain { expr, error } => {
+            map_literal_attr_pairs_in_expr(expr, span).or_else(|| {
+                error
+                    .as_ref()
+                    .and_then(|error| map_literal_attr_pairs_in_expr(error, span))
+            })
+        }
+        ExprKind::Spawn { block } => map_literal_attr_pairs_in_block(block, span),
+        ExprKind::HtmlIf {
+            cond,
+            then_children,
+            else_if,
+            else_children,
+        } => {
+            if let Some(pairs) = map_literal_attr_pairs_in_expr(cond, span) {
+                return Some(pairs);
+            }
+            for child in then_children {
+                if let Some(pairs) = map_literal_attr_pairs_in_expr(child, span) {
+                    return Some(pairs);
+                }
+            }
+            for (branch_cond, branch_children) in else_if {
+                if let Some(pairs) = map_literal_attr_pairs_in_expr(branch_cond, span) {
+                    return Some(pairs);
+                }
+                for child in branch_children {
+                    if let Some(pairs) = map_literal_attr_pairs_in_expr(child, span) {
+                        return Some(pairs);
+                    }
+                }
+            }
+            for child in else_children {
+                if let Some(pairs) = map_literal_attr_pairs_in_expr(child, span) {
+                    return Some(pairs);
+                }
+            }
+            None
+        }
+        ExprKind::HtmlFor {
+            iter,
+            body_children,
+            ..
+        } => {
+            if let Some(pairs) = map_literal_attr_pairs_in_expr(iter, span) {
+                return Some(pairs);
+            }
+            for child in body_children {
+                if let Some(pairs) = map_literal_attr_pairs_in_expr(child, span) {
+                    return Some(pairs);
+                }
+            }
+            None
+        }
+        ExprKind::Literal(_) | ExprKind::Ident(_) => None,
+    }
+}
+
+fn map_literal_attr_pairs_in_type_ref(ty: &TypeRef, span: Span) -> Option<Vec<(String, Span)>> {
+    if !span_contains(ty.span, span.start) {
+        return None;
+    }
+    match &ty.kind {
+        TypeRefKind::Simple(_) => None,
+        TypeRefKind::Generic { args, .. } => {
+            for arg in args {
+                if let Some(pairs) = map_literal_attr_pairs_in_type_ref(arg, span) {
+                    return Some(pairs);
+                }
+            }
+            None
+        }
+        TypeRefKind::Optional(inner) => map_literal_attr_pairs_in_type_ref(inner, span),
+        TypeRefKind::Result { ok, err } => {
+            map_literal_attr_pairs_in_type_ref(ok, span).or_else(|| {
+                err.as_ref()
+                    .and_then(|err| map_literal_attr_pairs_in_type_ref(err, span))
+            })
+        }
+        TypeRefKind::Refined { args, .. } => {
+            for arg in args {
+                if let Some(pairs) = map_literal_attr_pairs_in_expr(arg, span) {
+                    return Some(pairs);
+                }
+            }
+            None
+        }
+    }
+}
+
+fn map_literal_attr_pairs_from_items(items: &[(Expr, Expr)]) -> Option<Vec<(String, Span)>> {
+    let mut out = Vec::new();
+    for (key, value) in items {
+        let attr_name = html_attr_ident_from_map_key(key)?;
+        out.push((attr_name, value.span));
+    }
+    Some(out)
+}
+
+fn html_attr_ident_from_map_key(key: &Expr) -> Option<String> {
+    let ExprKind::Literal(Literal::String(raw_name)) = &key.kind else {
+        return None;
+    };
+    let mut ident = String::new();
+    for ch in raw_name.chars() {
+        if ch == '-' {
+            ident.push('_');
+            continue;
+        }
+        if ch == '_' || ch.is_ascii_alphanumeric() {
+            ident.push(ch);
+            continue;
+        }
+        return None;
+    }
+    if !is_valid_ident(&ident) || is_keyword_or_literal(&ident) {
+        return None;
+    }
+    Some(ident)
+}
+
+fn capability_sort_rank(capability: Capability) -> u8 {
+    match capability {
+        Capability::Db => 0,
+        Capability::Network => 1,
+        Capability::Time => 2,
+        Capability::Crypto => 3,
+    }
+}
+
+fn render_requires_block(capabilities: &[Capability]) -> String {
+    capabilities
+        .iter()
+        .map(|capability| format!("requires {}", capability.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn missing_capability_requires_workspace_edit(
+    uri: &str,
+    text: &str,
+    program: &Program,
+    capability: Capability,
+) -> Option<JsonValue> {
+    let mut capabilities: Vec<Capability> = program
+        .requires
+        .iter()
+        .map(|decl| decl.capability)
+        .collect();
+    if capabilities.contains(&capability) {
+        return None;
+    }
+    capabilities.push(capability);
+    capabilities.sort_by_key(|cap| capability_sort_rank(*cap));
+    capabilities.dedup();
+
+    let rendered = render_requires_block(&capabilities);
+    if program.requires.is_empty() {
+        let mut new_text = format!("{rendered}\n");
+        if !text.is_empty() && !text.starts_with('\n') {
+            new_text.push('\n');
+        }
+        return Some(workspace_edit_with_single_span(
+            uri,
+            text,
+            Span::new(0, 0),
+            &new_text,
+        ));
+    }
+
+    let first = program
+        .requires
+        .iter()
+        .map(|decl| line_start_offset(text, decl.span.start))
+        .min()?;
+    let mut end = program
+        .requires
+        .iter()
+        .map(|decl| line_end_offset(text, decl.span.end))
+        .max()?;
+    while end < text.len() && text.as_bytes().get(end) == Some(&b'\n') {
+        end += 1;
+    }
+
+    let mut replacement = format!("{rendered}\n");
+    if end < text.len() {
+        replacement.push('\n');
+    }
+    Some(workspace_edit_with_single_span(
+        uri,
+        text,
+        Span::new(first, end),
+        &replacement,
+    ))
 }
 
 fn missing_config_field_actions(

@@ -79,6 +79,30 @@ fn cancel_params(id: u64) -> JsonValue {
     JsonValue::Object(params)
 }
 
+fn code_action_params(uri: &str, diagnostics: Vec<JsonValue>) -> JsonValue {
+    let mut text_doc = BTreeMap::new();
+    text_doc.insert("uri".to_string(), JsonValue::String(uri.to_string()));
+
+    let mut range_start = BTreeMap::new();
+    range_start.insert("line".to_string(), JsonValue::Number(0.0));
+    range_start.insert("character".to_string(), JsonValue::Number(0.0));
+    let mut range_end = BTreeMap::new();
+    range_end.insert("line".to_string(), JsonValue::Number(200.0));
+    range_end.insert("character".to_string(), JsonValue::Number(0.0));
+    let mut range = BTreeMap::new();
+    range.insert("start".to_string(), JsonValue::Object(range_start));
+    range.insert("end".to_string(), JsonValue::Object(range_end));
+
+    let mut context = BTreeMap::new();
+    context.insert("diagnostics".to_string(), JsonValue::Array(diagnostics));
+
+    let mut params = BTreeMap::new();
+    params.insert("textDocument".to_string(), JsonValue::Object(text_doc));
+    params.insert("range".to_string(), JsonValue::Object(range));
+    params.insert("context".to_string(), JsonValue::Object(context));
+    JsonValue::Object(params)
+}
+
 fn assert_cancelled_response(raw: JsonValue) {
     let JsonValue::Object(root) = raw else {
         panic!("expected response object");
@@ -636,6 +660,96 @@ fn lsp_large_workspace_edit_burst_does_not_hang() {
     assert!(
         ok_text.contains("\"items\""),
         "completion should still respond after edit burst: {ok_text}"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn lsp_workspace_symbol_and_code_action_burst_stays_responsive() {
+    let dir = temp_project_dir("fuse_lsp_symbol_action_burst");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    );
+
+    let util_src = r#"fn call_greet(user: String) -> String:
+  return user
+"#;
+    let main_src = r#"import { call_greet } from "./util"
+
+fn page(css: String) -> Html:
+  return link({"rel": "stylesheet", "href": css})
+
+fn page2() -> Html:
+  return div(class="hero", id="main")
+
+fn main():
+  print(call_greet("Ada"))
+"#;
+
+    let util_path = dir.join("util.fuse");
+    let main_path = dir.join("main.fuse");
+    write_project_file(&util_path, util_src);
+    write_project_file(&main_path, main_src);
+
+    let root_uri = path_to_uri(&dir);
+    let util_uri = path_to_uri(&util_path);
+    let main_uri = path_to_uri(&main_path);
+
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&util_uri, util_src, 1);
+    assert!(lsp.wait_diagnostics(&util_uri).is_empty());
+    lsp.open_document(&main_uri, main_src, 1);
+    let main_diags = lsp.wait_diagnostics(&main_uri);
+    assert!(
+        !main_diags.is_empty(),
+        "expected HTML attr diagnostics for code-action burst fixture"
+    );
+
+    // Prime workspace symbol index.
+    let _ = lsp.request("workspace/symbol", workspace_symbol_params("cg"));
+
+    const BURST_SIZE: usize = 20;
+    let burst_start = Instant::now();
+    for i in 0..BURST_SIZE {
+        if i % 2 == 0 {
+            let result = lsp.request("workspace/symbol", workspace_symbol_params("cg"));
+            let text = json::encode(&result);
+            assert!(
+                text.contains("call_greet"),
+                "workspace/symbol burst response missing call_greet: {text}"
+            );
+        } else {
+            let result = lsp.request(
+                "textDocument/codeAction",
+                code_action_params(&main_uri, main_diags.clone()),
+            );
+            let text = json::encode(&result);
+            assert!(
+                text.contains("Rewrite HTML attrs from map literal"),
+                "code-action burst response missing map rewrite: {text}"
+            );
+        }
+    }
+    let burst_ms = burst_start.elapsed().as_millis();
+    assert!(
+        burst_ms <= EDIT_BURST_BUDGET_MS,
+        "symbol/code-action burst latency {burst_ms}ms exceeded budget {EDIT_BURST_BUDGET_MS}ms"
+    );
+
+    // Server must remain responsive after burst.
+    let (line, col) = line_col_of(main_src, "call_greet");
+    let completion = lsp.request(
+        "textDocument/completion",
+        completion_params(&main_uri, line, col + "call_".len()),
+    );
+    let completion_text = json::encode(&completion);
+    assert!(
+        completion_text.contains("\"items\""),
+        "completion should still respond after symbol/code-action burst: {completion_text}"
     );
 
     lsp.shutdown();

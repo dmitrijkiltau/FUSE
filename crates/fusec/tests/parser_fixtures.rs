@@ -38,6 +38,11 @@ fn parse_diags(src: &str) -> Vec<String> {
         .collect()
 }
 
+fn parse_diag_codes(src: &str) -> Vec<String> {
+    let (_program, diags) = parse_source(src);
+    diags.into_iter().filter_map(|diag| diag.code).collect()
+}
+
 fn assert_parse_err_contains(src: &str, expected: &str) {
     let diags = parse_diags(src);
     assert!(
@@ -47,6 +52,14 @@ fn assert_parse_err_contains(src: &str, expected: &str) {
     assert!(
         diags.iter().any(|diag| diag.contains(expected)),
         "expected parse diagnostics containing {expected:?}, got {diags:?}"
+    );
+}
+
+fn assert_parse_err_code(src: &str, expected_code: &str) {
+    let codes = parse_diag_codes(src);
+    assert!(
+        codes.iter().any(|code| code == expected_code),
+        "expected parse diagnostic code {expected_code:?}, got {codes:?}"
     );
 }
 
@@ -467,6 +480,7 @@ fn page() -> Html:
   return div(class="hero", id="main")
 "#;
     assert_parse_err_contains(src, "commas are not allowed between HTML tag attributes");
+    assert_parse_err_code(src, "FUSE_HTML_ATTR_COMMA");
 }
 
 #[test]
@@ -476,6 +490,7 @@ fn page(css: String) -> Html:
   return link({"rel": "stylesheet", "href": css})
 "#;
     assert_parse_err_contains(src, "map literal is not valid for HTML tag attributes");
+    assert_parse_err_code(src, "FUSE_HTML_ATTR_MAP");
 }
 
 #[test]
@@ -490,6 +505,7 @@ fn page() -> Html:
     "ok"
 "#;
     assert_parse_err_contains(src, "commas are not allowed between HTML tag attributes");
+    assert_parse_err_code(src, "FUSE_HTML_ATTR_COMMA");
 }
 
 #[test]
@@ -504,6 +520,7 @@ fn page() -> Html:
     "ok"
 "#;
     assert_parse_err_contains(src, "map literal is not valid for HTML tag attributes");
+    assert_parse_err_code(src, "FUSE_HTML_ATTR_MAP");
 }
 
 #[test]

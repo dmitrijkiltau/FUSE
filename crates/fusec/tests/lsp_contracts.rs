@@ -106,6 +106,22 @@ fn position_params(uri: &str, line: usize, character: usize) -> JsonValue {
     JsonValue::Object(params)
 }
 
+fn symbol_names(result: &JsonValue) -> Vec<String> {
+    let JsonValue::Array(items) = result else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let JsonValue::Object(symbol) = item else {
+            continue;
+        };
+        if let Some(JsonValue::String(name)) = symbol.get("name") {
+            out.push(name.clone());
+        }
+    }
+    out
+}
+
 #[test]
 fn lsp_lifecycle_diagnostics_open_change_close() {
     let dir = temp_project_dir("fuse_lsp_lifecycle");
@@ -204,10 +220,34 @@ fn lsp_navigation_refactor_workspace_symbol_and_call_hierarchy() {
     symbol_params.insert("query".to_string(), JsonValue::String("greet".to_string()));
     let symbols = lsp.request("workspace/symbol", JsonValue::Object(symbol_params));
     let symbols_text = json::encode(&symbols);
+    let symbol_names_greet = symbol_names(&symbols);
     assert!(
         symbols_text.contains("\"name\":\"greet\"")
             && symbols_text.contains("\"name\":\"call_greet\""),
         "workspace symbols missing greet entries: {symbols_text}"
+    );
+    let greet_idx = symbol_names_greet
+        .iter()
+        .position(|name| name == "greet")
+        .expect("greet symbol");
+    let call_greet_idx = symbol_names_greet
+        .iter()
+        .position(|name| name == "call_greet")
+        .expect("call_greet symbol");
+    assert!(
+        greet_idx < call_greet_idx,
+        "expected exact match to rank before substring match, got {symbol_names_greet:?}"
+    );
+
+    let mut symbol_params = BTreeMap::new();
+    symbol_params.insert("query".to_string(), JsonValue::String("cg".to_string()));
+    let symbols_cg = lsp.request("workspace/symbol", JsonValue::Object(symbol_params));
+    let symbol_names_cg = symbol_names(&symbols_cg);
+    assert!(
+        symbol_names_cg
+            .first()
+            .is_some_and(|name| name == "call_greet"),
+        "expected fuzzy query `cg` to rank call_greet first, got {symbol_names_cg:?}"
     );
 
     let (caller_line, caller_col) = line_col_of(&fixture.main_src, "fn call_greet");

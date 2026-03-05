@@ -141,3 +141,171 @@ fn main():
     lsp.shutdown();
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn lsp_code_actions_add_missing_requires_capability_quickfixes() {
+    let dir = temp_project_dir("fuse_lsp_code_action_requires");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    );
+
+    let main_path = dir.join("main.fuse");
+    let db_missing = r#"requires network
+
+fn main():
+  db.exec("select 1")
+"#;
+    write_project_file(&main_path, db_missing);
+
+    let root_uri = path_to_uri(&dir);
+    let main_uri = path_to_uri(&main_path);
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&main_uri, db_missing, 1);
+
+    let db_diags = lsp.wait_diagnostics(&main_uri);
+    assert!(!db_diags.is_empty(), "expected db capability diagnostics");
+    let db_actions = lsp.request(
+        "textDocument/codeAction",
+        code_action_params(&main_uri, db_diags),
+    );
+    let db_actions_text = json::encode(&db_actions);
+    assert!(
+        db_actions_text.contains("Add requires db"),
+        "missing db capability quickfix: {db_actions_text}"
+    );
+    assert!(
+        db_actions_text.contains("requires db\\nrequires network"),
+        "db capability rewrite should keep deterministic ordering: {db_actions_text}"
+    );
+
+    let network_missing = r#"fn main():
+  serve(3000)
+"#;
+    lsp.change_document(&main_uri, network_missing, 2);
+    let network_diags = lsp.wait_diagnostics(&main_uri);
+    assert!(
+        !network_diags.is_empty(),
+        "expected network capability diagnostics"
+    );
+    let network_actions = lsp.request(
+        "textDocument/codeAction",
+        code_action_params(&main_uri, network_diags),
+    );
+    let network_actions_text = json::encode(&network_actions);
+    assert!(
+        network_actions_text.contains("Add requires network"),
+        "missing network capability quickfix: {network_actions_text}"
+    );
+
+    let time_missing = r#"fn main():
+  let _ = time.now()
+"#;
+    lsp.change_document(&main_uri, time_missing, 3);
+    let time_diags = lsp.wait_diagnostics(&main_uri);
+    assert!(
+        !time_diags.is_empty(),
+        "expected time capability diagnostics"
+    );
+    let time_actions = lsp.request(
+        "textDocument/codeAction",
+        code_action_params(&main_uri, time_diags),
+    );
+    let time_actions_text = json::encode(&time_actions);
+    assert!(
+        time_actions_text.contains("Add requires time"),
+        "missing time capability quickfix: {time_actions_text}"
+    );
+
+    let crypto_missing = r#"fn main():
+  let _ = crypto.random_bytes(8)
+"#;
+    lsp.change_document(&main_uri, crypto_missing, 4);
+    let crypto_diags = lsp.wait_diagnostics(&main_uri);
+    assert!(
+        !crypto_diags.is_empty(),
+        "expected crypto capability diagnostics"
+    );
+    let crypto_actions = lsp.request(
+        "textDocument/codeAction",
+        code_action_params(&main_uri, crypto_diags),
+    );
+    let crypto_actions_text = json::encode(&crypto_actions);
+    assert!(
+        crypto_actions_text.contains("Add requires crypto"),
+        "missing crypto capability quickfix: {crypto_actions_text}"
+    );
+
+    let unrelated_src = r#"fn main():
+  MissingSymbol()
+"#;
+    lsp.change_document(&main_uri, unrelated_src, 5);
+    let unrelated_diags = lsp.wait_diagnostics(&main_uri);
+    assert!(
+        !unrelated_diags.is_empty(),
+        "expected unknown symbol diagnostics"
+    );
+    let unrelated_actions = lsp.request(
+        "textDocument/codeAction",
+        code_action_params(&main_uri, unrelated_diags),
+    );
+    let unrelated_actions_text = json::encode(&unrelated_actions);
+    assert!(
+        !unrelated_actions_text.contains("Add requires "),
+        "unrelated diagnostics should not get capability quickfixes: {unrelated_actions_text}"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn lsp_code_actions_html_attr_map_and_comma_migration_fixes() {
+    let dir = temp_project_dir("fuse_lsp_code_action_html_attr_migration");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    );
+
+    let main_src = r#"fn page(css: String) -> Html:
+  return link({"rel": "stylesheet", "href": css})
+
+fn page2() -> Html:
+  return div(class="hero", id="main")
+"#;
+    let main_path = dir.join("main.fuse");
+    write_project_file(&main_path, main_src);
+
+    let root_uri = path_to_uri(&dir);
+    let main_uri = path_to_uri(&main_path);
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&main_uri, main_src, 1);
+    let diags = lsp.wait_diagnostics(&main_uri);
+    assert!(
+        !diags.is_empty(),
+        "expected html attr migration diagnostics"
+    );
+
+    let actions = lsp.request(
+        "textDocument/codeAction",
+        code_action_params(&main_uri, diags),
+    );
+    let actions_text = json::encode(&actions);
+    assert!(
+        actions_text.contains("Rewrite HTML attrs from map literal"),
+        "missing html attr map rewrite quickfix: {actions_text}"
+    );
+    assert!(
+        actions_text.contains("Remove comma between HTML attrs"),
+        "missing html attr comma rewrite quickfix: {actions_text}"
+    );
+    assert!(
+        actions_text.contains("rel=\\\"stylesheet\\\" href=css"),
+        "html attr map rewrite output was not deterministic: {actions_text}"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}

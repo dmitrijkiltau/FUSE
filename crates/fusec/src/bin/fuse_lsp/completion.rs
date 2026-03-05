@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use fuse_rt::json::JsonValue;
 use fusec::ast::{
@@ -23,9 +23,18 @@ struct SignatureInfo {
 
 #[derive(Clone)]
 enum SignatureTarget {
-    Ident { name: String, span: Span },
-    Member { base: Option<String>, span: Span },
-    Other { span: Span },
+    Ident {
+        name: String,
+        span: Span,
+    },
+    Member {
+        base: Option<String>,
+        name: String,
+        span: Span,
+    },
+    Other {
+        span: Span,
+    },
 }
 
 #[derive(Clone)]
@@ -33,6 +42,14 @@ struct CallContext {
     span: Span,
     target: SignatureTarget,
     active_arg: usize,
+}
+
+struct RankedSignature {
+    rank: u8,
+    uri: String,
+    span_start: usize,
+    def_id: Option<usize>,
+    info: SignatureInfo,
 }
 
 pub(crate) fn handle_signature_help(
@@ -53,62 +70,56 @@ pub(crate) fn handle_signature_help(
     };
 
     let index = build_workspace_index_cached(state, &uri);
-    let signature = match &call.target {
-        SignatureTarget::Ident { name, span } => {
-            signature_info_for_symbol_ref(index, &uri, &offsets, *span)
-                .or_else(|| builtin_signature_info(name))
-        }
-        SignatureTarget::Member { base, span } => {
-            signature_info_for_symbol_ref(index, &uri, &offsets, *span).or_else(|| {
-                base.as_deref()
-                    .and_then(builtin_member_signature_info)
-                    .or_else(|| base.as_deref().and_then(builtin_signature_info))
-            })
-        }
-        SignatureTarget::Other { span } => {
-            signature_info_for_symbol_ref(index, &uri, &offsets, *span)
-        }
-    };
-
-    let Some(signature) = signature else {
+    let signatures = signature_candidates_for_target(index, &uri, &offsets, &call.target);
+    if signatures.is_empty() {
         return JsonValue::Null;
-    };
-    signature_help_json(&signature, call.active_arg)
+    }
+    signature_help_json(&signatures, call.active_arg)
 }
 
-fn signature_help_json(signature: &SignatureInfo, active_arg: usize) -> JsonValue {
-    let mut signature_obj = BTreeMap::new();
-    signature_obj.insert(
-        "label".to_string(),
-        JsonValue::String(signature.label.clone()),
-    );
-    let params = signature
-        .params
+fn signature_help_json(signatures: &[SignatureInfo], active_arg: usize) -> JsonValue {
+    let signatures_json = signatures
         .iter()
-        .map(|label| {
-            let mut param = BTreeMap::new();
-            param.insert("label".to_string(), JsonValue::String(label.clone()));
-            JsonValue::Object(param)
+        .map(|signature| {
+            let mut signature_obj = BTreeMap::new();
+            signature_obj.insert(
+                "label".to_string(),
+                JsonValue::String(signature.label.clone()),
+            );
+            let params = signature
+                .params
+                .iter()
+                .map(|label| {
+                    let mut param = BTreeMap::new();
+                    param.insert("label".to_string(), JsonValue::String(label.clone()));
+                    JsonValue::Object(param)
+                })
+                .collect();
+            signature_obj.insert("parameters".to_string(), JsonValue::Array(params));
+            if let Some(doc) = &signature.documentation {
+                if !doc.trim().is_empty() {
+                    signature_obj
+                        .insert("documentation".to_string(), JsonValue::String(doc.clone()));
+                }
+            }
+            JsonValue::Object(signature_obj)
         })
         .collect();
-    signature_obj.insert("parameters".to_string(), JsonValue::Array(params));
-    if let Some(doc) = &signature.documentation {
-        if !doc.trim().is_empty() {
-            signature_obj.insert("documentation".to_string(), JsonValue::String(doc.clone()));
-        }
-    }
 
-    let mut out = BTreeMap::new();
-    out.insert(
-        "signatures".to_string(),
-        JsonValue::Array(vec![JsonValue::Object(signature_obj)]),
-    );
-    out.insert("activeSignature".to_string(), JsonValue::Number(0.0));
-    let active_param = if signature.params.is_empty() {
+    let active_signature = 0usize;
+    let selected = &signatures[active_signature];
+    let active_param = if selected.params.is_empty() {
         0usize
     } else {
-        active_arg.min(signature.params.len().saturating_sub(1))
+        active_arg.min(selected.params.len().saturating_sub(1))
     };
+
+    let mut out = BTreeMap::new();
+    out.insert("signatures".to_string(), JsonValue::Array(signatures_json));
+    out.insert(
+        "activeSignature".to_string(),
+        JsonValue::Number(active_signature as f64),
+    );
     out.insert(
         "activeParameter".to_string(),
         JsonValue::Number(active_param as f64),
@@ -116,19 +127,185 @@ fn signature_help_json(signature: &SignatureInfo, active_arg: usize) -> JsonValu
     JsonValue::Object(out)
 }
 
-fn signature_info_for_symbol_ref(
+fn signature_candidates_for_target(
+    index: Option<&WorkspaceIndex>,
+    uri: &str,
+    offsets: &[usize],
+    target: &SignatureTarget,
+) -> Vec<SignatureInfo> {
+    let mut ranked = Vec::new();
+
+    match target {
+        SignatureTarget::Ident { name, span } => {
+            if let Some(def) = signature_def_for_symbol_ref(index, uri, offsets, *span) {
+                push_workspace_signature(&mut ranked, 0, &def);
+            }
+            if let Some(index) = index {
+                push_named_workspace_signatures(&mut ranked, index, uri, name, 1);
+            }
+            if let Some(signature) = builtin_signature_info(name) {
+                ranked.push(RankedSignature {
+                    rank: 4,
+                    uri: String::new(),
+                    span_start: 0,
+                    def_id: None,
+                    info: signature,
+                });
+            }
+        }
+        SignatureTarget::Member { base, name, span } => {
+            if let Some(def) = signature_def_for_symbol_ref(index, uri, offsets, *span) {
+                push_workspace_signature(&mut ranked, 0, &def);
+            }
+            if let Some(base) = base.as_deref() {
+                if let Some(signature) = builtin_member_signature_info(base) {
+                    ranked.push(RankedSignature {
+                        rank: 1,
+                        uri: String::new(),
+                        span_start: 0,
+                        def_id: None,
+                        info: signature,
+                    });
+                }
+            }
+            if let Some(index) = index {
+                push_named_workspace_signatures(&mut ranked, index, uri, name, 2);
+            }
+            if let Some(signature) = builtin_signature_info(name) {
+                ranked.push(RankedSignature {
+                    rank: 5,
+                    uri: String::new(),
+                    span_start: 0,
+                    def_id: None,
+                    info: signature,
+                });
+            }
+            if let Some(base) = base.as_deref() {
+                if let Some(signature) = builtin_signature_info(base) {
+                    ranked.push(RankedSignature {
+                        rank: 6,
+                        uri: String::new(),
+                        span_start: 0,
+                        def_id: None,
+                        info: signature,
+                    });
+                }
+            }
+        }
+        SignatureTarget::Other { span } => {
+            if let Some(def) = signature_def_for_symbol_ref(index, uri, offsets, *span) {
+                push_workspace_signature(&mut ranked, 0, &def);
+            }
+        }
+    }
+
+    ranked.sort_by(|left, right| {
+        left.rank
+            .cmp(&right.rank)
+            .then_with(|| left.uri.cmp(&right.uri))
+            .then_with(|| left.span_start.cmp(&right.span_start))
+            .then_with(|| {
+                left.info
+                    .label
+                    .to_lowercase()
+                    .cmp(&right.info.label.to_lowercase())
+            })
+            .then_with(|| left.info.label.cmp(&right.info.label))
+    });
+
+    let mut seen_defs = HashSet::new();
+    let mut seen_labels = HashSet::new();
+    let mut out = Vec::new();
+    for candidate in ranked {
+        if let Some(def_id) = candidate.def_id {
+            if !seen_defs.insert(def_id) {
+                continue;
+            }
+        }
+        if !seen_labels.insert(candidate.info.label.clone()) {
+            continue;
+        }
+        out.push(candidate.info);
+    }
+    out
+}
+
+fn push_workspace_signature(ranked: &mut Vec<RankedSignature>, rank: u8, def: &WorkspaceDef) {
+    let Some(info) = signature_info_from_workspace_def(def) else {
+        return;
+    };
+    ranked.push(RankedSignature {
+        rank,
+        uri: def.uri.clone(),
+        span_start: def.def.span.start,
+        def_id: Some(def.id),
+        info,
+    });
+}
+
+fn push_named_workspace_signatures(
+    ranked: &mut Vec<RankedSignature>,
+    index: &WorkspaceIndex,
+    uri: &str,
+    name: &str,
+    same_file_rank: u8,
+) {
+    let directly_imported = index.imported_module_uris.get(uri);
+    for def in &index.defs {
+        if def.def.kind != SymbolKind::Function || def.def.name != name {
+            continue;
+        }
+        let locality = if def.uri == uri {
+            0
+        } else if directly_imported.is_some_and(|set| set.contains(&def.uri)) {
+            1
+        } else {
+            2
+        };
+        push_workspace_signature(ranked, same_file_rank.saturating_add(locality), def);
+    }
+}
+
+fn signature_def_for_symbol_ref(
     index: Option<&WorkspaceIndex>,
     uri: &str,
     offsets: &[usize],
     span: Span,
-) -> Option<SignatureInfo> {
+) -> Option<WorkspaceDef> {
     let index = index?;
     let (line, col) = offset_to_line_col(offsets, span.start);
-    let def = index.definition_at(uri, line, col)?;
+    index.definition_at(uri, line, col)
+}
+
+fn signature_info_from_workspace_def(def: &WorkspaceDef) -> Option<SignatureInfo> {
     if def.def.kind != SymbolKind::Function {
         return None;
     }
     signature_info_from_function_detail(&def.def.detail, def.def.doc.as_deref())
+}
+
+fn signature_target_rank(target: &SignatureTarget) -> u8 {
+    match target {
+        SignatureTarget::Ident { .. } => 0,
+        SignatureTarget::Member { .. } => 1,
+        SignatureTarget::Other { .. } => 2,
+    }
+}
+
+fn signature_target_name(target: &SignatureTarget) -> String {
+    match target {
+        SignatureTarget::Ident { name, .. } => name.clone(),
+        SignatureTarget::Member { name, .. } => name.clone(),
+        SignatureTarget::Other { .. } => String::new(),
+    }
+}
+
+fn signature_target_span(target: &SignatureTarget) -> Span {
+    match target {
+        SignatureTarget::Ident { span, .. } => *span,
+        SignatureTarget::Member { span, .. } => *span,
+        SignatureTarget::Other { span } => *span,
+    }
 }
 
 fn signature_info_from_function_detail(detail: &str, doc: Option<&str>) -> Option<SignatureInfo> {
@@ -504,6 +681,7 @@ fn consider_call_context(
             };
             SignatureTarget::Member {
                 base,
+                name: name.name.clone(),
                 span: name.span,
             }
         }
@@ -516,7 +694,29 @@ fn consider_call_context(
     };
     let span_len = candidate.span.end.saturating_sub(candidate.span.start);
     let replace = best.as_ref().map_or(true, |current| {
-        span_len < current.span.end.saturating_sub(current.span.start)
+        let current_len = current.span.end.saturating_sub(current.span.start);
+        if span_len != current_len {
+            return span_len < current_len;
+        }
+
+        let candidate_rank = signature_target_rank(&candidate.target);
+        let current_rank = signature_target_rank(&current.target);
+        if candidate_rank != current_rank {
+            return candidate_rank < current_rank;
+        }
+
+        let candidate_target_len = signature_target_span(&candidate.target)
+            .end
+            .saturating_sub(signature_target_span(&candidate.target).start);
+        let current_target_len = signature_target_span(&current.target)
+            .end
+            .saturating_sub(signature_target_span(&current.target).start);
+        if candidate_target_len != current_target_len {
+            return candidate_target_len < current_target_len;
+        }
+
+        signature_target_name(&candidate.target).to_lowercase()
+            < signature_target_name(&current.target).to_lowercase()
     });
     if replace {
         *best = Some(candidate);

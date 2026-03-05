@@ -81,10 +81,15 @@ fn greet(user: Person, times: Int) -> String:
 fn local_join(left: String, right: String) -> String:
   return "${left}-${right}"
 
+fn local_tail(prefix: String, suffix: String) -> String:
+  return "${prefix}${suffix}"
+
 fn main():
   let user = Person(name="Ada")
   let local = local_join("a", "b")
+  let nested = local_join(greet(user, 2), local_tail("x", "y"))
   let remote = greet(user, 2)
+  print(nested)
   print(remote)
 "#;
 
@@ -127,10 +132,68 @@ fn main():
         "unexpected local signature params"
     );
 
-    let (remote_line, remote_col) = line_col_of(main_src, "greet(user, 2)");
+    let (nested_outer_line, nested_outer_col) = line_col_of(
+        main_src,
+        "local_join(greet(user, 2), local_tail(\"x\", \"y\"))",
+    );
+    let nested_outer_help = lsp.request(
+        "textDocument/signatureHelp",
+        signature_help_params(
+            &main_uri,
+            nested_outer_line,
+            nested_outer_col + "local_join(greet(user, 2),".len(),
+        ),
+    );
+    let (nested_outer_label, nested_outer_params, nested_outer_active) =
+        signature_summary(&nested_outer_help);
+    assert!(
+        nested_outer_label.contains("fn local_join(left: String, right: String) -> String"),
+        "unexpected outer nested signature label: {nested_outer_label}"
+    );
+    assert_eq!(
+        nested_outer_active, 1,
+        "outer nested call active parameter should be second"
+    );
+    assert_eq!(
+        nested_outer_params,
+        vec!["left: String".to_string(), "right: String".to_string()],
+        "unexpected outer nested signature params"
+    );
+
+    let (nested_inner_line, nested_inner_col) =
+        line_col_of(main_src, "greet(user, 2), local_tail(\"x\", \"y\")");
+    let nested_inner_help = lsp.request(
+        "textDocument/signatureHelp",
+        signature_help_params(
+            &main_uri,
+            nested_inner_line,
+            nested_inner_col + "greet(user, ".len(),
+        ),
+    );
+    let (nested_inner_label, nested_inner_params, nested_inner_active) =
+        signature_summary(&nested_inner_help);
+    assert!(
+        nested_inner_label.contains("fn greet(user: Person, times: Int) -> String"),
+        "unexpected inner nested signature label: {nested_inner_label}"
+    );
+    assert_eq!(
+        nested_inner_active, 1,
+        "inner nested call active parameter should be second"
+    );
+    assert_eq!(
+        nested_inner_params,
+        vec!["user: Person".to_string(), "times: Int".to_string()],
+        "unexpected inner nested signature params"
+    );
+
+    let (remote_line, remote_col) = line_col_of(main_src, "let remote = greet(user, 2)");
     let remote_help = lsp.request(
         "textDocument/signatureHelp",
-        signature_help_params(&main_uri, remote_line, remote_col + "greet(user, ".len()),
+        signature_help_params(
+            &main_uri,
+            remote_line,
+            remote_col + "let remote = greet(user, ".len(),
+        ),
     );
     let (remote_label, remote_params, remote_active) = signature_summary(&remote_help);
     assert!(
