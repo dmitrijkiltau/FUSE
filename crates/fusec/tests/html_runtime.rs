@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,7 +17,8 @@ fn write_temp_file(name: &str, ext: &str, contents: &str) -> std::path::PathBuf 
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    path.push(format!("{name}_{stamp}.{ext}"));
+    let unique = temp_path_counter().fetch_add(1, Ordering::Relaxed);
+    path.push(format!("{name}_{stamp}_{unique}.{ext}"));
     fs::write(&path, contents).expect("failed to write temp file");
     path
 }
@@ -27,9 +29,15 @@ fn write_temp_dir(name: &str) -> std::path::PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    path.push(format!("{name}_{stamp}"));
+    let unique = temp_path_counter().fetch_add(1, Ordering::Relaxed);
+    path.push(format!("{name}_{stamp}_{unique}"));
     fs::create_dir_all(&path).expect("failed to create temp dir");
     path
+}
+
+fn temp_path_counter() -> &'static AtomicU64 {
+    static COUNTER: OnceLock<AtomicU64> = OnceLock::new();
+    COUNTER.get_or_init(|| AtomicU64::new(0))
 }
 
 fn run_program(backend: &str, source: &str) -> std::process::Output {
