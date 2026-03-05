@@ -47,6 +47,7 @@ USER appuser
 ENV FUSE_HOST=0.0.0.0
 ENV APP_PORT=3000
 ENV FUSE_DB_URL=sqlite:///app/data/reference-service.db
+ENV FUSE_STATIC_DIR=/app
 
 EXPOSE 3000
 

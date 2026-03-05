@@ -37,14 +37,7 @@ FUSE_DB_URL=sqlite://reference-service.db
 ## Docker Compose (with migrations)
 
 ```bash
-# Local: use dist/fuse from this checkout for migrate + app.
-# Build or refresh dist/fuse for the current checkout:
-# ./scripts/build_dist.sh --release
-docker compose -f examples/reference-service/docker-compose.local.yml up --build
-```
-
-```bash
-# Production: keep release-based Fuse CLI in the image.
+# Keep release-based Fuse CLI in the image.
 # Build deployable AOT artifact first.
 ./scripts/fuse build --manifest-path examples/reference-service --aot
 
@@ -65,9 +58,8 @@ docker compose -f examples/reference-service/docker-compose.yml up --build
 This overrides the `${FUSE_VERSION:-v0.9.1}` default in `docker-compose.yml` and is passed through
 as the `FUSE_VERSION` build arg to `Dockerfile`.
 
-`docker-compose.local.yml` uses `Dockerfile.local` (local `dist/fuse` binary).
-`docker-compose.yml` uses `Dockerfile` (release Fuse CLI download).
-Both run migrations in deployment via `fuse migrate .` before starting `app-aot`.
+`docker-compose.yml` uses `Dockerfile` (release Fuse CLI download) and runs migrations in
+deployment via `fuse migrate .` before starting `app-aot`.
 
 ## Build
 
