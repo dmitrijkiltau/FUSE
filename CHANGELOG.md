@@ -2,6 +2,34 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.1] - 2026-03-05
+
+### Added
+
+- LSP completion ranking locality weighting for large dependency graphs:
+  - directly imported workspace symbols now rank ahead of transitive external symbols
+  - additional ranking fixtures for multi-module noise and imported-name collision cases
+- Reference-service container workflow support:
+  - Dockerfile and compose-based run/migrate flow
+  - explicit environment variable parsing path for containerized usage
+- Patch release planning docs for the active line (`0.9.2`-`0.9.5`).
+
+### Changed
+
+- Benchmark regression gate profile floors were refined for local WSL2 and GitHub-hosted CI to
+  reduce host-noise false positives on compile-time metrics.
+- Benchmark baseline metadata and README status wording were updated for the stabilized `0.9.x` line.
+- Reference-service Docker defaults now target `v0.9.1` tags.
+
+### Fixed
+
+- `html_runtime` test temp-path generation now uses an atomic uniqueness suffix, preventing
+  occasional filename collisions under parallel test execution.
+
+### Migration
+
+- No language/runtime migration is required from `0.9.0` to `0.9.1`.
+
 ## [0.9.0] - 2026-03-03
 
 ### Breaking
