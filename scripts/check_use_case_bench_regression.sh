@@ -141,18 +141,30 @@ function benchmarkProfile(current) {
 }
 
 function profileMetricLimitFloors(profile) {
-  if (profile !== "local_wsl2" && profile !== "ci_github_actions") {
-    return {};
-  }
-  return {
+  const floors = {};
+  if (profile === "local_wsl2" || profile === "ci_github_actions") {
     // WSL2 and hosted CI runners can add sizable loopback/network stack latency variance.
     // Apply floor only for high-variance request paths (and derived request-overhead metric)
     // on these host classes.
-    "reference_service.request_get_notes_ms": 30.0,
-    "reference_service.request_post_invalid_ms": 30.0,
-    "reference_service.request_frontend_root_ms": 30.0,
-    "reference_service.request_validation_error_overhead_abs_ms": 40.0
-  };
+    Object.assign(floors, {
+      "reference_service.request_get_notes_ms": 30.0,
+      "reference_service.request_post_invalid_ms": 30.0,
+      "reference_service.request_frontend_root_ms": 30.0,
+      "reference_service.request_validation_error_overhead_abs_ms": 40.0
+    });
+  }
+  if (profile === "ci_github_actions") {
+    // GHA hosted runners are CPU-constrained (2-core shared VMs) and run compilation
+    // benchmarks ~2x slower than the WSL2 baseline hardware (AMD Ryzen 5 5600X).
+    // The baseline_ms values for check_* metrics were captured on WSL2 (~85ms);
+    // GHA observes ~168ms. Apply a floor so CI noise does not trip the gate.
+    Object.assign(floors, {
+      "reference_service.check_cold_ms": 200.0,
+      "reference_service.check_warm_ms": 200.0,
+      "reference_service.check_incremental_edit_ms": 200.0
+    });
+  }
+  return floors;
 }
 
 const current = flattenMetrics(currentRaw);
