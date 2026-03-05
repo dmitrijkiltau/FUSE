@@ -305,3 +305,64 @@ type User:
         "stderr: {stderr}"
     );
 }
+
+#[test]
+fn typed_env_builtins_parse_scalars_across_backends() {
+    let program = r#"
+fn run():
+  print(env_int("TEST_INT") ?? -1)
+  print(env_float("TEST_FLOAT") ?? -1.0)
+  print(env_bool("TEST_BOOL") ?? false)
+  print(env_int("TEST_MISSING") ?? 7)
+
+app "demo":
+  run()
+"#;
+
+    let program_path = write_temp_file("fuse_typed_env_builtins", "fuse", program);
+    for backend in ["ast", "native"] {
+        let output = run_program_backend(
+            backend,
+            &program_path,
+            &[
+                ("TEST_INT", "42"),
+                ("TEST_FLOAT", "2.5"),
+                ("TEST_BOOL", "TrUe"),
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "backend={backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines, vec!["42", "2.5", "true", "7"], "backend={backend}");
+    }
+}
+
+#[test]
+fn typed_env_builtins_fail_on_invalid_values_across_backends() {
+    let program = r#"
+fn run():
+  print(env_int("TEST_INT") ?? 0)
+
+app "demo":
+  run()
+"#;
+
+    let program_path = write_temp_file("fuse_typed_env_builtins_invalid", "fuse", program);
+    for backend in ["ast", "native"] {
+        let output = run_program_backend(backend, &program_path, &[("TEST_INT", "abc")]);
+        assert!(
+            !output.status.success(),
+            "backend={backend} expected failure, stdout: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("invalid Int: abc (env TEST_INT)"),
+            "backend={backend} stderr: {stderr}"
+        );
+    }
+}

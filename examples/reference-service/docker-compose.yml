@@ -1,0 +1,32 @@
+services:
+  migrate:
+    build:
+      context: .
+      args:
+        FUSE_VERSION: ${FUSE_VERSION:-v0.9.1}
+    entrypoint: ["fuse", "migrate", "."]
+    environment:
+      FUSE_DB_URL: "sqlite:///app/data/reference-service.db"
+    volumes:
+      - db-data:/app/data
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      args:
+        FUSE_VERSION: ${FUSE_VERSION:-v0.9.1}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "3000:3000"
+    environment:
+      APP_PORT: 3000
+      FUSE_HOST: "0.0.0.0"
+      FUSE_DB_URL: "sqlite:///app/data/reference-service.db"
+    volumes:
+      - db-data:/app/data
+
+volumes:
+  db-data:

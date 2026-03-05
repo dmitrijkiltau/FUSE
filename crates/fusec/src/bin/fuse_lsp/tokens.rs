@@ -535,8 +535,18 @@ fn is_builtin_receiver(name: &str) -> bool {
 }
 
 fn is_builtin_function_name(name: &str) -> bool {
-    matches!(name, "print" | "env" | "serve" | "log" | "assert" | "asset")
-        || fusec::html_tags::is_html_tag(name)
+    matches!(
+        name,
+        "print"
+            | "env"
+            | "env_int"
+            | "env_float"
+            | "env_bool"
+            | "serve"
+            | "log"
+            | "assert"
+            | "asset"
+    ) || fusec::html_tags::is_html_tag(name)
 }
 
 fn is_builtin_type_name(name: &str) -> bool {

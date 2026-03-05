@@ -2,7 +2,9 @@
 .github
 target
 tmp
-dist
+dist/*
+!dist/fuse
+!dist/fuse.exe
 .cargo-target
 .cargo-tmp
 **/.fuse/build

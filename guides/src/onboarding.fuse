@@ -7,7 +7,7 @@ requires network
 # ## 1) Declare typed config
 # `config` gives one place for runtime settings and environment overrides.
 config App:
-  port: Int = env("APP_PORT") ?? 3000
+  port: Int = env_int("APP_PORT") ?? 3000
 
 # ## 2) Define boundary contracts
 # These types are reused for validation, JSON binding, and OpenAPI.

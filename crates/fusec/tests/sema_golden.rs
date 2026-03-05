@@ -289,6 +289,20 @@ fn main():
 }
 
 #[test]
+fn spawn_rejects_typed_env_builtins() {
+    let src = r#"
+fn main():
+  let t = spawn:
+    env_int("PORT")
+  await t
+"#;
+    assert_diags(
+        src,
+        &["Error: spawn blocks cannot call side-effect builtin env_int"],
+    );
+}
+
+#[test]
 fn spawn_rejects_time_sleep_builtin() {
     let src = r#"
 requires time
@@ -302,6 +316,20 @@ fn main():
         src,
         &["Error: spawn blocks cannot call side-effect builtin time.sleep"],
     );
+}
+
+#[test]
+fn typed_env_builtins_typecheck() {
+    let src = r#"
+fn main():
+  let i = env_int("PORT") ?? 3000
+  let f = env_float("RATIO") ?? 1.5
+  let b = env_bool("ENABLED") ?? false
+  print(i)
+  print(f)
+  print(b)
+"#;
+    assert_diags(src, &[]);
 }
 
 #[test]

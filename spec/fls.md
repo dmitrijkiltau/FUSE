@@ -447,7 +447,7 @@ Base types can be module-qualified (`Foo.User`). Unknown base types or fields ar
 Inside a `spawn` block, semantic analysis rejects:
 
 - `box` capture/use (including captured outer boxed bindings)
-- runtime side-effect builtins (`db.*`, `serve`, `print`, `input`, `log`, `env`, `asset`, `svg.inline`)
+- runtime side-effect builtins (`db.*`, `serve`, `print`, `input`, `log`, `env`, `env_int`, `env_float`, `env_bool`, `asset`, `svg.inline`)
 - mutation of captured outer bindings
 
 Structured task lifetime checks are also enforced at compile time:

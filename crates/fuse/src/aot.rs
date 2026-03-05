@@ -361,6 +361,9 @@ fn link_native_binary(
         release,
         &deps_dir,
     )?;
+    let selected_deps_dir = fusec_rlib
+        .parent()
+        .ok_or_else(|| format!("invalid fusec rlib path: {}", fusec_rlib.display()))?;
     super::emit_aot_build_progress(6, "link final binary");
     let mut rustc_cmd = ProcessCommand::new("rustc");
     apply_toolchain_env(
@@ -375,7 +378,7 @@ fn link_native_binary(
         .arg("-o")
         .arg(out_path)
         .arg("-L")
-        .arg(format!("dependency={}", deps_dir.display()))
+        .arg(format!("dependency={}", selected_deps_dir.display()))
         .arg("--extern")
         .arg(format!("fusec={}", fusec_rlib.display()))
         .arg("--extern")
@@ -408,37 +411,155 @@ fn ensure_link_dependencies(
     release: bool,
     deps_dir: &Path,
 ) -> Result<(PathBuf, PathBuf, Vec<String>), String> {
-    if let Some(existing) = resolve_link_dependencies(target_dir, profile, deps_dir) {
+    if let Some(existing) = resolve_usable_link_dependencies(
+        target_dir,
+        profile,
+        deps_dir,
+        rustc_tmpdir,
+        cargo_incremental,
+    ) {
         return Ok(existing);
     }
 
-    let mut build_cmd = ProcessCommand::new("cargo");
-    apply_toolchain_env(&mut build_cmd, target_dir, rustc_tmpdir, cargo_incremental);
-    build_cmd
-        .arg("build")
-        .arg("-p")
-        // `fusec` has a direct `bincode` dependency so both rlibs are
-        // available in `<target>/<profile>/deps` for the runner link step.
-        .arg("fusec");
-    if release {
-        build_cmd.arg("--release");
+    // If stale release artifacts exist but are not linkable, prefer a known-good
+    // debug dependency set before attempting a fresh release dependency build.
+    // This keeps AOT release linking robust on hosts that cannot reliably
+    // produce release metadata artifacts.
+    if release && resolve_link_dependencies(target_dir, profile, deps_dir).is_some() {
+        let fallback_deps = target_dir.join("debug").join("deps");
+        if let Some(existing) = resolve_usable_link_dependencies(
+            target_dir,
+            "debug",
+            &fallback_deps,
+            rustc_tmpdir,
+            cargo_incremental,
+        ) {
+            return Ok(existing);
+        }
     }
-    let build_output = build_cmd
-        .output()
-        .map_err(|err| format!("failed to run cargo build for link dependencies: {err}"))?;
-    if !build_output.status.success() {
+
+    let primary_build_err =
+        build_link_dependencies_for_profile(target_dir, rustc_tmpdir, cargo_incremental, release)
+            .err();
+
+    if let Some(existing) = resolve_usable_link_dependencies(
+        target_dir,
+        profile,
+        deps_dir,
+        rustc_tmpdir,
+        cargo_incremental,
+    ) {
+        return Ok(existing);
+    }
+
+    if release {
+        let fallback_deps = target_dir.join("debug").join("deps");
+        if let Some(existing) = resolve_usable_link_dependencies(
+            target_dir,
+            "debug",
+            &fallback_deps,
+            rustc_tmpdir,
+            cargo_incremental,
+        ) {
+            return Ok(existing);
+        }
+        let fallback_build_err =
+            build_link_dependencies_for_profile(target_dir, rustc_tmpdir, cargo_incremental, false)
+                .err();
+        if let Some(existing) = resolve_usable_link_dependencies(
+            target_dir,
+            "debug",
+            &fallback_deps,
+            rustc_tmpdir,
+            cargo_incremental,
+        ) {
+            return Ok(existing);
+        }
+        let mut reasons = Vec::new();
+        if let Some(err) = primary_build_err {
+            reasons.push(format!("release deps build failed: {err}"));
+        } else {
+            reasons.push("release deps unusable after build".to_string());
+        }
+        if let Some(err) = fallback_build_err {
+            reasons.push(format!("debug fallback build failed: {err}"));
+        } else {
+            reasons.push("debug fallback deps unusable".to_string());
+        }
+        return Err(format!("native link: {}", reasons.join("; ")));
+    }
+
+    if let Some(err) = primary_build_err {
         return Err(format!(
-            "native link: failed to build link dependencies\n{}",
-            summarize_command_failure(&build_output)
+            "native link: failed to build link dependencies\n{err}"
         ));
     }
 
-    resolve_link_dependencies(target_dir, profile, deps_dir).ok_or_else(|| {
+    resolve_usable_link_dependencies(
+        target_dir,
+        profile,
+        deps_dir,
+        rustc_tmpdir,
+        cargo_incremental,
+    )
+    .ok_or_else(|| {
         format!(
             "native link: missing link dependencies in {} after successful cargo build",
             deps_dir.display()
         )
     })
+}
+
+fn build_link_dependencies_for_profile(
+    target_dir: &Path,
+    rustc_tmpdir: &Path,
+    cargo_incremental: &str,
+    release: bool,
+) -> Result<(), String> {
+    let mut build_cmd = ProcessCommand::new("cargo");
+    apply_toolchain_env(&mut build_cmd, target_dir, rustc_tmpdir, cargo_incremental);
+    build_cmd.arg("build").arg("-p").arg("fusec");
+    if release {
+        build_cmd.arg("--release");
+    }
+    if env::var_os("CARGO_BUILD_JOBS").is_none() {
+        build_cmd.env("CARGO_BUILD_JOBS", "1");
+    }
+    if env::var_os("CARGO_BUILD_PIPELINING").is_none() {
+        build_cmd.env("CARGO_BUILD_PIPELINING", "false");
+    }
+    let build_output = build_cmd
+        .output()
+        .map_err(|err| format!("failed to run cargo build for link dependencies: {err}"))?;
+    if build_output.status.success() {
+        Ok(())
+    } else {
+        Err(summarize_command_failure(&build_output))
+    }
+}
+
+fn resolve_usable_link_dependencies(
+    target_dir: &Path,
+    profile: &str,
+    deps_dir: &Path,
+    rustc_tmpdir: &Path,
+    cargo_incremental: &str,
+) -> Option<(PathBuf, PathBuf, Vec<String>)> {
+    let resolved = resolve_link_dependencies(target_dir, profile, deps_dir)?;
+    if probe_link_dependencies(
+        target_dir,
+        rustc_tmpdir,
+        cargo_incremental,
+        deps_dir,
+        &resolved.0,
+        &resolved.1,
+    )
+    .is_ok()
+    {
+        Some(resolved)
+    } else {
+        None
+    }
 }
 
 fn resolve_link_dependencies(
@@ -450,6 +571,58 @@ fn resolve_link_dependencies(
     let bincode_rlib = find_latest_rlib(deps_dir, "libbincode").ok()?;
     let link_searches = collect_rustc_link_search_paths(target_dir, profile).ok()?;
     Some((fusec_rlib, bincode_rlib, link_searches))
+}
+
+fn probe_link_dependencies(
+    target_dir: &Path,
+    rustc_tmpdir: &Path,
+    cargo_incremental: &str,
+    deps_dir: &Path,
+    fusec_rlib: &Path,
+    bincode_rlib: &Path,
+) -> Result<(), String> {
+    let stamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+    let probe_name = format!("fuse_aot_link_probe_{stamp}_{pid}");
+    let probe_src = rustc_tmpdir.join(format!("{probe_name}.rs"));
+    let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
+    let probe_bin = rustc_tmpdir.join(format!("{probe_name}{exe_suffix}"));
+    let probe_source = r#"fn main() {
+    let _ = fusec::native::CACHE_VERSION;
+    let _ = bincode::serialize(&0u8);
+}
+"#;
+    fs::write(&probe_src, probe_source)
+        .map_err(|err| format!("failed to write {}: {err}", probe_src.display()))?;
+
+    let mut rustc_cmd = ProcessCommand::new("rustc");
+    apply_toolchain_env(&mut rustc_cmd, target_dir, rustc_tmpdir, cargo_incremental);
+    rustc_cmd
+        .arg("--edition=2024")
+        .arg(&probe_src)
+        .arg("-o")
+        .arg(&probe_bin)
+        .arg("-L")
+        .arg(format!("dependency={}", deps_dir.display()))
+        .arg("--extern")
+        .arg(format!("fusec={}", fusec_rlib.display()))
+        .arg("--extern")
+        .arg(format!("bincode={}", bincode_rlib.display()));
+    let output = rustc_cmd
+        .output()
+        .map_err(|err| format!("failed to run rustc link dependency probe: {err}"))?;
+
+    let _ = fs::remove_file(&probe_src);
+    let _ = fs::remove_file(&probe_bin);
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(summarize_command_failure(&output))
+    }
 }
 
 fn summarize_command_failure(output: &std::process::Output) -> String {

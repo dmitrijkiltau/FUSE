@@ -74,8 +74,17 @@ pub(crate) const COMPLETION_KEYWORDS: [&str; 35] = [
 pub(crate) const COMPLETION_BUILTIN_RECEIVERS: [&str; 8] = [
     "db", "json", "html", "svg", "request", "response", "time", "crypto",
 ];
-pub(crate) const COMPLETION_BUILTIN_FUNCTIONS: [&str; 6] =
-    ["print", "env", "serve", "log", "assert", "asset"];
+pub(crate) const COMPLETION_BUILTIN_FUNCTIONS: [&str; 9] = [
+    "print",
+    "env",
+    "env_int",
+    "env_float",
+    "env_bool",
+    "serve",
+    "log",
+    "assert",
+    "asset",
+];
 pub(crate) const COMPLETION_BUILTIN_TYPES: [&str; 14] = [
     "Unit", "Int", "Float", "Bool", "String", "Bytes", "Html", "Id", "Email", "Error", "List",
     "Map", "Task", "Range",

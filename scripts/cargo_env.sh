@@ -10,8 +10,37 @@ case "$TARGET_DIR" in
 esac
 export CARGO_TARGET_DIR="$TARGET_DIR"
 
-# Keep rustc temp files on the same filesystem as the target dir to avoid EXDEV.
-TMP_DIR="${RUSTC_TMPDIR:-$CARGO_TARGET_DIR/tmp}"
+# Keep rustc temp files in the active profile deps dir. Some filesystems used
+# in local dev reject hard links across directories even on the same mount;
+# rustc metadata writes can hit EXDEV unless temp and output stay co-located.
+DEFAULT_PROFILE="debug"
+if [[ "${1:-}" == "cargo" ]]; then
+  for ((i = 1; i <= $#; i++)); do
+    arg="${!i}"
+    case "$arg" in
+      --release)
+        DEFAULT_PROFILE="release"
+        ;;
+      --profile=*)
+        profile_value="${arg#--profile=}"
+        if [[ -n "$profile_value" ]]; then
+          DEFAULT_PROFILE="$profile_value"
+        fi
+        ;;
+      --profile)
+        next_index=$((i + 1))
+        if (( next_index <= $# )); then
+          profile_value="${!next_index}"
+          if [[ -n "$profile_value" ]]; then
+            DEFAULT_PROFILE="$profile_value"
+          fi
+        fi
+        ;;
+    esac
+  done
+fi
+
+TMP_DIR="${RUSTC_TMPDIR:-$CARGO_TARGET_DIR/$DEFAULT_PROFILE/deps}"
 case "$TMP_DIR" in
   /*) ;;
   *) TMP_DIR="$ROOT/$TMP_DIR" ;;

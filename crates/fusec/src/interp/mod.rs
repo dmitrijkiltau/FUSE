@@ -496,6 +496,11 @@ fn min_log_level() -> LogLevel {
         .unwrap_or(LogLevel::Info)
 }
 
+fn parse_typed_env_value(type_name: &str, key: &str, raw: &str) -> Result<Value, String> {
+    crate::runtime_types::parse_simple_env(type_name, raw.trim())
+        .map_err(|err| format!("{err} (env {key})"))
+}
+
 fn builtin_error_defaults(name: &str) -> Option<(&'static str, &'static str)> {
     match name {
         "std.Error.BadRequest" => Some(("bad_request", "bad request")),
@@ -1862,10 +1867,9 @@ impl Interpreter {
             return Ok(Value::Config(name.to_string()));
         }
         match name {
-            "print" | "input" | "env" | "serve" | "log" | "db" | "assert" | "asset" | "json"
-            | "html" | "svg" | "request" | "response" | "time" | "crypto" => {
-                Ok(Value::Builtin(name.to_string()))
-            }
+            "print" | "input" | "env" | "env_int" | "env_float" | "env_bool" | "serve" | "log"
+            | "db" | "assert" | "asset" | "json" | "html" | "svg" | "request" | "response"
+            | "time" | "crypto" => Ok(Value::Builtin(name.to_string())),
             _ if html_tags::is_html_tag(name) => Ok(Value::Builtin(name.to_string())),
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),
         }
@@ -1946,6 +1950,26 @@ impl Interpreter {
             span: Span::default(),
         };
         self.decode_json_value(&json, &ty, "$")
+    }
+
+    fn eval_typed_env_builtin(
+        &self,
+        builtin_name: &str,
+        type_name: &str,
+        args: &[Value],
+    ) -> ExecResult<Value> {
+        let key = match args.first() {
+            Some(Value::String(s)) => s.clone(),
+            _ => {
+                return Err(ExecError::Runtime(format!(
+                    "{builtin_name} expects a string argument"
+                )));
+            }
+        };
+        match std::env::var(&key) {
+            Ok(raw) => parse_typed_env_value(type_name, &key, &raw).map_err(ExecError::Runtime),
+            Err(_) => Ok(Value::Null),
+        }
     }
 
     fn eval_builtin(&mut self, name: &str, args: Vec<Value>) -> ExecResult<Value> {
@@ -2923,6 +2947,9 @@ impl Interpreter {
                     Err(_) => Ok(Value::Null),
                 }
             }
+            "env_int" => self.eval_typed_env_builtin("env_int", "Int", &args),
+            "env_float" => self.eval_typed_env_builtin("env_float", "Float", &args),
+            "env_bool" => self.eval_typed_env_builtin("env_bool", "Bool", &args),
             "request.header" => {
                 if args.len() != 1 {
                     return Err(ExecError::Runtime(

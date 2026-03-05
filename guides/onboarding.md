@@ -15,7 +15,7 @@ requires network
 `config` gives one place for runtime settings and environment overrides.
 ```fuse
 config App:
-  port: Int = env("APP_PORT") ?? 3000
+  port: Int = env_int("APP_PORT") ?? 3000
 
 ```
 

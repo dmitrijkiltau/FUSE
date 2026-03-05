@@ -1017,6 +1017,10 @@ pub(crate) struct WorkspaceIndex {
     pub(crate) calls: Vec<WorkspaceCall>,
     pub(crate) module_alias_exports: HashMap<String, HashMap<String, HashSet<String>>>,
     pub(crate) redirects: HashMap<usize, usize>,
+    /// Maps each file URI to the set of file URIs it directly imports.
+    /// Used for completion locality weighting: symbols from directly-imported modules
+    /// rank higher within group 02 than symbols from only transitively-imported modules.
+    pub(crate) imported_module_uris: HashMap<String, HashSet<String>>,
 }
 
 pub(crate) struct WorkspaceFile {
@@ -1899,6 +1903,17 @@ fn serialize_workspace_index(index: &WorkspaceIndex) -> Option<String> {
         aliases_obj.insert(file_uri.clone(), JsonValue::Object(inner));
     }
 
+    // imported_module_uris: HashMap<String, HashSet<String>>
+    let mut imported_obj = BTreeMap::new();
+    for (file_uri, module_uris) in &index.imported_module_uris {
+        let mut sorted: Vec<String> = module_uris.iter().cloned().collect();
+        sorted.sort();
+        imported_obj.insert(
+            file_uri.clone(),
+            JsonValue::Array(sorted.into_iter().map(JsonValue::String).collect()),
+        );
+    }
+
     // redirects: HashMap<usize, usize> — stored as {"<from>": <to>}
     let mut redirects_obj = BTreeMap::new();
     for (from, to) in &index.redirects {
@@ -1912,6 +1927,7 @@ fn serialize_workspace_index(index: &WorkspaceIndex) -> Option<String> {
     root.insert("refs".to_string(), JsonValue::Array(global_refs_json));
     root.insert("calls".to_string(), JsonValue::Array(global_calls_json));
     root.insert("aliases".to_string(), JsonValue::Object(aliases_obj));
+    root.insert("imported".to_string(), JsonValue::Object(imported_obj));
     root.insert("redirects".to_string(), JsonValue::Object(redirects_obj));
 
     Some(fuse_rt::json::encode(&JsonValue::Object(root)))
@@ -2237,6 +2253,26 @@ fn deserialize_workspace_index(json: &str) -> Option<WorkspaceIndex> {
         _ => HashMap::new(),
     };
 
+    let imported_module_uris: HashMap<String, HashSet<String>> = match root.get("imported") {
+        Some(JsonValue::Object(outer)) => outer
+            .iter()
+            .filter_map(|(file_uri, arr_v)| {
+                let JsonValue::Array(arr) = arr_v else {
+                    return None;
+                };
+                let uris: HashSet<String> = arr
+                    .iter()
+                    .filter_map(|v| match v {
+                        JsonValue::String(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                Some((file_uri.clone(), uris))
+            })
+            .collect(),
+        _ => HashMap::new(),
+    };
+
     Some(WorkspaceIndex {
         files,
         file_by_uri,
@@ -2245,6 +2281,7 @@ fn deserialize_workspace_index(json: &str) -> Option<WorkspaceIndex> {
         calls,
         module_alias_exports,
         redirects,
+        imported_module_uris,
     })
 }
 
@@ -2317,6 +2354,10 @@ fn build_workspace_from_registry(
     }
     let mut calls = Vec::new();
     let mut module_alias_exports = HashMap::new();
+    let mut imported_module_uris: HashMap<String, HashSet<String>> = HashMap::new();
+    // Pre-built to avoid borrow conflicts: file index → URI.
+    let file_uri_by_idx: HashMap<usize, String> =
+        files.iter().enumerate().map(|(i, f)| (i, f.uri.clone())).collect();
 
     let mut exports_by_module: HashMap<usize, HashMap<String, usize>> = HashMap::new();
     for (module_id, file_idx) in &module_to_file {
@@ -2376,6 +2417,27 @@ fn build_workspace_from_registry(
         }
         if !alias_exports.is_empty() {
             module_alias_exports.insert(file.uri.clone(), alias_exports);
+        }
+
+        // Collect the set of file URIs directly imported by this file.
+        let mut directly_imported: HashSet<String> = HashSet::new();
+        for (_name, link) in &unit.import_items {
+            if let Some(&dep_idx) = module_to_file.get(&link.id) {
+                if let Some(uri) = file_uri_by_idx.get(&dep_idx) {
+                    directly_imported.insert(uri.clone());
+                }
+            }
+        }
+        for (_alias, mid) in &module_aliases {
+            if let Some(&dep_idx) = module_to_file.get(mid) {
+                if let Some(uri) = file_uri_by_idx.get(&dep_idx) {
+                    directly_imported.insert(uri.clone());
+                }
+            }
+        }
+        if !directly_imported.is_empty() {
+            let file_uri = file_uri_by_idx[file_idx].clone();
+            imported_module_uris.insert(file_uri, directly_imported);
         }
 
         for call in &file.index.calls {
@@ -2488,6 +2550,7 @@ fn build_workspace_from_registry(
         calls,
         module_alias_exports,
         redirects,
+        imported_module_uris,
     })
 }
 
