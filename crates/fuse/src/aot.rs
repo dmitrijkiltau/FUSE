@@ -553,6 +553,7 @@ fn resolve_usable_link_dependencies(
         deps_dir,
         &resolved.0,
         &resolved.1,
+        &resolved.2,
     )
     .is_ok()
     {
@@ -580,6 +581,7 @@ fn probe_link_dependencies(
     deps_dir: &Path,
     fusec_rlib: &Path,
     bincode_rlib: &Path,
+    native_link_searches: &[String],
 ) -> Result<(), String> {
     let stamp = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -611,6 +613,9 @@ fn probe_link_dependencies(
         .arg(format!("fusec={}", fusec_rlib.display()))
         .arg("--extern")
         .arg(format!("bincode={}", bincode_rlib.display()));
+    for search in native_link_searches {
+        rustc_cmd.arg("-L").arg(search);
+    }
     let output = rustc_cmd
         .output()
         .map_err(|err| format!("failed to run rustc link dependency probe: {err}"))?;

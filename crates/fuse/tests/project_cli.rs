@@ -461,7 +461,12 @@ fn native_link_search_paths_for_tests(target_dir: &Path, profile: &str) -> Vec<P
     out
 }
 
-fn probe_link_deps_for_tests(deps_dir: &Path, fusec_rlib: &Path, bincode_rlib: &Path) -> bool {
+fn probe_link_deps_for_tests(
+    deps_dir: &Path,
+    fusec_rlib: &Path,
+    bincode_rlib: &Path,
+    link_searches: &[PathBuf],
+) -> bool {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -480,7 +485,8 @@ fn probe_link_deps_for_tests(deps_dir: &Path, fusec_rlib: &Path, bincode_rlib: &
 }
 "#;
     fs::write(&probe_src, src).expect("write link probe source");
-    let output = Command::new("rustc")
+    let mut probe_cmd = Command::new("rustc");
+    probe_cmd
         .arg("--edition=2024")
         .arg(&probe_src)
         .arg("-o")
@@ -490,9 +496,11 @@ fn probe_link_deps_for_tests(deps_dir: &Path, fusec_rlib: &Path, bincode_rlib: &
         .arg("--extern")
         .arg(format!("fusec={}", fusec_rlib.display()))
         .arg("--extern")
-        .arg(format!("bincode={}", bincode_rlib.display()))
-        .output()
-        .expect("run rustc link probe");
+        .arg(format!("bincode={}", bincode_rlib.display()));
+    for search in link_searches {
+        probe_cmd.arg("-L").arg(search);
+    }
+    let output = probe_cmd.output().expect("run rustc link probe");
     let _ = fs::remove_file(&probe_src);
     let _ = fs::remove_file(&probe_bin);
     output.status.success()
@@ -505,10 +513,10 @@ fn resolve_usable_link_deps_for_tests(
     let deps_dir = target_dir.join(profile).join("deps");
     let fusec_rlib = try_find_latest_rlib_for_tests(&deps_dir, "libfusec")?;
     let bincode_rlib = try_find_latest_rlib_for_tests(&deps_dir, "libbincode")?;
-    if !probe_link_deps_for_tests(&deps_dir, &fusec_rlib, &bincode_rlib) {
+    let link_searches = native_link_search_paths_for_tests(target_dir, profile);
+    if !probe_link_deps_for_tests(&deps_dir, &fusec_rlib, &bincode_rlib, &link_searches) {
         return None;
     }
-    let link_searches = native_link_search_paths_for_tests(target_dir, profile);
     Some((deps_dir, fusec_rlib, bincode_rlib, link_searches))
 }
 
