@@ -740,6 +740,8 @@ fn send_unix_signal(pid: u32, signal: &str) {
     );
 }
 
+#[path = "project_cli/clean_cmd.rs"]
+mod clean_cmd;
 #[path = "project_cli/deps_lock.rs"]
 mod deps_lock;
 #[path = "project_cli/output_aot.rs"]

@@ -108,6 +108,7 @@ fn command_tag(command: Command) -> Option<&'static str> {
         Command::Check => Some("check"),
         Command::Build => Some("build"),
         Command::Test => Some("test"),
+        Command::Clean => Some("clean"),
         Command::Dev | Command::Fmt | Command::Openapi | Command::Migrate => None,
     }
 }

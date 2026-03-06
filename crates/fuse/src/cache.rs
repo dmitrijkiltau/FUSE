@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -92,6 +93,42 @@ pub(crate) fn clean_build_dir(manifest_dir: Option<&Path>) -> Result<(), String>
     if dir.exists() {
         fs::remove_dir_all(&dir)
             .map_err(|err| format!("failed to remove {}: {err}", dir.display()))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn clean_fuse_cache_dirs(root: &Path) -> Result<usize, String> {
+    let mut dirs = Vec::new();
+    collect_fuse_cache_dirs(root, &mut dirs)?;
+    dirs.sort();
+    for dir in &dirs {
+        fs::remove_dir_all(dir)
+            .map_err(|err| format!("failed to remove {}: {err}", dir.display()))?;
+    }
+    Ok(dirs.len())
+}
+
+fn collect_fuse_cache_dirs(root: &Path, dirs: &mut Vec<PathBuf>) -> Result<(), String> {
+    if root.file_name() == Some(OsStr::new(".fuse-cache")) {
+        dirs.push(root.to_path_buf());
+        return Ok(());
+    }
+    let entries =
+        fs::read_dir(root).map_err(|err| format!("failed to read {}: {err}", root.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("failed to read {}: {err}", root.display()))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("failed to inspect {}: {err}", entry.path().display()))?;
+        if !file_type.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if path.file_name() == Some(OsStr::new(".fuse-cache")) {
+            dirs.push(path);
+            continue;
+        }
+        collect_fuse_cache_dirs(&path, dirs)?;
     }
     Ok(())
 }

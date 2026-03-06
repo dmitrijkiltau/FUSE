@@ -15,9 +15,9 @@ mod runtime_env;
 
 pub(crate) use cache::{
     FileStamp, affected_modules_for_incremental_check, build_dir, build_ir_meta,
-    changed_modules_since_meta, check_meta_files_unchanged, clean_build_dir, file_stamp,
-    ir_meta_base_is_valid, ir_meta_is_valid, is_virtual_module_path, load_check_ir_meta,
-    load_ir_meta, sha1_digest, write_check_ir_meta, write_ir_meta,
+    changed_modules_since_meta, check_meta_files_unchanged, clean_build_dir, clean_fuse_cache_dirs,
+    file_stamp, ir_meta_base_is_valid, ir_meta_is_valid, is_virtual_module_path,
+    load_check_ir_meta, load_ir_meta, sha1_digest, write_check_ir_meta, write_ir_meta,
 };
 pub(crate) use cli_output::{
     apply_color_choice, apply_diagnostics_format, dev_prefix, emit_aot_build_progress,
@@ -36,6 +36,7 @@ commands:
   test      Run tests in the package
   build     Run package checks (and optional build steps)
   check     Parse + sema check
+  clean     Remove selected cache directories
   deps      Dependency maintenance commands
   fmt       Format a Fuse file
   openapi   Emit OpenAPI JSON
@@ -52,6 +53,7 @@ options:
   --color <auto|always|never>  Colorized CLI output policy
   --frozen                Refuse fuse.lock mutation (check/run/build/test only)
   --clean                 Remove .fuse/build before building (build only)
+  --cache                 Remove .fuse-cache directories under a selected root (clean only)
   --aot                   Emit deployable AOT binary (build only)
   --release               Use release profile for build output (build only; implies --aot)
 
@@ -60,6 +62,8 @@ dependency commands:
                         Refresh fuse.lock or fail if it is out of date
   deps publish-check [<path>|--manifest-path <path>]
                         Check workspace manifest/lock readiness for publish
+  clean --cache [<path>|--manifest-path <path>]
+                        Remove .fuse-cache directories under the selected root
 "#;
 
 const FUSE_ASSET_MAP_ENV: &str = "FUSE_ASSET_MAP";
@@ -103,6 +107,13 @@ struct DepsLockArgs {
     mode: DepsLockMode,
 }
 
+struct CleanArgs {
+    path: Option<PathBuf>,
+    diagnostics: Option<DiagnosticsFormat>,
+    color: Option<ColorChoice>,
+    cache: bool,
+}
+
 #[derive(Copy, Clone)]
 enum Command {
     Dev,
@@ -110,6 +121,7 @@ enum Command {
     Test,
     Build,
     Check,
+    Clean,
     Fmt,
     Openapi,
     Migrate,
@@ -209,6 +221,12 @@ fn run(args: Vec<String>) -> i32 {
             apply_color_choice(choice);
         }
         return run_deps_command(rest);
+    }
+    if cmd == "clean" {
+        if let Some(choice) = cli_args::discover_color_choice(rest) {
+            apply_color_choice(choice);
+        }
+        return run_clean_command(rest);
     }
     let command = match cmd.as_str() {
         "dev" => Command::Dev,
@@ -458,9 +476,55 @@ fn run(args: Vec<String>) -> i32 {
             args.push(entry.to_string_lossy().to_string());
             fusec::cli::run_with_deps(args, Some(&deps))
         }
+        Command::Clean => unreachable!("clean is handled before manifest loading"),
     };
 
     finalize_command(command, code)
+}
+
+fn run_clean_command(args: &[String]) -> i32 {
+    let parsed = match parse_clean_args(args) {
+        Ok(args) => args,
+        Err(err) => {
+            emit_cli_error(&err);
+            emit_usage();
+            return 1;
+        }
+    };
+    apply_diagnostics_format(parsed.diagnostics.unwrap_or(DiagnosticsFormat::Text));
+    apply_color_choice(parsed.color.unwrap_or(ColorChoice::Auto));
+    emit_command_step(Command::Clean, "start");
+
+    let root = match resolve_clean_root(parsed.path) {
+        Ok(root) => root,
+        Err(err) => {
+            emit_cli_error(&err);
+            return finalize_command(Command::Clean, 1);
+        }
+    };
+    let removed = match clean_fuse_cache_dirs(&root) {
+        Ok(removed) => removed,
+        Err(err) => {
+            emit_cli_error(&err);
+            return finalize_command(Command::Clean, 1);
+        }
+    };
+    if removed == 0 {
+        emit_command_step(
+            Command::Clean,
+            &format!("no .fuse-cache directories found under {}", root.display()),
+        );
+    } else {
+        emit_command_step(
+            Command::Clean,
+            &format!(
+                "removed {removed} .fuse-cache director{} under {}",
+                if removed == 1 { "y" } else { "ies" },
+                root.display()
+            ),
+        );
+    }
+    finalize_command(Command::Clean, 0)
 }
 
 fn run_deps_command(args: &[String]) -> i32 {
@@ -553,6 +617,108 @@ fn run_deps_publish_check_command(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+fn parse_clean_args(args: &[String]) -> Result<CleanArgs, String> {
+    let mut out = CleanArgs {
+        path: None,
+        diagnostics: None,
+        color: None,
+        cache: false,
+    };
+    let mut idx = 0usize;
+    while idx < args.len() {
+        let arg = &args[idx];
+        if arg == "--manifest-path" {
+            idx += 1;
+            let Some(path) = args.get(idx) else {
+                return Err("--manifest-path expects a path".to_string());
+            };
+            if out.path.is_some() {
+                return Err("clean target path already set".to_string());
+            }
+            out.path = Some(PathBuf::from(path));
+            idx += 1;
+            continue;
+        }
+        if arg == "--diagnostics" {
+            idx += 1;
+            let Some(mode) = args.get(idx) else {
+                return Err("--diagnostics expects json|text".to_string());
+            };
+            let Some(parsed) = DiagnosticsFormat::parse(mode) else {
+                return Err(format!(
+                    "invalid --diagnostics value: {mode} (expected json|text)"
+                ));
+            };
+            out.diagnostics = Some(parsed);
+            idx += 1;
+            continue;
+        }
+        if let Some(mode) = arg.strip_prefix("--diagnostics=") {
+            let Some(parsed) = DiagnosticsFormat::parse(mode) else {
+                return Err(format!(
+                    "invalid --diagnostics value: {mode} (expected json|text)"
+                ));
+            };
+            out.diagnostics = Some(parsed);
+            idx += 1;
+            continue;
+        }
+        if arg == "--color" {
+            idx += 1;
+            let Some(choice) = args.get(idx) else {
+                return Err("--color expects auto, always, or never".to_string());
+            };
+            let Some(parsed) = ColorChoice::parse(choice) else {
+                return Err(format!(
+                    "invalid --color value: {choice} (expected auto|always|never)"
+                ));
+            };
+            out.color = Some(parsed);
+            idx += 1;
+            continue;
+        }
+        if let Some(choice) = arg.strip_prefix("--color=") {
+            let Some(parsed) = ColorChoice::parse(choice) else {
+                return Err(format!(
+                    "invalid --color value: {choice} (expected auto|always|never)"
+                ));
+            };
+            out.color = Some(parsed);
+            idx += 1;
+            continue;
+        }
+        if arg == "--cache" {
+            out.cache = true;
+            idx += 1;
+            continue;
+        }
+        if arg == "--frozen"
+            || arg == "--clean"
+            || arg == "--aot"
+            || arg == "--release"
+            || arg == "--strict-architecture"
+        {
+            return Err(format!("{arg} is not supported for fuse clean"));
+        }
+        if arg == "--file" || arg == "--app" || arg == "--backend" || arg == "--filter" {
+            return Err(format!("{arg} is not supported for fuse clean"));
+        }
+        if arg.starts_with("--") {
+            return Err(format!("unknown option: {arg}"));
+        }
+        if out.path.is_none() {
+            out.path = Some(PathBuf::from(arg));
+            idx += 1;
+            continue;
+        }
+        return Err(format!("unexpected argument: {arg}"));
+    }
+    if !out.cache {
+        return Err("fuse clean requires --cache".to_string());
+    }
+    Ok(out)
 }
 
 fn parse_deps_lock_args(args: &[String]) -> Result<DepsLockArgs, String> {
@@ -690,6 +856,35 @@ fn parse_deps_common_args(args: &[String], subcommand: &str) -> Result<DepsCommo
         return Err(format!("unexpected argument: {arg}"));
     }
     Ok(out)
+}
+
+fn resolve_clean_root(path: Option<PathBuf>) -> Result<PathBuf, String> {
+    let path = match path {
+        Some(path) => path,
+        None => env::current_dir().map_err(|err| format!("cwd error: {err}"))?,
+    };
+    if path.is_dir() {
+        return Ok(path);
+    }
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "fuse.toml")
+    {
+        return path
+            .parent()
+            .map(|parent| parent.to_path_buf())
+            .ok_or_else(|| {
+                format!(
+                    "clean root error: cannot resolve parent for {}",
+                    path.display()
+                )
+            });
+    }
+    Err(format!(
+        "clean root must be a directory or fuse.toml path, got {}",
+        path.display()
+    ))
 }
 
 fn resolve_publish_check_root(path: Option<PathBuf>) -> Result<PathBuf, String> {
