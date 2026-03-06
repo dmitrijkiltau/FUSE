@@ -9,6 +9,32 @@ step() {
   printf "\n[%s] %s\n" "$1" "$2"
 }
 
+clear_fuse_cache_dirs() {
+  local root="$1"
+  local label="${2:-cache}"
+  local -a dirs=()
+  local dir
+
+  while IFS= read -r -d '' dir; do
+    dirs+=("$dir")
+  done < <(find "$root" -type d -name .fuse-cache -print0 2>/dev/null)
+
+  if [[ "${#dirs[@]}" -eq 0 ]]; then
+    printf "[%s] no .fuse-cache directories found under %s\n" "$label" "$root"
+    return 0
+  fi
+
+  for dir in "${dirs[@]}"; do
+    rm -rf "$dir"
+  done
+
+  printf "[%s] removed %d .fuse-cache director%s under %s\n" \
+    "$label" \
+    "${#dirs[@]}" \
+    "$( [[ "${#dirs[@]}" -eq 1 ]] && printf 'y' || printf 'ies' )" \
+    "$root"
+}
+
 # Resolve a path to absolute. Relative paths are anchored to $ROOT, which must
 # be set in the calling script before sourcing this file.
 abspath() {

@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.3] - 2026-03-07
+
+### Added
+
+- Dependency workflow hardening for publishable multi-package repositories:
+  - `fuse deps lock` to refresh `fuse.lock`
+  - `fuse deps lock --check` for deterministic CI drift detection
+  - `fuse deps publish-check` for workspace publish-readiness validation
+- Frozen lockfile enforcement for `fuse check|run|build|test` with structured
+  `FUSE_LOCK_FROZEN` / `FUSE_LOCK_OUT_OF_DATE` diagnostics and remediation hints.
+- `fuse clean --cache` to prune accumulated `.fuse-cache` directories without touching
+  `.fuse/build`.
+
+### Changed
+
+- Release preflight can now opt into workspace publish-readiness checks with
+  `--workspace-publish-checks`.
+- `scripts/release_preflight.sh` and `scripts/release_smoke.sh` can now optionally clear
+  `.fuse-cache` before running via `--clear-fuse-cache`.
+- Tooling/docs now distinguish build artifact cleanup (`fuse build --clean`) from reusable
+  workspace/LSP cache cleanup (`fuse clean --cache`).
+
+### Migration
+
+- No language/runtime migration is required from `0.9.2` to `0.9.3`.
+
 ## [0.9.2] - 2026-03-05
 
 ### Added

@@ -214,13 +214,25 @@ Package dependency resolution (`dep:` imports):
   cycle path with `→` separators (for example, `circular import: A → B → A`).
 - attempting to use an undeclared dependency name emits a structured error naming the unknown
   dep and listing all declared deps (for example, `unknown dependency 'Foo' — available: Auth, Math`).
+- `fuse deps lock` rewrites `fuse.lock` for the selected package to match the resolved
+  dependency graph.
+- `fuse deps lock --check` must fail with code `FUSE_LOCK_OUT_OF_DATE` when the current
+  lockfile differs from the resolved dependency graph.
+- `fuse check|run|build|test --frozen` must fail with code `FUSE_LOCK_FROZEN` before command
+  execution if dependency resolution would change `fuse.lock`.
+- `fuse deps publish-check` walks all `fuse.toml` files under the selected root and reports
+  per-package manifest-entry or lock-readiness failures.
+- `fuse clean --cache` removes `.fuse-cache` directories under the selected root; when no path
+  is supplied it uses the current working directory, and `--manifest-path <path>` may point to
+  either a package directory or a `fuse.toml` file.
 - the `fuse check --workspace` flag walks the directory tree from the current working directory,
   discovers all `fuse.toml` manifests that declare a `[package].entry`, and checks each package
   independently; results are summarised with a per-package pass/fail line followed by a total.
 - in `--workspace` mode, a lightweight file-timestamp cache (`.fuse-cache/check-<hash>.tsv`) is
   maintained per entry point; a workspace check that hits a valid cache prints
   `check: ok (cached, no changes)` and exits immediately; the cache is invalidated after any
-  diagnostic error.
+  diagnostic error; these caches are not automatically swept outside command-specific invalidation,
+  so `fuse clean --cache` is the supported manual prune path.
 
 Module capabilities:
 
@@ -901,6 +913,7 @@ Common package commands:
 - `fuse dev` — run in watch/dev mode with live reload
 - `fuse test` — run test blocks
 - `fuse build` — compile to a native binary
+- `fuse clean --cache` — remove `.fuse-cache` directories under a selected root
 - `fuse fmt` — format a source file
 - `fuse openapi` — emit an OpenAPI JSON document
 - `fuse migrate` — execute pending migration blocks
@@ -908,6 +921,7 @@ Common package commands:
 
 Useful flags:
 
+- `fuse build --clean` — remove `.fuse/build` before building
 - `--workspace` — check all packages under the current directory
 - `--strict-architecture` — enable architectural purity checks
 - `--diagnostics json` — emit diagnostics as JSON Lines on stderr

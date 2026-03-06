@@ -2356,8 +2356,11 @@ fn build_workspace_from_registry(
     let mut module_alias_exports = HashMap::new();
     let mut imported_module_uris: HashMap<String, HashSet<String>> = HashMap::new();
     // Pre-built to avoid borrow conflicts: file index → URI.
-    let file_uri_by_idx: HashMap<usize, String> =
-        files.iter().enumerate().map(|(i, f)| (i, f.uri.clone())).collect();
+    let file_uri_by_idx: HashMap<usize, String> = files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (i, f.uri.clone()))
+        .collect();
 
     let mut exports_by_module: HashMap<usize, HashMap<String, usize>> = HashMap::new();
     for (module_id, file_idx) in &module_to_file {

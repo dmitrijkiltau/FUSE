@@ -1,7 +1,7 @@
 import Base from "./base"
 import { RequestContext, request_context_session_token, request_context_user_id } from "../../domain"
 
-fn auth_form(prefix: String, action: String, button_label: String, button_class: String) -> Html:
+fn auth_form(prefix: String, action: String, button_label: String, button_class: String, toggle_id: String, switch_label: String) -> Html:
   let email_id = "${prefix}-email"
   let password_id = "${prefix}-password"
 
@@ -34,37 +34,45 @@ fn auth_form(prefix: String, action: String, button_label: String, button_class:
         minlength="8"
         required="required"
       )
-    div(class="create-form__footer"):
+    div(class="create-form__footer auth-form__footer"):
+      label(class="auth-switch" for=toggle_id):
+        span(class="btn btn--link btn--sm auth-switch__button"):
+          html.text(switch_label)
       button(type="submit" class=button_class):
         html.text(button_label)
+
+fn render_guest_auth_section() -> Html:
+  let toggle_id = "auth-mode-toggle"
+  return section(class="dashboard__create"):
+    h2(class="section__title"):
+      "Login / register"
+    div(class="auth-panel auth-panel--guest"):
+      Base.state_block("Not signed in.", true, false)
+      input(id=toggle_id type="checkbox" class="btn--checkbox auth-panel__toggle" hidden="hidden")
+      div(class="auth-stack"):
+        div(class="auth-stack__pane auth-stack__pane--login"):
+          auth_form("login", "/ui/auth/login", "Login", "btn btn--primary", toggle_id, "Need an account? Register")
+        div(class="auth-stack__pane auth-stack__pane--register"):
+          auth_form("register", "/ui/auth/register", "Register", "btn btn--primary", toggle_id, "Have an account? Login")
 
 fn render_session_section(ctx: RequestContext) -> Html:
   let session_token = request_context_session_token(ctx)
   if session_token == "":
-    return section(class="section"):
-      h2(class="section__title"):
-        "Session"
-      div(class="auth-panel"):
-        Base.state_block("Not signed in.", true, false)
-        div(class="auth-grid"):
-          auth_form("register", "/ui/auth/register", "Register", "btn btn--primary")
-          auth_form("login", "/ui/auth/login", "Login", "btn btn--ghost")
+    return html.raw("")
 
   let logout_url = "/ui/auth/logout"
   let uid = request_context_user_id(ctx)
 
-  return section(class="section"):
-    h2(class="section__title"):
-      "Session"
-    div(class="auth-panel"):
-      Base.state_block("Signed in as ${uid}.", true, false)
-      div(class="auth-actions"):
-        button(
-          type="button"
-          id="logout-btn"
-          class="btn btn--ghost btn--sm"
-          hx_delete=logout_url
-          hx_target="#app-shell"
-          hx_swap="outerHTML"
-        ):
-          "Logout"
+  return div(class="page__session"):
+    p(class="page__session-copy"):
+      html.text("Signed in as ${uid}.")
+    div(class="auth-actions"):
+      button(
+        type="button"
+        id="logout-btn"
+        class="btn btn--ghost btn--sm"
+        hx_delete=logout_url
+        hx_target="#app-shell"
+        hx_swap="outerHTML"
+      ):
+        "Logout"

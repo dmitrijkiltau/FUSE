@@ -186,6 +186,9 @@ Observability baseline for HTTP runtime:
 | `fuse dev` | Run with file watching and live reload |
 | `fuse test` | Run in-language test blocks |
 | `fuse build` | Produce build artifacts and optional AOT output |
+| `fuse clean --cache` | Remove `.fuse-cache` directories under a selected root |
+| `fuse deps lock` | Refresh `fuse.lock` or check it for drift |
+| `fuse deps publish-check` | Check workspace manifest/lock readiness for publish |
 | `fuse migrate` | Run database migrations |
 | `fuse lsp` | Start the language server |
 
@@ -199,8 +202,10 @@ Global CLI output option:
   `kind="diagnostic"`, `level`, `code?`, `message`, `path?`, `line?`, `column?`, `span_start`, `span_end`.
   Command-step entries use:
   `kind="command_step"`, `command`, `message`.
-- `fuse check|run|build|test` emit consistent stderr step markers:
+- `fuse check|run|build|test|clean` emit consistent stderr step markers:
   `[command] start`, `[command] ok|failed|validation failed`.
+- `--frozen` is supported by `fuse check|run|build|test` and fails with
+  `[FUSE_LOCK_FROZEN]` if dependency resolution would rewrite `fuse.lock`.
 - `fuse test --filter <pattern>` runs only test blocks whose names contain `<pattern>`
   (case-sensitive substring match).
 - `--strict-architecture` enables strict architecture checks in semantic analysis
@@ -273,6 +278,11 @@ Lockfile semantics (`fuse.lock`):
 - Entries store resolved source (`path` or `git+rev`) and requested spec fingerprint.
 - If requested fingerprint matches, lock entry is reused; if it differs, entry is refreshed.
 - Unchanged dependency graphs keep stable lockfile content.
+- `fuse deps lock` refreshes the lockfile for the selected package.
+- `fuse deps lock --check` fails with `[FUSE_LOCK_OUT_OF_DATE]` when the current lockfile
+  differs from the resolved dependency graph.
+- `fuse deps publish-check` walks all `fuse.toml` files under a workspace root and reports
+  missing entry files or out-of-date lockfiles per package.
 - Lockfile format/load errors include remediation guidance to regenerate `fuse.lock`.
 
 ### Build artifacts
@@ -282,6 +292,8 @@ Cache validity uses content hashes (module graph + `fuse.toml` + `fuse.lock`) in
 Native/IR cache reuse also requires matching build fingerprints (target triple, Rust toolchain, CLI version).
 `fuse check` also writes incremental metadata (`check.meta` / `check.strict.meta`) and skips
 unchanged modules by hash on warm runs.
+Workspace checks and the language server may also persist reusable data under `.fuse-cache/`
+(`check-*.tsv`, `lsp-index-*.json`) until explicitly pruned.
 
 Deployable AOT output:
 
@@ -311,7 +323,9 @@ Deployable AOT output:
 - AOT runtime is sealed: no dynamic backend fallback, no JIT compilation for app execution, and no
   runtime source compilation.
 
-Use `fuse build --clean` to clear the cache.
+Use `fuse build --clean` to clear `.fuse/build`.
+Use `fuse clean --cache [<path>|--manifest-path <path>]` to prune `.fuse-cache` directories
+under the current root or a selected package/workspace root.
 
 ## Config loading
 

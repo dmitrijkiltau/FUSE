@@ -353,6 +353,7 @@ Common package commands:
 - `fuse dev` — run in watch/dev mode with live reload
 - `fuse test` — run test blocks
 - `fuse build` — compile to a native binary
+- `fuse clean --cache` — remove `.fuse-cache` directories under a selected root
 - `fuse fmt` — format a source file
 - `fuse openapi` — emit an OpenAPI JSON document
 - `fuse migrate` — execute pending migration blocks
@@ -360,6 +361,7 @@ Common package commands:
 
 Useful flags:
 
+- `fuse build --clean` — remove `.fuse/build` before building
 - `--workspace` — check all packages under the current directory
 - `--strict-architecture` — enable architectural purity checks
 - `--diagnostics json` — emit diagnostics as JSON Lines on stderr
