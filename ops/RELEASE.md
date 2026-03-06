@@ -51,6 +51,8 @@ Three scripts cover the full release cycle:
    ```sh
    ./scripts/release_preflight.sh --skip-bench 0.9.0
    ```
+   This also forwards `--skip-bench` into the nested `scripts/release_smoke.sh` run so the
+   benchmark-heavy smoke steps are skipped consistently.
    Include workspace publish-readiness checks for multi-package release branches:
    ```sh
    ./scripts/release_preflight.sh --workspace-publish-checks 0.9.0

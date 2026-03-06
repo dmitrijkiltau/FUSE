@@ -109,6 +109,9 @@ preflight_step() {
 
 run_release_smoke() {
   local -a args=()
+  if [[ "$SKIP_BENCH" -eq 1 ]]; then
+    args+=(--skip-bench)
+  fi
   if [[ "$CLEAR_FUSE_CACHE" -eq 1 ]]; then
     args+=(--clear-fuse-cache)
   fi
