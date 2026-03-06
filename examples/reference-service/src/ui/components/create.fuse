@@ -1,9 +1,10 @@
+import Auth from "./auth"
 import { RequestContext, request_context_session_token } from "../../domain"
 
 fn render_create_section(ctx: RequestContext) -> Html:
   let session_token = request_context_session_token(ctx)
   if session_token == "":
-    return html.raw("")
+    return Auth.render_guest_auth_section()
   let create_url = "/ui/notes"
 
   return section(class="dashboard__create"):

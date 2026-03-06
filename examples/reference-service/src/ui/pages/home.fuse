@@ -8,10 +8,11 @@ import Notes from "../components/notes"
 fn render_shell(ctx: RequestContext) -> Html:
   return div(id="app-shell"):
     header(class="page__header"):
-      h1(class="page__title"):
-        "Notes"
-      p(class="page__subtitle"):
-        "HTMX and HTML DSL reference service."
+      div(class="page__brand"):
+        h1(class="page__title"):
+          "Notes"
+        p(class="page__subtitle"):
+          "Reference service"
       Auth.render_session_section(ctx)
     main(class="dashboard"):
       Create.render_create_section(ctx)

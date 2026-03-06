@@ -50,6 +50,7 @@ fn render_private_note_card(note: Map<String, String>) -> Html:
   let edit_url = "/ui/notes/${id}"
   let visibility_url = "/ui/notes/${id}/visibility"
   let delete_url = "/ui/notes/${id}"
+  let delete_dialog_id = "delete-note-${id}"
   let title_id = "edit-title-${id}"
   let content_id = "edit-content-${id}"
 
@@ -90,8 +91,6 @@ fn render_private_note_card(note: Map<String, String>) -> Html:
         button(type="submit" class="btn btn--ghost btn--sm"):
           "Save"
     div(class="note-card__meta-line"):
-      div(class="note-card__meta"):
-        html.text(id)
       span(class="note-card__pill"):
         html.text(visibility)
     div(class="note-card__actions"):
@@ -112,12 +111,26 @@ fn render_private_note_card(note: Map<String, String>) -> Html:
       button(
         type="button"
         class="btn btn--danger btn--sm"
-        hx_delete=delete_url
-        hx_confirm="Delete note?"
-        hx_target="#app-shell"
-        hx_swap="outerHTML"
+        onclick="document.getElementById('${delete_dialog_id}').showModal()"
       ):
         "Delete"
+    dialog(id=delete_dialog_id class="dialog"):
+      h3(class="dialog__title"):
+        "Delete note?"
+      p(class="dialog__body"):
+        "This action permanently removes \"${title}\"."
+      div(class="dialog__actions"):
+        form(method="dialog" class="inline-form"):
+          button(type="submit" class="btn btn--ghost btn--sm"):
+            "Cancel"
+        form(
+          class="inline-form"
+          hx_delete=delete_url
+          hx_target="#app-shell"
+          hx_swap="outerHTML"
+        ):
+          button(type="submit" class="btn btn--danger btn--sm"):
+            "Delete"
 
 fn render_private_notes_section(ctx: RequestContext) -> Html:
   let session_token = request_context_session_token(ctx)
@@ -176,7 +189,6 @@ fn render_public_note_actions(ctx: RequestContext, note: Map<String, String>) ->
       html.text(likes_label)
 
 fn render_public_note_card(ctx: RequestContext, note: Map<String, String>) -> Html:
-  let id = note["id"]
   let title = note["title"]
   let content = note["content"]
   let owner_id = note["owner_id"]
@@ -188,7 +200,7 @@ fn render_public_note_card(ctx: RequestContext, note: Map<String, String>) -> Ht
       html.text(content)
     div(class="note-card__meta-line"):
       div(class="note-card__meta"):
-        html.text("${id} by ${owner_id}")
+        html.text("by ${owner_id}")
 
     render_public_note_actions(ctx, note)
 
