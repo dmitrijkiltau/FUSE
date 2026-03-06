@@ -13,6 +13,7 @@ VERSION=""
 SKIP_BENCH=0
 SKIP_GUIDE_REGEN=0
 WORKSPACE_PUBLISH_CHECKS=0
+CLEAR_FUSE_CACHE=0
 
 usage() {
   cat <<'USAGE'
@@ -30,6 +31,8 @@ Options:
   --skip-guide-regen Skip regenerating guide docs (use when already up to date)
   --workspace-publish-checks
                      Run optional workspace publish-readiness checks
+  --clear-fuse-cache Remove all .fuse-cache directories under the repo before preflight
+                     and before the nested release smoke step
   -h, --help         Show this help
 USAGE
 }
@@ -46,6 +49,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --workspace-publish-checks)
       WORKSPACE_PUBLISH_CHECKS=1
+      shift
+      ;;
+    --clear-fuse-cache)
+      CLEAR_FUSE_CACHE=1
       shift
       ;;
     -h|--help)
@@ -99,6 +106,19 @@ preflight_step() {
     FAILURES+=("$label")
   fi
 }
+
+run_release_smoke() {
+  local -a args=()
+  if [[ "$CLEAR_FUSE_CACHE" -eq 1 ]]; then
+    args+=(--clear-fuse-cache)
+  fi
+  "$ROOT/scripts/release_smoke.sh" "${args[@]}"
+}
+
+if [[ "$CLEAR_FUSE_CACHE" -eq 1 ]]; then
+  preflight_step "clear .fuse-cache directories" \
+    clear_fuse_cache_dirs "$ROOT" "preflight"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Version bump verification
@@ -203,8 +223,7 @@ preflight_step "authority parity (authority_parity.sh)" \
 # 6. Release smoke
 # ---------------------------------------------------------------------------
 
-preflight_step "release smoke (release_smoke.sh)" \
-  "$ROOT/scripts/release_smoke.sh"
+preflight_step "release smoke (release_smoke.sh)" run_release_smoke
 
 # ---------------------------------------------------------------------------
 # 7. AOT SLO check

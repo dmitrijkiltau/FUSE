@@ -55,6 +55,10 @@ Three scripts cover the full release cycle:
    ```sh
    ./scripts/release_preflight.sh --workspace-publish-checks 0.9.0
    ```
+   Force a cold release cache run by clearing all repo `.fuse-cache` directories first:
+   ```sh
+   ./scripts/release_preflight.sh --clear-fuse-cache 0.9.0
+   ```
 4. Verify package UX manually (optional but recommended):
    ```sh
    ./scripts/fuse build

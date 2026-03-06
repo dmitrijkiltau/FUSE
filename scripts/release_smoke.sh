@@ -4,10 +4,45 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 ROOT="$(fuse_repo_root "${BASH_SOURCE[0]}")"
 USE_CASE_BENCH_MAX_ATTEMPTS="${FUSE_USE_CASE_BENCH_MAX_ATTEMPTS:-3}"
+CLEAR_FUSE_CACHE=0
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/release_smoke.sh [options]
+
+Runs the full release smoke suite.
+
+Options:
+  --clear-fuse-cache  Remove all .fuse-cache directories under the repo before running
+  -h, --help          Show this help
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --clear-fuse-cache)
+      CLEAR_FUSE_CACHE=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown option: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
 
 if ! [[ "$USE_CASE_BENCH_MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
   echo "invalid FUSE_USE_CASE_BENCH_MAX_ATTEMPTS: $USE_CASE_BENCH_MAX_ATTEMPTS" >&2
   exit 1
+fi
+
+if [[ "$CLEAR_FUSE_CACHE" -eq 1 ]]; then
+  clear_fuse_cache_dirs "$ROOT" "release-smoke"
 fi
 
 step "1/22" "Check all example files"
