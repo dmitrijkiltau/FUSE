@@ -76,6 +76,41 @@
   opacity: 1;
 }
 
+.note-like {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--c-text-3);
+
+  &:hover {
+    background: transparent;
+    color: var(--c-text);
+    border-color: transparent;
+  }
+}
+
+.note-like--active {
+  color: var(--c-text);
+}
+
+.note-like--static {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--c-text-3);
+  font-size: var(--fs-xs);
+}
+
+.note-like__icon {
+  font-size: var(--fs-sm);
+  line-height: 1;
+}
+
+.note-like__count {
+  font-size: var(--fs-xs);
+  line-height: 1;
+}
+
 .note-stack {
   display: contents;
 }

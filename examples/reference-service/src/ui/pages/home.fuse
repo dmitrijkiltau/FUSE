@@ -15,8 +15,9 @@ fn render_shell(ctx: RequestContext) -> Html:
           "Reference service"
       Auth.render_session_section(ctx)
     main(class="dashboard"):
-      Create.render_create_section(ctx)
-      Notes.render_private_notes_section(ctx)
+      div(class="dashboard__create-private"):
+        Create.render_create_section(ctx)
+        Notes.render_private_notes_section(ctx)
       Notes.render_public_section(ctx)
       Notes.render_liked_section(ctx)
 

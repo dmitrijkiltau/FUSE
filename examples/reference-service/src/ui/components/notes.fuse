@@ -14,11 +14,21 @@ fn private_note_rows(user_id: String) -> List<Map<String, String>>:
       .all()
   return rows
 
-fn public_note_rows() -> List<Map<String, String>>:
+fn public_note_rows(ctx: RequestContext) -> List<Map<String, String>>:
   var rows: List<Map<String, String>> = []
+  let viewer_id = request_context_user_id(ctx)
   transaction:
-    rows = db.query("""select n.id, n.title, n.content, n.owner_id,
+    if viewer_id == "":
+      rows = db.query("""select n.id, n.title, n.content, n.owner_id,
+  cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes,
+  "0" as liked
+from notes n where n.is_public = "1" order by n.id desc""")
+    else:
+      rows = db.query("""select n.id, n.title, n.content, n.owner_id,
   cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes
+  , case when exists(
+      select 1 from note_likes l where l.note_id = n.id and l.user_id = "${viewer_id}"
+    ) then "1" else "0" end as liked
 from notes n where n.is_public = "1" order by n.id desc""")
   return rows
 
@@ -26,12 +36,47 @@ fn liked_note_rows(user_id: String) -> List<Map<String, String>>:
   var rows: List<Map<String, String>> = []
   transaction:
     rows = db.query("""select n.id, n.title, n.content, n.owner_id,
-  cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes
+  cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes,
+  "1" as liked
 from notes n
 join note_likes nl on nl.note_id = n.id
 where nl.user_id = "${user_id}" and n.is_public = "1"
 order by n.id desc""")
   return rows
+
+fn render_like_badge(note: Map<String, String>, interactive: Bool) -> Html:
+  let id = note["id"]
+  let likes = note["likes"]
+  let liked = note["liked"] == "1"
+
+  var action_url = "/ui/public/notes/${id}/likes"
+  var action_method = "post"
+  var button_class = "btn btn--ghost btn--sm note-like"
+  var icon = "♡"
+
+  if liked:
+    action_method = "delete"
+    button_class = button_class + " note-like--active"
+    icon = "♥"
+
+  if interactive == false:
+    return span(class="note-like note-like--static"):
+      span(class="note-like__icon"):
+        html.text(icon)
+      span(class="note-like__count"):
+        html.text(likes)
+
+  return button(
+    type="button"
+    class=button_class
+    hx_post=action_url
+    hx_target="#app-shell"
+    hx_swap="outerHTML"
+  ):
+    span(class="note-like__icon"):
+      html.text(icon)
+    span(class="note-like__count"):
+      html.text(likes)
 
 fn render_private_note_card(note: Map<String, String>) -> Html:
   let id = note["id"]
@@ -158,35 +203,13 @@ fn render_private_notes_section(ctx: RequestContext) -> Html:
 
 fn render_public_note_actions(ctx: RequestContext, note: Map<String, String>) -> Html:
   let session_token = request_context_session_token(ctx)
-  if session_token == "":
-    return html.raw("")
-
   let viewer_id = request_context_user_id(ctx)
   let owner_id = note["owner_id"]
 
-  if viewer_id == "" or owner_id == viewer_id:
-    return html.raw("")
-
-  let id = note["id"]
-  let like_url = "/ui/public/notes/${id}/likes"
-
-  let likes = note["likes"]
-  var likes_label = "${likes} likes"
-  if likes == "1":
-    likes_label = "1 like"
+  let can_toggle_like = session_token != "" and viewer_id != "" and owner_id != viewer_id
 
   return div(class="note-card__actions note-card__actions--public"):
-    button(
-      type="button"
-      class="btn btn--ghost btn--sm"
-      hx_post=like_url
-      hx_target="#app-shell"
-      hx_swap="outerHTML"
-    ):
-      "Like"
-
-    span(class="note-card__pill"):
-      html.text(likes_label)
+    render_like_badge(note, can_toggle_like)
 
 fn render_public_note_card(ctx: RequestContext, note: Map<String, String>) -> Html:
   let title = note["title"]
@@ -205,7 +228,7 @@ fn render_public_note_card(ctx: RequestContext, note: Map<String, String>) -> Ht
     render_public_note_actions(ctx, note)
 
 fn render_public_notes_inner(ctx: RequestContext) -> Html:
-  let rows = public_note_rows()
+  let rows = public_note_rows(ctx)
   var has_rows = false
   var cards = html.raw("")
   for row in rows:
@@ -248,7 +271,7 @@ fn render_liked_section(ctx: RequestContext) -> Html:
       cards
       render_public_note_card(ctx, row)
 
-  return section(class="section"):
+  return section(class="dashboard__liked"):
     h2(class="section__title"):
       "Liked notes"
     div(class="notes-list" id="liked-notes-list"):

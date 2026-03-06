@@ -6,6 +6,10 @@
   box-sizing: border-box;
 }
 
+html {
+  color-scheme: light dark;
+}
+
 body {
   font-family: var(--font-sans);
   font-size: var(--fs-base);
@@ -14,6 +18,39 @@ body {
   background: var(--c-bg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body,
+.dashboard__create-private,
+.dashboard__public,
+.dialog,
+.form-textarea {
+  scrollbar-width: thin;
+  scrollbar-color: var(--c-scrollbar) var(--c-scrollbar-track);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--c-scrollbar-track);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--c-scrollbar);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+
+  &:hover {
+    background: var(--c-scrollbar-hv);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
 }
 
 .hidden {
@@ -43,8 +80,8 @@ body {
   gap: var(--sp-4);
   margin: 0 var(--sp-6) var(--sp-8);
   padding: var(--sp-3) var(--sp-4);
-  background: rgb(255 255 255 / 92%);
-  border: 1px solid rgb(255 255 255 / 70%);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-md);
   backdrop-filter: blur(12px);
@@ -85,6 +122,8 @@ body {
 }
 
 .section__title {
+  position: sticky;
+  top: 0;
   font-size: var(--fs-xs);
   font-weight: 500;
   color: var(--c-text-3);
@@ -93,6 +132,7 @@ body {
   margin-bottom: var(--sp-4);
   padding-bottom: var(--sp-2);
   border-bottom: 1px solid var(--c-border);
+  background: var(--c-bg);
 }
 
 .create-form {
@@ -230,6 +270,18 @@ body {
   flex-direction: column;
   gap: var(--sp-8);
   padding: 0 var(--sp-6);
+
+  & .dashboard__create-private {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-4);
+  }
+
+  & .dashboard__create-private, & .dashboard__public {
+    max-height: calc(100dvh - 10rem);
+    overflow-y: auto;
+    position: relative;
+  }
 }
 
 @media (max-width: 759px) {
@@ -248,15 +300,11 @@ body {
   .dashboard {
     display: grid;
     grid-template-columns: 1fr 1fr 1fr;
-    grid-template-rows: auto 1fr;
-    grid-template-areas:
-      "create  public liked"
-      "private public liked";
+    grid-template-areas: "create-private public liked";
     gap: var(--sp-8);
     align-items: start;
 
-    & .dashboard__create  { grid-area: create; }
-    & .dashboard__private { grid-area: private; }
+    & .dashboard__create-private  { grid-area: create-private; }
     & .dashboard__public  { grid-area: public; }
     & .dashboard__liked   { grid-area: liked; }
 

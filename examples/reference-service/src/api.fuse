@@ -167,6 +167,23 @@ service ReferenceService at "/":
         [id, request_context_user_id(ctx)]
       )
 
+  delete "/api/sessions/{token: String}/public/notes/{id: String}/likes" -> Unit!NotFound!Unauthorized!Forbidden:
+    let ctx = scoped_context(token, "notes:read") ?!
+    transaction:
+      let note = db
+        .from("notes")
+        .select(["owner_id"])
+        .where("is_public", "=", "1")
+        .where("id", "=", id)
+        .one()
+        ?! NotFound(message="not found")
+      if note["owner_id"] == request_context_user_id(ctx):
+        null ?! Forbidden(message="cannot unlike your own note")
+      db.exec(
+        "delete from note_likes where note_id = ? and user_id = ?",
+        [id, request_context_user_id(ctx)]
+      )
+
   # List notes that are published and readable without authentication.
   get "/api/public/notes" -> List<Map<String, String>>:
     var rows: List<Map<String, String>> = []
@@ -304,6 +321,24 @@ from notes n where n.is_public = "1" and n.id = ?""",
         null ?! Forbidden(message="cannot like your own note")
       db.exec(
         "insert or ignore into note_likes (note_id, user_id) values (?, ?)",
+        [id, request_context_user_id(ctx)]
+      )
+    return Home.render_shell(ctx)
+
+  delete "/ui/public/notes/{id: String}/likes" -> Html!NotFound!Unauthorized!Forbidden:
+    let ctx = scoped_request_context("notes:read") ?!
+    transaction:
+      let note = db
+        .from("notes")
+        .select(["owner_id"])
+        .where("is_public", "=", "1")
+        .where("id", "=", id)
+        .one()
+        ?! NotFound(message="not found")
+      if note["owner_id"] == request_context_user_id(ctx):
+        null ?! Forbidden(message="cannot unlike your own note")
+      db.exec(
+        "delete from note_likes where note_id = ? and user_id = ?",
         [id, request_context_user_id(ctx)]
       )
     return Home.render_shell(ctx)
