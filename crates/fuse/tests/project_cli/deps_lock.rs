@@ -1,5 +1,134 @@
 use super::*;
 
+fn run_project_command(dir: &Path, command: &str, extra_args: &[&str]) -> std::process::Output {
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let mut cmd = Command::new(exe);
+    cmd.arg(command).arg("--manifest-path").arg(dir);
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
+    cmd.output()
+        .unwrap_or_else(|err| panic!("run fuse {command}: {err}"))
+}
+
+fn run_deps_command(dir: &Path, subcommand: &str, extra_args: &[&str]) -> std::process::Output {
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let mut cmd = Command::new(exe);
+    cmd.arg("deps")
+        .arg(subcommand)
+        .arg("--manifest-path")
+        .arg(dir);
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
+    cmd.output()
+        .unwrap_or_else(|err| panic!("run fuse deps {subcommand}: {err}"))
+}
+
+fn write_helper_dep(dir: &Path, relative_path: &str, value: i32) {
+    let helper_dir = dir.join(relative_path);
+    fs::create_dir_all(&helper_dir).expect("create helper dep");
+    fs::write(
+        helper_dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "Helper"
+"#,
+    )
+    .expect("write helper manifest");
+    fs::write(
+        helper_dir.join("lib.fuse"),
+        format!("fn helper() -> Int:\n  return {value}\n"),
+    )
+    .expect("write helper lib");
+}
+
+fn write_project_with_helper(dir: &Path, dep_path: &str, helper_value: i32, include_test: bool) {
+    let test_block = if include_test {
+        r#"
+
+test "smoke":
+  assert(Helper.helper() == 1)
+"#
+    } else {
+        ""
+    };
+    fs::write(
+        dir.join("fuse.toml"),
+        format!(
+            r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[dependencies]
+Helper = {{ path = "{dep_path}" }}
+"#
+        ),
+    )
+    .expect("write root fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        format!(
+            r#"
+import Helper from "dep:Helper/lib"
+
+app "Demo":
+  print(Helper.helper()){test_block}
+"#
+        ),
+    )
+    .expect("write main.fuse");
+    write_helper_dep(dir, dep_path.trim_start_matches("./"), helper_value);
+}
+
+fn commit_git_repo(repo_dir: &Path, source: &str) -> String {
+    fs::write(repo_dir.join("lib.fuse"), source).expect("rewrite git dep lib");
+    let add = Command::new("git")
+        .arg("-C")
+        .arg(repo_dir)
+        .arg("add")
+        .arg(".")
+        .output()
+        .expect("git add");
+    assert!(
+        add.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let commit = Command::new("git")
+        .arg("-C")
+        .arg(repo_dir)
+        .arg("-c")
+        .arg("user.name=Fuse Test")
+        .arg("-c")
+        .arg("user.email=fuse@example.test")
+        .arg("commit")
+        .arg("-m")
+        .arg("update")
+        .output()
+        .expect("git commit");
+    assert!(
+        commit.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+    let rev = Command::new("git")
+        .arg("-C")
+        .arg(repo_dir)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()
+        .expect("git rev-parse");
+    assert!(
+        rev.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&rev.stderr)
+    );
+    String::from_utf8_lossy(&rev.stdout).trim().to_string()
+}
+
 #[test]
 fn check_reports_transitive_dependency_conflicts_with_origin_paths() {
     let dir = temp_project_dir();
@@ -1322,6 +1451,305 @@ fn prefix(name: String) -> String:
         String::from_utf8_lossy(&run.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "dep-changed");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deps_lock_check_detects_drift_and_update_writes_lockfile() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_with_helper(&dir, "./deps/helper", 1, false);
+
+    let check = run_deps_command(&dir, "lock", &["--check", "--color", "never"]);
+    assert!(!check.status.success(), "lock check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(
+        stderr.contains("[FUSE_LOCK_OUT_OF_DATE]"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("add Helper"), "stderr: {stderr}");
+
+    let update = run_deps_command(&dir, "lock", &["--color", "never"]);
+    assert!(
+        update.status.success(),
+        "update stderr: {}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+
+    let lock_text = fs::read_to_string(dir.join("fuse.lock")).expect("read fuse.lock");
+    assert!(
+        lock_text.contains("[dependencies.Helper]"),
+        "lockfile: {lock_text}"
+    );
+
+    let recheck = run_deps_command(&dir, "lock", &["--check", "--color", "never"]);
+    assert!(
+        recheck.status.success(),
+        "recheck stderr: {}",
+        String::from_utf8_lossy(&recheck.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn frozen_mode_allows_synced_lock_for_check_run_build_and_test() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_with_helper(&dir, "./deps/helper", 1, true);
+
+    let lock = run_deps_command(&dir, "lock", &["--color", "never"]);
+    assert!(
+        lock.status.success(),
+        "lock stderr: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+
+    for command in ["check", "run", "build", "test"] {
+        let output = run_project_command(&dir, command, &["--frozen", "--color", "never"]);
+        assert!(
+            output.status.success(),
+            "{command} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_frozen_rejects_path_dependency_drift() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_with_helper(&dir, "./deps/helper", 1, false);
+
+    let helper_two_dir = dir.join("deps").join("helper-two");
+    fs::create_dir_all(&helper_two_dir).expect("create helper-two dep");
+    fs::write(
+        helper_two_dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "lib.fuse"
+app = "HelperTwo"
+"#,
+    )
+    .expect("write helper-two manifest");
+    fs::write(
+        helper_two_dir.join("lib.fuse"),
+        "fn helper() -> Int:\n  return 2\n",
+    )
+    .expect("write helper-two lib");
+
+    let lock = run_deps_command(&dir, "lock", &["--color", "never"]);
+    assert!(
+        lock.status.success(),
+        "lock stderr: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[dependencies]
+Helper = { path = "./deps/helper-two" }
+"#,
+    )
+    .expect("rewrite fuse.toml");
+
+    let run = run_project_command(&dir, "run", &["--frozen", "--color", "never"]);
+    assert!(!run.status.success(), "run unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(stderr.contains("[FUSE_LOCK_FROZEN]"), "stderr: {stderr}");
+    assert!(stderr.contains("update Helper"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_frozen_rejects_git_dependency_drift() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let (git_url, rev_one) = create_local_git_dep_repo(&dir);
+    fs::write(
+        dir.join("fuse.toml"),
+        format!(
+            r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[dependencies]
+Helper = {{ git = "{git_url}", rev = "{rev_one}" }}
+"#
+        ),
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    )
+    .expect("write main.fuse");
+
+    let lock = run_deps_command(&dir, "lock", &["--color", "never"]);
+    assert!(
+        lock.status.success(),
+        "lock stderr: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+
+    let rev_two = commit_git_repo(
+        &dir.join("git_dep_repo"),
+        "fn helper() -> Int:\n  return 2\n",
+    );
+    fs::write(
+        dir.join("fuse.toml"),
+        format!(
+            r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+
+[dependencies]
+Helper = {{ git = "{git_url}", rev = "{rev_two}" }}
+"#
+        ),
+    )
+    .expect("rewrite fuse.toml");
+
+    let check = run_project_command(&dir, "check", &["--frozen", "--color", "never"]);
+    assert!(!check.status.success(), "check unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(stderr.contains("[FUSE_LOCK_FROZEN]"), "stderr: {stderr}");
+    assert!(stderr.contains("update Helper"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deps_publish_check_succeeds_for_workspace_with_synced_locks() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Root":
+  print("root")
+"#,
+    );
+
+    let pkg_dir = dir.join("packages").join("app");
+    fs::create_dir_all(&pkg_dir).expect("create app package dir");
+    write_project_with_helper(&pkg_dir, "./deps/helper", 1, false);
+
+    let lock = run_deps_command(&pkg_dir, "lock", &["--color", "never"]);
+    assert!(
+        lock.status.success(),
+        "lock stderr: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+
+    let publish = run_deps_command(&dir, "publish-check", &["--color", "never"]);
+    assert!(
+        publish.status.success(),
+        "publish stderr: {}",
+        String::from_utf8_lossy(&publish.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deps_publish_check_reports_manifest_and_lock_failures() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Root":
+  print("root")
+"#,
+    );
+
+    let helper_dir = dir.join("packages").join("helper");
+    fs::create_dir_all(&helper_dir).expect("create helper package dir");
+    write_basic_manifest_project(
+        &helper_dir,
+        r#"
+app "Helper":
+  print("helper")
+"#,
+    );
+
+    let missing_entry_dir = dir.join("packages").join("missing-entry");
+    fs::create_dir_all(&missing_entry_dir).expect("create missing-entry dir");
+    fs::write(
+        missing_entry_dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Broken"
+"#,
+    )
+    .expect("write broken manifest");
+
+    let deps_pkg_dir = dir.join("packages").join("with-deps");
+    fs::create_dir_all(&deps_pkg_dir).expect("create with-deps dir");
+    fs::write(
+        deps_pkg_dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "WithDeps"
+
+[dependencies]
+Helper = { path = "../helper" }
+"#,
+    )
+    .expect("write with-deps manifest");
+    fs::write(
+        deps_pkg_dir.join("main.fuse"),
+        r#"
+app "WithDeps":
+  print("ok")
+"#,
+    )
+    .expect("write with-deps main");
+
+    let publish = run_deps_command(&dir, "publish-check", &["--color", "never"]);
+    assert!(!publish.status.success(), "publish unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&publish.stderr);
+    assert!(
+        stderr.contains("[FUSE_WORKSPACE_PUBLISH_NOT_READY]"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("packages/missing-entry"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("[FUSE_MANIFEST_ENTRY_NOT_FOUND]"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("packages/with-deps"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("[FUSE_LOCK_OUT_OF_DATE]"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("rerun 'fuse deps publish-check'"),
+        "stderr: {stderr}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

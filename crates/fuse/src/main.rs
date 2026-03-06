@@ -36,6 +36,7 @@ commands:
   test      Run tests in the package
   build     Run package checks (and optional build steps)
   check     Parse + sema check
+  deps      Dependency maintenance commands
   fmt       Format a Fuse file
   openapi   Emit OpenAPI JSON
   migrate   Run database migrations
@@ -49,9 +50,16 @@ options:
   --strict-architecture   Enable strict architectural checks during semantic analysis
   --diagnostics <json|text>  Emit structured JSON diagnostics or force text mode
   --color <auto|always|never>  Colorized CLI output policy
+  --frozen                Refuse fuse.lock mutation (check/run/build/test only)
   --clean                 Remove .fuse/build before building (build only)
   --aot                   Emit deployable AOT binary (build only)
   --release               Use release profile for build output (build only; implies --aot)
+
+dependency commands:
+  deps lock [--check|--update] [--manifest-path <path>]
+                        Refresh fuse.lock or fail if it is out of date
+  deps publish-check [<path>|--manifest-path <path>]
+                        Check workspace manifest/lock readiness for publish
 "#;
 
 const FUSE_ASSET_MAP_ENV: &str = "FUSE_ASSET_MAP";
@@ -75,6 +83,24 @@ struct CommonArgs {
     aot: bool,
     release: bool,
     strict_architecture: bool,
+    frozen: bool,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum DepsLockMode {
+    Update,
+    Check,
+}
+
+struct DepsCommonArgs {
+    path: Option<PathBuf>,
+    diagnostics: Option<DiagnosticsFormat>,
+    color: Option<ColorChoice>,
+}
+
+struct DepsLockArgs {
+    common: DepsCommonArgs,
+    mode: DepsLockMode,
 }
 
 #[derive(Copy, Clone)]
@@ -178,6 +204,12 @@ fn run(args: Vec<String>) -> i32 {
     if let Some(format) = cli_args::discover_diagnostics_format(rest) {
         apply_diagnostics_format(format);
     }
+    if cmd == "deps" {
+        if let Some(choice) = cli_args::discover_color_choice(rest) {
+            apply_color_choice(choice);
+        }
+        return run_deps_command(rest);
+    }
     let command = match cmd.as_str() {
         "dev" => Command::Dev,
         "run" => Command::Run,
@@ -200,12 +232,17 @@ fn run(args: Vec<String>) -> i32 {
     let allow_clean = matches!(command, Command::Build);
     let allow_build_mode = matches!(command, Command::Build);
     let allow_test_filter = matches!(command, Command::Test);
+    let allow_frozen = matches!(
+        command,
+        Command::Run | Command::Test | Command::Build | Command::Check
+    );
     let common = match cli_args::parse_common_args(
         rest,
         allow_program_args,
         allow_clean,
         allow_build_mode,
         allow_test_filter,
+        allow_frozen,
     ) {
         Ok(args) => args,
         Err(err) => {
@@ -261,7 +298,16 @@ fn run(args: Vec<String>) -> i32 {
 
     let backend_flag = backend.map(|backend| backend.as_str().to_string());
 
-    let deps = match deps::resolve_dependencies(manifest.as_ref(), manifest_dir.as_deref()) {
+    let lock_mode = if common.frozen {
+        deps::LockMode::Frozen
+    } else {
+        deps::LockMode::Update
+    };
+    let deps = match deps::resolve_dependencies_with_options(
+        manifest.as_ref(),
+        manifest_dir.as_deref(),
+        deps::ResolveOptions { lock_mode },
+    ) {
         Ok(deps) => deps,
         Err(err) => {
             emit_cli_error(&err);
@@ -415,4 +461,262 @@ fn run(args: Vec<String>) -> i32 {
     };
 
     finalize_command(command, code)
+}
+
+fn run_deps_command(args: &[String]) -> i32 {
+    if args.is_empty() {
+        emit_cli_error("missing deps subcommand");
+        emit_usage();
+        return 1;
+    }
+    let (subcmd, rest) = args.split_first().unwrap();
+    match subcmd.as_str() {
+        "lock" => run_deps_lock_command(rest),
+        "publish-check" => run_deps_publish_check_command(rest),
+        _ => {
+            emit_cli_error(&format!("unknown deps subcommand: {subcmd}"));
+            emit_usage();
+            1
+        }
+    }
+}
+
+fn run_deps_lock_command(args: &[String]) -> i32 {
+    let parsed = match parse_deps_lock_args(args) {
+        Ok(args) => args,
+        Err(err) => {
+            emit_cli_error(&err);
+            emit_usage();
+            return 1;
+        }
+    };
+    apply_diagnostics_format(parsed.common.diagnostics.unwrap_or(DiagnosticsFormat::Text));
+    apply_color_choice(parsed.common.color.unwrap_or(ColorChoice::Auto));
+
+    let (manifest, manifest_dir) = match manifest::load_manifest(parsed.common.path.as_deref()) {
+        Ok((Some(manifest), Some(dir))) => (manifest, dir),
+        Ok((Some(_), None)) => {
+            emit_cli_error("dependencies require a manifest directory");
+            return 1;
+        }
+        Ok((None, _)) => {
+            emit_cli_error(
+                "missing manifest: pass --manifest-path <path> or run from a package directory",
+            );
+            return 1;
+        }
+        Err(err) => {
+            emit_cli_error(&err);
+            return 1;
+        }
+    };
+    let lock_mode = match parsed.mode {
+        DepsLockMode::Update => deps::LockMode::Update,
+        DepsLockMode::Check => deps::LockMode::Check,
+    };
+    match deps::resolve_dependencies_with_options(
+        Some(&manifest),
+        Some(&manifest_dir),
+        deps::ResolveOptions { lock_mode },
+    ) {
+        Ok(_) => 0,
+        Err(err) => {
+            emit_cli_error(&err);
+            1
+        }
+    }
+}
+
+fn run_deps_publish_check_command(args: &[String]) -> i32 {
+    let parsed = match parse_deps_common_args(args, "publish-check") {
+        Ok(args) => args,
+        Err(err) => {
+            emit_cli_error(&err);
+            emit_usage();
+            return 1;
+        }
+    };
+    apply_diagnostics_format(parsed.diagnostics.unwrap_or(DiagnosticsFormat::Text));
+    apply_color_choice(parsed.color.unwrap_or(ColorChoice::Auto));
+
+    let root = match resolve_publish_check_root(parsed.path) {
+        Ok(root) => root,
+        Err(err) => {
+            emit_cli_error(&err);
+            return 1;
+        }
+    };
+    match deps::check_workspace_publish_readiness(&root) {
+        Ok(()) => 0,
+        Err(err) => {
+            emit_cli_error(&err);
+            1
+        }
+    }
+}
+
+fn parse_deps_lock_args(args: &[String]) -> Result<DepsLockArgs, String> {
+    let mut common = parse_deps_common_args(args, "lock")?;
+    let mut mode = DepsLockMode::Update;
+    let mut idx = 0usize;
+    while idx < args.len() {
+        let arg = &args[idx];
+        match arg.as_str() {
+            "--manifest-path" | "--diagnostics" | "--color" => {
+                idx += 2;
+                continue;
+            }
+            _ if arg.starts_with("--diagnostics=") || arg.starts_with("--color=") => {
+                idx += 1;
+                continue;
+            }
+            "--check" => {
+                mode = DepsLockMode::Check;
+                idx += 1;
+                continue;
+            }
+            "--update" => {
+                mode = DepsLockMode::Update;
+                idx += 1;
+                continue;
+            }
+            _ if arg.starts_with("--") => {
+                idx += 1;
+                continue;
+            }
+            _ => {
+                if common.path.is_none() {
+                    common.path = Some(PathBuf::from(arg));
+                }
+                idx += 1;
+            }
+        }
+    }
+    Ok(DepsLockArgs { common, mode })
+}
+
+fn parse_deps_common_args(args: &[String], subcommand: &str) -> Result<DepsCommonArgs, String> {
+    let mut out = DepsCommonArgs {
+        path: None,
+        diagnostics: None,
+        color: None,
+    };
+    let mut idx = 0usize;
+    while idx < args.len() {
+        let arg = &args[idx];
+        if arg == "--manifest-path" {
+            idx += 1;
+            let Some(path) = args.get(idx) else {
+                return Err("--manifest-path expects a path".to_string());
+            };
+            out.path = Some(PathBuf::from(path));
+            idx += 1;
+            continue;
+        }
+        if arg == "--diagnostics" {
+            idx += 1;
+            let Some(mode) = args.get(idx) else {
+                return Err("--diagnostics expects json|text".to_string());
+            };
+            let Some(parsed) = DiagnosticsFormat::parse(mode) else {
+                return Err(format!(
+                    "invalid --diagnostics value: {mode} (expected json|text)"
+                ));
+            };
+            out.diagnostics = Some(parsed);
+            idx += 1;
+            continue;
+        }
+        if let Some(mode) = arg.strip_prefix("--diagnostics=") {
+            let Some(parsed) = DiagnosticsFormat::parse(mode) else {
+                return Err(format!(
+                    "invalid --diagnostics value: {mode} (expected json|text)"
+                ));
+            };
+            out.diagnostics = Some(parsed);
+            idx += 1;
+            continue;
+        }
+        if arg == "--color" {
+            idx += 1;
+            let Some(choice) = args.get(idx) else {
+                return Err("--color expects auto, always, or never".to_string());
+            };
+            let Some(parsed) = ColorChoice::parse(choice) else {
+                return Err(format!(
+                    "invalid --color value: {choice} (expected auto|always|never)"
+                ));
+            };
+            out.color = Some(parsed);
+            idx += 1;
+            continue;
+        }
+        if let Some(choice) = arg.strip_prefix("--color=") {
+            let Some(parsed) = ColorChoice::parse(choice) else {
+                return Err(format!(
+                    "invalid --color value: {choice} (expected auto|always|never)"
+                ));
+            };
+            out.color = Some(parsed);
+            idx += 1;
+            continue;
+        }
+        if arg == "--check" || arg == "--update" {
+            if subcommand == "lock" {
+                idx += 1;
+                continue;
+            }
+            return Err(format!("{arg} is not supported for fuse deps {subcommand}"));
+        }
+        if arg == "--frozen"
+            || arg == "--clean"
+            || arg == "--aot"
+            || arg == "--release"
+            || arg == "--strict-architecture"
+        {
+            return Err(format!("{arg} is not supported for fuse deps {subcommand}"));
+        }
+        if arg == "--file" || arg == "--app" || arg == "--backend" || arg == "--filter" {
+            return Err(format!("{arg} is not supported for fuse deps {subcommand}"));
+        }
+        if arg.starts_with("--") {
+            return Err(format!("unknown option: {arg}"));
+        }
+        if out.path.is_none() {
+            out.path = Some(PathBuf::from(arg));
+            idx += 1;
+            continue;
+        }
+        return Err(format!("unexpected argument: {arg}"));
+    }
+    Ok(out)
+}
+
+fn resolve_publish_check_root(path: Option<PathBuf>) -> Result<PathBuf, String> {
+    let path = match path {
+        Some(path) => path,
+        None => env::current_dir().map_err(|err| format!("cwd error: {err}"))?,
+    };
+    if path.is_dir() {
+        return Ok(path);
+    }
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "fuse.toml")
+    {
+        return path
+            .parent()
+            .map(|parent| parent.to_path_buf())
+            .ok_or_else(|| {
+                format!(
+                    "workspace root error: cannot resolve parent for {}",
+                    path.display()
+                )
+            });
+    }
+    Err(format!(
+        "workspace root must be a directory or fuse.toml path, got {}",
+        path.display()
+    ))
 }

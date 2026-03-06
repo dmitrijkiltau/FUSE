@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{DependencyDetail, DependencySpec, Manifest};
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, Eq, PartialEq)]
 struct Lockfile {
     #[serde(default)]
     version: u32,
@@ -15,7 +15,7 @@ struct Lockfile {
     dependencies: BTreeMap<String, LockedDependency>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq)]
 struct LockedDependency {
     source: String,
     git: Option<String>,
@@ -23,6 +23,26 @@ struct LockedDependency {
     path: Option<String>,
     subdir: Option<String>,
     requested: Option<String>,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub(crate) enum LockMode {
+    Update,
+    Check,
+    Frozen,
+}
+
+#[derive(Copy, Clone)]
+pub(crate) struct ResolveOptions {
+    pub(crate) lock_mode: LockMode,
+}
+
+impl Default for ResolveOptions {
+    fn default() -> Self {
+        Self {
+            lock_mode: LockMode::Update,
+        }
+    }
 }
 
 struct NormalizedDependency {
@@ -65,24 +85,28 @@ impl GitReference {
     }
 }
 
-pub fn resolve_dependencies(
+pub(crate) fn resolve_dependencies_with_options(
     manifest: Option<&Manifest>,
     manifest_dir: Option<&Path>,
+    options: ResolveOptions,
 ) -> Result<HashMap<String, PathBuf>, String> {
     let Some(manifest) = manifest else {
         return Ok(HashMap::new());
     };
-    if manifest.dependencies.is_empty() {
-        return Ok(HashMap::new());
-    }
     let Some(root_dir) = manifest_dir else {
+        if manifest.dependencies.is_empty() {
+            return Ok(HashMap::new());
+        }
         return Err(dep_error(
             "FUSE_DEP_MANIFEST_DIR_REQUIRED",
             "dependencies require a manifest directory",
         ));
     };
     let lock_path = root_dir.join("fuse.lock");
-    let mut lock = load_lockfile(&lock_path)?;
+    if manifest.dependencies.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let current_lock = load_lockfile(&lock_path)?;
     let deps_dir = root_dir.join(".fuse").join("deps");
     if !deps_dir.exists() {
         fs::create_dir_all(&deps_dir).map_err(|err| {
@@ -94,6 +118,10 @@ pub fn resolve_dependencies(
     }
 
     let mut resolved = HashMap::new();
+    let mut desired_lock = Lockfile {
+        version: 1,
+        dependencies: BTreeMap::new(),
+    };
     let mut requests: HashMap<String, (String, PathBuf)> = HashMap::new();
     let mut queue: VecDeque<(String, DependencySpec, PathBuf)> = VecDeque::new();
     for (name, spec) in &manifest.dependencies {
@@ -121,8 +149,10 @@ pub fn resolve_dependencies(
         if resolved.contains_key(&name) {
             continue;
         }
-        let root = resolve_dependency(&name, &spec, &base_dir, root_dir, &deps_dir, &mut lock)?;
+        let (root, entry) =
+            resolve_dependency(&name, &spec, &base_dir, root_dir, &deps_dir, &current_lock)?;
         resolved.insert(name.clone(), root.clone());
+        desired_lock.dependencies.insert(name.clone(), entry);
 
         if let Some(dep_manifest) = load_manifest_from_dir(&root).map_err(|err| {
             dep_error(
@@ -139,8 +169,7 @@ pub fn resolve_dependencies(
         }
     }
 
-    lock.version = 1;
-    write_lockfile(&lock_path, &lock)?;
+    finalize_lockfile(&lock_path, &current_lock, &desired_lock, options.lock_mode)?;
     Ok(resolved)
 }
 
@@ -160,6 +189,90 @@ fn lock_error(code: &str, message: impl Into<String>) -> String {
     dep_error_with_hint(code, message, lockfile_remediation_hint())
 }
 
+fn finalize_lockfile(
+    path: &Path,
+    current: &Lockfile,
+    desired: &Lockfile,
+    mode: LockMode,
+) -> Result<(), String> {
+    if current == desired {
+        return Ok(());
+    }
+    match mode {
+        LockMode::Update => write_lockfile(path, desired),
+        LockMode::Check => Err(lock_drift_error(
+            "FUSE_LOCK_OUT_OF_DATE",
+            path,
+            &describe_lock_drift(current, desired),
+            "run 'fuse deps lock' to refresh fuse.lock",
+        )),
+        LockMode::Frozen => Err(lock_drift_error(
+            "FUSE_LOCK_FROZEN",
+            path,
+            &describe_lock_drift(current, desired),
+            "run 'fuse deps lock' before retrying with --frozen",
+        )),
+    }
+}
+
+fn lock_drift_error(code: &str, path: &Path, drift: &str, hint: &str) -> String {
+    dep_error_with_hint(
+        code,
+        format!("lockfile drift detected in {}: {drift}", path.display()),
+        hint,
+    )
+}
+
+fn describe_lock_drift(current: &Lockfile, desired: &Lockfile) -> String {
+    let mut parts = Vec::new();
+    if current.version != desired.version {
+        parts.push(format!(
+            "lockfile version {} -> {}",
+            current.version, desired.version
+        ));
+    }
+
+    let added: Vec<_> = desired
+        .dependencies
+        .keys()
+        .filter(|name| !current.dependencies.contains_key(*name))
+        .cloned()
+        .collect();
+    if !added.is_empty() {
+        parts.push(format!("add {}", added.join(", ")));
+    }
+
+    let removed: Vec<_> = current
+        .dependencies
+        .keys()
+        .filter(|name| !desired.dependencies.contains_key(*name))
+        .cloned()
+        .collect();
+    if !removed.is_empty() {
+        parts.push(format!("remove {}", removed.join(", ")));
+    }
+
+    let changed: Vec<_> = desired
+        .dependencies
+        .iter()
+        .filter_map(
+            |(name, desired_entry)| match current.dependencies.get(name) {
+                Some(current_entry) if current_entry != desired_entry => Some(name.clone()),
+                _ => None,
+            },
+        )
+        .collect();
+    if !changed.is_empty() {
+        parts.push(format!("update {}", changed.join(", ")));
+    }
+
+    if parts.is_empty() {
+        "dependency metadata changed".to_string()
+    } else {
+        parts.join("; ")
+    }
+}
+
 fn dependency_request_key(
     name: &str,
     spec: &DependencySpec,
@@ -175,12 +288,13 @@ fn resolve_dependency(
     base_dir: &Path,
     root_dir: &Path,
     deps_dir: &Path,
-    lock: &mut Lockfile,
-) -> Result<PathBuf, String> {
+    current_lock: &Lockfile,
+) -> Result<(PathBuf, LockedDependency), String> {
     let normalized = normalize_dependency_spec(name, spec, base_dir)?;
-    if let Some(entry) = lock.dependencies.get(name) {
+    if let Some(entry) = current_lock.dependencies.get(name) {
         if entry.requested.as_deref() == Some(normalized.requested.as_str()) {
-            return root_from_lock(name, entry, root_dir, deps_dir);
+            let root = root_from_lock(name, entry, root_dir, deps_dir)?;
+            return Ok((root, entry.clone()));
         }
     }
 
@@ -239,8 +353,7 @@ fn resolve_dependency(
         }
     };
 
-    lock.dependencies.insert(name.to_string(), entry);
-    Ok(root)
+    Ok((root, entry))
 }
 
 fn root_from_lock(
@@ -653,4 +766,113 @@ fn load_manifest_from_dir(dir: &Path) -> Result<Option<Manifest>, String> {
     let manifest: Manifest =
         toml::from_str(&content).map_err(|err| format!("invalid manifest: {err}"))?;
     Ok(Some(manifest))
+}
+
+pub(crate) fn check_workspace_publish_readiness(root: &Path) -> Result<(), String> {
+    let manifests: Vec<_> = fusec::manifest::find_workspace_manifests(root)
+        .into_iter()
+        .filter(|manifest_dir| include_workspace_manifest_in_publish_check(root, manifest_dir))
+        .collect();
+    if manifests.is_empty() {
+        return Err(dep_error_with_hint(
+            "FUSE_WORKSPACE_NO_MANIFESTS",
+            format!("no fuse.toml files found under {}", root.display()),
+            "run the command from a workspace root or pass --manifest-path <dir>",
+        ));
+    }
+
+    let mut failures = Vec::new();
+    for manifest_dir in manifests {
+        if let Err(err) = check_manifest_publish_readiness(&manifest_dir) {
+            let label = manifest_dir
+                .strip_prefix(root)
+                .ok()
+                .filter(|path| !path.as_os_str().is_empty())
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| ".".to_string());
+            failures.push((label, err));
+        }
+    }
+
+    if failures.is_empty() {
+        return Ok(());
+    }
+
+    let mut message = format!(
+        "workspace publish-readiness failed for {} package(s):",
+        failures.len()
+    );
+    for (label, err) in failures {
+        message.push_str(&format!("\n  - {label}: {err}"));
+    }
+    Err(dep_error_with_hint(
+        "FUSE_WORKSPACE_PUBLISH_NOT_READY",
+        message,
+        "fix the listed packages, then rerun 'fuse deps publish-check'",
+    ))
+}
+
+fn include_workspace_manifest_in_publish_check(root: &Path, manifest_dir: &Path) -> bool {
+    let ignored = ["target", "node_modules", ".fuse", "fuse-target"];
+    let Ok(relative) = manifest_dir.strip_prefix(root) else {
+        return true;
+    };
+    !relative.components().any(|component| {
+        let name = component.as_os_str().to_string_lossy();
+        ignored.contains(&name.as_ref())
+    })
+}
+
+fn check_manifest_publish_readiness(manifest_dir: &Path) -> Result<(), String> {
+    let manifest_path = manifest_dir.join("fuse.toml");
+    let content = fs::read_to_string(&manifest_path).map_err(|err| {
+        dep_error_with_hint(
+            "FUSE_MANIFEST_READ_FAILED",
+            format!("failed to read {}: {err}", manifest_path.display()),
+            "fix the manifest path or file permissions",
+        )
+    })?;
+    let manifest: Manifest = toml::from_str(&content).map_err(|err| {
+        dep_error_with_hint(
+            "FUSE_MANIFEST_PARSE_FAILED",
+            format!("invalid manifest {}: {err}", manifest_path.display()),
+            "fix the manifest syntax and rerun the check",
+        )
+    })?;
+    validate_manifest_entry(&manifest, manifest_dir)?;
+    resolve_dependencies_with_options(
+        Some(&manifest),
+        Some(manifest_dir),
+        ResolveOptions {
+            lock_mode: LockMode::Check,
+        },
+    )?;
+    Ok(())
+}
+
+fn validate_manifest_entry(manifest: &Manifest, manifest_dir: &Path) -> Result<(), String> {
+    let manifest_path = manifest_dir.join("fuse.toml");
+    let Some(entry) = manifest.package.entry.as_deref() else {
+        return Err(dep_error_with_hint(
+            "FUSE_MANIFEST_ENTRY_MISSING",
+            format!(
+                "manifest {} is missing [package].entry",
+                manifest_path.display()
+            ),
+            "set [package].entry to the package entry file",
+        ));
+    };
+    let entry_path = resolve_path(manifest_dir, entry);
+    if !entry_path.is_file() {
+        return Err(dep_error_with_hint(
+            "FUSE_MANIFEST_ENTRY_NOT_FOUND",
+            format!(
+                "manifest {} points to missing entry {}",
+                manifest_path.display(),
+                entry_path.display()
+            ),
+            "fix [package].entry or add the missing file",
+        ));
+    }
+    Ok(())
 }

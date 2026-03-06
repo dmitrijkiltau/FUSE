@@ -14,6 +14,7 @@ commands:
   test     Run package tests (fuse test)
   build    Build the package (fuse build)
   check    Parse + sema check (fuse check)
+  deps     Maintain dependency lockfiles / publish-readiness checks
   fmt      Format a Fuse file (fuse fmt)
   openapi  Emit OpenAPI JSON (fuse openapi)
   migrate  Run DB migrations (fuse migrate)
@@ -26,6 +27,8 @@ examples:
   scripts/fuse build
   scripts/fuse build --clean
   scripts/fuse check examples/project_demo.fuse
+  scripts/fuse deps lock examples/dep_import
+  scripts/fuse deps publish-check .
   scripts/fuse fmt examples/project_demo.fuse
   scripts/fuse lsp
 EOF
@@ -113,7 +116,7 @@ if [[ "$cmd" =~ ^(dev|run|test|build|check|fmt|openapi|migrate)$ ]]; then
 fi
 
 case "$cmd" in
-  dev|run|test|build|check|fmt|openapi|migrate)
+  dev|run|test|build|check|deps|fmt|openapi|migrate)
     exec "$ROOT/scripts/cargo_env.sh" cargo run -p fuse -- "$cmd" "$@"
     ;;
   lsp)

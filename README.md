@@ -186,6 +186,8 @@ Observability baseline for HTTP runtime:
 | `fuse dev` | Run with file watching and live reload |
 | `fuse test` | Run in-language test blocks |
 | `fuse build` | Produce build artifacts and optional AOT output |
+| `fuse deps lock` | Refresh `fuse.lock` or check it for drift |
+| `fuse deps publish-check` | Check workspace manifest/lock readiness for publish |
 | `fuse migrate` | Run database migrations |
 | `fuse lsp` | Start the language server |
 
@@ -201,6 +203,8 @@ Global CLI output option:
   `kind="command_step"`, `command`, `message`.
 - `fuse check|run|build|test` emit consistent stderr step markers:
   `[command] start`, `[command] ok|failed|validation failed`.
+- `--frozen` is supported by `fuse check|run|build|test` and fails with
+  `[FUSE_LOCK_FROZEN]` if dependency resolution would rewrite `fuse.lock`.
 - `fuse test --filter <pattern>` runs only test blocks whose names contain `<pattern>`
   (case-sensitive substring match).
 - `--strict-architecture` enables strict architecture checks in semantic analysis
@@ -273,6 +277,11 @@ Lockfile semantics (`fuse.lock`):
 - Entries store resolved source (`path` or `git+rev`) and requested spec fingerprint.
 - If requested fingerprint matches, lock entry is reused; if it differs, entry is refreshed.
 - Unchanged dependency graphs keep stable lockfile content.
+- `fuse deps lock` refreshes the lockfile for the selected package.
+- `fuse deps lock --check` fails with `[FUSE_LOCK_OUT_OF_DATE]` when the current lockfile
+  differs from the resolved dependency graph.
+- `fuse deps publish-check` walks all `fuse.toml` files under a workspace root and reports
+  missing entry files or out-of-date lockfiles per package.
 - Lockfile format/load errors include remediation guidance to regenerate `fuse.lock`.
 
 ### Build artifacts

@@ -48,6 +48,7 @@ pub fn parse_common_args(
     allow_clean: bool,
     allow_build_mode: bool,
     allow_test_filter: bool,
+    allow_frozen: bool,
 ) -> Result<CommonArgs, String> {
     let mut out = CommonArgs::default();
     let mut idx = 0;
@@ -175,6 +176,14 @@ pub fn parse_common_args(
         }
         if arg == "--strict-architecture" {
             out.strict_architecture = true;
+            idx += 1;
+            continue;
+        }
+        if arg == "--frozen" {
+            if !allow_frozen {
+                return Err("--frozen is only supported for fuse check|run|build|test".to_string());
+            }
+            out.frozen = true;
             idx += 1;
             continue;
         }

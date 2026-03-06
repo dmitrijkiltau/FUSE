@@ -51,6 +51,10 @@ Three scripts cover the full release cycle:
    ```sh
    ./scripts/release_preflight.sh --skip-bench 0.9.0
    ```
+   Include workspace publish-readiness checks for multi-package release branches:
+   ```sh
+   ./scripts/release_preflight.sh --workspace-publish-checks 0.9.0
+   ```
 4. Verify package UX manually (optional but recommended):
    ```sh
    ./scripts/fuse build
