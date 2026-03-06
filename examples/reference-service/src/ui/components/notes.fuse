@@ -19,7 +19,7 @@ fn public_note_rows() -> List<Map<String, String>>:
   transaction:
     rows = db.query("""select n.id, n.title, n.content, n.owner_id,
   cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes
-from notes n where n.is_public = '1' order by n.id desc""")
+from notes n where n.is_public = "1" order by n.id desc""")
   return rows
 
 fn liked_note_rows(user_id: String) -> List<Map<String, String>>:
@@ -29,7 +29,7 @@ fn liked_note_rows(user_id: String) -> List<Map<String, String>>:
   cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes
 from notes n
 join note_likes nl on nl.note_id = n.id
-where nl.user_id = '${user_id}' and n.is_public = '1'
+where nl.user_id = "${user_id}" and n.is_public = "1"
 order by n.id desc""")
   return rows
 
@@ -171,9 +171,9 @@ fn render_public_note_actions(ctx: RequestContext, note: Map<String, String>) ->
       hx_swap="outerHTML"
     ):
       "Like"
-    
+
     span(class="note-card__pill"):
-        html.text(likes_label)
+      html.text(likes_label)
 
 fn render_public_note_card(ctx: RequestContext, note: Map<String, String>) -> Html:
   let id = note["id"]
@@ -189,7 +189,7 @@ fn render_public_note_card(ctx: RequestContext, note: Map<String, String>) -> Ht
     div(class="note-card__meta-line"):
       div(class="note-card__meta"):
         html.text("${id} by ${owner_id}")
-      
+
     render_public_note_actions(ctx, note)
 
 fn render_public_notes_inner(ctx: RequestContext) -> Html:

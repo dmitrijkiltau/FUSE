@@ -172,7 +172,7 @@ service ReferenceService at "/":
     var rows: List<Map<String, String>> = []
     transaction:
       rows = db.query("""select n.id, n.title, n.content, n.owner_id, cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes
-from notes n where n.is_public = '1' order by n.id desc""")
+from notes n where n.is_public = "1" order by n.id desc""")
     return rows
 
   # Read a single published note without authentication.
@@ -181,7 +181,7 @@ from notes n where n.is_public = '1' order by n.id desc""")
     transaction:
       row = db.one(
         """select n.id, n.title, n.content, n.owner_id, cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes
-from notes n where n.is_public = '1' and n.id = ?""",
+from notes n where n.is_public = "1" and n.id = ?""",
         [id]
       )
         ?! NotFound(message="not found")

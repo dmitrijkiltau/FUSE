@@ -99,7 +99,11 @@ fn normalize_field_colon_spacing(rest: &str) -> String {
         }
     }
     let tail = &rest[cursor..];
-    format!("{ident}: {tail}")
+    if tail.is_empty() {
+        format!("{ident}:")
+    } else {
+        format!("{ident}: {tail}")
+    }
 }
 
 fn normalize_quotes(rest: &str) -> String {
@@ -175,4 +179,34 @@ fn is_ident_start(ch: char) -> bool {
 
 fn is_ident_continue(ch: char) -> bool {
     ch == '_' || ch.is_ascii_alphanumeric()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_source;
+
+    #[test]
+    fn formatter_does_not_add_trailing_space_after_block_colon() {
+        let src = r#"fn main():
+  transaction:
+    if true:
+      print("x")
+    else:
+      print("y")
+"#;
+        assert_eq!(format_source(src), src);
+    }
+
+    #[test]
+    fn formatter_keeps_inline_field_spacing_after_colon() {
+        let src = r#"type User:
+  name:String
+  age:   Int
+"#;
+        let expected = r#"type User:
+  name: String
+  age: Int
+"#;
+        assert_eq!(format_source(src), expected);
+    }
 }

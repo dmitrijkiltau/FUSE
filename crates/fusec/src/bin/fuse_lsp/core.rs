@@ -8,7 +8,7 @@ use fusec::span::Span;
 use super::symbols::{SymbolDef, SymbolKind};
 use super::workspace::{WorkspaceCache, try_incremental_module_update};
 
-pub(crate) const SEMANTIC_TOKEN_TYPES: [&str; 12] = [
+pub(crate) const SEMANTIC_TOKEN_TYPES: [&str; 14] = [
     "namespace",
     "type",
     "enum",
@@ -21,6 +21,8 @@ pub(crate) const SEMANTIC_TOKEN_TYPES: [&str; 12] = [
     "string",
     "number",
     "comment",
+    "htmlTag",
+    "htmlAttribute",
 ];
 pub(crate) const SEM_NAMESPACE: usize = 0;
 pub(crate) const SEM_TYPE: usize = 1;
@@ -34,6 +36,8 @@ pub(crate) const SEM_KEYWORD: usize = 8;
 pub(crate) const SEM_STRING: usize = 9;
 pub(crate) const SEM_NUMBER: usize = 10;
 pub(crate) const SEM_COMMENT: usize = 11;
+pub(crate) const SEM_HTML_TAG: usize = 12;
+pub(crate) const SEM_HTML_ATTRIBUTE: usize = 13;
 pub(crate) const COMPLETION_KEYWORDS: [&str; 35] = [
     "app",
     "service",

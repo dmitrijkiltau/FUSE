@@ -50,6 +50,10 @@ fn call_greet(user: Person) -> String:
   let rendered = greet(user, 2)
   return local_id(rendered)
 
+component Banner:
+  return div(class="banner"):
+    "Banner"
+
 fn main():
   let user: Person = Person(name="Ada")
   let out = call_greet(user)
@@ -336,9 +340,14 @@ fn lsp_semantic_tokens_and_inlay_hints_contract() {
 
     let (import_person_line, import_person_col) = line_col_of(&fixture.main_src, "Person, greet");
     let (annot_person_line, annot_person_col) = line_col_of(&fixture.main_src, "user: Person");
+    let (call_greet_line, call_greet_col) = line_col_of(&fixture.main_src, "greet(user, 2)");
+    let (call_arg_line, call_arg_col) = line_col_of(&fixture.main_src, "greet(user, 2)");
     let (from_line, from_col) = line_col_of(&fixture.main_src, ".from(\"notes\")");
     let (select_line, select_col) = line_col_of(&fixture.main_src, ".select([\"id\"])");
     let (member_name_line, member_name_col) = line_col_of(&fixture.main_src, "user.name");
+    let (input_tag_line, input_tag_col) = line_col_of(&fixture.main_src, "input(");
+    let (component_decl_line, component_decl_col) =
+        line_col_of(&fixture.main_src, "component Banner:");
     let (attr_class_line, attr_class_col) = line_col_of(&fixture.main_src, "class=\"form-input\"");
     let (attr_type_line, attr_type_col) = line_col_of(&fixture.main_src, "type=\"text\"");
     let (attr_id_line, attr_id_col) = line_col_of(&fixture.main_src, "id=\"title\"");
@@ -346,12 +355,24 @@ fn lsp_semantic_tokens_and_inlay_hints_contract() {
         .expect("token type for imported Person");
     let annotate_person_ty = token_type_at(&rows, annot_person_line, annot_person_col + 6)
         .expect("token type for annotated Person");
+    let call_greet_ty =
+        token_type_at(&rows, call_greet_line, call_greet_col).expect("token type for greet call");
+    let call_arg_ty = token_type_at(&rows, call_arg_line, call_arg_col + "greet(".len())
+        .expect("token type for call arg");
     let from_ty =
         token_type_at(&rows, from_line, from_col + 1).expect("token type for from member");
     let select_ty =
         token_type_at(&rows, select_line, select_col + 1).expect("token type for select member");
     let member_name_ty = token_type_at(&rows, member_name_line, member_name_col + 5)
         .expect("token type for member property");
+    let input_tag_ty =
+        token_type_at(&rows, input_tag_line, input_tag_col).expect("token type for html tag");
+    let component_decl_ty = token_type_at(
+        &rows,
+        component_decl_line,
+        component_decl_col + "component ".len(),
+    )
+    .expect("token type for component declaration");
     let class_attr_ty = token_type_at(&rows, attr_class_line, attr_class_col)
         .expect("token type for class html attr");
     let type_attr_ty =
@@ -364,11 +385,23 @@ fn lsp_semantic_tokens_and_inlay_hints_contract() {
         "imported vs annotated type token mismatch"
     );
     assert_eq!(from_ty, select_ty, "db member token mismatch");
+    assert_eq!(
+        input_tag_ty, component_decl_ty,
+        "html tag and component declaration token mismatch"
+    );
+    assert_ne!(
+        input_tag_ty, call_greet_ty,
+        "html tags/components should not share function token type"
+    );
     assert_eq!(class_attr_ty, type_attr_ty, "html attr token mismatch");
     assert_eq!(class_attr_ty, id_attr_ty, "html attr token mismatch");
-    assert_eq!(
+    assert_ne!(
         class_attr_ty, member_name_ty,
-        "html attrs should use property token type"
+        "html attrs should not share member property token type"
+    );
+    assert_ne!(
+        class_attr_ty, call_arg_ty,
+        "html attrs should not share normal call-arg token type"
     );
 
     lsp.shutdown();

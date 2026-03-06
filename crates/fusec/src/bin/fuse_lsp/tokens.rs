@@ -7,10 +7,11 @@ use fusec::parse_source;
 use fusec::span::Span;
 
 use super::super::{
-    LspState, SEM_COMMENT, SEM_ENUM, SEM_ENUM_MEMBER, SEM_FUNCTION, SEM_KEYWORD, SEM_NAMESPACE,
-    SEM_NUMBER, SEM_PARAMETER, SEM_PROPERTY, SEM_STRING, SEM_TYPE, SEM_VARIABLE, SymbolKind,
-    WorkspaceIndex, build_index_with_program, build_workspace_index_cached, extract_text_doc_uri,
-    line_offsets, lsp_range_to_span, offset_to_line_col, uri_to_path,
+    LspState, SEM_COMMENT, SEM_ENUM, SEM_ENUM_MEMBER, SEM_FUNCTION, SEM_HTML_ATTRIBUTE,
+    SEM_HTML_TAG, SEM_KEYWORD, SEM_NAMESPACE, SEM_NUMBER, SEM_PARAMETER, SEM_PROPERTY, SEM_STRING,
+    SEM_TYPE, SEM_VARIABLE, SymbolKind, WorkspaceIndex, build_index_with_program,
+    build_workspace_index_cached, extract_text_doc_uri, line_offsets, lsp_range_to_span,
+    offset_to_line_col, uri_to_path,
 };
 
 pub(crate) fn handle_semantic_tokens(
@@ -47,7 +48,7 @@ fn semantic_tokens_for_text(
     range: Option<Span>,
 ) -> JsonValue {
     let (program, _) = parse_source(text);
-    let html_attr_name_spans = collect_html_attr_name_spans(&program);
+    let html_semantic_spans = collect_html_semantic_spans(&program);
     let mut symbol_types: HashMap<(usize, usize), usize> = HashMap::new();
     if let Some(index) = build_workspace_index_cached(state, uri) {
         for def in &index.defs {
@@ -93,8 +94,10 @@ fn semantic_tokens_for_text(
     let mut rows = Vec::new();
     for (idx, token) in tokens.iter().enumerate() {
         let token_key = (token.span.start, token.span.end);
-        let token_type = if html_attr_name_spans.contains(&token_key) {
-            Some(SEM_PROPERTY)
+        let token_type = if html_semantic_spans.attr_name_spans.contains(&token_key) {
+            Some(SEM_HTML_ATTRIBUTE)
+        } else if html_semantic_spans.dsl_name_spans.contains(&token_key) {
+            Some(SEM_HTML_TAG)
         } else {
             match &token.kind {
                 fusec::token::TokenKind::Keyword(fusec::token::Keyword::From) => {
@@ -173,7 +176,12 @@ fn semantic_tokens_for_text(
     JsonValue::Object(out)
 }
 
-fn collect_html_attr_name_spans(program: &Program) -> HashSet<(usize, usize)> {
+struct HtmlSemanticSpans {
+    attr_name_spans: HashSet<(usize, usize)>,
+    dsl_name_spans: HashSet<(usize, usize)>,
+}
+
+fn collect_html_semantic_spans(program: &Program) -> HtmlSemanticSpans {
     let component_names = program
         .items
         .iter()
@@ -182,52 +190,57 @@ fn collect_html_attr_name_spans(program: &Program) -> HashSet<(usize, usize)> {
             _ => None,
         })
         .collect::<HashSet<_>>();
-    let mut spans = HashSet::new();
+    let mut out = HtmlSemanticSpans {
+        attr_name_spans: HashSet::new(),
+        dsl_name_spans: HashSet::new(),
+    };
     for item in &program.items {
         match item {
             Item::Fn(decl) => {
-                collect_html_attr_name_spans_block(&decl.body, &component_names, &mut spans);
+                collect_html_semantic_spans_block(&decl.body, &component_names, &mut out);
             }
             Item::Component(decl) => {
-                collect_html_attr_name_spans_block(&decl.body, &component_names, &mut spans);
+                out.dsl_name_spans
+                    .insert((decl.name.span.start, decl.name.span.end));
+                collect_html_semantic_spans_block(&decl.body, &component_names, &mut out);
             }
             Item::Service(decl) => {
                 for route in &decl.routes {
-                    collect_html_attr_name_spans_block(&route.body, &component_names, &mut spans);
+                    collect_html_semantic_spans_block(&route.body, &component_names, &mut out);
                 }
             }
             Item::App(decl) => {
-                collect_html_attr_name_spans_block(&decl.body, &component_names, &mut spans);
+                collect_html_semantic_spans_block(&decl.body, &component_names, &mut out);
             }
             Item::Migration(decl) => {
-                collect_html_attr_name_spans_block(&decl.body, &component_names, &mut spans);
+                collect_html_semantic_spans_block(&decl.body, &component_names, &mut out);
             }
             Item::Test(decl) => {
-                collect_html_attr_name_spans_block(&decl.body, &component_names, &mut spans);
+                collect_html_semantic_spans_block(&decl.body, &component_names, &mut out);
             }
             Item::Import(_) | Item::Type(_) | Item::Enum(_) | Item::Config(_) => {}
         }
     }
-    spans
+    out
 }
 
-fn collect_html_attr_name_spans_block(
+fn collect_html_semantic_spans_block(
     block: &Block,
     component_names: &HashSet<String>,
-    out: &mut HashSet<(usize, usize)>,
+    out: &mut HtmlSemanticSpans,
 ) {
     for stmt in &block.stmts {
         match &stmt.kind {
             StmtKind::Let { expr, .. } | StmtKind::Var { expr, .. } => {
-                collect_html_attr_name_spans_expr(expr, component_names, out);
+                collect_html_semantic_spans_expr(expr, component_names, out);
             }
             StmtKind::Assign { target, expr } => {
-                collect_html_attr_name_spans_expr(target, component_names, out);
-                collect_html_attr_name_spans_expr(expr, component_names, out);
+                collect_html_semantic_spans_expr(target, component_names, out);
+                collect_html_semantic_spans_expr(expr, component_names, out);
             }
             StmtKind::Return { expr } => {
                 if let Some(expr) = expr {
-                    collect_html_attr_name_spans_expr(expr, component_names, out);
+                    collect_html_semantic_spans_expr(expr, component_names, out);
                 }
             }
             StmtKind::If {
@@ -236,71 +249,80 @@ fn collect_html_attr_name_spans_block(
                 else_if,
                 else_block,
             } => {
-                collect_html_attr_name_spans_expr(cond, component_names, out);
-                collect_html_attr_name_spans_block(then_block, component_names, out);
+                collect_html_semantic_spans_expr(cond, component_names, out);
+                collect_html_semantic_spans_block(then_block, component_names, out);
                 for (branch_cond, branch_block) in else_if {
-                    collect_html_attr_name_spans_expr(branch_cond, component_names, out);
-                    collect_html_attr_name_spans_block(branch_block, component_names, out);
+                    collect_html_semantic_spans_expr(branch_cond, component_names, out);
+                    collect_html_semantic_spans_block(branch_block, component_names, out);
                 }
                 if let Some(else_block) = else_block {
-                    collect_html_attr_name_spans_block(else_block, component_names, out);
+                    collect_html_semantic_spans_block(else_block, component_names, out);
                 }
             }
             StmtKind::Match { expr, cases } => {
-                collect_html_attr_name_spans_expr(expr, component_names, out);
+                collect_html_semantic_spans_expr(expr, component_names, out);
                 for (_, case_block) in cases {
-                    collect_html_attr_name_spans_block(case_block, component_names, out);
+                    collect_html_semantic_spans_block(case_block, component_names, out);
                 }
             }
             StmtKind::For { iter, block, .. } => {
-                collect_html_attr_name_spans_expr(iter, component_names, out);
-                collect_html_attr_name_spans_block(block, component_names, out);
+                collect_html_semantic_spans_expr(iter, component_names, out);
+                collect_html_semantic_spans_block(block, component_names, out);
             }
             StmtKind::While { cond, block } => {
-                collect_html_attr_name_spans_expr(cond, component_names, out);
-                collect_html_attr_name_spans_block(block, component_names, out);
+                collect_html_semantic_spans_expr(cond, component_names, out);
+                collect_html_semantic_spans_block(block, component_names, out);
             }
             StmtKind::Transaction { block } => {
-                collect_html_attr_name_spans_block(block, component_names, out);
+                collect_html_semantic_spans_block(block, component_names, out);
             }
             StmtKind::Expr(expr) => {
-                collect_html_attr_name_spans_expr(expr, component_names, out);
+                collect_html_semantic_spans_expr(expr, component_names, out);
             }
             StmtKind::Break | StmtKind::Continue => {}
         }
     }
 }
 
-fn collect_html_attr_name_spans_expr(
+fn collect_html_semantic_spans_expr(
     expr: &Expr,
     component_names: &HashSet<String>,
-    out: &mut HashSet<(usize, usize)>,
+    out: &mut HtmlSemanticSpans,
 ) {
     match &expr.kind {
         ExprKind::Call { callee, args, .. } => {
-            let html_attr_context = matches!(&callee.kind, ExprKind::Ident(ident)
-                if fusec::html_tags::is_html_tag(&ident.name) || component_names.contains(&ident.name));
-            if html_attr_context {
+            let html_dsl_context = match &callee.kind {
+                ExprKind::Ident(ident)
+                    if fusec::html_tags::is_html_tag(&ident.name)
+                        || component_names.contains(&ident.name) =>
+                {
+                    out.dsl_name_spans
+                        .insert((ident.span.start, ident.span.end));
+                    true
+                }
+                _ => false,
+            };
+            if html_dsl_context {
                 for arg in args {
                     if let Some(name) = &arg.name {
-                        out.insert((name.span.start, name.span.end));
+                        out.attr_name_spans.insert((name.span.start, name.span.end));
                     }
                 }
             }
-            collect_html_attr_name_spans_expr(callee, component_names, out);
+            collect_html_semantic_spans_expr(callee, component_names, out);
             for arg in args {
-                collect_html_attr_name_spans_expr(&arg.value, component_names, out);
+                collect_html_semantic_spans_expr(&arg.value, component_names, out);
             }
         }
         ExprKind::Binary { left, right, .. } | ExprKind::Coalesce { left, right } => {
-            collect_html_attr_name_spans_expr(left, component_names, out);
-            collect_html_attr_name_spans_expr(right, component_names, out);
+            collect_html_semantic_spans_expr(left, component_names, out);
+            collect_html_semantic_spans_expr(right, component_names, out);
         }
         ExprKind::Unary { expr, .. } | ExprKind::Await { expr } | ExprKind::Box { expr } => {
-            collect_html_attr_name_spans_expr(expr, component_names, out);
+            collect_html_semantic_spans_expr(expr, component_names, out);
         }
         ExprKind::Member { base, .. } | ExprKind::OptionalMember { base, .. } => {
-            collect_html_attr_name_spans_expr(base, component_names, out);
+            collect_html_semantic_spans_expr(base, component_names, out);
         }
         ExprKind::Index {
             base,
@@ -310,40 +332,40 @@ fn collect_html_attr_name_spans_expr(
             base,
             index: index_expr,
         } => {
-            collect_html_attr_name_spans_expr(base, component_names, out);
-            collect_html_attr_name_spans_expr(index_expr, component_names, out);
+            collect_html_semantic_spans_expr(base, component_names, out);
+            collect_html_semantic_spans_expr(index_expr, component_names, out);
         }
         ExprKind::StructLit { fields, .. } => {
             for field in fields {
-                collect_html_attr_name_spans_expr(&field.value, component_names, out);
+                collect_html_semantic_spans_expr(&field.value, component_names, out);
             }
         }
         ExprKind::ListLit(items) => {
             for item in items {
-                collect_html_attr_name_spans_expr(item, component_names, out);
+                collect_html_semantic_spans_expr(item, component_names, out);
             }
         }
         ExprKind::MapLit(items) => {
             for (key, value) in items {
-                collect_html_attr_name_spans_expr(key, component_names, out);
-                collect_html_attr_name_spans_expr(value, component_names, out);
+                collect_html_semantic_spans_expr(key, component_names, out);
+                collect_html_semantic_spans_expr(value, component_names, out);
             }
         }
         ExprKind::InterpString(parts) => {
             for part in parts {
                 if let fusec::ast::InterpPart::Expr(expr) = part {
-                    collect_html_attr_name_spans_expr(expr, component_names, out);
+                    collect_html_semantic_spans_expr(expr, component_names, out);
                 }
             }
         }
         ExprKind::BangChain { expr, error } => {
-            collect_html_attr_name_spans_expr(expr, component_names, out);
+            collect_html_semantic_spans_expr(expr, component_names, out);
             if let Some(error) = error {
-                collect_html_attr_name_spans_expr(error, component_names, out);
+                collect_html_semantic_spans_expr(error, component_names, out);
             }
         }
         ExprKind::Spawn { block } => {
-            collect_html_attr_name_spans_block(block, component_names, out);
+            collect_html_semantic_spans_block(block, component_names, out);
         }
         ExprKind::HtmlIf {
             cond,
@@ -351,18 +373,18 @@ fn collect_html_attr_name_spans_expr(
             else_if,
             else_children,
         } => {
-            collect_html_attr_name_spans_expr(cond, component_names, out);
+            collect_html_semantic_spans_expr(cond, component_names, out);
             for child in then_children {
-                collect_html_attr_name_spans_expr(child, component_names, out);
+                collect_html_semantic_spans_expr(child, component_names, out);
             }
             for (branch_cond, branch_children) in else_if {
-                collect_html_attr_name_spans_expr(branch_cond, component_names, out);
+                collect_html_semantic_spans_expr(branch_cond, component_names, out);
                 for child in branch_children {
-                    collect_html_attr_name_spans_expr(child, component_names, out);
+                    collect_html_semantic_spans_expr(child, component_names, out);
                 }
             }
             for child in else_children {
-                collect_html_attr_name_spans_expr(child, component_names, out);
+                collect_html_semantic_spans_expr(child, component_names, out);
             }
         }
         ExprKind::HtmlFor {
@@ -370,9 +392,9 @@ fn collect_html_attr_name_spans_expr(
             body_children,
             ..
         } => {
-            collect_html_attr_name_spans_expr(iter, component_names, out);
+            collect_html_semantic_spans_expr(iter, component_names, out);
             for child in body_children {
-                collect_html_attr_name_spans_expr(child, component_names, out);
+                collect_html_semantic_spans_expr(child, component_names, out);
             }
         }
         ExprKind::Literal(_) | ExprKind::Ident(_) => {}
