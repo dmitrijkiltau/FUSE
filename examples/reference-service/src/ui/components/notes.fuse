@@ -22,6 +22,17 @@ fn public_note_rows() -> List<Map<String, String>>:
 from notes n where n.is_public = '1' order by n.id desc""")
   return rows
 
+fn liked_note_rows(user_id: String) -> List<Map<String, String>>:
+  var rows: List<Map<String, String>> = []
+  transaction:
+    rows = db.query("""select n.id, n.title, n.content, n.owner_id,
+  cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes
+from notes n
+join note_likes nl on nl.note_id = n.id
+where nl.user_id = '${user_id}' and n.is_public = '1'
+order by n.id desc""")
+  return rows
+
 fn render_private_note_card(note: Map<String, String>) -> Html:
   let id = note["id"]
   let title = note["title"]
@@ -112,34 +123,25 @@ fn render_private_notes_section(ctx: RequestContext) -> Html:
   let session_token = request_context_session_token(ctx)
   let owner_id = request_context_user_id(ctx)
   if session_token == "" or owner_id == "":
-    return section(class="section"):
-      h2(class="section__title"):
-        "Your notes"
-      div(class="notes-list" id="private-notes-list"):
-        Base.state_block("Sign in to load your private notes.", false, false)
+    return html.raw("")
 
   let rows = private_note_rows(owner_id)
   var has_rows = false
   var cards = html.raw("")
   for row in rows:
     has_rows = true
-    let prev = cards
     cards = div(class="note-stack"):
-      prev
+      cards
       render_private_note_card(row)
 
-  if has_rows == false:
-    return section(class="section"):
-      h2(class="section__title"):
-        "Your notes"
-      div(class="notes-list" id="private-notes-list"):
-        Base.state_block("No private notes yet - create one above.", false, false)
-
-  return section(class="section"):
+  return section(class="dashboard__private"):
     h2(class="section__title"):
       "Your notes"
     div(class="notes-list" id="private-notes-list"):
-      cards
+      if has_rows == false:
+        Base.state_block("No private notes yet - create one above.", false, false)
+      else:
+        cards
 
 fn render_public_note_actions(ctx: RequestContext, note: Map<String, String>) -> Html:
   let session_token = request_context_session_token(ctx)
@@ -150,12 +152,15 @@ fn render_public_note_actions(ctx: RequestContext, note: Map<String, String>) ->
   let owner_id = note["owner_id"]
 
   if viewer_id == "" or owner_id == viewer_id:
-    return div(class="note-card__actions note-card__actions--public"):
-      button(type="button" class="btn btn--ghost btn--sm" disabled="disabled"):
-        "Your note"
+    return html.raw("")
 
   let id = note["id"]
   let like_url = "/ui/public/notes/${id}/likes"
+
+  let likes = note["likes"]
+  var likes_label = "${likes} likes"
+  if likes == "1":
+    likes_label = "1 like"
 
   return div(class="note-card__actions note-card__actions--public"):
     button(
@@ -166,17 +171,15 @@ fn render_public_note_actions(ctx: RequestContext, note: Map<String, String>) ->
       hx_swap="outerHTML"
     ):
       "Like"
+    
+    span(class="note-card__pill"):
+        html.text(likes_label)
 
 fn render_public_note_card(ctx: RequestContext, note: Map<String, String>) -> Html:
   let id = note["id"]
   let title = note["title"]
   let content = note["content"]
   let owner_id = note["owner_id"]
-  let likes = note["likes"]
-
-  var likes_label = "${likes} likes"
-  if likes == "1":
-    likes_label = "1 like"
 
   return div(class="note-card note-card--public"):
     h3(class="note-card__title"):
@@ -186,8 +189,7 @@ fn render_public_note_card(ctx: RequestContext, note: Map<String, String>) -> Ht
     div(class="note-card__meta-line"):
       div(class="note-card__meta"):
         html.text("${id} by ${owner_id}")
-      span(class="note-card__pill"):
-        html.text(likes_label)
+      
     render_public_note_actions(ctx, note)
 
 fn render_public_notes_inner(ctx: RequestContext) -> Html:
@@ -206,7 +208,7 @@ fn render_public_notes_inner(ctx: RequestContext) -> Html:
 
 fn render_public_section(ctx: RequestContext) -> Html:
   let feed_url = "/ui/public/notes"
-  return section(class="section" id="public-notes-section"):
+  return section(class="dashboard__public" id="public-notes-section"):
     h2(class="section__title"):
       "Public notes"
     div(
@@ -218,3 +220,27 @@ fn render_public_section(ctx: RequestContext) -> Html:
       hx_sync="this:replace"
     ):
       render_public_notes_inner(ctx)
+
+fn render_liked_section(ctx: RequestContext) -> Html:
+  let session_token = request_context_session_token(ctx)
+  let owner_id = request_context_user_id(ctx)
+  if session_token == "" or owner_id == "":
+    return html.raw("")
+
+  let rows = liked_note_rows(owner_id)
+  var has_rows = false
+  var cards = html.raw("")
+  for row in rows:
+    has_rows = true
+    cards = div(class="note-stack"):
+      cards
+      render_public_note_card(ctx, row)
+
+  return section(class="section"):
+    h2(class="section__title"):
+      "Liked notes"
+    div(class="notes-list" id="liked-notes-list"):
+      if has_rows == false:
+        Base.state_block("You haven't liked any notes yet.", false, false)
+      else:
+        cards

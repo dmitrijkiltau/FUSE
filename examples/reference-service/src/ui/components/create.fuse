@@ -6,7 +6,7 @@ fn render_create_section(ctx: RequestContext) -> Html:
     return html.raw("")
   let create_url = "/ui/notes"
 
-  return section(class="section"):
+  return section(class="dashboard__create"):
     h2(class="section__title"): "New note"
     form(
       class="create-form"

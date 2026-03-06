@@ -1,14 +1,15 @@
 .note-card {
   padding: var(--sp-5);
-  border-bottom: 1px solid var(--c-border);
-  transition: background var(--ease);
-
-  &:last-child {
-    border-bottom: none;
-  }
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  transition: box-shadow var(--ease), border-color var(--ease);
+  display: flex;
+  flex-direction: column;
 
   &:hover {
-    background: var(--c-bg);
+    border-color: var(--c-border-hv);
+    box-shadow: var(--shadow-sm);
   }
 
   &:has(.btn--checkbox:checked) {
