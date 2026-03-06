@@ -2,7 +2,7 @@
   "name": "fuse-vscode",
   "displayName": "Fuse Language",
   "description": "Syntax highlighting and LSP support for the Fuse programming language",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "publisher": "fuse",
   "license": "Apache-2.0",
   "homepage": "https://github.com/dmitrijkiltau/FUSE",
@@ -64,6 +64,31 @@
         "language": "fuse",
         "scopeName": "source.fuse",
         "path": "./syntaxes/fuse.tmLanguage.json"
+      }
+    ],
+    "semanticTokenTypes": [
+      {
+        "id": "htmlTag",
+        "description": "HTML DSL tag and component identifiers."
+      },
+      {
+        "id": "htmlAttribute",
+        "description": "Named HTML DSL attributes."
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "fuse",
+        "scopes": {
+          "htmlTag": [
+            "entity.name.tag.html",
+            "entity.name.class.fuse"
+          ],
+          "htmlAttribute": [
+            "entity.other.attribute-name.html",
+            "entity.other.attribute-name"
+          ]
+        }
       }
     ]
   }

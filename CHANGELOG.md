@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.2] - 2026-03-05
+
+### Added
+
+- LSP quick fixes for missing capability declarations (`requires db|network|time|crypto`) with
+  deterministic top-level rewrite ordering.
+- LSP quick fixes for HTML attribute migration diagnostics:
+  - `FUSE_HTML_ATTR_MAP`: rewrites supported map-literal attrs to named attrs.
+  - `FUSE_HTML_ATTR_COMMA`: removes commas between HTML attrs.
+
+### Changed
+
+- `textDocument/signatureHelp` relevance in noisy/nested call chains:
+  - stronger target selection tie-breaks
+  - signature candidate ranking (`resolved` > nearby workspace defs > builtins).
+- `workspace/symbol` query quality:
+  - deterministic fuzzy ranking (exact/prefix/initials/substring/subsequence)
+  - stable tie-ordering for equivalent match quality.
+- LSP reliability coverage extended with symbol/code-action burst responsiveness checks.
+
+### Migration
+
+- No language/runtime migration is required from `0.9.1` to `0.9.2`.
+- HTML attr migration diagnostics can now be auto-remediated via LSP quick fixes.
+
 ## [0.9.1] - 2026-03-05
 
 ### Added
