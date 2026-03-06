@@ -65,6 +65,31 @@
         "scopeName": "source.fuse",
         "path": "./syntaxes/fuse.tmLanguage.json"
       }
+    ],
+    "semanticTokenTypes": [
+      {
+        "id": "htmlTag",
+        "description": "HTML DSL tag and component identifiers."
+      },
+      {
+        "id": "htmlAttribute",
+        "description": "Named HTML DSL attributes."
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "fuse",
+        "scopes": {
+          "htmlTag": [
+            "entity.name.tag.html",
+            "entity.name.class.fuse"
+          ],
+          "htmlAttribute": [
+            "entity.other.attribute-name.html",
+            "entity.other.attribute-name"
+          ]
+        }
+      }
     ]
   }
 }
