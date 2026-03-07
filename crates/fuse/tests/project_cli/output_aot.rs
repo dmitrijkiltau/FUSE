@@ -904,6 +904,98 @@ app "Demo":
 }
 
 #[test]
+fn build_aot_runtime_preserves_operator_error_message_taxonomy() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  let xs = [1]
+  print(xs[3])
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let aot = default_aot_binary_path(&dir);
+    let run = Command::new(&aot).output().expect("run aot binary");
+    assert_eq!(run.status.code(), Some(1), "status: {:?}", run.status);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(stderr.contains("fatal: class=runtime_fatal"), "stderr: {stderr}");
+    assert!(stderr.contains("index out of bounds"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_aot_runtime_preserves_config_decode_error_message_taxonomy() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        r#"
+[package]
+entry = "main.fuse"
+app = "Demo"
+"#,
+    )
+    .expect("write fuse.toml");
+    fs::write(
+        dir.join("main.fuse"),
+        r#"
+config App:
+  profile: Map<String, String> = {"name": "ok"}
+
+app "Demo":
+  print(App.profile["name"] ?? "none")
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let build = Command::new(exe)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--aot")
+        .arg("--release")
+        .output()
+        .expect("run fuse build --aot --release");
+    assert!(
+        build.status.success(),
+        "build stderr: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let aot = default_aot_binary_path(&dir);
+    let run = Command::new(&aot)
+        .current_dir(&dir)
+        .env("APP_PROFILE", "{bad json}")
+        .output()
+        .expect("run aot binary");
+    assert_eq!(run.status.code(), Some(1), "status: {:?}", run.status);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(stderr.contains("fatal: class=runtime_fatal"), "stderr: {stderr}");
+    assert!(stderr.contains("invalid JSON value"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn build_aot_runtime_panic_uses_exit_101_and_panic_fatal_envelope() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");

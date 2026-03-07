@@ -607,10 +607,16 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
   - command-step entries:
     `{"kind":"command_step","command":"check|run|build|test","message":"start|ok|failed|validation failed|..."}`
 - runtime execution failures reported through the validation envelope use stable field codes where
-  possible, including `runtime_null_access`, `runtime_index_bounds`, `runtime_invalid_index`,
-  `runtime_field_access`, `runtime_invalid_assignment_target`, `runtime_task_expected`,
-  `runtime_range_error`, `runtime_type_error`, and `runtime_invalid_arguments`; unmatched failures
-  fall back to `runtime_error`
+  possible, including `runtime_config_decode`, `runtime_type_spec_error`,
+  `runtime_null_access`, `runtime_index_bounds`, `runtime_invalid_index`, `runtime_field_access`,
+  `runtime_invalid_assignment_target`, `runtime_task_expected`, `runtime_range_error`,
+  `runtime_type_error`, and `runtime_invalid_arguments`; unmatched failures fall back to
+  `runtime_error`
+- config/env decode failures that arise during structured config binding remain field-addressed
+  validation payloads (`error.code="validation_error"`) and usually use path-local field code
+  `invalid_value` with the failing config path and decode message
+- direct AOT binaries do not emit JSON diagnostics, but their fatal envelopes preserve the same
+  stable runtime message taxonomy for config/env decode failures and operator-path failures
 - keeps JSON validation payloads uncolored/machine-readable
 - `run` CLI argument validation failures exit with code `2`
 

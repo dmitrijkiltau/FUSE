@@ -261,8 +261,11 @@ Global CLI output option:
   Loader/import diagnostics now use stable codes including `FUSE_IMPORT_*`, `FUSE_ASSET_*`,
   `FUSE_DEP_CYCLE`, `FUSE_TYPE_DERIVE_*`, and `FUSE_SYMBOL_DUPLICATE`.
   Runtime execution failures emitted through the validation envelope use stable codes such as
-  `runtime_index_bounds`, `runtime_type_error`, `runtime_invalid_arguments`, and
-  `runtime_null_access`, with `runtime_error` retained as the generic fallback.
+  `runtime_config_decode`, `runtime_index_bounds`, `runtime_type_error`,
+  `runtime_invalid_arguments`, and `runtime_null_access`, with `runtime_error` retained as the
+  generic fallback. Structured config/env binding failures remain path-addressed validation
+  payloads (typically `invalid_value`). Direct AOT binaries keep the matching stable message
+  taxonomy in fatal envelopes even though they do not emit JSON diagnostics.
   Command-step entries use:
   `kind="command_step"`, `command`, `message`.
 - `fuse check|run|build|test|clean` emit consistent stderr step markers:

@@ -586,3 +586,47 @@ app "Demo":
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn run_diagnostics_json_classifies_runtime_config_decode_errors_for_ast_and_native() {
+    for backend in ["ast", "native"] {
+        let dir = temp_project_dir();
+        fs::create_dir_all(&dir).expect("create temp dir");
+        write_basic_manifest_project(
+            &dir,
+            r#"
+config App:
+    port: Int = 3000
+
+app "Demo":
+    print(App.port)
+"#,
+        );
+
+        let exe = env!("CARGO_BIN_EXE_fuse");
+        let output = Command::new(exe)
+            .arg("run")
+            .arg("--manifest-path")
+            .arg(&dir)
+            .arg("--backend")
+            .arg(backend)
+            .arg("--diagnostics")
+            .arg("json")
+            .arg("--color")
+            .arg("never")
+            .env("APP_PORT", "abc")
+            .output()
+            .expect("run fuse run --diagnostics json");
+        assert_eq!(output.status.code(), Some(1), "status: {:?}", output.status);
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("\"code\":\"invalid_value\""),
+            "backend={backend} stderr: {stderr}"
+        );
+        assert!(stderr.contains("invalid Int: abc"), "stderr: {stderr}");
+        assert!(stderr.contains("\"path\":\"App.port\""), "stderr: {stderr}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
