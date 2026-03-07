@@ -428,7 +428,7 @@ fn builtin_member_signature_info(base: &str, member: &str) -> Option<SignatureIn
                 "timeout_ms: Int".to_string(),
             ],
             documentation: Some(
-                "Performs an outbound HTTP request over plain http:// and returns Err on transport failures or non-2xx responses.".to_string(),
+                "Performs an outbound HTTP request over http:// or validated https:// and returns Err on transport failures or non-2xx responses.".to_string(),
             ),
         }),
         ("http", "get") => Some(SignatureInfo {
@@ -439,7 +439,7 @@ fn builtin_member_signature_info(base: &str, member: &str) -> Option<SignatureIn
                 "timeout_ms: Int".to_string(),
             ],
             documentation: Some(
-                "Performs an outbound HTTP GET over plain http:// and returns Err on transport failures or non-2xx responses.".to_string(),
+                "Performs an outbound HTTP GET over http:// or validated https:// and returns Err on transport failures or non-2xx responses.".to_string(),
             ),
         }),
         ("http", "post") => Some(SignatureInfo {
@@ -451,7 +451,7 @@ fn builtin_member_signature_info(base: &str, member: &str) -> Option<SignatureIn
                 "timeout_ms: Int".to_string(),
             ],
             documentation: Some(
-                "Performs an outbound HTTP POST over plain http:// and returns Err on transport failures or non-2xx responses.".to_string(),
+                "Performs an outbound HTTP POST over http:// or validated https:// and returns Err on transport failures or non-2xx responses.".to_string(),
             ),
         }),
         ("time", "format") => Some(SignatureInfo {

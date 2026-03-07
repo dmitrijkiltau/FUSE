@@ -1,0 +1,12 @@
+requires network
+
+config App:
+  url: String = env("HTTPS_URL") ?? "https://example.com/"
+  timeoutMs: Int = env_int("HTTPS_TIMEOUT_MS") ?? 5000
+
+app "HttpsClientDemo":
+  match http.get(App.url, {"accept": "text/html"}, App.timeoutMs):
+    Ok(response):
+      print("GET ${response.url} -> ${response.status}")
+    Err(err):
+      print("${err.code}: ${err.message}")

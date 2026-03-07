@@ -18,6 +18,9 @@ Sample programs for FUSE. All examples are valid FUSE source files that pass
 # Run with environment overrides
 APP_PORT=4000 ./scripts/fuse run examples/http_users.fuse
 
+# Run the HTTPS client example against a custom endpoint
+HTTPS_URL=https://example.com/ ./scripts/fuse run examples/http_client_https.fuse
+
 # Check all examples at once
 ./scripts/check_examples.sh
 ```
@@ -31,6 +34,7 @@ APP_PORT=4000 ./scripts/fuse run examples/http_users.fuse
 | `cli_input.fuse` | CLI stdin input with prompt |
 | `log_parity.fuse` | Runtime log text/JSON output behavior |
 | `http_users.fuse` | HTTP service with routes and `?!` error handling |
+| `http_client_https.fuse` | Outbound HTTPS request handling with explicit `Ok` / `Err` matching |
 | `types_patterns.fuse` | Enums, structs, and pattern matching (Option/Result) |
 | `project_demo.fuse` | Config env overrides, refined types, enums, and match |
 | `interp_demo.fuse` | String interpolation |

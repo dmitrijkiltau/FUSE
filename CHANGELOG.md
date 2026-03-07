@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.8] - Unreleased
+
+### Added
+
+- Validated outbound HTTPS support for `http.request`, `http.get`, and `http.post` across AST and
+  native execution.
+- Explicit outbound transport diagnostics for TLS validation failures (`tls_error`) and
+  phase-specific timeout failures (`timeout`).
+- Structured outbound observability emission through `http.client.request` request logs and
+  stderr metrics hooks.
+- New HTTPS client example: `examples/http_client_https.fuse`.
+
+### Changed
+
+- The outbound HTTP client now accepts both `http://` and `https://` URLs while keeping the
+  existing request/response shapes and manual redirect posture.
+- Runtime-owned request headers remain reserved (`host`, `connection`, `content-length`) and are
+  now explicitly regression-covered across AST/native backends.
+- README/spec/reference/LSP help text now describe the production outbound HTTP contract,
+  including HTTPS support and outbound observability.
+
+### Migration
+
+- No language/runtime migration is required from `0.9.7` to `0.9.8`.
+- Existing `http.*` call sites continue to use the same signatures; HTTPS support is additive.
+
 ## [0.9.7] - 2026-03-07
 
 ### Added
