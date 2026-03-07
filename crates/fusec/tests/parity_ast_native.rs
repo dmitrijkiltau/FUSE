@@ -10,7 +10,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use fuse_rt::json;
 mod support;
 use support::http::{
-    ScriptedHttpExchange, send_http_request_status_body_with_retry, spawn_scripted_http_server,
+    ScriptedHttpExchange, send_http_request_status_body_with_retry,
+    spawn_handshake_only_https_server, spawn_scripted_http_server,
 };
 use support::net::{find_free_port, skip_if_loopback_unavailable};
 
@@ -903,20 +904,26 @@ fn parity_http_client_error_results_across_backends() {
     let program = r#"
 requires network
 
-app "demo":
-  let missing = http.get(env("UPSTREAM_MISSING") ?? "", {}, 1000)
-  match missing:
-    Ok(resp):
-      print("unexpected")
-    Err(err):
-      print("STATUS:${err.code}:${err.status ?? 0}:${err.body ?? ""}")
+fn missing_line() -> String:
+    let missing = http.get(env("UPSTREAM_MISSING") ?? "", {}, 1000)
+    match missing:
+        Ok(resp):
+            return "unexpected"
+        Err(err):
+            let missing_body = err.body ?? ""
+            return "STATUS:${err.code}:${err.status ?? 0}:${missing_body}"
 
-  let tls = http.get("https://example.com")
-  match tls:
-    Ok(resp):
-      print("unexpected")
-    Err(err):
-      print("TLS:${err.code}")
+fn tls_line() -> String:
+    let tls = http.get(env("UPSTREAM_TLS") ?? "")
+    match tls:
+        Ok(resp):
+            return "unexpected"
+        Err(err):
+            return "TLS:${err.code}"
+
+app "demo":
+    print(missing_line())
+    print(tls_line())
 "#;
     let mut outputs = Vec::new();
     for backend in ["ast", "native"] {
@@ -925,11 +932,16 @@ app "demo":
             request_contains: Vec::new(),
             response: "HTTP/1.1 404 Not Found\r\nContent-Length: 7\r\n\r\nmissing".to_string(),
         }]);
+        let (tls_port, _cert_pem, tls_server) = spawn_handshake_only_https_server();
         let upstream_missing = format!("http://127.0.0.1:{port}/missing");
+        let upstream_tls = format!("https://127.0.0.1:{tls_port}/tls");
         let output = run_temp_program(
             backend,
             program,
-            &[("UPSTREAM_MISSING", upstream_missing.as_str())],
+            &[
+                ("UPSTREAM_MISSING", upstream_missing.as_str()),
+                ("UPSTREAM_TLS", upstream_tls.as_str()),
+            ],
         );
         assert!(
             output.status.success(),
@@ -937,11 +949,12 @@ app "demo":
             String::from_utf8_lossy(&output.stderr)
         );
         server.join().expect("join scripted upstream server");
+        tls_server.join().expect("join scripted upstream tls server");
         outputs.push(String::from_utf8_lossy(&output.stdout).to_string());
     }
 
     assert_eq!(outputs[0], outputs[1]);
-    assert_eq!(outputs[0], "STATUS:http_status:404:missing\nTLS:unsupported_scheme\n");
+    assert_eq!(outputs[0], "STATUS:http_status:404:missing\nTLS:tls_error\n");
 }
 
 #[test]

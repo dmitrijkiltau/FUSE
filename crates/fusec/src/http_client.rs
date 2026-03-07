@@ -1,7 +1,12 @@
 use std::collections::{BTreeMap, HashMap};
+use std::io::Cursor;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+use std::sync::Arc;
 use std::time::Duration;
+
+use rustls::pki_types::ServerName;
+use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 use crate::interp::Value;
 
@@ -9,6 +14,12 @@ pub const DEFAULT_TIMEOUT_MS: i64 = 30_000;
 
 const HTTP_RESPONSE_STRUCT_NAME: &str = "http.Response";
 const HTTP_ERROR_STRUCT_NAME: &str = "http.Error";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HttpScheme {
+    Http,
+    Https,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HttpBuiltin {
@@ -46,10 +57,17 @@ pub struct HttpClientError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ParsedHttpUrl {
+    scheme: HttpScheme,
     host: String,
     port: u16,
     target: String,
     host_header: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ParsedHttpUrlError {
+    InvalidUrl(String),
+    UnsupportedScheme(String),
 }
 
 pub fn parse_http_builtin_args(
@@ -146,25 +164,25 @@ pub fn perform_http_request(request: &HttpClientRequest) -> Result<HttpClientRes
         headers: HashMap::new(),
         body: None,
     })?;
-    if request.url.trim().starts_with("https://") {
-        return Err(HttpClientError {
-            code: "unsupported_scheme".to_string(),
-            message: "http.* only supports http:// URLs in 0.9.6".to_string(),
-            method,
+    let parsed = parse_http_url(&request.url).map_err(|error| match error {
+        ParsedHttpUrlError::InvalidUrl(message) => HttpClientError {
+            code: "invalid_url".to_string(),
+            message,
+            method: method.clone(),
             url: request.url.clone(),
             status: None,
             headers: HashMap::new(),
             body: None,
-        });
-    }
-    let parsed = parse_http_url(&request.url).map_err(|message| HttpClientError {
-        code: "invalid_url".to_string(),
-        message,
-        method: method.clone(),
-        url: request.url.clone(),
-        status: None,
-        headers: HashMap::new(),
-        body: None,
+        },
+        ParsedHttpUrlError::UnsupportedScheme(message) => HttpClientError {
+            code: "unsupported_scheme".to_string(),
+            message,
+            method: method.clone(),
+            url: request.url.clone(),
+            status: None,
+            headers: HashMap::new(),
+            body: None,
+        },
     })?;
     let timeout = timeout_duration(request.timeout_ms).map_err(|message| HttpClientError {
         code: "invalid_request".to_string(),
@@ -292,23 +310,34 @@ fn normalize_http_method(raw: &str) -> Result<String, String> {
     Ok(trimmed.to_ascii_uppercase())
 }
 
-fn parse_http_url(raw: &str) -> Result<ParsedHttpUrl, String> {
+fn parse_http_url(raw: &str) -> Result<ParsedHttpUrl, ParsedHttpUrlError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err("http.* requires a non-empty URL".to_string());
+        return Err(ParsedHttpUrlError::InvalidUrl(
+            "http.* requires a non-empty URL".to_string(),
+        ));
     }
-    if trimmed.starts_with("https://") {
-        return Err("http.* only supports http:// URLs in 0.9.6".to_string());
-    }
-    let rest = trimmed
-        .strip_prefix("http://")
-        .ok_or_else(|| "http.* requires an http:// URL".to_string())?;
+    let (scheme, rest, default_port) = if let Some(rest) = trimmed.strip_prefix("http://") {
+        (HttpScheme::Http, rest, 80)
+    } else if let Some(rest) = trimmed.strip_prefix("https://") {
+        (HttpScheme::Https, rest, 443)
+    } else if let Some((scheme, _)) = trimmed.split_once("://") {
+        return Err(ParsedHttpUrlError::UnsupportedScheme(format!(
+            "http.* does not support {scheme}:// URLs"
+        )));
+    } else {
+        return Err(ParsedHttpUrlError::InvalidUrl(
+            "http.* requires an http:// or https:// URL".to_string(),
+        ));
+    };
     let split_idx = rest
         .find(['/', '?', '#'])
         .unwrap_or(rest.len());
     let authority = &rest[..split_idx];
     if authority.is_empty() {
-        return Err("http.* URL is missing a host".to_string());
+        return Err(ParsedHttpUrlError::InvalidUrl(
+            "http.* URL is missing a host".to_string(),
+        ));
     }
     let mut remainder = &rest[split_idx..];
     if let Some((before_fragment, _)) = remainder.split_once('#') {
@@ -325,43 +354,54 @@ fn parse_http_url(raw: &str) -> Result<ParsedHttpUrl, String> {
     let (host, port) = if authority.starts_with('[') {
         let end = authority
             .find(']')
-            .ok_or_else(|| "http.* URL has an invalid IPv6 host".to_string())?;
+            .ok_or_else(|| {
+                ParsedHttpUrlError::InvalidUrl("http.* URL has an invalid IPv6 host".to_string())
+            })?;
         let host = authority[..=end].to_string();
         let port = if let Some(rest) = authority.get(end + 1..) {
             if rest.is_empty() {
-                80
+                default_port
             } else {
                 let port = rest
                     .strip_prefix(':')
-                    .ok_or_else(|| "http.* URL has an invalid host:port".to_string())?;
+                    .ok_or_else(|| {
+                        ParsedHttpUrlError::InvalidUrl(
+                            "http.* URL has an invalid host:port".to_string(),
+                        )
+                    })?;
                 parse_port(port)?
             }
         } else {
-            80
+            default_port
         };
         (host, port)
     } else if let Some((host, port)) = authority.rsplit_once(':') {
         if host.is_empty() || port.is_empty() {
-            return Err("http.* URL has an invalid host:port".to_string());
+            return Err(ParsedHttpUrlError::InvalidUrl(
+                "http.* URL has an invalid host:port".to_string(),
+            ));
         }
         if port.chars().all(|ch| ch.is_ascii_digit()) {
             (host.to_string(), parse_port(port)?)
         } else {
-            (authority.to_string(), 80)
+            (authority.to_string(), default_port)
         }
     } else {
-        (authority.to_string(), 80)
+        (authority.to_string(), default_port)
     };
     if host.is_empty() {
-        return Err("http.* URL is missing a host".to_string());
+        return Err(ParsedHttpUrlError::InvalidUrl(
+            "http.* URL is missing a host".to_string(),
+        ));
     }
 
-    let host_header = if port == 80 {
+    let host_header = if port == default_port {
         host.clone()
     } else {
         format!("{host}:{port}")
     };
     Ok(ParsedHttpUrl {
+        scheme,
         host,
         port,
         target,
@@ -369,9 +409,9 @@ fn parse_http_url(raw: &str) -> Result<ParsedHttpUrl, String> {
     })
 }
 
-fn parse_port(raw: &str) -> Result<u16, String> {
+fn parse_port(raw: &str) -> Result<u16, ParsedHttpUrlError> {
     raw.parse::<u16>()
-        .map_err(|_| format!("http.* URL has an invalid port {raw}"))
+        .map_err(|_| ParsedHttpUrlError::InvalidUrl(format!("http.* URL has an invalid port {raw}")))
 }
 
 fn timeout_duration(timeout_ms: i64) -> Result<Option<Duration>, String> {
@@ -412,6 +452,36 @@ fn validate_http_header(name: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+enum HttpConnection {
+    Tcp(TcpStream),
+    Tls(StreamOwned<ClientConnection, TcpStream>),
+}
+
+impl Read for HttpConnection {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Tcp(stream) => stream.read(buf),
+            Self::Tls(stream) => stream.read(buf),
+        }
+    }
+}
+
+impl Write for HttpConnection {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Tcp(stream) => stream.write(buf),
+            Self::Tls(stream) => stream.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Tcp(stream) => stream.flush(),
+            Self::Tls(stream) => stream.flush(),
+        }
+    }
+}
+
 fn send_http_request(
     method: &str,
     url: &str,
@@ -420,6 +490,49 @@ fn send_http_request(
     headers: &BTreeMap<String, String>,
     timeout: Option<Duration>,
 ) -> Result<HttpClientResponse, HttpClientError> {
+    let mut stream = match parsed.scheme {
+        HttpScheme::Http => HttpConnection::Tcp(connect_tcp_stream(method, url, parsed, timeout)?),
+        HttpScheme::Https => HttpConnection::Tls(connect_tls_stream(method, url, parsed, timeout)?),
+    };
+
+    let body_bytes = body.as_bytes();
+    let mut request_bytes = Vec::new();
+    request_bytes.extend_from_slice(
+        format!(
+            "{method} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n",
+            parsed.target,
+            parsed.host_header,
+            body_bytes.len()
+        )
+        .as_bytes(),
+    );
+    for (name, value) in headers {
+        request_bytes.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+    }
+    request_bytes.extend_from_slice(b"\r\n");
+    request_bytes.extend_from_slice(body_bytes);
+
+    stream
+        .write_all(&request_bytes)
+        .map_err(|err| io_error_to_http_error(method, url, err))?;
+    stream
+        .flush()
+        .map_err(|err| io_error_to_http_error(method, url, err))?;
+    if let HttpConnection::Tcp(stream) = &mut stream {
+        let _ = stream.shutdown(Shutdown::Write);
+    }
+
+    let response = read_http_response_bytes(&mut stream)
+        .map_err(|err| io_error_to_http_error(method, url, err))?;
+    parse_http_response(method, url, &response)
+}
+
+fn connect_tcp_stream(
+    method: &str,
+    url: &str,
+    parsed: &ParsedHttpUrl,
+    timeout: Option<Duration>,
+) -> Result<TcpStream, HttpClientError> {
     let address_text = format!("{}:{}", parsed.host, parsed.port);
     let mut addrs = address_text.to_socket_addrs().map_err(|err| HttpClientError {
         code: "network_error".to_string(),
@@ -445,7 +558,7 @@ fn send_http_request(
             Err(err) => last_error = Some(err),
         }
     }
-    let mut stream = stream.ok_or_else(|| io_error_to_http_error(
+    let stream = stream.ok_or_else(|| io_error_to_http_error(
         method,
         url,
         last_error.unwrap_or_else(|| {
@@ -454,34 +567,127 @@ fn send_http_request(
     ))?;
     let _ = stream.set_read_timeout(timeout);
     let _ = stream.set_write_timeout(timeout);
+    Ok(stream)
+}
 
-    let body_bytes = body.as_bytes();
-    let mut request_bytes = Vec::new();
-    request_bytes.extend_from_slice(
-        format!(
-            "{method} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n",
-            parsed.target,
-            parsed.host_header,
-            body_bytes.len()
-        )
-        .as_bytes(),
-    );
-    for (name, value) in headers {
-        request_bytes.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+fn connect_tls_stream(
+    method: &str,
+    url: &str,
+    parsed: &ParsedHttpUrl,
+    timeout: Option<Duration>,
+) -> Result<StreamOwned<ClientConnection, TcpStream>, HttpClientError> {
+    let tls_config = build_tls_client_config().map_err(|message| HttpClientError {
+        code: "tls_error".to_string(),
+        message,
+        method: method.to_string(),
+        url: url.to_string(),
+        status: None,
+        headers: HashMap::new(),
+        body: None,
+    })?;
+    let server_name = tls_server_name(&parsed.host).map_err(|message| HttpClientError {
+        code: "invalid_url".to_string(),
+        message,
+        method: method.to_string(),
+        url: url.to_string(),
+        status: None,
+        headers: HashMap::new(),
+        body: None,
+    })?;
+    let mut stream = connect_tcp_stream(method, url, parsed, timeout)?;
+    let mut connection = ClientConnection::new(tls_config, server_name).map_err(|err| {
+        tls_error_to_http_error(method, url, format!("invalid TLS client state: {err}"))
+    })?;
+    while connection.is_handshaking() {
+        match connection.complete_io(&mut stream) {
+            Ok(_) => {}
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                return Err(io_error_to_http_error(method, url, err));
+            }
+            Err(err) => {
+                return Err(tls_error_to_http_error(
+                    method,
+                    url,
+                    format!("TLS handshake failed: {err}"),
+                ));
+            }
+        }
     }
-    request_bytes.extend_from_slice(b"\r\n");
-    request_bytes.extend_from_slice(body_bytes);
+    Ok(StreamOwned::new(connection, stream))
+}
 
-    stream
-        .write_all(&request_bytes)
-        .map_err(|err| io_error_to_http_error(method, url, err))?;
-    let _ = stream.shutdown(Shutdown::Write);
+fn build_tls_client_config() -> Result<Arc<ClientConfig>, String> {
+    let mut roots = RootCertStore::empty();
+    let native_certs = rustls_native_certs::load_native_certs();
+    let load_errors = native_certs
+        .errors
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>();
+    let (native_added, _) = roots.add_parsable_certificates(native_certs.certs);
+    let extra_roots = load_extra_root_certs_from_env()?;
+    let (extra_added, _) = roots.add_parsable_certificates(extra_roots);
+    let added = native_added + extra_added;
+    if added == 0 {
+        if load_errors.is_empty() {
+            return Err("failed to load any trusted root certificates".to_string());
+        }
+        return Err(format!(
+            "failed to load any trusted root certificates: {}",
+            load_errors.join("; ")
+        ));
+    }
+    let provider = rustls::crypto::ring::default_provider();
+    let builder = ClientConfig::builder_with_provider(provider.into())
+        .with_safe_default_protocol_versions()
+        .map_err(|err| format!("failed to configure TLS protocol versions: {err}"))?;
+    Ok(Arc::new(
+        builder
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    ))
+}
 
-    let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .map_err(|err| io_error_to_http_error(method, url, err))?;
-    parse_http_response(method, url, &response)
+fn load_extra_root_certs_from_env(
+) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>, String> {
+    let Ok(path) = std::env::var("FUSE_EXTRA_CA_CERT_FILE") else {
+        return Ok(Vec::new());
+    };
+    let pem = std::fs::read(&path)
+        .map_err(|err| format!("failed to read extra CA certificate file {path}: {err}"))?;
+    let mut cursor = Cursor::new(pem);
+    rustls_pemfile::certs(&mut cursor)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("failed to parse PEM certificates from {path}: {err}"))
+}
+
+fn tls_server_name(host: &str) -> Result<ServerName<'static>, String> {
+    let unbracketed = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ip) = unbracketed.parse::<std::net::IpAddr>() {
+        return Ok(ServerName::IpAddress(ip.into()));
+    }
+    ServerName::try_from(unbracketed.to_string())
+        .map_err(|_| format!("http.* URL has an invalid TLS host {unbracketed}"))
+}
+
+fn tls_error_to_http_error(method: &str, url: &str, detail: String) -> HttpClientError {
+    HttpClientError {
+        code: "tls_error".to_string(),
+        message: format!("{} {} {detail}", method.to_ascii_lowercase(), url),
+        method: method.to_string(),
+        url: url.to_string(),
+        status: None,
+        headers: HashMap::new(),
+        body: None,
+    }
 }
 
 fn io_error_to_http_error(method: &str, url: &str, err: std::io::Error) -> HttpClientError {
@@ -567,6 +773,53 @@ fn parse_http_response(
     })
 }
 
+fn read_http_response_bytes<R: Read>(stream: &mut R) -> std::io::Result<Vec<u8>> {
+    let mut response = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let mut expected_len = None;
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                response.extend_from_slice(&chunk[..read]);
+                if expected_len.is_none() {
+                    expected_len = expected_http_response_len(&response);
+                }
+                if let Some(expected_len) = expected_len {
+                    if response.len() >= expected_len {
+                        break;
+                    }
+                }
+            }
+            Err(err)
+                if err.kind() == std::io::ErrorKind::UnexpectedEof
+                    && expected_http_response_len(&response)
+                        .is_some_and(|expected_len| response.len() >= expected_len) =>
+            {
+                break;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(response)
+}
+
+fn expected_http_response_len(response: &[u8]) -> Option<usize> {
+    let header_end = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")?;
+    let head = String::from_utf8_lossy(&response[..header_end]);
+    let content_length = head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            value.trim().parse::<usize>().ok()
+        } else {
+            None
+        }
+    })?;
+    Some(header_end + 4 + content_length)
+}
+
 fn string_map_to_value(items: HashMap<String, String>) -> Value {
     let mut out = HashMap::with_capacity(items.len());
     for (key, value) in items {
@@ -577,12 +830,13 @@ fn string_map_to_value(items: HashMap<String, String>) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_http_url, parse_http_response};
+    use super::{HttpScheme, ParsedHttpUrlError, parse_http_response, parse_http_url};
 
     #[test]
     fn parse_http_url_supports_default_path_and_query() {
         let parsed = parse_http_url("http://example.com:8080/api/users?limit=1")
             .expect("parse url");
+        assert_eq!(parsed.scheme, HttpScheme::Http);
         assert_eq!(parsed.host, "example.com");
         assert_eq!(parsed.port, 8080);
         assert_eq!(parsed.target, "/api/users?limit=1");
@@ -590,9 +844,24 @@ mod tests {
     }
 
     #[test]
-    fn parse_http_url_rejects_https() {
-        let err = parse_http_url("https://example.com").expect_err("https rejected");
-        assert!(err.contains("http://"), "unexpected error: {err}");
+    fn parse_http_url_supports_https_default_port() {
+        let parsed = parse_http_url("https://example.com/api").expect("parse https url");
+        assert_eq!(parsed.scheme, HttpScheme::Https);
+        assert_eq!(parsed.host, "example.com");
+        assert_eq!(parsed.port, 443);
+        assert_eq!(parsed.target, "/api");
+        assert_eq!(parsed.host_header, "example.com");
+    }
+
+    #[test]
+    fn parse_http_url_rejects_unsupported_scheme() {
+        let err = parse_http_url("ftp://example.com").expect_err("unsupported scheme");
+        assert_eq!(
+            err,
+            ParsedHttpUrlError::UnsupportedScheme(
+                "http.* does not support ftp:// URLs".to_string()
+            )
+        );
     }
 
     #[test]

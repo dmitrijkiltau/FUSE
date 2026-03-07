@@ -9,7 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod support;
 use support::http::{
-    HttpResponse, ScriptedHttpExchange, send_http_request_with_retry, spawn_scripted_http_server,
+    HttpResponse, ScriptedHttpExchange, send_http_request_with_retry,
+    spawn_handshake_only_https_server, spawn_scripted_http_server, spawn_scripted_https_server,
 };
 use support::net::{find_free_port, skip_if_loopback_unavailable};
 
@@ -253,20 +254,26 @@ fn http_client_error_results_across_backends() {
     let program = r#"
 requires network
 
-app "demo":
-  let missing = http.get(env("UPSTREAM_MISSING") ?? "", {}, 1000)
-  match missing:
-    Ok(resp):
-      print("unexpected")
-    Err(err):
-      print("STATUS:${err.code}:${err.status ?? 0}:${err.body ?? ""}")
+fn missing_line() -> String:
+    let missing = http.get(env("UPSTREAM_MISSING") ?? "", {}, 1000)
+    match missing:
+        Ok(resp):
+            return "unexpected"
+        Err(err):
+            let missing_body = err.body ?? ""
+            return "STATUS:${err.code}:${err.status ?? 0}:${missing_body}"
 
-  let tls = http.get("https://example.com")
-  match tls:
-    Ok(resp):
-      print("unexpected")
-    Err(err):
-      print("TLS:${err.code}")
+fn tls_line() -> String:
+    let tls = http.get(env("UPSTREAM_TLS") ?? "")
+    match tls:
+        Ok(resp):
+            return "unexpected"
+        Err(err):
+            return "TLS:${err.code}"
+
+app "demo":
+    print(missing_line())
+    print(tls_line())
 "#;
 
     for backend in ["ast", "native"] {
@@ -275,10 +282,17 @@ app "demo":
             request_contains: Vec::new(),
             response: "HTTP/1.1 404 Not Found\r\nContent-Length: 7\r\n\r\nmissing".to_string(),
         }]);
-        let env = vec![(
-            "UPSTREAM_MISSING".to_string(),
-            format!("http://127.0.0.1:{port}/missing"),
-        )];
+        let (tls_port, _cert_pem, tls_server) = spawn_handshake_only_https_server();
+        let env = vec![
+            (
+                "UPSTREAM_MISSING".to_string(),
+                format!("http://127.0.0.1:{port}/missing"),
+            ),
+            (
+                "UPSTREAM_TLS".to_string(),
+                format!("https://127.0.0.1:{tls_port}/tls"),
+            ),
+        ];
         let output = run_program_with_env(backend, program, &env);
         assert!(
             output.status.success(),
@@ -286,12 +300,60 @@ app "demo":
             String::from_utf8_lossy(&output.stderr)
         );
         server.join().expect("join scripted upstream server");
+        tls_server.join().expect("join scripted upstream tls server");
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
-            "STATUS:http_status:404:missing\nTLS:unsupported_scheme\n",
+            "STATUS:http_status:404:missing\nTLS:tls_error\n",
             "{backend} stdout"
         );
     }
+}
+
+#[test]
+fn http_client_https_success_ast_backend() {
+    if skip_if_loopback_unavailable("http_client_https_success_ast_backend") {
+        return;
+    }
+    let program = r#"
+requires network
+
+app "demo":
+  let result = http.get(env("UPSTREAM_TLS") ?? "", {"x-test": "yes"}, 1000)
+  match result:
+    Ok(resp):
+      print("HTTPS:${resp.status}:${resp.headers["x-reply"] ?? ""}:${resp.body}")
+    Err(err):
+      print("ERR:${err.code}")
+"#;
+
+    let (tls_port, cert_pem, tls_server) = spawn_scripted_https_server(vec![ScriptedHttpExchange {
+        request_line: "GET /secure HTTP/1.1".to_string(),
+        request_contains: vec!["x-test: yes".to_string()],
+        response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Reply: ok\r\n\r\nhi".to_string(),
+    }]);
+    let cert_path = write_temp_file("fuse_https_root", "pem", &cert_pem);
+    let output = run_program_with_env(
+        "ast",
+        program,
+        &[
+            (
+                "UPSTREAM_TLS".to_string(),
+                format!("https://127.0.0.1:{tls_port}/secure"),
+            ),
+            (
+                "FUSE_EXTRA_CA_CERT_FILE".to_string(),
+                cert_path.to_string_lossy().to_string(),
+            ),
+        ],
+    );
+    let _ = fs::remove_file(&cert_path);
+    assert!(
+        output.status.success(),
+        "ast stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    tls_server.join().expect("join scripted upstream tls server");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "HTTPS:200:ok:hi\n");
 }
 
 #[test]
