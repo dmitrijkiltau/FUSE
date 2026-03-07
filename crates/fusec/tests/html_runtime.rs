@@ -310,8 +310,8 @@ app "demo":
 }
 
 #[test]
-fn http_client_https_success_ast_backend() {
-    if skip_if_loopback_unavailable("http_client_https_success_ast_backend") {
+fn http_client_https_success_across_backends() {
+    if skip_if_loopback_unavailable("http_client_https_success_across_backends") {
         return;
     }
     let program = r#"
@@ -326,34 +326,38 @@ app "demo":
       print("ERR:${err.code}")
 "#;
 
-    let (tls_port, cert_pem, tls_server) = spawn_scripted_https_server(vec![ScriptedHttpExchange {
-        request_line: "GET /secure HTTP/1.1".to_string(),
-        request_contains: vec!["x-test: yes".to_string()],
-        response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Reply: ok\r\n\r\nhi".to_string(),
-    }]);
-    let cert_path = write_temp_file("fuse_https_root", "pem", &cert_pem);
-    let output = run_program_with_env(
-        "ast",
-        program,
-        &[
-            (
-                "UPSTREAM_TLS".to_string(),
-                format!("https://127.0.0.1:{tls_port}/secure"),
-            ),
-            (
-                "FUSE_EXTRA_CA_CERT_FILE".to_string(),
-                cert_path.to_string_lossy().to_string(),
-            ),
-        ],
-    );
-    let _ = fs::remove_file(&cert_path);
-    assert!(
-        output.status.success(),
-        "ast stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    tls_server.join().expect("join scripted upstream tls server");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "HTTPS:200:ok:hi\n");
+    for backend in ["ast", "native"] {
+        let (tls_port, cert_pem, tls_server) =
+            spawn_scripted_https_server(vec![ScriptedHttpExchange {
+                request_line: "GET /secure HTTP/1.1".to_string(),
+                request_contains: vec!["x-test: yes".to_string()],
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Reply: ok\r\n\r\nhi"
+                    .to_string(),
+            }]);
+        let cert_path = write_temp_file("fuse_https_root", "pem", &cert_pem);
+        let output = run_program_with_env(
+            backend,
+            program,
+            &[
+                (
+                    "UPSTREAM_TLS".to_string(),
+                    format!("https://127.0.0.1:{tls_port}/secure"),
+                ),
+                (
+                    "FUSE_EXTRA_CA_CERT_FILE".to_string(),
+                    cert_path.to_string_lossy().to_string(),
+                ),
+            ],
+        );
+        let _ = fs::remove_file(&cert_path);
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        tls_server.join().expect("join scripted upstream tls server");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "HTTPS:200:ok:hi\n");
+    }
 }
 
 #[test]

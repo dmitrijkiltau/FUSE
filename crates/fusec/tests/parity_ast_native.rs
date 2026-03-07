@@ -11,6 +11,7 @@ use fuse_rt::json;
 mod support;
 use support::http::{
     ScriptedHttpExchange, send_http_request_status_body_with_retry,
+    spawn_scripted_https_server,
     spawn_handshake_only_https_server, spawn_scripted_http_server,
 };
 use support::net::{find_free_port, skip_if_loopback_unavailable};
@@ -151,6 +152,17 @@ fn run_temp_program(backend: &str, source: &str, envs: &[(&str, &str)]) -> std::
     let output = cmd.output().expect("failed to run fusec");
     let _ = fs::remove_file(&program_path);
     output
+}
+
+fn write_temp_pem(name: &str, contents: &str) -> PathBuf {
+    let mut path = std::env::temp_dir();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    path.push(format!("{name}_{stamp}.pem"));
+    fs::write(&path, contents).expect("failed to write temp pem");
+    path
 }
 
 fn run_http_program_request(
@@ -338,6 +350,17 @@ fn normalize_error(stderr: &str) -> String {
         return json::encode(&parsed);
     }
     json_text.trim().to_string()
+}
+
+fn normalize_tls_output_port(text: &str) -> String {
+    let prefix = "TLS:tls_error:get https://127.0.0.1:";
+    let Some(rest) = text.strip_prefix(prefix) else {
+        return text.to_string();
+    };
+    let Some((_, suffix)) = rest.split_once('/') else {
+        return text.to_string();
+    };
+    format!("{prefix}<port>/{suffix}")
 }
 
 #[test]
@@ -955,6 +978,96 @@ app "demo":
 
     assert_eq!(outputs[0], outputs[1]);
     assert_eq!(outputs[0], "STATUS:http_status:404:missing\nTLS:tls_error\n");
+}
+
+#[test]
+fn parity_http_client_https_success_across_backends() {
+    if skip_if_loopback_unavailable("parity_http_client_https_success_across_backends") {
+        return;
+    }
+    let program = r#"
+requires network
+
+app "demo":
+  let result = http.get(env("UPSTREAM_TLS") ?? "", {"x-test": "yes"}, 1000)
+  match result:
+    Ok(resp):
+      print("HTTPS:${resp.status}:${resp.headers["x-reply"] ?? ""}:${resp.body}")
+    Err(err):
+      print("ERR:${err.code}")
+"#;
+
+    let mut outputs = Vec::new();
+    for backend in ["ast", "native"] {
+        let (tls_port, cert_pem, tls_server) =
+            spawn_scripted_https_server(vec![ScriptedHttpExchange {
+                request_line: "GET /secure HTTP/1.1".to_string(),
+                request_contains: vec!["x-test: yes".to_string()],
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Reply: ok\r\n\r\nhi"
+                    .to_string(),
+            }]);
+        let cert_path = write_temp_pem("fuse_parity_https_root", &cert_pem);
+        let upstream_tls = format!("https://127.0.0.1:{tls_port}/secure");
+        let cert_path_text = cert_path.to_string_lossy().to_string();
+        let output = run_temp_program(
+            backend,
+            program,
+            &[
+                ("UPSTREAM_TLS", upstream_tls.as_str()),
+                ("FUSE_EXTRA_CA_CERT_FILE", cert_path_text.as_str()),
+            ],
+        );
+        let _ = fs::remove_file(&cert_path);
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        tls_server.join().expect("join scripted upstream tls server");
+        outputs.push(String::from_utf8_lossy(&output.stdout).to_string());
+    }
+
+    assert_eq!(outputs[0], outputs[1]);
+    assert_eq!(outputs[0], "HTTPS:200:ok:hi\n");
+}
+
+#[test]
+fn parity_http_client_tls_diagnostics_match_across_backends() {
+    if skip_if_loopback_unavailable("parity_http_client_tls_diagnostics_match_across_backends") {
+        return;
+    }
+    let program = r#"
+requires network
+
+app "demo":
+  let result = http.get(env("UPSTREAM_TLS") ?? "")
+  match result:
+    Ok(resp):
+      print("unexpected")
+    Err(err):
+      print("TLS:${err.code}:${err.message}")
+"#;
+
+    let mut outputs = Vec::new();
+    for backend in ["ast", "native"] {
+        let (tls_port, _cert_pem, tls_server) = spawn_handshake_only_https_server();
+        let upstream_tls = format!("https://127.0.0.1:{tls_port}/tls");
+        let output = run_temp_program(backend, program, &[("UPSTREAM_TLS", upstream_tls.as_str())]);
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        tls_server.join().expect("join scripted upstream tls server");
+        outputs.push(String::from_utf8_lossy(&output.stdout).to_string());
+    }
+
+    assert_eq!(
+        normalize_tls_output_port(&outputs[0]),
+        normalize_tls_output_port(&outputs[1])
+    );
+    assert!(outputs[0].starts_with("TLS:tls_error:get https://127.0.0.1:"), "stdout: {}", outputs[0]);
+    assert!(outputs[0].contains("TLS handshake failed:"), "stdout: {}", outputs[0]);
 }
 
 #[test]
