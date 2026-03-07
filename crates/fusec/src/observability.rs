@@ -140,6 +140,116 @@ pub fn emit_http_observability(
     }
 }
 
+pub fn emit_http_client_observability(
+    runtime: &str,
+    method: &str,
+    url: &str,
+    status: Option<u16>,
+    duration: Duration,
+    response_bytes: usize,
+    error_code: Option<&str>,
+) {
+    let duration_ms = duration.as_millis() as f64;
+    let outcome = if error_code.is_some() { "error" } else { "success" };
+
+    if structured_request_logging_enabled() {
+        let mut obj = BTreeMap::new();
+        obj.insert(
+            "duration_ms".to_string(),
+            rt_json::JsonValue::Number(duration_ms),
+        );
+        obj.insert(
+            "event".to_string(),
+            rt_json::JsonValue::String("http.client.request".to_string()),
+        );
+        obj.insert(
+            "method".to_string(),
+            rt_json::JsonValue::String(method.to_string()),
+        );
+        obj.insert(
+            "outcome".to_string(),
+            rt_json::JsonValue::String(outcome.to_string()),
+        );
+        obj.insert(
+            "response_bytes".to_string(),
+            rt_json::JsonValue::Number(response_bytes as f64),
+        );
+        obj.insert(
+            "runtime".to_string(),
+            rt_json::JsonValue::String(runtime.to_string()),
+        );
+        obj.insert(
+            "status".to_string(),
+            match status {
+                Some(status) => rt_json::JsonValue::Number(status as f64),
+                None => rt_json::JsonValue::Null,
+            },
+        );
+        obj.insert(
+            "url".to_string(),
+            rt_json::JsonValue::String(url.to_string()),
+        );
+        obj.insert(
+            "error_code".to_string(),
+            match error_code {
+                Some(code) => rt_json::JsonValue::String(code.to_string()),
+                None => rt_json::JsonValue::Null,
+            },
+        );
+        eprintln!("{}", rt_json::encode(&rt_json::JsonValue::Object(obj)));
+    }
+
+    if metrics_hook_mode() == MetricsHookMode::Stderr {
+        let mut obj = BTreeMap::new();
+        obj.insert(
+            "duration_ms".to_string(),
+            rt_json::JsonValue::Number(duration_ms),
+        );
+        obj.insert(
+            "metric".to_string(),
+            rt_json::JsonValue::String("http.client.request".to_string()),
+        );
+        obj.insert(
+            "method".to_string(),
+            rt_json::JsonValue::String(method.to_string()),
+        );
+        obj.insert(
+            "outcome".to_string(),
+            rt_json::JsonValue::String(outcome.to_string()),
+        );
+        obj.insert(
+            "response_bytes".to_string(),
+            rt_json::JsonValue::Number(response_bytes as f64),
+        );
+        obj.insert(
+            "runtime".to_string(),
+            rt_json::JsonValue::String(runtime.to_string()),
+        );
+        obj.insert(
+            "status".to_string(),
+            match status {
+                Some(status) => rt_json::JsonValue::Number(status as f64),
+                None => rt_json::JsonValue::Null,
+            },
+        );
+        obj.insert(
+            "url".to_string(),
+            rt_json::JsonValue::String(url.to_string()),
+        );
+        obj.insert(
+            "error_code".to_string(),
+            match error_code {
+                Some(code) => rt_json::JsonValue::String(code.to_string()),
+                None => rt_json::JsonValue::Null,
+            },
+        );
+        eprintln!(
+            "metrics: {}",
+            rt_json::encode(&rt_json::JsonValue::Object(obj))
+        );
+    }
+}
+
 pub fn parse_http_response_status_and_body_len(response: &str) -> (u16, usize) {
     let mut sections = response.splitn(2, "\r\n\r\n");
     let head = sections.next().unwrap_or("");

@@ -1,6 +1,6 @@
 [package]
 name = "fusec"
-version = "0.9.7"
+version = "0.9.8"
 edition = "2024"
 default-run = "fusec"
 description = "Compiler, runtime, and language tooling for FUSE."
@@ -30,3 +30,9 @@ sha2 = "0.10"
 hmac = "0.12"
 getrandom = "0.3"
 chrono = "0.4"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
+
+[dev-dependencies]
+rcgen = "0.13"

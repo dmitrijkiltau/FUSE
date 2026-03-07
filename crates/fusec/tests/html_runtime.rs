@@ -9,7 +9,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod support;
 use support::http::{
-    HttpResponse, ScriptedHttpExchange, send_http_request_with_retry, spawn_scripted_http_server,
+    DelayedHttpExchange, HttpResponse, ScriptedHttpExchange, send_http_request_with_retry,
+    spawn_delayed_http_server,
+    spawn_handshake_only_https_server, spawn_scripted_http_server, spawn_scripted_https_server,
 };
 use support::net::{find_free_port, skip_if_loopback_unavailable};
 
@@ -253,20 +255,26 @@ fn http_client_error_results_across_backends() {
     let program = r#"
 requires network
 
-app "demo":
-  let missing = http.get(env("UPSTREAM_MISSING") ?? "", {}, 1000)
-  match missing:
-    Ok(resp):
-      print("unexpected")
-    Err(err):
-      print("STATUS:${err.code}:${err.status ?? 0}:${err.body ?? ""}")
+fn missing_line() -> String:
+    let missing = http.get(env("UPSTREAM_MISSING") ?? "", {}, 1000)
+    match missing:
+        Ok(resp):
+            return "unexpected"
+        Err(err):
+            let missing_body = err.body ?? ""
+            return "STATUS:${err.code}:${err.status ?? 0}:${missing_body}"
 
-  let tls = http.get("https://example.com")
-  match tls:
-    Ok(resp):
-      print("unexpected")
-    Err(err):
-      print("TLS:${err.code}")
+fn tls_line() -> String:
+    let tls = http.get(env("UPSTREAM_TLS") ?? "")
+    match tls:
+        Ok(resp):
+            return "unexpected"
+        Err(err):
+            return "TLS:${err.code}"
+
+app "demo":
+    print(missing_line())
+    print(tls_line())
 "#;
 
     for backend in ["ast", "native"] {
@@ -275,10 +283,17 @@ app "demo":
             request_contains: Vec::new(),
             response: "HTTP/1.1 404 Not Found\r\nContent-Length: 7\r\n\r\nmissing".to_string(),
         }]);
-        let env = vec![(
-            "UPSTREAM_MISSING".to_string(),
-            format!("http://127.0.0.1:{port}/missing"),
-        )];
+        let (tls_port, _cert_pem, tls_server) = spawn_handshake_only_https_server();
+        let env = vec![
+            (
+                "UPSTREAM_MISSING".to_string(),
+                format!("http://127.0.0.1:{port}/missing"),
+            ),
+            (
+                "UPSTREAM_TLS".to_string(),
+                format!("https://127.0.0.1:{tls_port}/tls"),
+            ),
+        ];
         let output = run_program_with_env(backend, program, &env);
         assert!(
             output.status.success(),
@@ -286,11 +301,136 @@ app "demo":
             String::from_utf8_lossy(&output.stderr)
         );
         server.join().expect("join scripted upstream server");
+        tls_server.join().expect("join scripted upstream tls server");
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
-            "STATUS:http_status:404:missing\nTLS:unsupported_scheme\n",
+            "STATUS:http_status:404:missing\nTLS:tls_error\n",
             "{backend} stdout"
         );
+    }
+}
+
+#[test]
+fn http_client_https_success_across_backends() {
+    if skip_if_loopback_unavailable("http_client_https_success_across_backends") {
+        return;
+    }
+    let program = r#"
+requires network
+
+app "demo":
+  let result = http.get(env("UPSTREAM_TLS") ?? "", {"x-test": "yes"}, 1000)
+  match result:
+    Ok(resp):
+      print("HTTPS:${resp.status}:${resp.headers["x-reply"] ?? ""}:${resp.body}")
+    Err(err):
+      print("ERR:${err.code}")
+"#;
+
+    for backend in ["ast", "native"] {
+        let (tls_port, cert_pem, tls_server) =
+            spawn_scripted_https_server(vec![ScriptedHttpExchange {
+                request_line: "GET /secure HTTP/1.1".to_string(),
+                request_contains: vec!["x-test: yes".to_string()],
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Reply: ok\r\n\r\nhi"
+                    .to_string(),
+            }]);
+        let cert_path = write_temp_file("fuse_https_root", "pem", &cert_pem);
+        let output = run_program_with_env(
+            backend,
+            program,
+            &[
+                (
+                    "UPSTREAM_TLS".to_string(),
+                    format!("https://127.0.0.1:{tls_port}/secure"),
+                ),
+                (
+                    "FUSE_EXTRA_CA_CERT_FILE".to_string(),
+                    cert_path.to_string_lossy().to_string(),
+                ),
+            ],
+        );
+        let _ = fs::remove_file(&cert_path);
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        tls_server.join().expect("join scripted upstream tls server");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "HTTPS:200:ok:hi\n");
+    }
+}
+
+#[test]
+fn http_client_timeout_and_outbound_observability_across_backends() {
+    if skip_if_loopback_unavailable("http_client_timeout_and_outbound_observability_across_backends") {
+        return;
+    }
+    let program = r#"
+requires network
+
+app "demo":
+  let ok = http.get(env("UPSTREAM_OK") ?? "", {}, 1000)
+  match ok:
+    Ok(resp):
+      print("OK:${resp.status}:${resp.body}")
+    Err(err):
+      print("unexpected")
+
+  let slow = http.get(env("UPSTREAM_SLOW") ?? "", {}, 50)
+  match slow:
+    Ok(resp):
+      print("unexpected")
+    Err(err):
+      print("TIMEOUT:${err.code}:${err.message}")
+"#;
+
+    for backend in ["ast", "native"] {
+        let (ok_port, ok_server) = spawn_scripted_http_server(vec![ScriptedHttpExchange {
+            request_line: "GET /ok HTTP/1.1".to_string(),
+            request_contains: Vec::new(),
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_string(),
+        }]);
+        let (slow_port, slow_server) = spawn_delayed_http_server(DelayedHttpExchange {
+            request_line: "GET /slow HTTP/1.1".to_string(),
+            request_contains: Vec::new(),
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nslow".to_string(),
+            delay: std::time::Duration::from_millis(150),
+        });
+        let output = run_program_with_env(
+            backend,
+            program,
+            &[
+                ("UPSTREAM_OK".to_string(), format!("http://127.0.0.1:{ok_port}/ok")),
+                (
+                    "UPSTREAM_SLOW".to_string(),
+                    format!("http://127.0.0.1:{slow_port}/slow"),
+                ),
+                ("FUSE_REQUEST_LOG".to_string(), "structured".to_string()),
+                ("FUSE_METRICS_HOOK".to_string(), "stderr".to_string()),
+            ],
+        );
+        ok_server.join().expect("join ok upstream server");
+        slow_server.join().expect("join slow upstream server");
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("OK:200:ok\n"), "{backend} stdout: {stdout}");
+        assert!(
+            stdout.contains("TIMEOUT:timeout:get http://127.0.0.1:")
+                && stdout.contains("timed out during read after 50ms"),
+            "{backend} stdout: {stdout}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("\"event\":\"http.client.request\""), "{backend} stderr: {stderr}");
+        assert!(stderr.contains("\"metric\":\"http.client.request\""), "{backend} stderr: {stderr}");
+        assert!(stderr.contains(&format!("\"runtime\":\"{backend}\"")), "{backend} stderr: {stderr}");
+        assert!(stderr.contains("\"outcome\":\"success\""), "{backend} stderr: {stderr}");
+        assert!(stderr.contains("\"outcome\":\"error\""), "{backend} stderr: {stderr}");
+        assert!(stderr.contains("\"error_code\":\"timeout\""), "{backend} stderr: {stderr}");
     }
 }
 

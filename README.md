@@ -198,16 +198,24 @@ Modules with `requires network` can also issue outbound HTTP requests:
 - `http.get(url: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error`
 - `http.post(url: String, body: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error`
 
-`0.9.6` intentionally supports `http://` only. `https://...` fails with `Err(http.error)` and code
-`unsupported_scheme`.
+The outbound client supports both `http://` and validated `https://` URLs.
 
 Runtime behavior:
 
 - `2xx` responses return `Ok(http.response)`
 - non-`2xx` responses return `Err(http.error)` with `code = "http_status"`
+- HTTPS certificate and hostname validation failures return `Err(http.error)` with
+  `code = "tls_error"`
 - `timeout_ms` defaults to `30000`; `0` disables the socket timeout
+- timeout messages identify the failing transport phase when available (for example connect, TLS
+  handshake, write, or read)
 - request/response bodies are plain `String`
+- request headers are normalized to lowercase; `host`, `connection`, and `content-length` are
+  runtime-owned and rejected if supplied by user code
 - response/error headers are exposed as `Map<String, String>` with lowercase header names
+- redirects remain manual in `0.9.x`; `3xx` responses surface as `http_status`
+- when `FUSE_REQUEST_LOG=structured` or `FUSE_METRICS_HOOK=stderr` is enabled, outbound requests
+  also emit `http.client.request` observability events
 
 Response and error shapes:
 

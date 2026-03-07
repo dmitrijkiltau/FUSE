@@ -4,9 +4,14 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::net::TcpStream;
+use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+use rcgen::generate_simple_self_signed;
+use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls::{ServerConfig, ServerConnection, StreamOwned};
 
 #[derive(Debug)]
 pub struct HttpResponse {
@@ -20,6 +25,14 @@ pub struct ScriptedHttpExchange {
     pub request_line: String,
     pub request_contains: Vec<String>,
     pub response: String,
+}
+
+#[derive(Debug)]
+pub struct DelayedHttpExchange {
+    pub request_line: String,
+    pub request_contains: Vec<String>,
+    pub response: String,
+    pub delay: Duration,
 }
 
 pub fn send_http_request_with_retry(port: u16, request: &str) -> HttpResponse {
@@ -92,6 +105,102 @@ pub fn spawn_scripted_http_server(
     (port, handle)
 }
 
+pub fn spawn_delayed_http_server(exchange: DelayedHttpExchange) -> (u16, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind delayed upstream server");
+    let port = listener.local_addr().expect("delayed upstream addr").port();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept delayed upstream request");
+        let request = read_http_request(&mut stream);
+        let first_line = request.lines().next().unwrap_or("");
+        assert_eq!(first_line, exchange.request_line, "delayed upstream request line");
+        for needle in &exchange.request_contains {
+            assert!(
+                request.contains(needle),
+                "delayed upstream request missing `{needle}` in {request}"
+            );
+        }
+        thread::sleep(exchange.delay);
+        stream
+            .write_all(exchange.response.as_bytes())
+            .expect("write delayed upstream response");
+    });
+    (port, handle)
+}
+
+pub fn spawn_scripted_https_server(
+    exchanges: Vec<ScriptedHttpExchange>,
+) -> (u16, String, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind scripted upstream tls server");
+    let port = listener.local_addr().expect("scripted upstream tls addr").port();
+    let (tls_config, cert_pem) = build_test_tls_identity();
+    let tls_config = Arc::new(tls_config);
+    let handle = thread::spawn(move || {
+        for exchange in exchanges {
+            let (tcp_stream, _) = listener.accept().expect("accept scripted upstream tls request");
+            let _ = tcp_stream.set_read_timeout(Some(Duration::from_millis(500)));
+            let _ = tcp_stream.set_write_timeout(Some(Duration::from_millis(500)));
+            let connection = ServerConnection::new(Arc::clone(&tls_config))
+                .expect("create scripted upstream tls server connection");
+            let mut stream = StreamOwned::new(connection, tcp_stream);
+            let request = read_http_request_from(&mut stream);
+            let first_line = request.lines().next().unwrap_or("");
+            assert_eq!(first_line, exchange.request_line, "upstream tls request line");
+            for needle in &exchange.request_contains {
+                assert!(
+                    request.contains(needle),
+                    "upstream tls request missing `{needle}` in {request}"
+                );
+            }
+            stream
+                .write_all(exchange.response.as_bytes())
+                .expect("write scripted upstream tls response");
+            stream.conn.send_close_notify();
+            stream.flush().expect("flush scripted upstream tls response");
+        }
+    });
+    (port, cert_pem, handle)
+}
+
+pub fn spawn_handshake_only_https_server() -> (u16, String, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind handshake-only tls server");
+    let port = listener.local_addr().expect("handshake-only tls addr").port();
+    let (tls_config, cert_pem) = build_test_tls_identity();
+    let tls_config = Arc::new(tls_config);
+    let handle = thread::spawn(move || {
+        let (mut tcp_stream, _) = listener.accept().expect("accept handshake-only tls request");
+        let _ = tcp_stream.set_read_timeout(Some(Duration::from_millis(500)));
+        let _ = tcp_stream.set_write_timeout(Some(Duration::from_millis(500)));
+        let mut connection = ServerConnection::new(tls_config).expect("create tls server connection");
+        loop {
+            match connection.complete_io(&mut tcp_stream) {
+                Ok(_) if !connection.is_handshaking() => break,
+                Ok(_) => continue,
+                Err(_) => return,
+            }
+        }
+        let mut stream = StreamOwned::new(connection, tcp_stream);
+        let _ = read_http_request_from(&mut stream);
+    });
+    (port, cert_pem, handle)
+}
+
+fn build_test_tls_identity() -> (ServerConfig, String) {
+    let certified = generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+        .expect("generate test tls certificate");
+    let cert_pem = certified.cert.pem();
+    let cert_chain = vec![certified.cert.der().clone()];
+    let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+        certified.key_pair.serialize_der(),
+    ));
+    (
+        ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(cert_chain, private_key)
+            .expect("build test tls server config"),
+        cert_pem,
+    )
+}
+
 fn parse_http_response(raw: &str) -> HttpResponse {
     let mut parts = raw.splitn(2, "\r\n\r\n");
     let head = parts.next().unwrap_or("");
@@ -119,6 +228,10 @@ fn parse_http_response(raw: &str) -> HttpResponse {
 
 fn read_http_request(stream: &mut TcpStream) -> String {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    read_http_request_from(stream)
+}
+
+fn read_http_request_from<R: Read>(stream: &mut R) -> String {
     let mut buffer = Vec::new();
     let mut temp = [0u8; 1024];
     let mut expected_len = None;

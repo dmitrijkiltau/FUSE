@@ -557,19 +557,32 @@ Typed env parsing notes:
 HTTP client notes:
 
 - outbound client calls are blocking runtime operations
-- `0.9.6` supports `http://` only; `https://...` returns `Err(http.error)` with
-  `code = "unsupported_scheme"`
+- supported outbound schemes are `http://` and validated `https://`; any other well-formed scheme
+  returns `Err(http.error)` with `code = "unsupported_scheme"`
 - `2xx` responses return `Ok(http.response)`; non-`2xx` responses return `Err(http.error)` with
   `code = "http_status"`
+- HTTPS handshake and certificate-validation failures return `Err(http.error)` with
+  `code = "tls_error"`
 - `timeout_ms` defaults to `30000`; `0` disables the timeout; negative values are invalid requests
+- timeout failures use `code = "timeout"` and include the failing phase in the message when the
+  runtime can distinguish it (`connect`, `tls handshake`, `write`, or `read`)
 - request/response bodies are `String`
 - request headers are sent after lowercase normalization; `host`, `connection`, and
   `content-length` are reserved and rejected if supplied by user code
+- malformed URLs use `code = "invalid_url"`; other request-shaping failures such as invalid
+  timeout/header/method data use `code = "invalid_request"`
+- DNS/connect failures use `code = "network_error"`; malformed HTTP response bytes use
+  `code = "invalid_response"`
+- redirects remain manual in `0.9.x`; `3xx` responses surface through the same `http_status`
+  error contract as other non-`2xx` responses
 - `http.response` fields: `method: String`, `url: String`, `status: Int`,
   `headers: Map<String, String>`, `body: String`
 - `http.error` fields: `code: String`, `message: String`, `method: String`, `url: String`,
   `status: Int?`, `headers: Map<String, String>`, `body: String?`
 - response/error header maps expose lowercase header names
+- when structured request logs or stderr metrics hooks are enabled, outbound requests emit
+  `http.client.request` events carrying runtime, method, URL, outcome, status, response bytes,
+  and error-code fields where available
 
 Imported asset runtime values:
 
