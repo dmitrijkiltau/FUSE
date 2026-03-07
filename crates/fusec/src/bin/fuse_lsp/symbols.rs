@@ -5,6 +5,7 @@ use fusec::ast::{
     Pattern, PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, TypeDerive, TypeRef,
     TypeRefKind,
 };
+use fusec::loader::{ImportPathKind, classify_import_path};
 use fusec::span::Span;
 
 pub(crate) struct Index {
@@ -651,13 +652,28 @@ impl<'a> IndexBuilder<'a> {
                 );
             }
             ImportSpec::ModuleFrom { name, .. } => {
-                self.define_global(
-                    name,
-                    SymbolKind::Module,
-                    format!("module {}", name.name),
-                    None,
-                    None,
-                );
+                match &decl.spec {
+                    ImportSpec::ModuleFrom { path, .. }
+                        if matches!(classify_import_path(&path.value), ImportPathKind::Asset(_)) =>
+                    {
+                        self.define_global(
+                            name,
+                            SymbolKind::Variable,
+                            format!("import {}", name.name),
+                            None,
+                            None,
+                        );
+                    }
+                    _ => {
+                        self.define_global(
+                            name,
+                            SymbolKind::Module,
+                            format!("module {}", name.name),
+                            None,
+                            None,
+                        );
+                    }
+                }
             }
             ImportSpec::AliasFrom { alias, .. } => {
                 self.define_global(

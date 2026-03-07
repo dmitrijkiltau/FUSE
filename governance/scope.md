@@ -64,6 +64,8 @@ See also: [Runtime semantics](../spec/runtime.md), [README](../README.md).
 FUSE is currently scoped as a strict, typed language with integrated boundary/runtime tooling for:
 
 - language authoring (`fn`, `type`, `enum`, modules/imports, services/config/apps)
+- fixed built-in asset value imports for `.md` and `.json` through ordinary `import` syntax,
+  without opening a generalized loader/plugin system
 - backend execution across AST/native with semantic parity gates (including operator semantics such as `Bool` equality/inequality); VM removed per RFC 0007
 - integrated runtime boundary handling (validation, JSON/config/CLI/HTTP binding, error mapping)
 - compile-time module capability declarations (`requires db|crypto|network|time`) with
@@ -147,5 +149,6 @@ Additional scope non-goals:
 
 - full ORM / heavyweight query language
 - "everything async by default"
+- user-defined import loaders or generalized compile-time file-reader plugin APIs
 
 See also: [FUSE identity charter](IDENTITY_CHARTER.md), [README](../README.md).

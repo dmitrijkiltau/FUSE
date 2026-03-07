@@ -34,6 +34,7 @@ APP_PORT=4000 ./scripts/fuse run examples/http_users.fuse
 | `types_patterns.fuse` | Enums, structs, and pattern matching (Option/Result) |
 | `project_demo.fuse` | Config env overrides, refined types, enums, and match |
 | `interp_demo.fuse` | String interpolation |
+| `markdown_import.fuse` | Markdown asset import (`./markdown_import.md`) as raw `String` |
 | `spawn_error.fuse` | Spawn/await task failure propagation |
 | `box_shared.fuse` | Shared `box` state mutation |
 | `transaction_demo.fuse` | `transaction:` commit/rollback behavior with typed error result |
@@ -46,6 +47,7 @@ APP_PORT=4000 ./scripts/fuse run examples/http_users.fuse
 | `float_compare.fuse` | Float comparison semantics |
 | `task_api.fuse` | Spawn/await task workflow |
 | `refinement_demo.fuse` | Refinement constraints (`range`, `regex`, `predicate`) |
+| `json_import.fuse` | JSON asset import (`./json_import.json`) as a decoded runtime value |
 | `json_codec.fuse` | `json.encode` / `json.decode` round-trip |
 | `time_crypto.fuse` | `time.*` and `crypto.*` runtime APIs |
 | `db_query_builder.fuse` | DB query-builder workflow with typed read projections (`db.from(...).one<T>()` / `.all<T>()`) |

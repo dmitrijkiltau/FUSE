@@ -247,6 +247,21 @@ fn main():
 }
 
 #[test]
+fn parses_asset_imports() {
+    let src = r#"
+import Docs from "./README.md"
+import Seed from "root:fixtures/seed.json"
+import Auth from "dep:Fixtures/auth/login.json"
+
+fn main():
+  print(Docs)
+  print(json.encode(Seed))
+  print(json.encode(Auth))
+"#;
+    assert_parse_ok(src);
+}
+
+#[test]
 fn parses_multiline_postfix_chain() {
     let src = r#"
 fn get_note(id: Id) -> Map<String, String>!std.Error.NotFound:

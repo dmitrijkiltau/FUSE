@@ -5,6 +5,7 @@ use crate::ast::{
     ServiceDecl, TypeDecl, TypeRef, TypeRefKind,
 };
 use crate::diag::Diagnostics;
+use crate::loader::{ImportPathKind, classify_import_path};
 use crate::span::Span;
 
 #[derive(Clone, Debug, Default)]
@@ -105,6 +106,8 @@ pub struct ImportInfo {
 pub enum ImportKind {
     Module,
     Item,
+    AssetMarkdown,
+    AssetJson,
 }
 
 pub fn collect(program: &Program, diags: &mut Diagnostics) -> ModuleSymbols {
@@ -176,12 +179,21 @@ fn collect_import(
             }
         }
         ImportSpec::ModuleFrom { name, path } => {
+            let kind = match classify_import_path(&path.value) {
+                ImportPathKind::Asset(crate::loader::ImportedAssetKind::Markdown) => {
+                    ImportKind::AssetMarkdown
+                }
+                ImportPathKind::Asset(crate::loader::ImportedAssetKind::Json) => {
+                    ImportKind::AssetJson
+                }
+                _ => ImportKind::Module,
+            };
             if register_name(&name.name, name.span, names, diags) {
                 imports.insert(
                     name.name.clone(),
                     ImportInfo {
                         name: name.name.clone(),
-                        kind: ImportKind::Module,
+                        kind,
                         path: Some(path.value.clone()),
                         span: name.span,
                     },

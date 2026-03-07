@@ -64,23 +64,18 @@ fn workspace_diags_for_uri(state: &mut LspState, uri: &str) -> Option<Vec<Diag>>
 
     if full_cache_warm || focus_is_entry || force_full {
         if let Some(snapshot) = build_workspace_snapshot_cached(state, uri) {
+            let loader_diags = loader_diags_for_path(&snapshot.loader_diags, &focus_key);
             if let Some(module_id) = snapshot.module_ids_by_path.get(&focus_key).copied() {
                 let (_, sema_diags) = sema::analyze_module(&snapshot.registry, module_id);
-                let mut diags = Vec::new();
-                for diag in &snapshot.loader_diags {
-                    if diag.path.is_none() {
-                        diags.push(diag.clone());
-                        continue;
-                    }
-                    if let Some(path) = diag.path.as_ref() {
-                        let key = path.canonicalize().unwrap_or_else(|_| path.clone());
-                        if key == focus_key {
-                            diags.push(diag.clone());
-                        }
-                    }
-                }
+                let mut diags = loader_diags;
                 diags.extend(sema_diags);
                 return Some(diags);
+            }
+            if !loader_diags.is_empty() {
+                return Some(loader_diags);
+            }
+            if is_imported_asset_path(&snapshot.registry, &focus_key) {
+                return Some(loader_diags);
             }
             // File not in full workspace registry — fall through to progressive.
         }
@@ -90,23 +85,19 @@ fn workspace_diags_for_uri(state: &mut LspState, uri: &str) -> Option<Vec<Diag>>
     // Used when the cache is cold and the file is not the workspace entry, so
     // the first diagnostics response is not blocked on a full workspace build.
     let snap = build_progressive_snapshot_cached(state, uri)?;
-    let module_id = *snap.module_ids_by_path.get(&focus_key)?;
-    let (_, sema_diags) = sema::analyze_module(&snap.registry, module_id);
-    let mut diags = Vec::new();
-    for diag in &snap.loader_diags {
-        if diag.path.is_none() {
-            diags.push(diag.clone());
-            continue;
-        }
-        if let Some(path) = diag.path.as_ref() {
-            let key = path.canonicalize().unwrap_or_else(|_| path.clone());
-            if key == focus_key {
-                diags.push(diag.clone());
-            }
-        }
+    let mut diags = loader_diags_for_path(&snap.loader_diags, &focus_key);
+    if let Some(module_id) = snap.module_ids_by_path.get(&focus_key).copied() {
+        let (_, sema_diags) = sema::analyze_module(&snap.registry, module_id);
+        diags.extend(sema_diags);
+        return Some(diags);
     }
-    diags.extend(sema_diags);
-    Some(diags)
+    if !diags.is_empty() {
+        return Some(diags);
+    }
+    if is_imported_asset_path(&snap.registry, &focus_key) {
+        return Some(diags);
+    }
+    None
 }
 
 fn diagnostics_params(uri: &str, diagnostics: Vec<JsonValue>) -> JsonValue {
@@ -142,4 +133,36 @@ fn to_lsp_diags(text: &str, diags: &[Diag]) -> Vec<JsonValue> {
             JsonValue::Object(out)
         })
         .collect()
+}
+
+fn loader_diags_for_path(loader_diags: &[Diag], focus_key: &std::path::Path) -> Vec<Diag> {
+    let mut out = Vec::new();
+    for diag in loader_diags {
+        if diag.path.is_none() {
+            out.push(diag.clone());
+            continue;
+        }
+        if let Some(path) = diag.path.as_ref() {
+            let key = path.canonicalize().unwrap_or_else(|_| path.clone());
+            if key == focus_key {
+                out.push(diag.clone());
+            }
+        }
+    }
+    out
+}
+
+fn is_imported_asset_path(
+    registry: &fusec::loader::ModuleRegistry,
+    focus_key: &std::path::Path,
+) -> bool {
+    registry.modules.values().any(|unit| {
+        unit.import_assets.values().any(|asset| {
+            asset
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| asset.path.clone())
+                == focus_key
+        })
+    })
 }

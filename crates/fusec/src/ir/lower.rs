@@ -2,6 +2,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
+use fuse_rt::json as rt_json;
+
 use crate::ast::{
     AppDecl, BinaryOp, Block, ComponentDecl, EnumDecl, Expr, ExprKind, FnDecl, Ident, Item,
     Literal, Param, Pattern, PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, TypeRef,
@@ -11,7 +13,9 @@ use crate::callbind::{CallArgSpec, CallBindError, ParamBinding, ParamSpec, bind_
 use crate::frontend::html_shorthand::{CanonicalizationPhase, validate_named_args_for_phase};
 use crate::frontend::html_tag_builtin::should_use_html_tag_builtin;
 use crate::html_tags::{self, HtmlTagKind};
-use crate::loader::{ModuleId, ModuleLink, ModuleMap, ModuleRegistry};
+use crate::loader::{
+    ImportedAsset, ImportedAssetValue, ModuleId, ModuleLink, ModuleMap, ModuleRegistry,
+};
 use crate::span::Span;
 
 use super::{
@@ -128,6 +132,7 @@ fn rewrite_predicate_name_in_refined_arg(
 
 pub fn lower_program(program: &Program, modules: &ModuleMap) -> Result<IrProgram, Vec<String>> {
     let import_items = HashMap::new();
+    let import_assets = HashMap::new();
     let mut module_fn_decls = HashMap::new();
     module_fn_decls.insert(0, collect_function_decls(program));
     let mut lowerer = Lowerer::new(
@@ -135,6 +140,7 @@ pub fn lower_program(program: &Program, modules: &ModuleMap) -> Result<IrProgram
         0,
         modules,
         &import_items,
+        &import_assets,
         Rc::new(module_fn_decls),
         None,
     );
@@ -158,6 +164,7 @@ fn lower_program_in_module(
     module_id: ModuleId,
     modules: &ModuleMap,
     import_items: &HashMap<String, ModuleLink>,
+    import_assets: &HashMap<String, ImportedAsset>,
     module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
     std_error_module_id: Option<ModuleId>,
 ) -> Result<IrProgram, Vec<String>> {
@@ -166,6 +173,7 @@ fn lower_program_in_module(
         module_id,
         modules,
         import_items,
+        import_assets,
         module_fn_decls,
         std_error_module_id,
     );
@@ -211,6 +219,7 @@ pub fn lower_registry(registry: &ModuleRegistry) -> Result<IrProgram, Vec<String
             unit.id,
             &unit.modules,
             &unit.import_items,
+            &unit.import_assets,
             module_fn_decls.clone(),
             std_error_module_id,
         ) {
@@ -237,6 +246,7 @@ struct Lowerer<'a> {
     module_id: ModuleId,
     modules: &'a ModuleMap,
     import_items: &'a HashMap<String, ModuleLink>,
+    import_assets: &'a HashMap<String, ImportedAsset>,
     fn_decls: Rc<HashMap<String, FnDecl>>,
     module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
     functions: HashMap<String, Function>,
@@ -279,6 +289,7 @@ impl<'a> Lowerer<'a> {
         module_id: ModuleId,
         modules: &'a ModuleMap,
         import_items: &'a HashMap<String, ModuleLink>,
+        import_assets: &'a HashMap<String, ImportedAsset>,
         module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
         std_error_module_id: Option<ModuleId>,
     ) -> Self {
@@ -342,6 +353,7 @@ impl<'a> Lowerer<'a> {
             module_id,
             modules,
             import_items,
+            import_assets,
             fn_decls: Rc::new(fn_decls),
             module_fn_decls,
             functions: HashMap::new(),
@@ -408,6 +420,7 @@ impl<'a> Lowerer<'a> {
             &self.builtin_names,
             self.modules,
             self.import_items,
+            self.import_assets,
             self.fn_decls.clone(),
             self.module_fn_decls.clone(),
             self.default_helpers.clone(),
@@ -442,6 +455,7 @@ impl<'a> Lowerer<'a> {
             &self.builtin_names,
             self.modules,
             self.import_items,
+            self.import_assets,
             self.fn_decls.clone(),
             self.module_fn_decls.clone(),
             self.default_helpers.clone(),
@@ -472,6 +486,7 @@ impl<'a> Lowerer<'a> {
                 &self.builtin_names,
                 self.modules,
                 self.import_items,
+                self.import_assets,
                 self.fn_decls.clone(),
                 self.module_fn_decls.clone(),
                 self.default_helpers.clone(),
@@ -521,6 +536,7 @@ impl<'a> Lowerer<'a> {
                     &self.builtin_names,
                     self.modules,
                     self.import_items,
+                    self.import_assets,
                     self.fn_decls.clone(),
                     self.module_fn_decls.clone(),
                     self.default_helpers.clone(),
@@ -623,6 +639,7 @@ impl<'a> Lowerer<'a> {
                 &self.builtin_names,
                 self.modules,
                 self.import_items,
+                self.import_assets,
                 self.fn_decls.clone(),
                 self.module_fn_decls.clone(),
                 self.default_helpers.clone(),
@@ -804,6 +821,7 @@ struct FuncBuilder {
     builtin_names: HashSet<String>,
     modules: ModuleMap,
     import_items: HashMap<String, ModuleLink>,
+    import_assets: HashMap<String, ImportedAsset>,
     loop_stack: Vec<LoopContext>,
     fn_decls: Rc<HashMap<String, FnDecl>>,
     module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
@@ -823,6 +841,7 @@ impl FuncBuilder {
         builtin_names: &HashSet<String>,
         modules: &ModuleMap,
         import_items: &HashMap<String, ModuleLink>,
+        import_assets: &HashMap<String, ImportedAsset>,
         fn_decls: Rc<HashMap<String, FnDecl>>,
         module_fn_decls: Rc<HashMap<ModuleId, HashMap<String, FnDecl>>>,
         default_helpers: Rc<RefCell<HashMap<(String, String), String>>>,
@@ -846,6 +865,7 @@ impl FuncBuilder {
             builtin_names: builtin_names.clone(),
             modules: modules.clone(),
             import_items: import_items.clone(),
+            import_assets: import_assets.clone(),
             loop_stack: Vec::new(),
             fn_decls,
             module_fn_decls,
@@ -1556,6 +1576,8 @@ impl FuncBuilder {
             ExprKind::Ident(ident) => {
                 if let Some(slot) = self.resolve(&ident.name) {
                     self.emit(Instr::LoadLocal(slot));
+                } else if self.lower_imported_asset(&ident.name) {
+                    // Asset imports lower directly to deterministic constants.
                 } else {
                     self.errors
                         .push(format!("unknown identifier {}", ident.name));
@@ -1944,6 +1966,7 @@ impl FuncBuilder {
                     &self.builtin_names,
                     &self.modules,
                     &self.import_items,
+                    &self.import_assets,
                     self.fn_decls.clone(),
                     self.module_fn_decls.clone(),
                     self.default_helpers.clone(),
@@ -2260,6 +2283,7 @@ impl FuncBuilder {
             &self.builtin_names,
             &self.modules,
             &self.import_items,
+            &self.import_assets,
             self.fn_decls.clone(),
             self.module_fn_decls.clone(),
             self.default_helpers.clone(),
@@ -2291,6 +2315,53 @@ impl FuncBuilder {
             Literal::Bool(v) => Const::Bool(*v),
             Literal::String(v) => Const::String(v.clone()),
             Literal::Null => Const::Null,
+        }
+    }
+
+    fn lower_imported_asset(&mut self, name: &str) -> bool {
+        let Some(asset) = self.import_assets.get(name).cloned() else {
+            return false;
+        };
+        self.lower_imported_asset_value(&asset.value);
+        true
+    }
+
+    fn lower_imported_asset_value(&mut self, value: &ImportedAssetValue) {
+        match value {
+            ImportedAssetValue::Markdown(text) => {
+                self.emit(Instr::Push(Const::String(text.clone())));
+            }
+            ImportedAssetValue::Json(json) => self.lower_json_const(json),
+        }
+    }
+
+    fn lower_json_const(&mut self, json: &rt_json::JsonValue) {
+        match json {
+            rt_json::JsonValue::Null => self.emit(Instr::Push(Const::Null)),
+            rt_json::JsonValue::Bool(v) => self.emit(Instr::Push(Const::Bool(*v))),
+            rt_json::JsonValue::Number(v) => {
+                if v.fract() == 0.0 {
+                    self.emit(Instr::Push(Const::Int(*v as i64)));
+                } else {
+                    self.emit(Instr::Push(Const::Float(*v)));
+                }
+            }
+            rt_json::JsonValue::String(text) => {
+                self.emit(Instr::Push(Const::String(text.clone())));
+            }
+            rt_json::JsonValue::Array(items) => {
+                for item in items {
+                    self.lower_json_const(item);
+                }
+                self.emit(Instr::MakeList { len: items.len() });
+            }
+            rt_json::JsonValue::Object(items) => {
+                for (key, value) in items {
+                    self.emit(Instr::Push(Const::String(key.clone())));
+                    self.lower_json_const(value);
+                }
+                self.emit(Instr::MakeMap { len: items.len() });
+            }
         }
     }
 }
