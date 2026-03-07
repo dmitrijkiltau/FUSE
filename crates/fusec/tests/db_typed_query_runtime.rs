@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use fusec::diag::Diag;
 use fusec::interp::{Interpreter, Value};
 use fusec::native::{NativeVm, compile_registry};
 
@@ -69,6 +70,22 @@ fn load_registry(main_path: &Path) -> fusec::loader::ModuleRegistry {
         "unexpected sema diagnostics: {sema_diags:?}"
     );
     registry
+}
+
+fn analyze_registry_diags(src: &str, tag: &str) -> Vec<Diag> {
+    let dir = temp_project_dir(tag);
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let main_path = dir.join("main.fuse");
+    write_file(&main_path, src);
+    let root_src = fs::read_to_string(&main_path).expect("read root source");
+    let (registry, load_diags) = fusec::load_program_with_modules(&main_path, &root_src);
+    assert!(
+        load_diags.is_empty(),
+        "unexpected loader diagnostics: {load_diags:?}"
+    );
+    let (_analysis, sema_diags) = fusec::sema::analyze_registry(&registry);
+    let _ = fs::remove_dir_all(&dir);
+    sema_diags
 }
 
 fn expect_user_struct(value: &Value, expected_id: i64, expected_name: &str) {
@@ -175,4 +192,72 @@ fn typed_query_results_in_native_backend() {
     assert!(matches!(missing, Value::Null));
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn typed_query_missing_select_reports_code_and_expected_fields() {
+    let diags = analyze_registry_diags(
+        r#"
+requires db
+
+type User:
+  id: Int
+  name: String
+
+fn all_users() -> List<User>:
+  return db.from("users").all<User>()
+"#,
+        "missing_select_diag",
+    );
+    assert_eq!(diags.len(), 1, "unexpected diagnostics: {diags:?}");
+    assert_eq!(diags[0].code.as_deref(), Some("FUSE_TYPED_QUERY_SELECT"));
+    assert_eq!(
+        diags[0].message,
+        "typed query requires select([...]) before one<T>()/all<T>(); expected User fields [id, name]"
+    );
+}
+
+#[test]
+fn typed_query_field_mismatch_reports_code_and_missing_fields() {
+    let diags = analyze_registry_diags(
+        r#"
+requires db
+
+type User:
+  id: Int
+  name: String
+
+fn all_users() -> List<User>:
+  return db.from("users").select(["id"]).all<User>()
+"#,
+        "field_mismatch_diag",
+    );
+    assert_eq!(diags.len(), 1, "unexpected diagnostics: {diags:?}");
+    assert_eq!(
+        diags[0].code.as_deref(),
+        Some("FUSE_TYPED_QUERY_FIELD_MISMATCH")
+    );
+    assert_eq!(
+        diags[0].message,
+        "typed query projection for User does not match selected columns: missing [name]; expected fields [id, name]"
+    );
+}
+
+#[test]
+fn typed_query_non_type_result_target_reports_code() {
+    let diags = analyze_registry_diags(
+        r#"
+requires db
+
+fn all_users() -> List<String>:
+  return db.from("users").select(["id"]).all<String>()
+"#,
+        "type_arg_diag",
+    );
+    assert_eq!(diags.len(), 1, "unexpected diagnostics: {diags:?}");
+    assert_eq!(diags[0].code.as_deref(), Some("FUSE_TYPED_QUERY_TYPE_ARG"));
+    assert_eq!(
+        diags[0].message,
+        "typed query result type must be a declared `type`, found String"
+    );
 }

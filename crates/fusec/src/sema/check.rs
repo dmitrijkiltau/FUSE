@@ -17,6 +17,18 @@ use crate::span::Span;
 use super::symbols::ModuleSymbols;
 use super::types::{FnSig, ParamSig, Ty};
 
+const TYPED_QUERY_CALL_DIAG_CODE: &str = "FUSE_TYPED_QUERY_CALL";
+const TYPED_QUERY_TYPE_ARG_DIAG_CODE: &str = "FUSE_TYPED_QUERY_TYPE_ARG";
+const TYPED_QUERY_SELECT_DIAG_CODE: &str = "FUSE_TYPED_QUERY_SELECT";
+const TYPED_QUERY_FIELD_MISMATCH_DIAG_CODE: &str = "FUSE_TYPED_QUERY_FIELD_MISMATCH";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TypedQuerySelectError {
+    MissingSelect,
+    EmptySelect,
+    InvalidColumns,
+}
+
 pub struct Checker<'a> {
     module_id: ModuleId,
     symbols: &'a ModuleSymbols,
@@ -1105,8 +1117,9 @@ impl<'a> Checker<'a> {
         type_args: &[crate::ast::TypeRef],
     ) -> Ty {
         let ExprKind::Member { base, name } = &callee.kind else {
-            self.diags.error(
+            self.diags.error_with_code(
                 span,
+                TYPED_QUERY_CALL_DIAG_CODE,
                 "type arguments are only supported on query.one<T>() and query.all<T>()",
             );
             for arg in args {
@@ -1115,8 +1128,9 @@ impl<'a> Checker<'a> {
             return Ty::Unknown;
         };
         if !matches!(name.name.as_str(), "one" | "all") {
-            self.diags.error(
+            self.diags.error_with_code(
                 span,
+                TYPED_QUERY_CALL_DIAG_CODE,
                 "type arguments are only supported on query.one<T>() and query.all<T>()",
             );
             for arg in args {
@@ -1125,21 +1139,31 @@ impl<'a> Checker<'a> {
             return Ty::Unknown;
         }
         if !args.is_empty() {
-            self.diags
-                .error(span, "typed query methods do not accept arguments");
+            self.diags.error_with_code(
+                span,
+                TYPED_QUERY_CALL_DIAG_CODE,
+                "typed query methods do not accept arguments; use query.one<T>() / query.all<T>() with only a type argument",
+            );
             for arg in args {
                 let _ = self.check_expr(&arg.value);
             }
         }
         if type_args.len() != 1 {
-            self.diags
-                .error(span, "typed query methods expect exactly one type argument");
+            self.diags.error_with_code(
+                span,
+                TYPED_QUERY_TYPE_ARG_DIAG_CODE,
+                format!(
+                    "typed query methods expect exactly one type argument, found {}",
+                    type_args.len()
+                ),
+            );
             return Ty::Unknown;
         }
         let base_ty = self.check_expr(base);
         if !matches!(base_ty, Ty::External(ref name) if name == "query") && !base_ty.is_unknown() {
-            self.diags.error(
+            self.diags.error_with_code(
                 base.span,
+                TYPED_QUERY_CALL_DIAG_CODE,
                 format!("typed query call expects Query receiver, got {base_ty}"),
             );
             return Ty::Unknown;
@@ -1150,17 +1174,18 @@ impl<'a> Checker<'a> {
             Ty::Struct(name) => name.clone(),
             Ty::Unknown => return Ty::Unknown,
             other => {
-                self.diags.error(
+                self.diags.error_with_code(
                     type_args[0].span,
+                    TYPED_QUERY_TYPE_ARG_DIAG_CODE,
                     format!(
-                        "typed query result type must be a declared type, found {}",
+                        "typed query result type must be a declared `type`, found {}",
                         other
                     ),
                 );
                 return Ty::Unknown;
             }
         };
-        self.check_typed_query_projection(base, &struct_name, span);
+        self.check_typed_query_projection(base, &type_args[0], &struct_name, span);
         if name.name == "one" {
             Ty::Option(Box::new(target_ty))
         } else {
@@ -1168,81 +1193,150 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_typed_query_projection(&mut self, base: &Expr, struct_name: &str, span: Span) {
-        let selected = self.extract_query_select_columns(base);
-        let Some(selected) = selected else {
-            self.diags.error(
-                span,
-                "typed query requires select([...]) with string literal columns before one<T>()/all<T>()",
-            );
+    fn check_typed_query_projection(
+        &mut self,
+        base: &Expr,
+        target_type: &crate::ast::TypeRef,
+        struct_name: &str,
+        span: Span,
+    ) {
+        let Some(expected_fields) = self.typed_query_target_fields(target_type, struct_name) else {
             return;
         };
-        if selected.is_empty() {
-            self.diags.error(
-                span,
-                "typed query requires select([...]) with string literal columns before one<T>()/all<T>()",
-            );
-            return;
-        }
-        let Some(info) = self.type_info(struct_name) else {
-            return;
+        let selected = match self.extract_query_select_columns(base) {
+            Ok(selected) => selected,
+            Err(TypedQuerySelectError::MissingSelect) => {
+                self.diags.error_with_code(
+                    span,
+                    TYPED_QUERY_SELECT_DIAG_CODE,
+                    format!(
+                        "typed query requires select([...]) before one<T>()/all<T>(); expected {} fields [{}]",
+                        struct_name,
+                        expected_fields.join(", ")
+                    ),
+                );
+                return;
+            }
+            Err(TypedQuerySelectError::EmptySelect) => {
+                self.diags.error_with_code(
+                    span,
+                    TYPED_QUERY_SELECT_DIAG_CODE,
+                    format!(
+                        "typed query select([...]) cannot be empty for {}; expected fields [{}]",
+                        struct_name,
+                        expected_fields.join(", ")
+                    ),
+                );
+                return;
+            }
+            Err(TypedQuerySelectError::InvalidColumns) => {
+                self.diags.error_with_code(
+                    span,
+                    TYPED_QUERY_SELECT_DIAG_CODE,
+                    format!(
+                        "typed query select([...]) must use string literal columns for {}; expected fields [{}]",
+                        struct_name,
+                        expected_fields.join(", ")
+                    ),
+                );
+                return;
+            }
         };
         let selected_fields: HashSet<String> = selected
             .iter()
             .map(|name| name.rsplit('.').next().unwrap_or(name.as_str()).to_string())
             .collect();
-        let declared_fields: HashSet<String> =
-            info.fields.iter().map(|field| field.name.clone()).collect();
-        if selected_fields == declared_fields {
+        let declared_fields: HashSet<String> = expected_fields.iter().cloned().collect();
+        let mut missing: Vec<String> = expected_fields
+            .iter()
+            .filter(|field| !selected_fields.contains(field.as_str()))
+            .cloned()
+            .collect();
+        let mut unexpected: Vec<String> = selected_fields
+            .iter()
+            .filter(|field| !declared_fields.contains(field.as_str()))
+            .cloned()
+            .collect();
+        if missing.is_empty() && unexpected.is_empty() {
             return;
         }
-        let mut selected_sorted: Vec<String> = selected_fields.into_iter().collect();
-        selected_sorted.sort();
-        let mut declared_sorted: Vec<String> = declared_fields.into_iter().collect();
-        declared_sorted.sort();
-        self.diags.error(
+        missing.sort();
+        unexpected.sort();
+        let mut details = Vec::new();
+        if !missing.is_empty() {
+            details.push(format!("missing [{}]", missing.join(", ")));
+        }
+        if !unexpected.is_empty() {
+            details.push(format!("unexpected [{}]", unexpected.join(", ")));
+        }
+        self.diags.error_with_code(
             span,
+            TYPED_QUERY_FIELD_MISMATCH_DIAG_CODE,
             format!(
-                "typed query column mismatch for {struct_name}: selected [{}], expected [{}]",
-                selected_sorted.join(", "),
-                declared_sorted.join(", ")
+                "typed query projection for {struct_name} does not match selected columns: {}; expected fields [{}]",
+                details.join("; "),
+                expected_fields.join(", ")
             ),
         );
     }
 
-    fn extract_query_select_columns(&self, expr: &Expr) -> Option<Vec<String>> {
+    fn extract_query_select_columns(
+        &self,
+        expr: &Expr,
+    ) -> Result<Vec<String>, TypedQuerySelectError> {
         let ExprKind::Call { callee, args, .. } = &expr.kind else {
-            return None;
+            return Err(TypedQuerySelectError::MissingSelect);
         };
         let ExprKind::Member { base, name } = &callee.kind else {
-            return None;
+            return Err(TypedQuerySelectError::MissingSelect);
         };
         if !is_query_method_name(&name.name) {
-            return None;
+            return Err(TypedQuerySelectError::MissingSelect);
         }
         match name.name.as_str() {
             "select" => {
                 if args.len() != 1 {
-                    return None;
+                    return Err(TypedQuerySelectError::InvalidColumns);
                 }
                 let ExprKind::ListLit(items) = &args[0].value.kind else {
-                    return None;
+                    return Err(TypedQuerySelectError::InvalidColumns);
                 };
+                if items.is_empty() {
+                    return Err(TypedQuerySelectError::EmptySelect);
+                }
                 let mut out = Vec::with_capacity(items.len());
                 for item in items {
                     let ExprKind::Literal(Literal::String(text)) = &item.kind else {
-                        return None;
+                        return Err(TypedQuerySelectError::InvalidColumns);
                     };
                     out.push(text.clone());
                 }
-                Some(out)
+                Ok(out)
             }
             "where" | "order_by" | "limit" | "one" | "all" => {
                 self.extract_query_select_columns(base)
             }
-            "from" => Some(Vec::new()),
-            _ => None,
+            "from" => Err(TypedQuerySelectError::MissingSelect),
+            _ => Err(TypedQuerySelectError::MissingSelect),
         }
+    }
+
+    fn typed_query_target_fields(
+        &self,
+        target_type: &crate::ast::TypeRef,
+        struct_name: &str,
+    ) -> Option<Vec<String>> {
+        if let Some(info) = self.type_info(struct_name) {
+            return Some(info.fields.iter().map(|field| field.name.clone()).collect());
+        }
+        let crate::ast::TypeRefKind::Simple(ident) = &target_type.kind else {
+            return None;
+        };
+        let (module_name, item_name) = split_qualified_type_name(&ident.name)?;
+        let link = self.modules.get(module_name)?;
+        let symbols = self.module_symbols.get(&link.id)?;
+        let info = symbols.types.get(item_name)?;
+        Some(info.fields.iter().map(|field| field.name.clone()).collect())
     }
 
     fn check_index(&mut self, base: &Expr, index: &Expr, is_optional: bool) -> Ty {

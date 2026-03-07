@@ -627,6 +627,11 @@ Typed query constraints:
 - the type argument must be a declared `type`
 - typed query forms require `select([...])` with string-literal columns before `one<T>()`/`all<T>()`
 - selected column names must match the target type field names at compile time
+- qualified column names are matched by their final segment (`users.id` -> `id`) during typed
+  field validation
+- typed-query compiler diagnostics use codes `FUSE_TYPED_QUERY_CALL`,
+  `FUSE_TYPED_QUERY_TYPE_ARG`, `FUSE_TYPED_QUERY_SELECT`, and
+  `FUSE_TYPED_QUERY_FIELD_MISMATCH` in JSON diagnostics output
 
 Parameter binding:
 

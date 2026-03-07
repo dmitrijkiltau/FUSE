@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.5] - 2026-03-07
+
+### Added
+
+- Machine-readable typed query compiler diagnostics:
+  - `FUSE_TYPED_QUERY_CALL`
+  - `FUSE_TYPED_QUERY_TYPE_ARG`
+  - `FUSE_TYPED_QUERY_SELECT`
+  - `FUSE_TYPED_QUERY_FIELD_MISMATCH`
+
+### Changed
+
+- Typed query mismatch diagnostics now distinguish missing/malformed `select([...])` usage,
+  invalid result type arguments, and field mismatches with explicit missing/unexpected field detail.
+- `examples/db_query_builder.fuse` and `examples/reference-service/` now favor typed query
+  projection structs on query-builder reads while preserving existing runtime behavior.
+- Guide/spec docs now include practical component `attrs`/`children` usage guidance and
+  boundary-safe UI composition conventions.
+- Reference-service Docker defaults now target `v0.9.5` tags.
+
+### Migration
+
+- No language/runtime migration is required from `0.9.4` to `0.9.5`.
+- JSON diagnostic consumers can now match typed-query compiler failures via the
+  `FUSE_TYPED_QUERY_*` codes.
+
 ## [0.9.4] - 2026-03-07
 
 ### Added

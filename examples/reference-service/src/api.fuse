@@ -7,6 +7,47 @@ import { anonymous_context, session_context, authenticated_context, scoped_conte
 import Home from "./ui/pages/home"
 import NotesUi from "./ui/components/notes"
 
+type NoteIdRow:
+  id: String
+
+type NoteOwnerRow:
+  owner_id: String
+
+type OwnedNoteRow:
+  id: String
+  title: String
+  content: String
+  is_public: String
+
+type NoteDraftRow:
+  id: String
+  title: String
+  content: String
+
+fn owned_note_to_map(row: OwnedNoteRow) -> Map<String, String>:
+  return {
+    "id": row.id,
+    "title": row.title,
+    "content": row.content,
+    "is_public": row.is_public
+  }
+
+fn owned_note_to_note(row: OwnedNoteRow) -> Note:
+  return Note(
+    id=NoteId(value=row.id),
+    title=row.title,
+    content=row.content,
+    published=row.is_public == "1"
+  )
+
+fn note_draft_to_note(row: NoteDraftRow, published: Bool) -> Note:
+  return Note(
+    id=NoteId(value=row.id),
+    title=row.title,
+    content=row.content,
+    published=published
+  )
+
 fn new_note_id() -> NoteId!BadRequest:
   var seed = ""
   transaction:
@@ -53,28 +94,28 @@ service ReferenceService at "/":
   # Get a single note by id for the authenticated session owner only.
   get "/api/sessions/{token: String}/notes/{id: String}" -> Map<String, String>!NotFound!Unauthorized!Forbidden:
     let ctx = scoped_context(token, "notes:read") ?!
-    var row = {"id": "", "title": "", "content": "", "is_public": "0"}
+    var row = OwnedNoteRow(id="", title="", content="", is_public="0")
     transaction:
       row = db
         .from("notes")
         .select(["id", "title", "content", "is_public"])
         .where("owner_id", "=", request_context_user_id(ctx))
         .where("id", "=", id)
-        .one()
+        .one<OwnedNoteRow>()
         ?! NotFound(message="not found")
-    return row
+    return owned_note_to_map(row)
 
   # Update a note by id for the authenticated session owner only.
   put "/api/sessions/{token: String}/notes/{id: String}" body NoteCreate -> Note!NotFound!Unauthorized!Forbidden!BadRequest:
     let ctx = scoped_context(token, "notes:write") ?!
-    var row = {"id": "", "title": "", "content": "", "is_public": "0"}
+    var row = OwnedNoteRow(id="", title="", content="", is_public="0")
     transaction:
       db
         .from("notes")
         .select(["id"])
         .where("owner_id", "=", request_context_user_id(ctx))
         .where("id", "=", id)
-        .one()
+        .one<NoteIdRow>()
         ?! NotFound(message="not found")
       db.exec(
         "update notes set title = ?, content = ? where id = ? and owner_id = ?",
@@ -85,15 +126,9 @@ service ReferenceService at "/":
         .select(["id", "title", "content", "is_public"])
         .where("owner_id", "=", request_context_user_id(ctx))
         .where("id", "=", id)
-        .one()
+        .one<OwnedNoteRow>()
         ?! NotFound(message="not found")
-    let published = row["is_public"] == "1"
-    return Note(
-      id=NoteId(value=row["id"]),
-      title=row["title"],
-      content=row["content"],
-      published=published
-    )
+    return owned_note_to_note(row)
 
   # Create a new note for the authenticated session owner.
   post "/api/sessions/{token: String}/notes" body NoteCreate -> Note!Unauthorized!Forbidden!BadRequest:
@@ -109,7 +144,7 @@ service ReferenceService at "/":
   # Set note visibility for the authenticated session owner.
   put "/api/sessions/{token: String}/notes/{id: String}/visibility" body NoteVisibilityUpdate -> Note!NotFound!Unauthorized!Forbidden!BadRequest:
     let ctx = scoped_context(token, "notes:write") ?!
-    var row = {"id": "", "title": "", "content": ""}
+    var row = NoteDraftRow(id="", title="", content="")
     var is_public = "0"
     var published = false
     if body.published == "1":
@@ -123,7 +158,7 @@ service ReferenceService at "/":
         .select(["id", "title", "content"])
         .where("owner_id", "=", request_context_user_id(ctx))
         .where("id", "=", id)
-        .one()
+        .one<NoteDraftRow>()
         ?! NotFound(message="not found")
       db
         .from("notes")
@@ -131,12 +166,7 @@ service ReferenceService at "/":
         .where("id", "=", id)
         .where("owner_id", "=", request_context_user_id(ctx))
         .exec()
-    return Note(
-      id=NoteId(value=row["id"]),
-      title=row["title"],
-      content=row["content"],
-      published=published
-    )
+    return note_draft_to_note(row, published)
 
   # Delete a note by id for the authenticated session owner.
   delete "/api/sessions/{token: String}/notes/{id: String}" -> Unit!Unauthorized!Forbidden:
@@ -158,9 +188,9 @@ service ReferenceService at "/":
         .select(["owner_id"])
         .where("is_public", "=", "1")
         .where("id", "=", id)
-        .one()
+        .one<NoteOwnerRow>()
         ?! NotFound(message="not found")
-      if note["owner_id"] == request_context_user_id(ctx):
+      if note.owner_id == request_context_user_id(ctx):
         null ?! Forbidden(message="cannot like your own note")
       db.exec(
         "insert or ignore into note_likes (note_id, user_id) values (?, ?)",
@@ -175,9 +205,9 @@ service ReferenceService at "/":
         .select(["owner_id"])
         .where("is_public", "=", "1")
         .where("id", "=", id)
-        .one()
+        .one<NoteOwnerRow>()
         ?! NotFound(message="not found")
-      if note["owner_id"] == request_context_user_id(ctx):
+      if note.owner_id == request_context_user_id(ctx):
         null ?! Forbidden(message="cannot unlike your own note")
       db.exec(
         "delete from note_likes where note_id = ? and user_id = ?",
@@ -262,7 +292,7 @@ from notes n where n.is_public = "1" and n.id = ?""",
         .select(["id"])
         .where("owner_id", "=", request_context_user_id(ctx))
         .where("id", "=", id)
-        .one()
+        .one<NoteIdRow>()
         ?! NotFound(message="not found")
       db
         .from("notes")
@@ -286,7 +316,7 @@ from notes n where n.is_public = "1" and n.id = ?""",
         .select(["id"])
         .where("owner_id", "=", request_context_user_id(ctx))
         .where("id", "=", id)
-        .one()
+        .one<NoteIdRow>()
         ?! NotFound(message="not found")
       db
         .from("notes")
@@ -315,9 +345,9 @@ from notes n where n.is_public = "1" and n.id = ?""",
         .select(["owner_id"])
         .where("is_public", "=", "1")
         .where("id", "=", id)
-        .one()
+        .one<NoteOwnerRow>()
         ?! NotFound(message="not found")
-      if note["owner_id"] == request_context_user_id(ctx):
+      if note.owner_id == request_context_user_id(ctx):
         null ?! Forbidden(message="cannot like your own note")
       db.exec(
         "insert or ignore into note_likes (note_id, user_id) values (?, ?)",
@@ -333,9 +363,9 @@ from notes n where n.is_public = "1" and n.id = ?""",
         .select(["owner_id"])
         .where("is_public", "=", "1")
         .where("id", "=", id)
-        .one()
+        .one<NoteOwnerRow>()
         ?! NotFound(message="not found")
-      if note["owner_id"] == request_context_user_id(ctx):
+      if note.owner_id == request_context_user_id(ctx):
         null ?! Forbidden(message="cannot unlike your own note")
       db.exec(
         "delete from note_likes where note_id = ? and user_id = ?",
