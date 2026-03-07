@@ -260,6 +260,9 @@ Global CLI output option:
   `kind="diagnostic"`, `level`, `code?`, `message`, `path?`, `line?`, `column?`, `span_start`, `span_end`.
   Loader/import diagnostics now use stable codes including `FUSE_IMPORT_*`, `FUSE_ASSET_*`,
   `FUSE_DEP_CYCLE`, `FUSE_TYPE_DERIVE_*`, and `FUSE_SYMBOL_DUPLICATE`.
+  Runtime execution failures emitted through the validation envelope use stable codes such as
+  `runtime_index_bounds`, `runtime_type_error`, `runtime_invalid_arguments`, and
+  `runtime_null_access`, with `runtime_error` retained as the generic fallback.
   Command-step entries use:
   `kind="command_step"`, `command`, `message`.
 - `fuse check|run|build|test|clean` emit consistent stderr step markers:

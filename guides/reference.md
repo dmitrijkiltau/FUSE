@@ -606,6 +606,11 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
     `{"kind":"diagnostic","level":"error|warning","message":"...","path":"...","line":N,"column":N,"span_start":N,"span_end":N}`
   - command-step entries:
     `{"kind":"command_step","command":"check|run|build|test","message":"start|ok|failed|validation failed|..."}`
+- runtime execution failures reported through the validation envelope use stable field codes where
+  possible, including `runtime_null_access`, `runtime_index_bounds`, `runtime_invalid_index`,
+  `runtime_field_access`, `runtime_invalid_assignment_target`, `runtime_task_expected`,
+  `runtime_range_error`, `runtime_type_error`, and `runtime_invalid_arguments`; unmatched failures
+  fall back to `runtime_error`
 - keeps JSON validation payloads uncolored/machine-readable
 - `run` CLI argument validation failures exit with code `2`
 

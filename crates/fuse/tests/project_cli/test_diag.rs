@@ -495,3 +495,94 @@ app "Demo":
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn run_diagnostics_json_classifies_runtime_index_bounds_for_ast_and_native() {
+    for backend in ["ast", "native"] {
+        let dir = temp_project_dir();
+        fs::create_dir_all(&dir).expect("create temp dir");
+        write_basic_manifest_project(
+            &dir,
+            r#"
+fn main():
+  let xs = [1]
+  print(xs[3])
+
+app "Demo":
+  main()
+"#,
+        );
+
+        let exe = env!("CARGO_BIN_EXE_fuse");
+        let output = Command::new(exe)
+            .arg("run")
+            .arg("--manifest-path")
+            .arg(&dir)
+            .arg("--backend")
+            .arg(backend)
+            .arg("--diagnostics")
+            .arg("json")
+            .arg("--color")
+            .arg("never")
+            .output()
+            .expect("run fuse run --diagnostics json");
+        assert_eq!(output.status.code(), Some(1), "status: {:?}", output.status);
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("\"message\":\"validation failed\""),
+            "stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("\"code\":\"runtime_index_bounds\""),
+            "backend={backend} stderr: {stderr}"
+        );
+        assert!(stderr.contains("index out of bounds"), "stderr: {stderr}");
+        assert!(stderr.contains("\"message\":\"failed\""), "stderr: {stderr}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn run_diagnostics_json_classifies_runtime_type_errors() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+fn main():
+  let left = [1]
+  let right = [1]
+  print(left == right)
+
+app "Demo":
+  main()
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--diagnostics")
+        .arg("json")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse run --diagnostics json");
+    assert_eq!(output.status.code(), Some(1), "status: {:?}", output.status);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("\"code\":\"runtime_type_error\""),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("unsupported comparison"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

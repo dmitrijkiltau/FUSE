@@ -8,6 +8,8 @@ use std::time::SystemTime;
 use fuse_rt::error::{ValidationError, ValidationField};
 use fuse_rt::json as rt_json;
 
+use crate::cli_output::diagnostics_json_enabled;
+
 pub(crate) struct BuildArtifacts {
     pub(crate) native: fusec::native::NativeProgram,
     pub(crate) meta: super::IrMeta,
@@ -851,7 +853,11 @@ pub(crate) fn run_native_program(
         return match vm.run_app(app) {
             Ok(_) => 0,
             Err(err) => {
-                super::emit_cli_error(&format!("run error: {err}"));
+                if diagnostics_json_enabled() {
+                    emit_validation_error("$", classify_runtime_error_code(&err), &err);
+                } else {
+                    super::emit_cli_error(&format!("run error: {err}"));
+                }
                 1
             }
         };
@@ -1077,6 +1083,47 @@ fn emit_error_json_message(message: &str) {
     if message.trim_start().starts_with('{') {
         eprintln!("{message}");
     } else {
-        emit_validation_error("$", "runtime_error", message);
+        emit_validation_error("$", classify_runtime_error_code(message), message);
     }
+}
+
+fn classify_runtime_error_code(message: &str) -> &'static str {
+    let message = message.trim();
+    if message == "null access" {
+        return "runtime_null_access";
+    }
+    if message == "index out of bounds" {
+        return "runtime_index_bounds";
+    }
+    if message == "list index must be Int" || message == "map keys must be strings" {
+        return "runtime_invalid_index";
+    }
+    if message.starts_with("field lookup failed:") {
+        return "runtime_field_access";
+    }
+    if message == "assignment target must be an indexable value"
+        || message == "assignment target must be a struct field"
+    {
+        return "runtime_invalid_assignment_target";
+    }
+    if message == "await expects a Task value" {
+        return "runtime_task_expected";
+    }
+    if message.starts_with("range expects")
+        || message == "range start must be <= end"
+        || message == "invalid range bounds"
+    {
+        return "runtime_range_error";
+    }
+    if message.starts_with("unsupported comparison")
+        || message == "unsupported + operands"
+        || message == "cannot iterate over value"
+        || message.starts_with("expected iterator, got")
+    {
+        return "runtime_type_error";
+    }
+    if message.contains(" expects ") || message.starts_with("expected ") {
+        return "runtime_invalid_arguments";
+    }
+    "runtime_error"
 }
