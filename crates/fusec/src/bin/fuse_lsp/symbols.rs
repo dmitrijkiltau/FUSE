@@ -176,6 +176,7 @@ pub(crate) fn span_contains(span: Span, offset: usize) -> bool {
 
 pub(crate) struct QualifiedNameRef {
     pub(crate) span: Span,
+    pub(crate) module_span: Option<Span>,
     pub(crate) module: String,
     pub(crate) item: String,
 }
@@ -320,6 +321,7 @@ fn collect_qualified_expr(expr: &Expr, out: &mut Vec<QualifiedNameRef>) {
                 {
                     out.push(QualifiedNameRef {
                         span: name.span,
+                        module_span: Some(ident.span),
                         module: module.to_string(),
                         item: item.to_string(),
                     });
@@ -334,6 +336,7 @@ fn collect_qualified_expr(expr: &Expr, out: &mut Vec<QualifiedNameRef>) {
                 {
                     out.push(QualifiedNameRef {
                         span: name.span,
+                        module_span: Some(ident.span),
                         module: module.to_string(),
                         item: item.to_string(),
                     });
@@ -345,6 +348,7 @@ fn collect_qualified_expr(expr: &Expr, out: &mut Vec<QualifiedNameRef>) {
             if let Some((module, item)) = split_qualified_name(&name.name) {
                 out.push(QualifiedNameRef {
                     span: name.span,
+                    module_span: None,
                     module: module.to_string(),
                     item: item.to_string(),
                 });
@@ -430,6 +434,7 @@ fn collect_qualified_pattern(pattern: &Pattern, out: &mut Vec<QualifiedNameRef>)
             if let Some((module, item)) = split_qualified_name(&name.name) {
                 out.push(QualifiedNameRef {
                     span: name.span,
+                    module_span: None,
                     module: module.to_string(),
                     item: item.to_string(),
                 });
@@ -442,6 +447,7 @@ fn collect_qualified_pattern(pattern: &Pattern, out: &mut Vec<QualifiedNameRef>)
             if let Some((module, item)) = split_qualified_name(&name.name) {
                 out.push(QualifiedNameRef {
                     span: name.span,
+                    module_span: None,
                     module: module.to_string(),
                     item: item.to_string(),
                 });
@@ -459,6 +465,7 @@ fn collect_qualified_type_ref(ty: &TypeRef, out: &mut Vec<QualifiedNameRef>) {
             if let Some((module, item)) = split_qualified_name(&ident.name) {
                 out.push(QualifiedNameRef {
                     span: ident.span,
+                    module_span: None,
                     module: module.to_string(),
                     item: item.to_string(),
                 });
@@ -468,6 +475,7 @@ fn collect_qualified_type_ref(ty: &TypeRef, out: &mut Vec<QualifiedNameRef>) {
             if let Some((module, item)) = split_qualified_name(&base.name) {
                 out.push(QualifiedNameRef {
                     span: base.span,
+                    module_span: None,
                     module: module.to_string(),
                     item: item.to_string(),
                 });
@@ -487,6 +495,7 @@ fn collect_qualified_type_ref(ty: &TypeRef, out: &mut Vec<QualifiedNameRef>) {
             if let Some((module, item)) = split_qualified_name(&base.name) {
                 out.push(QualifiedNameRef {
                     span: base.span,
+                    module_span: None,
                     module: module.to_string(),
                     item: item.to_string(),
                 });

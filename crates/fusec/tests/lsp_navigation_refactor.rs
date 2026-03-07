@@ -78,6 +78,16 @@ fn main():
     assert!(lsp.wait_diagnostics(&main_uri).is_empty());
 
     let (main_greet_line, main_greet_col) = line_col_of(main_src, "util.greet(\"A\")");
+    let alias_definition = lsp.request(
+        "textDocument/definition",
+        position_params(&main_uri, main_greet_line, main_greet_col + 1),
+    );
+    let alias_definition_text = json::encode(&alias_definition);
+    assert!(
+        alias_definition_text.contains(&util_uri),
+        "definition on module alias receiver should resolve to util module: {alias_definition_text}"
+    );
+
     let definition = lsp.request(
         "textDocument/definition",
         position_params(

@@ -19,6 +19,9 @@ pub(crate) fn handle_definition(
         Some(index) => index,
         None => return JsonValue::Null,
     };
+    if let Some(target_uri) = index.module_ref_target_at(&uri, line, character) {
+        return JsonValue::Array(vec![zero_location_json(target_uri)]);
+    }
     if let Some(target_uri) = index.import_path_target_at(&uri, line, character) {
         return JsonValue::Array(vec![zero_location_json(target_uri)]);
     }
