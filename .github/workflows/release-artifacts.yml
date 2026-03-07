@@ -226,8 +226,10 @@ jobs:
         with:
           name: release-bundle
           path: |
-            dist/fuse-cli-*
-            dist/fuse-aot-*
+            dist/fuse-cli-*.tar.gz
+            dist/fuse-cli-*.zip
+            dist/fuse-aot-*.tar.gz
+            dist/fuse-aot-*.zip
             dist/fuse-vscode-*.vsix
             dist/SHA256SUMS
             dist/SHA256SUMS.sig
@@ -304,14 +306,23 @@ jobs:
           path: tmp/release-bundle
 
       - name: Publish release from generated assets
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          body_path: tmp/release-bundle/RELEASE_NOTES.md
-          files: |
-            tmp/release-bundle/fuse-cli-*
-            tmp/release-bundle/fuse-aot-*
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "release ${GITHUB_REF_NAME} already exists; delete it before republishing this tag" >&2
+            exit 1
+          fi
+
+          assets=(
+            tmp/release-bundle/fuse-cli-*.tar.gz
+            tmp/release-bundle/fuse-cli-*.zip
+            tmp/release-bundle/fuse-aot-*.tar.gz
+            tmp/release-bundle/fuse-aot-*.zip
             tmp/release-bundle/fuse-vscode-*.vsix
             tmp/release-bundle/SHA256SUMS
             tmp/release-bundle/SHA256SUMS.sig
@@ -321,10 +332,18 @@ jobs:
             tmp/release-bundle/release-provenance.json
             tmp/release-bundle/release-provenance.sig
             tmp/release-bundle/release-provenance.pem
-          fail_on_unmatched_files: true
-          generate_release_notes: false
-          draft: false
-          prerelease: false
+          )
+
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo "no release assets found in tmp/release-bundle" >&2
+            exit 1
+          fi
+
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file tmp/release-bundle/RELEASE_NOTES.md \
+            "${assets[@]}"
 
   verify-published:
     name: Verify Published Release Assets
