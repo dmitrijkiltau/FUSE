@@ -2,6 +2,34 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.6] - 2026-03-07
+
+### Added
+
+- Outbound HTTP client builtins across AST/native parity:
+  - `http.request(method, url, body?, headers?, timeout_ms?)`
+  - `http.get(url, headers?, timeout_ms?)`
+  - `http.post(url, body, headers?, timeout_ms?)`
+- New typed HTTP client result surfaces:
+  - `http.response` with `method`, `url`, `status`, `headers`, and `body`
+  - `http.error` with `code`, `message`, `method`, `url`, optional `status`, `headers`, and optional `body`
+- Parser/LSP support for `http.get(...)` / `http.post(...)` member calls and signature/completion help.
+
+### Changed
+
+- `requires network` now also gates outbound `http.*` client calls in semantic analysis.
+- `0.9.6` intentionally limits the first HTTP client surface to `http://` URLs; `https://...`
+  fails fast with `unsupported_scheme`.
+- Non-`2xx` HTTP client responses now resolve to `Err(http.error)` with `code = "http_status"`
+  instead of returning successful response values.
+- Guide/spec/runtime docs now describe the HTTP client API and its capability/runtime contract.
+
+### Migration
+
+- Add `requires network` to any module that now uses `http.request`, `http.get`, or `http.post`.
+- Handle outbound results explicitly as `http.response!http.error`; non-`2xx` statuses no longer
+  count as successful responses.
+
 ## [0.9.5] - 2026-03-07
 
 ### Added

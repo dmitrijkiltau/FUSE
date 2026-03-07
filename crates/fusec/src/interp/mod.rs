@@ -1869,7 +1869,7 @@ impl Interpreter {
         match name {
             "print" | "input" | "env" | "env_int" | "env_float" | "env_bool" | "serve" | "log"
             | "db" | "assert" | "asset" | "json" | "html" | "svg" | "request" | "response"
-            | "time" | "crypto" => Ok(Value::Builtin(name.to_string())),
+            | "http" | "time" | "crypto" => Ok(Value::Builtin(name.to_string())),
             _ if html_tags::is_html_tag(name) => Ok(Value::Builtin(name.to_string())),
             _ => Err(ExecError::Runtime(format!("unknown identifier {name}"))),
         }
@@ -2072,6 +2072,26 @@ impl Interpreter {
                 let json = rt_json::decode(&text)
                     .map_err(|msg| ExecError::Runtime(format!("invalid json: {msg}")))?;
                 Ok(self.json_to_value(&json))
+            }
+            "http.request" | "http.get" | "http.post" => {
+                let builtin = match name {
+                    "http.request" => crate::http_client::HttpBuiltin::Request,
+                    "http.get" => crate::http_client::HttpBuiltin::Get,
+                    "http.post" => crate::http_client::HttpBuiltin::Post,
+                    _ => unreachable!(),
+                };
+                let request = crate::http_client::parse_http_builtin_args(builtin, &args)
+                    .map_err(ExecError::Runtime)?;
+                let method = request.method.clone();
+                let url = request.url.clone();
+                match crate::http_client::perform_http_request(&request) {
+                    Ok(response) => Ok(Value::ResultOk(Box::new(
+                        crate::http_client::http_response_value(&method, &url, response),
+                    ))),
+                    Err(error) => Ok(Value::ResultErr(Box::new(
+                        crate::http_client::http_error_value(error),
+                    ))),
+                }
             }
             "time.now" => {
                 if !args.is_empty() {
@@ -3975,6 +3995,10 @@ impl Interpreter {
                 _ => Err(ExecError::Runtime(format!(
                     "unknown response method {field}"
                 ))),
+            },
+            Value::Builtin(name) if name == "http" => match field {
+                "request" | "get" | "post" => Ok(Value::Builtin(format!("http.{field}"))),
+                _ => Err(ExecError::Runtime(format!("unknown http method {field}"))),
             },
             Value::Builtin(name) if name == "time" => match field {
                 "now" | "sleep" | "format" | "parse" => Ok(Value::Builtin(format!("time.{field}"))),

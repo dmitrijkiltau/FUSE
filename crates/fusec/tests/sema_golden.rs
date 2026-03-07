@@ -412,6 +412,28 @@ app "api":
 }
 
 #[test]
+fn http_client_primitives_typecheck() {
+    let src = r#"
+requires network
+
+app "client":
+  let result = http.get("http://127.0.0.1:8080/health")
+  match result:
+    Ok(resp):
+      print(resp.status)
+      print(resp.body)
+      print(resp.headers["content-type"])
+    Err(err):
+      print(err.code)
+      print(err.message)
+      print(err.status ?? 0)
+      print(err.body ?? "")
+      print(err.headers["content-type"])
+"#;
+    assert_diags(src, &[]);
+}
+
+#[test]
 fn spawn_rejects_box_capture() {
     let src = r#"
 fn main():
@@ -659,6 +681,20 @@ fn main():
         src,
         &[
             "Error: call serve requires capability network; add `requires network` at module top-level",
+        ],
+    );
+}
+
+#[test]
+fn requires_network_capability_for_http_calls() {
+    let src = r#"
+fn main():
+  let _ = http.get("http://127.0.0.1:8080/health")
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: call http.get requires capability network; add `requires network` at module top-level",
         ],
     );
 }

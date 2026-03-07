@@ -552,7 +552,7 @@ fn is_type_context(tokens: &[fusec::token::Token], idx: usize) -> bool {
 fn is_builtin_receiver(name: &str) -> bool {
     matches!(
         name,
-        "db" | "json" | "html" | "svg" | "request" | "response" | "time" | "crypto"
+        "db" | "json" | "html" | "svg" | "request" | "response" | "http" | "time" | "crypto"
     )
 }
 

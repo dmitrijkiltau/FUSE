@@ -245,6 +245,8 @@ Module capabilities:
   (`select`, `where`, `order_by`, `limit`, `insert`, `upsert`, `update`, `delete`, `count`, `one`, `all`, `exec`, `sql`, `params`)
 - typed query forms (`one<T>()`, `all<T>()`) are compile-time checked:
   the type argument must be a declared `type`, and `select([...])` columns must match its fields
+- `requires network` gates `serve(...)` and outbound `http.*` client builtins
+  (`http.request`, `http.get`, `http.post`)
 - `requires time` gates access to runtime `time.*` builtins (`now`, `format`, `parse`, `sleep`)
 - `requires crypto` gates access to runtime `crypto.*` builtins (`hash`, `hmac`, `random_bytes`, `constant_time_eq`)
 - call sites to imported module functions must declare every capability required by the callee module
@@ -278,8 +280,9 @@ post "/users" body UserCreate -> User:
 
 Binding/encoding/error semantics for routes are runtime behavior and are defined in `runtime.md`.
 
-HTTP-specific route primitives (`request.header/cookie` and
-`response.header/cookie/delete_cookie`) are runtime semantics owned by `runtime.md`.
+HTTP-specific route primitives (`request.header/cookie`,
+`response.header/cookie/delete_cookie`, and outbound `http.request/get/post`) are runtime
+semantics owned by `runtime.md`.
 
 ---
 
@@ -652,6 +655,9 @@ Metrics hook extension point (non-semantic):
 - `response.header(name: String, value: String)` appends response headers
 - `response.cookie(name: String, value: String)` appends HTTP-only session cookies
 - `response.delete_cookie(name: String)` emits cookie expiration headers
+- `http.request(method: String, url: String, body?: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error`
+- `http.get(url: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error`
+- `http.post(url: String, body: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error`
 - HTML tag builtins (`html`, `head`, `body`, `div`, `meta`, `button`, ...)
 - `html.text`, `html.raw`, `html.node`, `html.render`
 - `svg.inline(path: String) -> Html`
@@ -679,6 +685,23 @@ Typed env parsing notes:
 
 - `env_int` / `env_float` / `env_bool` return `null` when the variable is unset.
 - when the variable is set but parsing fails, runtime raises a fatal error.
+
+HTTP client notes:
+
+- outbound client calls are blocking runtime operations
+- `0.9.6` supports `http://` only; `https://...` returns `Err(http.error)` with
+  `code = "unsupported_scheme"`
+- `2xx` responses return `Ok(http.response)`; non-`2xx` responses return `Err(http.error)` with
+  `code = "http_status"`
+- `timeout_ms` defaults to `30000`; `0` disables the timeout; negative values are invalid requests
+- request/response bodies are `String`
+- request headers are sent after lowercase normalization; `host`, `connection`, and
+  `content-length` are reserved and rejected if supplied by user code
+- `http.response` fields: `method: String`, `url: String`, `status: Int`,
+  `headers: Map<String, String>`, `body: String`
+- `http.error` fields: `code: String`, `message: String`, `method: String`, `url: String`,
+  `status: Int?`, `headers: Map<String, String>`, `body: String?`
+- response/error header maps expose lowercase header names
 
 Compile-time sugar affecting HTML builtins:
 

@@ -230,3 +230,57 @@ fn main():
     lsp.shutdown();
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn lsp_signature_help_http_builtin_member_call() {
+    let dir = temp_project_dir("fuse_lsp_signature_help_http");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    );
+
+    let main_src = r#"requires network
+
+fn main():
+  let _ = http.post("http://127.0.0.1:8080/submit", "payload", {}, 1000)
+"#;
+    let main_path = dir.join("main.fuse");
+    write_project_file(&main_path, main_src);
+
+    let root_uri = path_to_uri(&dir);
+    let main_uri = path_to_uri(&main_path);
+
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&main_uri, main_src, 1);
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+
+    let (line, col) = line_col_of(main_src, "http.post(\"http://127.0.0.1:8080/submit\", \"payload\", {}, 1000)");
+    let help = lsp.request(
+        "textDocument/signatureHelp",
+        signature_help_params(
+            &main_uri,
+            line,
+            col + "http.post(\"http://127.0.0.1:8080/submit\", \"payload\", ".len(),
+        ),
+    );
+    let (label, params, active) = signature_summary(&help);
+    assert!(
+        label.contains("fn http.post(url: String, body: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error"),
+        "unexpected http signature label: {label}"
+    );
+    assert_eq!(active, 2, "http.post active parameter should be headers");
+    assert_eq!(
+        params,
+        vec![
+            "url: String".to_string(),
+            "body: String".to_string(),
+            "headers: Map<String, String>".to_string(),
+            "timeout_ms: Int".to_string(),
+        ],
+        "unexpected http signature params"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}

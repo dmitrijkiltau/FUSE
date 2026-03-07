@@ -80,7 +80,8 @@ FUSE is currently scoped as a strict, typed language with integrated boundary/ru
 - service-oriented package workflow (`fuse check/run/dev/test/build`,
   `fuse clean --cache`, `fuse deps lock`, `fuse deps publish-check`,
   frozen lock enforcement)
-- HTTP handler request/response primitives for header and cookie handling
+- HTTP handler request/response primitives for header and cookie handling, plus outbound
+  `http.request/get/post` client calls
 
 Detailed behavior is intentionally kept out of this doc and lives in `../spec/fls.md` and `../spec/runtime.md`.
 Identity guardrails are defined in `IDENTITY_CHARTER.md`.

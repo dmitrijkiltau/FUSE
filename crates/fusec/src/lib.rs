@@ -8,6 +8,7 @@ pub mod diag_render;
 pub mod format;
 pub mod frontend;
 pub mod html_tags;
+mod http_client;
 pub mod interp;
 pub mod ir;
 pub mod lexer;

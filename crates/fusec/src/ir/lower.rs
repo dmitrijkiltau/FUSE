@@ -330,6 +330,7 @@ impl<'a> Lowerer<'a> {
             "svg",
             "request",
             "response",
+            "http",
             "time",
             "crypto",
         ]
@@ -1655,6 +1656,7 @@ impl FuncBuilder {
                             || ident.name == "svg"
                             || ident.name == "request"
                             || ident.name == "response"
+                            || ident.name == "http"
                             || ident.name == "time"
                             || ident.name == "crypto"
                         {

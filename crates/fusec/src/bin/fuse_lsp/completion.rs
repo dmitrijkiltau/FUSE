@@ -158,7 +158,7 @@ fn signature_candidates_for_target(
                 push_workspace_signature(&mut ranked, 0, &def);
             }
             if let Some(base) = base.as_deref() {
-                if let Some(signature) = builtin_member_signature_info(base) {
+                if let Some(signature) = builtin_member_signature_info(base, name) {
                     ranked.push(RankedSignature {
                         rank: 1,
                         uri: String::new(),
@@ -378,40 +378,161 @@ fn builtin_signature_info(name: &str) -> Option<SignatureInfo> {
     }
 }
 
-fn builtin_member_signature_info(base: &str) -> Option<SignatureInfo> {
-    match base {
-        "svg" => Some(SignatureInfo {
+fn builtin_member_signature_info(base: &str, member: &str) -> Option<SignatureInfo> {
+    match (base, member) {
+        ("svg", "inline") => Some(SignatureInfo {
             label: "fn svg.inline(path: String) -> Html".to_string(),
             params: vec!["path: String".to_string()],
             documentation: Some(
                 "Loads an SVG by logical name and returns inline Html.".to_string(),
             ),
         }),
-        "request" => Some(SignatureInfo {
+        ("request", "header") => Some(SignatureInfo {
             label: "fn request.header(name: String) -> String?".to_string(),
             params: vec!["name: String".to_string()],
             documentation: Some(
                 "Reads an inbound HTTP request header (case-insensitive), or null.".to_string(),
             ),
         }),
-        "response" => Some(SignatureInfo {
+        ("request", "cookie") => Some(SignatureInfo {
+            label: "fn request.cookie(name: String) -> String?".to_string(),
+            params: vec!["name: String".to_string()],
+            documentation: Some(
+                "Reads an inbound HTTP cookie value by name, or null.".to_string(),
+            ),
+        }),
+        ("response", "header") => Some(SignatureInfo {
             label: "fn response.header(name: String, value: String) -> Unit".to_string(),
             params: vec!["name: String".to_string(), "value: String".to_string()],
             documentation: Some(
                 "Appends an HTTP response header for the current route response.".to_string(),
             ),
         }),
-        "time" => Some(SignatureInfo {
+        ("response", "cookie") => Some(SignatureInfo {
+            label: "fn response.cookie(name: String, value: String) -> Unit".to_string(),
+            params: vec!["name: String".to_string(), "value: String".to_string()],
+            documentation: Some("Appends a Set-Cookie response header.".to_string()),
+        }),
+        ("response", "delete_cookie") => Some(SignatureInfo {
+            label: "fn response.delete_cookie(name: String) -> Unit".to_string(),
+            params: vec!["name: String".to_string()],
+            documentation: Some("Expires a response cookie by name.".to_string()),
+        }),
+        ("http", "request") => Some(SignatureInfo {
+            label: "fn http.request(method: String, url: String, body?: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error".to_string(),
+            params: vec![
+                "method: String".to_string(),
+                "url: String".to_string(),
+                "body: String".to_string(),
+                "headers: Map<String, String>".to_string(),
+                "timeout_ms: Int".to_string(),
+            ],
+            documentation: Some(
+                "Performs an outbound HTTP request over plain http:// and returns Err on transport failures or non-2xx responses.".to_string(),
+            ),
+        }),
+        ("http", "get") => Some(SignatureInfo {
+            label: "fn http.get(url: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error".to_string(),
+            params: vec![
+                "url: String".to_string(),
+                "headers: Map<String, String>".to_string(),
+                "timeout_ms: Int".to_string(),
+            ],
+            documentation: Some(
+                "Performs an outbound HTTP GET over plain http:// and returns Err on transport failures or non-2xx responses.".to_string(),
+            ),
+        }),
+        ("http", "post") => Some(SignatureInfo {
+            label: "fn http.post(url: String, body: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error".to_string(),
+            params: vec![
+                "url: String".to_string(),
+                "body: String".to_string(),
+                "headers: Map<String, String>".to_string(),
+                "timeout_ms: Int".to_string(),
+            ],
+            documentation: Some(
+                "Performs an outbound HTTP POST over plain http:// and returns Err on transport failures or non-2xx responses.".to_string(),
+            ),
+        }),
+        ("time", "format") => Some(SignatureInfo {
             label: "fn time.format(epoch: Int, fmt: String) -> String".to_string(),
             params: vec!["epoch: Int".to_string(), "fmt: String".to_string()],
             documentation: Some(
                 "Formats Unix epoch milliseconds using a strftime-style format string.".to_string(),
             ),
         }),
-        "crypto" => Some(SignatureInfo {
+        ("time", "now") => Some(SignatureInfo {
+            label: "fn time.now() -> Int".to_string(),
+            params: vec![],
+            documentation: Some("Returns Unix epoch milliseconds.".to_string()),
+        }),
+        ("time", "sleep") => Some(SignatureInfo {
+            label: "fn time.sleep(ms: Int) -> Unit".to_string(),
+            params: vec!["ms: Int".to_string()],
+            documentation: Some("Sleeps the current runtime thread for the given duration.".to_string()),
+        }),
+        ("time", "parse") => Some(SignatureInfo {
+            label: "fn time.parse(text: String, fmt: String) -> Int!Error".to_string(),
+            params: vec!["text: String".to_string(), "fmt: String".to_string()],
+            documentation: Some("Parses text into Unix epoch milliseconds.".to_string()),
+        }),
+        ("crypto", "hash") => Some(SignatureInfo {
             label: "fn crypto.hash(algo: String, data: Bytes) -> Bytes".to_string(),
             params: vec!["algo: String".to_string(), "data: Bytes".to_string()],
             documentation: Some("Computes a cryptographic digest (sha256/sha512).".to_string()),
+        }),
+        ("crypto", "hmac") => Some(SignatureInfo {
+            label: "fn crypto.hmac(algo: String, key: Bytes, data: Bytes) -> Bytes".to_string(),
+            params: vec![
+                "algo: String".to_string(),
+                "key: Bytes".to_string(),
+                "data: Bytes".to_string(),
+            ],
+            documentation: Some("Computes an HMAC digest (sha256/sha512).".to_string()),
+        }),
+        ("crypto", "random_bytes") => Some(SignatureInfo {
+            label: "fn crypto.random_bytes(n: Int) -> Bytes".to_string(),
+            params: vec!["n: Int".to_string()],
+            documentation: Some("Returns cryptographically secure random bytes.".to_string()),
+        }),
+        ("crypto", "constant_time_eq") => Some(SignatureInfo {
+            label: "fn crypto.constant_time_eq(a: Bytes, b: Bytes) -> Bool".to_string(),
+            params: vec!["a: Bytes".to_string(), "b: Bytes".to_string()],
+            documentation: Some("Compares two byte sequences in constant time.".to_string()),
+        }),
+        ("json", "encode") => Some(SignatureInfo {
+            label: "fn json.encode(value) -> String".to_string(),
+            params: vec!["value".to_string()],
+            documentation: Some("Encodes a value as JSON text.".to_string()),
+        }),
+        ("json", "decode") => Some(SignatureInfo {
+            label: "fn json.decode(text: String) -> Any".to_string(),
+            params: vec!["text: String".to_string()],
+            documentation: Some("Decodes JSON text into a runtime value.".to_string()),
+        }),
+        ("html", "text") => Some(SignatureInfo {
+            label: "fn html.text(value: String) -> Html".to_string(),
+            params: vec!["value: String".to_string()],
+            documentation: Some("Escapes text into an Html node.".to_string()),
+        }),
+        ("html", "raw") => Some(SignatureInfo {
+            label: "fn html.raw(value: String) -> Html".to_string(),
+            params: vec!["value: String".to_string()],
+            documentation: Some("Injects raw HTML without escaping.".to_string()),
+        }),
+        ("html", "node") => Some(SignatureInfo {
+            label: "fn html.node(name: String, attrs: Map<String, String>, children: List<Html>) -> Html".to_string(),
+            params: vec![
+                "name: String".to_string(),
+                "attrs: Map<String, String>".to_string(),
+                "children: List<Html>".to_string(),
+            ],
+            documentation: Some("Builds an Html element node.".to_string()),
+        }),
+        ("html", "render") => Some(SignatureInfo {
+            label: "fn html.render(value: Html) -> String".to_string(),
+            params: vec!["value: Html".to_string()],
+            documentation: Some("Renders Html to a string.".to_string()),
         }),
         _ => None,
     }
@@ -1297,6 +1418,7 @@ fn builtin_receiver_methods(receiver: &str) -> &'static [&'static str] {
         "svg" => &["inline"],
         "request" => &["header", "cookie"],
         "response" => &["header", "cookie", "delete_cookie"],
+        "http" => &["request", "get", "post"],
         "time" => &["now", "sleep", "format", "parse"],
         "crypto" => &["hash", "hmac", "random_bytes", "constant_time_eq"],
         _ => &[],

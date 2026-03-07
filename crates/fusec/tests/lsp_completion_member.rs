@@ -91,3 +91,50 @@ fn main():
     lsp.shutdown();
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn lsp_member_completion_includes_http_builtin_methods() {
+    let dir = temp_project_dir("fuse_lsp_completion_http");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    );
+
+    let main_src = r#"requires network
+
+fn main():
+  let _ = http.
+"#;
+    let main_path = dir.join("main.fuse");
+    write_project_file(&main_path, main_src);
+
+    let root_uri = path_to_uri(&dir);
+    let main_uri = path_to_uri(&main_path);
+
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&main_uri, main_src, 1);
+    let _ = lsp.wait_diagnostics(&main_uri);
+
+    let (line, col) = line_col_of(main_src, "http.");
+    let completion = lsp.request(
+        "textDocument/completion",
+        completion_params(&main_uri, line, col + "http.".len()),
+    );
+    let text = json::encode(&completion);
+    assert!(
+        text.contains("\"label\":\"get\""),
+        "expected http.get completion, got: {text}"
+    );
+    assert!(
+        text.contains("\"label\":\"post\""),
+        "expected http.post completion, got: {text}"
+    );
+    assert!(
+        text.contains("\"label\":\"request\""),
+        "expected http.request completion, got: {text}"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
