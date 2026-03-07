@@ -38,6 +38,8 @@ pub fn analyze_program(program: &Program) -> (Analysis, Vec<Diag>) {
     module_caps_by_id.insert(0, declared_caps);
     let empty_items: std::collections::HashMap<String, crate::loader::ModuleLink> =
         std::collections::HashMap::new();
+    let empty_assets: std::collections::HashMap<String, crate::loader::ImportedAsset> =
+        std::collections::HashMap::new();
     let mut import_items_by_id: std::collections::HashMap<
         ModuleId,
         std::collections::HashMap<String, crate::loader::ModuleLink>,
@@ -53,6 +55,7 @@ pub fn analyze_program(program: &Program) -> (Analysis, Vec<Diag>) {
         &empty_modules,
         &module_maps_by_id,
         &empty_items,
+        &empty_assets,
         &symbols_by_id,
         &import_items_by_id,
         &module_caps_by_id,
@@ -108,6 +111,7 @@ pub fn analyze_registry_with_options(
             &unit.modules,
             &module_maps_by_id,
             &unit.import_items,
+            &unit.import_assets,
             &symbols_by_id,
             &import_items_by_id,
             &module_caps_by_id,
@@ -182,6 +186,7 @@ pub fn analyze_module(registry: &ModuleRegistry, module_id: ModuleId) -> (Analys
             &unit.modules,
             &module_maps_by_id,
             &unit.import_items,
+            &unit.import_assets,
             &symbols_by_id,
             &import_items_by_id,
             &module_caps_by_id,

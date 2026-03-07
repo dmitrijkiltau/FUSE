@@ -1,0 +1,4 @@
+import Docs from "./markdown_import.md"
+
+app "MarkdownImportDemo":
+  print(Docs)

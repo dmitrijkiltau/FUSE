@@ -495,10 +495,18 @@ See also: [Imports and modules (current)](#imports-and-modules-current), [Runtim
 
 `import` declarations are resolved at load time.
 
-- Module imports register an alias for qualified access (`Foo.bar`, `Foo.Config.field`, `Foo.Enum.Variant`).
-- Named imports bring specific items into local scope.
+Import path classification:
 
-Resolution rules:
+- paths with no explicit extension are module imports and default to `.fuse`
+- explicit `.fuse` paths are module imports
+- explicit `.md` paths are Markdown asset imports
+- explicit `.json` paths are JSON asset imports
+- any other explicit extension in import position is rejected as unsupported
+
+Module imports register an alias for qualified access (`Foo.bar`, `Foo.Config.field`, `Foo.Enum.Variant`).
+Named imports bring specific items into local scope.
+
+Module import resolution rules:
 
 - `import Foo` loads `Foo.fuse` from the current file directory.
 - `import X from "path"` loads `path` relative to current file; `.fuse` is added if missing.
@@ -506,25 +514,41 @@ Resolution rules:
 - `import X as Y from "path"` loads `path` and registers the module under alias `Y` for qualified access.
 - `import X from "root:path/to/module"` loads from package root (`fuse.toml` directory); if no manifest is found, root falls back to the entry module directory.
 
+Asset import rules:
+
+- asset imports are supported only as `import Name from "path.ext"` where `ext` is `.md` or `.json`
+- `root:` and `dep:` path resolution apply to asset imports using the same repository/package rules
+  as module imports
+- `.md` imports bind a local immutable `String` containing the exact UTF-8 file contents
+- `.json` imports bind a local immutable runtime value equivalent to `json.decode(text)`; static
+  typing remains intentionally conservative
+- asset imports are values, not modules: they do not create a namespace and do not expose named exports
+- `import {A, B} from "./data.json"` and `import X as Y from "./data.json"` are load-time errors
+
 Notes:
 
 - module imports do not automatically import all members into local scope
 - named imports do not create a module alias
+- asset imports do not create a module alias or a named-export set
 - function symbols are module-scoped (not global across all loaded modules)
 - unqualified function calls resolve in this order: current module, then named imports
 - module-qualified calls (`Foo.bar`) resolve against the referenced module alias
-- duplicate named imports in one module are load-time errors
+- duplicate imported binding names in one module are load-time errors
 - duplicate function names across different modules are allowed
 - module-qualified type references are valid in type positions (`Foo.User`, `Foo.Config`)
-- dependency modules use `dep:` import paths (for example, `dep:Auth/lib`)
-- root-qualified modules use `root:` import paths (for example, `root:lib/auth`)
+- dependency imports use `dep:` import paths (for example, `dep:Auth/lib` or `dep:Fixtures/data.json`)
+- root-qualified imports use `root:` import paths (for example, `root:lib/auth` or `root:content/policy.md`)
+- missing asset files, unreadable files, invalid UTF-8, invalid JSON syntax, unsupported asset
+  forms, and unsupported explicit extensions are load-time diagnostics attached to the import path
 
 Package dependency resolution (`dep:` imports):
 
 - dependencies are declared in `fuse.toml` under `[dependencies]` using any of three syntaxes:
   `Auth = "./deps/auth"` (bare path), `Auth = { path = "./deps/auth" }` (inline table),
   `[dependencies.Auth] path = "./deps/auth"` (section table).
-- `dep:<Name>/<module-path>` resolves to `<dep-root>/<module-path>.fuse` (`.fuse` added if missing).
+- `dep:<Name>/<path>` resolves against `<dep-root>` using ordinary import classification:
+  module targets default to `.fuse` when no extension is present, while explicit `.md` / `.json`
+  targets remain asset imports.
 - dependency resolution is transitive: each dependency's own `fuse.toml` is read and its
   named sub-dependencies are merged into the consumer's dep map; the direct consumer's deps
   always shadow any same-named sub-dependencies.

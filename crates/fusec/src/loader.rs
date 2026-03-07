@@ -3,6 +3,8 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use fuse_rt::json as rt_json;
+
 use crate::manifest::build_transitive_deps;
 
 use crate::ast::{FieldDecl, ImportDecl, ImportSpec, Item, Program, TypeDecl, TypeDerive};
@@ -120,7 +122,53 @@ pub struct ModuleUnit {
     pub program: Program,
     pub modules: ModuleMap,
     pub import_items: HashMap<String, ModuleLink>,
+    pub import_assets: HashMap<String, ImportedAsset>,
     pub exports: ModuleExports,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImportedAssetKind {
+    Markdown,
+    Json,
+}
+
+#[derive(Clone, Debug)]
+pub enum ImportedAssetValue {
+    Markdown(String),
+    Json(rt_json::JsonValue),
+}
+
+#[derive(Clone, Debug)]
+pub struct ImportedAsset {
+    pub path: PathBuf,
+    pub kind: ImportedAssetKind,
+    pub value: ImportedAssetValue,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImportPathKind {
+    Module,
+    Asset(ImportedAssetKind),
+    UnsupportedAssetExtension,
+}
+
+pub fn classify_import_path(raw: &str) -> ImportPathKind {
+    if raw == "std.Error" || raw == "<std.Error>" {
+        return ImportPathKind::Module;
+    }
+    classify_path_extension(Path::new(raw))
+}
+
+fn classify_path_extension(path: &Path) -> ImportPathKind {
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        return ImportPathKind::Module;
+    };
+    match ext.to_ascii_lowercase().as_str() {
+        "fuse" => ImportPathKind::Module,
+        "md" => ImportPathKind::Asset(ImportedAssetKind::Markdown),
+        "json" => ImportPathKind::Asset(ImportedAssetKind::Json),
+        _ => ImportPathKind::UnsupportedAssetExtension,
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -192,6 +240,7 @@ pub fn load_program(_path: &Path, src: &str) -> (Program, Vec<Diag>) {
 struct ModuleLoader {
     next_id: ModuleId,
     by_path: HashMap<PathBuf, ModuleId>,
+    assets: HashMap<PathBuf, ImportedAsset>,
     modules: HashMap<ModuleId, ModuleUnit>,
     visiting: HashSet<PathBuf>,
     deps: HashMap<String, PathBuf>,
@@ -206,6 +255,7 @@ impl ModuleLoader {
         Self {
             next_id: 1,
             by_path: HashMap::new(),
+            assets: HashMap::new(),
             modules: HashMap::new(),
             visiting: HashSet::new(),
             deps: deps.clone(),
@@ -232,6 +282,7 @@ impl ModuleLoader {
         Self {
             next_id: 1,
             by_path: HashMap::new(),
+            assets: HashMap::new(),
             modules: HashMap::new(),
             visiting: HashSet::new(),
             deps: deps.clone(),
@@ -312,6 +363,7 @@ impl ModuleLoader {
             program,
             modules: ModuleMap::default(),
             import_items: HashMap::new(),
+            import_assets: HashMap::new(),
             exports,
         };
         self.by_path.insert(key.clone(), id);
@@ -325,7 +377,7 @@ impl ModuleLoader {
     }
 
     fn resolve_imports(&mut self, id: ModuleId) {
-        let (imports, import_items, base_dir) = {
+        let (imports, import_items, import_assets, base_dir, importer_path) = {
             let Some(unit) = self.modules.get(&id) else {
                 return;
             };
@@ -343,11 +395,18 @@ impl ModuleLoader {
                     _ => None,
                 })
                 .collect();
-            (imports, HashMap::new(), base_dir)
+            (
+                imports,
+                HashMap::new(),
+                HashMap::new(),
+                base_dir,
+                unit.path.clone(),
+            )
         };
 
         let mut module_map = ModuleMap::default();
         let mut import_items = import_items;
+        let mut import_assets = import_assets;
         let mut import_item_spans: HashMap<String, Span> = HashMap::new();
 
         for import in imports {
@@ -363,50 +422,108 @@ impl ModuleLoader {
                     }
                 }
                 ImportSpec::ModuleFrom { name, path } => {
-                    let module_id = self.load_std_module(&path.value, span).or_else(|| {
-                        let path = self.resolve_path(&base_dir, &path.value, path.span);
-                        self.load_module(&path, None, span)
-                    });
-                    if let Some(module_id) = module_id {
-                        self.insert_module_alias(&mut module_map, &name.name, module_id);
+                    match classify_import_path(&path.value) {
+                        ImportPathKind::Module => {
+                            let module_id = self.load_std_module(&path.value, span).or_else(|| {
+                                let path = self.resolve_path(&base_dir, &path.value, path.span);
+                                self.load_module(&path, None, span)
+                            });
+                            if let Some(module_id) = module_id {
+                                self.insert_module_alias(&mut module_map, &name.name, module_id);
+                            }
+                        }
+                        ImportPathKind::Asset(kind) => {
+                            let target_path =
+                                self.resolve_path(&base_dir, &path.value, path.span);
+                            if let Some(asset) =
+                                self.load_asset(&target_path, &importer_path, path.span, kind)
+                            {
+                                import_assets.entry(name.name.clone()).or_insert(asset);
+                            }
+                        }
+                        ImportPathKind::UnsupportedAssetExtension => {
+                            self.diags.error_at_path(
+                                importer_path.clone(),
+                                path.span,
+                                unsupported_import_extension_message(&path.value),
+                            );
+                        }
                     }
                 }
                 ImportSpec::AliasFrom { alias, path, .. } => {
-                    let module_id = self.load_std_module(&path.value, span).or_else(|| {
-                        let path = self.resolve_path(&base_dir, &path.value, path.span);
-                        self.load_module(&path, None, span)
-                    });
-                    if let Some(module_id) = module_id {
-                        self.insert_module_alias(&mut module_map, &alias.name, module_id);
+                    match classify_import_path(&path.value) {
+                        ImportPathKind::Module => {
+                            let module_id = self.load_std_module(&path.value, span).or_else(|| {
+                                let path = self.resolve_path(&base_dir, &path.value, path.span);
+                                self.load_module(&path, None, span)
+                            });
+                            if let Some(module_id) = module_id {
+                                self.insert_module_alias(&mut module_map, &alias.name, module_id);
+                            }
+                        }
+                        ImportPathKind::Asset(_) => {
+                            self.diags.error_at_path(
+                                importer_path.clone(),
+                                span,
+                                asset_import_form_message(),
+                            );
+                        }
+                        ImportPathKind::UnsupportedAssetExtension => {
+                            self.diags.error_at_path(
+                                importer_path.clone(),
+                                path.span,
+                                unsupported_import_extension_message(&path.value),
+                            );
+                        }
                     }
                 }
                 ImportSpec::NamedFrom { names, path } => {
-                    let module_id = self.load_std_module(&path.value, span).or_else(|| {
-                        let path = self.resolve_path(&base_dir, &path.value, path.span);
-                        self.load_module(&path, None, span)
-                    });
-                    let Some(module_id) = module_id else {
-                        continue;
-                    };
-                    let exports = self.modules.get(&module_id).map(|unit| &unit.exports);
-                    for name in names {
-                        if let Some(prev_span) = import_item_spans.get(&name.name).copied() {
-                            self.diags
-                                .error(name.span, format!("duplicate import {}", name.name));
-                            self.diags
-                                .error(prev_span, format!("previous import of {} here", name.name));
-                            continue;
+                    match classify_import_path(&path.value) {
+                        ImportPathKind::Module => {
+                            let module_id = self.load_std_module(&path.value, span).or_else(|| {
+                                let path = self.resolve_path(&base_dir, &path.value, path.span);
+                                self.load_module(&path, None, span)
+                            });
+                            let Some(module_id) = module_id else {
+                                continue;
+                            };
+                            let exports = self.modules.get(&module_id).map(|unit| &unit.exports);
+                            for name in names {
+                                if let Some(prev_span) = import_item_spans.get(&name.name).copied() {
+                                    self.diags
+                                        .error(name.span, format!("duplicate import {}", name.name));
+                                    self.diags.error(
+                                        prev_span,
+                                        format!("previous import of {} here", name.name),
+                                    );
+                                    continue;
+                                }
+                                let Some(exports) = exports else { continue };
+                                if !exports.contains(&name.name) {
+                                    self.diags.error(
+                                        name.span,
+                                        format!("unknown import {} in {}", name.name, path.value),
+                                    );
+                                    continue;
+                                }
+                                import_items.insert(name.name.clone(), self.link_for(module_id));
+                                import_item_spans.insert(name.name.clone(), name.span);
+                            }
                         }
-                        let Some(exports) = exports else { continue };
-                        if !exports.contains(&name.name) {
-                            self.diags.error(
-                                name.span,
-                                format!("unknown import {} in {}", name.name, path.value),
+                        ImportPathKind::Asset(_) => {
+                            self.diags.error_at_path(
+                                importer_path.clone(),
+                                span,
+                                asset_import_form_message(),
                             );
-                            continue;
                         }
-                        import_items.insert(name.name.clone(), self.link_for(module_id));
-                        import_item_spans.insert(name.name.clone(), name.span);
+                        ImportPathKind::UnsupportedAssetExtension => {
+                            self.diags.error_at_path(
+                                importer_path.clone(),
+                                path.span,
+                                unsupported_import_extension_message(&path.value),
+                            );
+                        }
                     }
                 }
             }
@@ -415,6 +532,7 @@ impl ModuleLoader {
         if let Some(unit) = self.modules.get_mut(&id) {
             unit.modules = module_map;
             unit.import_items = import_items;
+            unit.import_assets = import_assets;
         }
 
         self.expand_type_derivations(id);
@@ -716,6 +834,74 @@ impl ModuleLoader {
         self.load_module(&path, Some(STD_ERROR_MODULE), span)
     }
 
+    fn load_asset(
+        &mut self,
+        path: &Path,
+        importer_path: &Path,
+        span: Span,
+        kind: ImportedAssetKind,
+    ) -> Option<ImportedAsset> {
+        let key = self.normalize_path(path);
+        if let Some(asset) = self.assets.get(&key) {
+            return Some(asset.clone());
+        }
+        let bytes = if let Some(src) = self.source_overrides.get(&key) {
+            src.as_bytes().to_vec()
+        } else {
+            match fs::read(&key) {
+                Ok(bytes) => bytes,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    self.diags.error_at_path(
+                        importer_path.to_path_buf(),
+                        span,
+                        format!("missing asset file {}", key.display()),
+                    );
+                    return None;
+                }
+                Err(err) => {
+                    self.diags.error_at_path(
+                        importer_path.to_path_buf(),
+                        span,
+                        format!("failed to read asset {}: {err}", key.display()),
+                    );
+                    return None;
+                }
+            }
+        };
+        let text = match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(_) => {
+                self.diags.error_at_path(
+                    key.clone(),
+                    Span::default(),
+                    "asset file is not valid UTF-8",
+                );
+                return None;
+            }
+        };
+        let value = match kind {
+            ImportedAssetKind::Markdown => ImportedAssetValue::Markdown(text),
+            ImportedAssetKind::Json => match rt_json::decode(&text) {
+                Ok(json) => ImportedAssetValue::Json(json),
+                Err(err) => {
+                    self.diags.error_at_path(
+                        key.clone(),
+                        Span::default(),
+                        format!("invalid json: {err}"),
+                    );
+                    return None;
+                }
+            },
+        };
+        let asset = ImportedAsset {
+            path: key.clone(),
+            kind,
+            value,
+        };
+        self.assets.insert(key, asset.clone());
+        Some(asset)
+    }
+
     fn normalize_path(&self, path: &Path) -> PathBuf {
         if is_std_error_virtual_path(path) {
             return std_error_virtual_path();
@@ -768,4 +954,17 @@ fn is_std_error_virtual_path(path: &Path) -> bool {
         return true;
     }
     matches!(path.file_name(), Some(name) if name == OsStr::new("<std.Error>"))
+}
+
+fn asset_import_form_message() -> &'static str {
+    "asset imports only support `import Name from \"path.ext\"` in v0.9.7"
+}
+
+fn unsupported_import_extension_message(raw: &str) -> String {
+    let ext = Path::new(raw)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| format!(".{ext}"))
+        .unwrap_or_else(|| "unknown".to_string());
+    format!("unsupported import extension {ext}; only .fuse, .md, and .json are supported")
 }

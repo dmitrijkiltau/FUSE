@@ -8,7 +8,7 @@ use crate::diag::Diagnostics;
 use crate::frontend::html_shorthand::{CanonicalizationPhase, validate_named_args_for_phase};
 use crate::frontend::html_tag_builtin::should_use_html_tag_builtin;
 use crate::html_tags::{self, HtmlTagKind};
-use crate::loader::{ModuleId, ModuleLink, ModuleMap};
+use crate::loader::{ImportedAsset, ImportedAssetKind, ModuleId, ModuleLink, ModuleMap};
 use crate::refinement::{
     NumberLiteral, RefinementConstraint, base_is_string_like, parse_constraints,
 };
@@ -35,6 +35,7 @@ pub struct Checker<'a> {
     modules: &'a ModuleMap,
     module_maps: &'a HashMap<ModuleId, ModuleMap>,
     import_items: &'a HashMap<String, ModuleLink>,
+    import_assets: &'a HashMap<String, ImportedAsset>,
     module_capabilities: &'a HashMap<ModuleId, HashSet<Capability>>,
     module_symbols: &'a HashMap<ModuleId, ModuleSymbols>,
     module_import_items: &'a HashMap<ModuleId, HashMap<String, ModuleLink>>,
@@ -55,6 +56,7 @@ impl<'a> Checker<'a> {
         modules: &'a ModuleMap,
         module_maps: &'a HashMap<ModuleId, ModuleMap>,
         import_items: &'a HashMap<String, ModuleLink>,
+        import_assets: &'a HashMap<String, ImportedAsset>,
         module_symbols: &'a HashMap<ModuleId, ModuleSymbols>,
         module_import_items: &'a HashMap<ModuleId, HashMap<String, ModuleLink>>,
         module_capabilities: &'a HashMap<ModuleId, HashSet<Capability>>,
@@ -152,6 +154,7 @@ impl<'a> Checker<'a> {
             modules,
             module_maps,
             import_items,
+            import_assets,
             module_capabilities,
             module_symbols,
             module_import_items,
@@ -2028,6 +2031,13 @@ impl<'a> Checker<'a> {
         Ty::Unknown
     }
 
+    fn resolve_imported_asset_value(&self, asset: &ImportedAsset) -> Ty {
+        match asset.kind {
+            ImportedAssetKind::Markdown => Ty::String,
+            ImportedAssetKind::Json => Ty::Unknown,
+        }
+    }
+
     fn lookup_enum_variant(&mut self, enum_name: &str, name: &crate::ast::Ident) -> Ty {
         let info = match self.enum_info(enum_name) {
             Some(info) => info,
@@ -2256,6 +2266,9 @@ impl<'a> Checker<'a> {
                     .error(ident.span, "spawn blocks cannot capture or use box values");
             }
             return Self::unbox_transparent(var.ty.clone());
+        }
+        if let Some(asset) = self.import_assets.get(&ident.name) {
+            return self.resolve_imported_asset_value(asset);
         }
         if let Some(link) = self.import_items.get(&ident.name) {
             return self.resolve_imported_value(ident, link);
@@ -3138,7 +3151,7 @@ impl<'a> Checker<'a> {
             name != "html" && self.env.lookup(name).is_some(),
             self.fn_sig_in(self.module_id, name).is_some(),
             self.config_info(name).is_some(),
-            self.import_items.contains_key(name),
+            self.import_items.contains_key(name) || self.import_assets.contains_key(name),
         )
     }
 

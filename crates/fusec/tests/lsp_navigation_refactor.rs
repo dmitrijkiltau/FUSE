@@ -361,3 +361,85 @@ fn main():
     lsp.shutdown();
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn lsp_definition_navigates_asset_import_paths() {
+    let dir = temp_project_dir("fuse_lsp_asset_path_definition");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n\n[dependencies]\nFixtures = { path = \"./deps/fixtures\" }\n",
+    );
+    write_project_file(&dir.join("README.md"), "local docs\n");
+    write_project_file(&dir.join("content").join("policy.md"), "root policy\n");
+    write_project_file(
+        &dir.join("deps").join("fixtures").join("fuse.toml"),
+        "[package]\nentry = \"lib.fuse\"\n",
+    );
+    write_project_file(
+        &dir.join("deps").join("fixtures").join("lib.fuse"),
+        "fn unused() -> Int:\n  return 0\n",
+    );
+    write_project_file(
+        &dir.join("deps").join("fixtures").join("auth").join("login.json"),
+        "{\"token\":\"abc123\"}",
+    );
+
+    let main_src = r#"import Docs from "./README.md"
+import Policy from "root:content/policy.md"
+import Auth from "dep:Fixtures/auth/login.json"
+
+fn main():
+  print(Docs)
+  print(Policy)
+  print(json.encode(Auth))
+"#;
+    let main_path = dir.join("main.fuse");
+    write_project_file(&main_path, main_src);
+
+    let root_uri = path_to_uri(&dir);
+    let main_uri = path_to_uri(&main_path);
+    let docs_uri = path_to_uri(&dir.join("README.md"));
+    let policy_uri = path_to_uri(&dir.join("content").join("policy.md"));
+    let auth_uri = path_to_uri(&dir.join("deps").join("fixtures").join("auth").join("login.json"));
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+
+    lsp.open_document(&main_uri, main_src, 1);
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+
+    let (docs_line, docs_col) = line_col_of(main_src, "\"./README.md\"");
+    let docs_def = lsp.request(
+        "textDocument/definition",
+        position_params(&main_uri, docs_line, docs_col + 2),
+    );
+    let docs_def_text = json::encode(&docs_def);
+    assert!(
+        docs_def_text.contains(&docs_uri),
+        "local asset path should navigate to markdown file: {docs_def_text}"
+    );
+
+    let (policy_line, policy_col) = line_col_of(main_src, "\"root:content/policy.md\"");
+    let policy_def = lsp.request(
+        "textDocument/definition",
+        position_params(&main_uri, policy_line, policy_col + 2),
+    );
+    let policy_def_text = json::encode(&policy_def);
+    assert!(
+        policy_def_text.contains(&policy_uri),
+        "root asset path should navigate to markdown file: {policy_def_text}"
+    );
+
+    let (auth_line, auth_col) = line_col_of(main_src, "\"dep:Fixtures/auth/login.json\"");
+    let auth_def = lsp.request(
+        "textDocument/definition",
+        position_params(&main_uri, auth_line, auth_col + 2),
+    );
+    let auth_def_text = json::encode(&auth_def);
+    assert!(
+        auth_def_text.contains(&auth_uri),
+        "dep asset path should navigate to json file: {auth_def_text}"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}

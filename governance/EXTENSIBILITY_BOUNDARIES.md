@@ -30,7 +30,20 @@ Status: `NOT ALLOWED`
 Reason: these extension classes break the small deterministic core and conflict with
 `IDENTITY_CHARTER.md`.
 
-### 2) Custom backends
+### 2) Import loaders and file-type plugins
+
+Status: `NOT ALLOWED`
+
+- No user-defined import loader registration.
+- No per-project file-extension hooks in import position.
+- No custom file-type resolution pipeline beyond the built-in language set.
+- Built-in `.md` / `.json` asset imports are fixed language features owned by
+  `../spec/fls.md` and `../spec/runtime.md`, not extensibility points.
+
+Reason: import resolution must remain deterministic, repository-local, and parity-tested across
+AST/native/CLI/LSP flows.
+
+### 3) Custom backends
 
 Status: `INTERNAL ONLY` (maintainer-owned, in-tree)
 
@@ -46,7 +59,7 @@ Required for adding/changing a backend:
 3. AST/native parity tests and release gates stay green.
 4. `../spec/runtime.md`, and tests are updated in the same change.
 
-### 3) Type-system extensions
+### 4) Type-system extensions
 
 Status: `CLOSED TO USER PLUGINS`
 
@@ -63,7 +76,7 @@ Users cannot:
 
 Core type changes are language changes and require spec + tests, not per-project plugins.
 
-### 4) Runtime hooks
+### 5) Runtime hooks
 
 Status: `ALLOWED (NON-SEMANTIC ONLY)`
 
@@ -78,7 +91,7 @@ Boundary:
 
 If a hook changes semantic meaning of source, it is out of scope and must be rejected.
 
-### 5) IDE/editor hooks
+### 6) IDE/editor hooks
 
 Status: `ALLOWED VIA LSP`
 

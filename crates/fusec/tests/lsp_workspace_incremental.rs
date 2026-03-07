@@ -592,6 +592,84 @@ fn lsp_uses_nearest_manifest_for_nested_docs_workspace() {
 }
 
 #[test]
+fn lsp_incrementally_relinks_imported_assets() {
+    let dir = temp_project_dir("fuse_lsp_asset_incremental");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    );
+
+    let main_src = r#"import Seed from "./seed.json"
+
+fn main():
+  print(json.encode(Seed))
+"#;
+    let seed_v1 = "{\"ok\":true}\n";
+    let seed_v2 = "{\"ok\": }\n";
+    let seed_v3 = "{\"ok\":false}\n";
+
+    let main_path = dir.join("main.fuse");
+    let seed_path = dir.join("seed.json");
+    write_project_file(&main_path, main_src);
+    write_project_file(&seed_path, seed_v1);
+
+    let root_uri = path_to_uri(&dir);
+    let main_uri = path_to_uri(&main_path);
+    let seed_uri = path_to_uri(&seed_path);
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+
+    lsp.open_document(&main_uri, main_src, 1);
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+    assert_eq!(workspace_builds(&mut lsp), 1);
+
+    lsp.open_document(&seed_uri, seed_v1, 1);
+    assert!(lsp.wait_diagnostics(&seed_uri).is_empty());
+    assert_eq!(
+        workspace_builds(&mut lsp),
+        1,
+        "opening an imported asset should reuse the existing workspace snapshot"
+    );
+
+    lsp.change_document(&seed_uri, seed_v2, 2);
+    let seed_diags = lsp.wait_diagnostics(&seed_uri);
+    let seed_diag_texts: Vec<String> = seed_diags
+        .iter()
+        .map(|diag| fuse_rt::json::encode(diag))
+        .collect();
+    assert!(
+        seed_diag_texts
+            .iter()
+            .any(|text| text.contains("invalid json")),
+        "invalid asset edits should surface updated diagnostics: {seed_diag_texts:?}"
+    );
+    assert_eq!(
+        workspace_builds(&mut lsp),
+        1,
+        "asset relinking should stay incremental"
+    );
+
+    lsp.change_document(&seed_uri, seed_v3, 3);
+    let restored_diags = lsp.wait_diagnostics(&seed_uri);
+    assert!(
+        restored_diags.is_empty(),
+        "expected cleared asset diagnostics, got {:?}",
+        restored_diags
+            .iter()
+            .map(fuse_rt::json::encode)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        workspace_builds(&mut lsp),
+        1,
+        "restoring valid asset content should clear diagnostics without a full rebuild"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn lsp_full_rebuild_triggered_by_manifest_change() {
     // When fuse.toml is updated on disk and a doc-change notification arrives,
     // the LSP should detect the manifest mtime change and trigger a full

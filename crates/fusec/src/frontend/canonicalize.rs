@@ -32,7 +32,8 @@ pub fn canonicalize_registry(registry: &mut ModuleRegistry) {
                 _ => {}
             }
         }
-        let import_item_names: HashSet<String> = unit.import_items.keys().cloned().collect();
+        let mut import_item_names: HashSet<String> = unit.import_items.keys().cloned().collect();
+        import_item_names.extend(unit.import_assets.keys().cloned());
         let mut canonicalizer = Canonicalizer {
             fn_names,
             config_names,

@@ -2,10 +2,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use fuse_rt::json::JsonValue;
-use fusec::ast::{ImportSpec, Item, Program};
+use fusec::ast::{ImportDecl, ImportSpec, Item, Program};
 use fusec::diag::{Diag, Level};
 use fusec::loader::{
-    ModuleExports, ModuleLink, ModuleMap, ModuleRegistry,
+    ImportPathKind, ImportedAsset, ImportedAssetKind, ImportedAssetValue, ModuleExports,
+    ModuleLink, ModuleMap, ModuleRegistry, classify_import_path,
     load_program_with_modules_and_deps_and_overrides,
 };
 use fusec::manifest::{build_transitive_deps, parse_manifest};
@@ -63,6 +64,14 @@ pub(crate) fn try_incremental_module_update(
         cache.snapshot.overrides.remove(&module_key);
     }
     let Some(module_id) = cache.snapshot.module_ids_by_path.get(&module_key).copied() else {
+        let affected = collect_modules_importing_asset(&cache.snapshot, &module_key);
+        if affected.is_empty() {
+            return true;
+        }
+        if !try_partial_relink_for_asset_change(&mut cache.snapshot, &module_key, affected) {
+            return false;
+        }
+        cache.snapshot.index = None;
         return true;
     };
     let next_source = if let Some(contents) = text {
@@ -113,7 +122,7 @@ pub(crate) fn try_incremental_module_update(
 
     let mut module_diags = HashMap::new();
     module_diags.insert(module_key, parse_diags);
-    replace_loader_diags_for_modules(&mut cache.snapshot.loader_diags, &module_diags);
+    replace_loader_diags_for_paths(&mut cache.snapshot.loader_diags, &module_diags);
     refresh_global_duplicate_symbol_diags(
         &mut cache.snapshot.loader_diags,
         &cache.snapshot.registry,
@@ -148,6 +157,16 @@ fn try_partial_relink_for_structural_change(
     let mut staged_programs: HashMap<usize, Program> = HashMap::new();
     let mut next_module_diags: HashMap<PathBuf, Vec<Diag>> = HashMap::new();
     next_module_diags.insert(changed_module_path.to_path_buf(), changed_parse_diags);
+    for module_id in &affected_sorted {
+        let Some(unit) = snapshot.registry.modules.get(module_id) else {
+            continue;
+        };
+        for asset in unit.import_assets.values() {
+            next_module_diags
+                .entry(normalized_path(asset.path.as_path()))
+                .or_default();
+        }
+    }
 
     for module_id in &affected_sorted {
         if *module_id == changed_module_id {
@@ -195,12 +214,18 @@ fn try_partial_relink_for_structural_change(
         unit.exports = module_exports_from_program(&unit.program);
     }
 
-    let mut pending_links: HashMap<usize, (ModuleMap, HashMap<String, ModuleLink>)> =
-        HashMap::new();
+    let mut pending_links: HashMap<
+        usize,
+        (
+            ModuleMap,
+            HashMap<String, ModuleLink>,
+            HashMap<String, ImportedAsset>,
+        ),
+    > = HashMap::new();
     let mut relink_queue = affected_sorted.clone();
     let mut queued: HashSet<usize> = relink_queue.iter().copied().collect();
     while let Some(module_id) = relink_queue.pop() {
-        let Some((module_map, import_items, relink_diags, newly_loaded_ids)) =
+        let Some((module_map, import_items, import_assets, relink_diags, newly_loaded_ids)) =
             build_module_links_for_registry(
                 snapshot,
                 module_id,
@@ -218,12 +243,12 @@ fn try_partial_relink_for_structural_change(
         else {
             return false;
         };
-        let module_path = normalized_path(path.as_path());
-        next_module_diags
-            .entry(module_path)
-            .or_default()
-            .extend(relink_diags);
-        pending_links.insert(module_id, (module_map, import_items));
+        stage_loader_diags(
+            &mut next_module_diags,
+            normalized_path(path.as_path()),
+            relink_diags,
+        );
+        pending_links.insert(module_id, (module_map, import_items, import_assets));
 
         for new_id in newly_loaded_ids {
             if queued.insert(new_id) {
@@ -232,12 +257,13 @@ fn try_partial_relink_for_structural_change(
         }
     }
 
-    for (module_id, (module_map, import_items)) in pending_links {
+    for (module_id, (module_map, import_items, import_assets)) in pending_links {
         let Some(unit) = snapshot.registry.modules.get_mut(&module_id) else {
             return false;
         };
         unit.modules = module_map;
         unit.import_items = import_items;
+        unit.import_assets = import_assets;
     }
 
     snapshot.module_ids_by_path = path_to_id;
@@ -247,9 +273,144 @@ fn try_partial_relink_for_structural_change(
     }
 
     fusec::frontend::canonicalize::canonicalize_registry(&mut snapshot.registry);
-    replace_loader_diags_for_modules(&mut snapshot.loader_diags, &next_module_diags);
+    replace_loader_diags_for_paths(&mut snapshot.loader_diags, &next_module_diags);
     refresh_global_duplicate_symbol_diags(&mut snapshot.loader_diags, &snapshot.registry);
     true
+}
+
+fn try_partial_relink_for_asset_change(
+    snapshot: &mut WorkspaceSnapshot,
+    asset_path: &Path,
+    affected: HashSet<usize>,
+) -> bool {
+    let mut path_to_id = snapshot.module_ids_by_path.clone();
+    let mut affected_sorted: Vec<usize> = affected.into_iter().collect();
+    affected_sorted.sort_unstable();
+
+    let mut next_path_diags: HashMap<PathBuf, Vec<Diag>> = HashMap::new();
+    next_path_diags
+        .entry(normalized_path(asset_path))
+        .or_default();
+    for module_id in &affected_sorted {
+        let Some(unit) = snapshot.registry.modules.get(module_id) else {
+            continue;
+        };
+        for asset in unit.import_assets.values() {
+            next_path_diags
+                .entry(normalized_path(asset.path.as_path()))
+                .or_default();
+        }
+    }
+    let mut pending_links: HashMap<
+        usize,
+        (
+            ModuleMap,
+            HashMap<String, ModuleLink>,
+            HashMap<String, ImportedAsset>,
+        ),
+    > = HashMap::new();
+    let mut relink_queue = affected_sorted.clone();
+    let mut queued: HashSet<usize> = relink_queue.iter().copied().collect();
+    while let Some(module_id) = relink_queue.pop() {
+        let Some((module_map, import_items, import_assets, relink_diags, newly_loaded_ids)) =
+            build_module_links_for_registry(
+                snapshot,
+                module_id,
+                &mut path_to_id,
+                &mut next_path_diags,
+            )
+        else {
+            return false;
+        };
+        let Some(path) = snapshot
+            .registry
+            .modules
+            .get(&module_id)
+            .map(|unit| unit.path.clone())
+        else {
+            return false;
+        };
+        stage_loader_diags(
+            &mut next_path_diags,
+            normalized_path(path.as_path()),
+            relink_diags,
+        );
+        pending_links.insert(module_id, (module_map, import_items, import_assets));
+
+        for new_id in newly_loaded_ids {
+            if queued.insert(new_id) {
+                relink_queue.push(new_id);
+            }
+        }
+    }
+
+    for (module_id, (module_map, import_items, import_assets)) in pending_links {
+        let Some(unit) = snapshot.registry.modules.get_mut(&module_id) else {
+            return false;
+        };
+        unit.modules = module_map;
+        unit.import_items = import_items;
+        unit.import_assets = import_assets;
+    }
+
+    snapshot.module_ids_by_path = path_to_id;
+    fusec::frontend::canonicalize::canonicalize_registry(&mut snapshot.registry);
+    replace_loader_diags_for_paths(&mut snapshot.loader_diags, &next_path_diags);
+    refresh_global_duplicate_symbol_diags(&mut snapshot.loader_diags, &snapshot.registry);
+    true
+}
+
+fn collect_modules_importing_asset(
+    snapshot: &WorkspaceSnapshot,
+    asset_path: &Path,
+) -> HashSet<usize> {
+    let target = normalized_path(asset_path);
+    snapshot
+        .registry
+        .modules
+        .iter()
+        .filter_map(|(module_id, unit)| {
+            let base_dir = unit
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf();
+            unit.program
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Import(ImportDecl {
+                        spec: ImportSpec::ModuleFrom { path, .. },
+                        ..
+                    }) if matches!(classify_import_path(&path.value), ImportPathKind::Asset(_)) => {
+                        resolve_asset_import_path(
+                            &base_dir,
+                            &snapshot.workspace_root,
+                            &snapshot.dep_roots,
+                            &path.value,
+                        )
+                    }
+                    _ => None,
+                })
+                .any(|path| path == target)
+                .then_some(*module_id)
+        })
+        .collect()
+}
+
+fn stage_loader_diags(
+    next_path_diags: &mut HashMap<PathBuf, Vec<Diag>>,
+    fallback_path: PathBuf,
+    diags: Vec<Diag>,
+) {
+    for diag in diags {
+        let key = diag
+            .path
+            .clone()
+            .map(|path| normalized_path(path.as_path()))
+            .unwrap_or_else(|| fallback_path.clone());
+        next_path_diags.entry(key).or_default().push(diag);
+    }
 }
 
 fn collect_modules_for_structural_relink(
@@ -412,6 +573,18 @@ fn resolve_dep_import_path(dep_roots: &HashMap<String, PathBuf>, raw: &str) -> O
     Some(normalized_path(path.as_path()))
 }
 
+fn resolve_asset_import_path(
+    base_dir: &Path,
+    workspace_root: &Path,
+    dep_roots: &HashMap<String, PathBuf>,
+    raw: &str,
+) -> Option<PathBuf> {
+    if let Some(path) = resolve_dep_import_path(dep_roots, raw) {
+        return Some(path);
+    }
+    resolve_import_path_value(base_dir, workspace_root, raw)
+}
+
 fn resolve_root_import_path(workspace_root: &Path, raw: &str) -> Option<PathBuf> {
     let rel = Path::new(raw);
     if rel.is_absolute() {
@@ -441,6 +614,19 @@ fn resolve_root_import_path(workspace_root: &Path, raw: &str) -> Option<PathBuf>
     ))
 }
 
+fn asset_import_form_message() -> &'static str {
+    "asset imports only support `import Name from \"path.ext\"` in v0.9.7"
+}
+
+fn unsupported_import_extension_message(raw: &str) -> String {
+    let ext = Path::new(raw)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| format!(".{ext}"))
+        .unwrap_or_else(|| "unknown".to_string());
+    format!("unsupported import extension {ext}; only .fuse, .md, and .json are supported")
+}
+
 fn build_module_links_for_registry(
     snapshot: &mut WorkspaceSnapshot,
     module_id: usize,
@@ -449,6 +635,7 @@ fn build_module_links_for_registry(
 ) -> Option<(
     ModuleMap,
     HashMap<String, ModuleLink>,
+    HashMap<String, ImportedAsset>,
     Vec<Diag>,
     Vec<usize>,
 )> {
@@ -462,6 +649,7 @@ fn build_module_links_for_registry(
         .to_path_buf();
     let mut module_map = ModuleMap::default();
     let mut import_items = HashMap::new();
+    let mut import_assets = HashMap::new();
     let mut import_item_spans: HashMap<String, Span> = HashMap::new();
     let mut diags = Vec::new();
     let mut newly_loaded_ids = Vec::new();
@@ -490,113 +678,175 @@ fn build_module_links_for_registry(
                     .or_insert_with(|| module_link_for_registry(&snapshot.registry, target_id));
             }
             ImportSpec::ModuleFrom { name, path } => {
-                let target_id = match resolve_import_target_for_relink(
-                    &base_dir,
-                    &path.value,
-                    path.span,
-                    snapshot,
-                    path_to_id,
-                    &mut diags,
-                    next_module_diags,
-                ) {
-                    Ok(Some((target, loaded_now))) => {
-                        if loaded_now {
-                            newly_loaded_ids.push(target);
-                        }
-                        target
+                match classify_import_path(&path.value) {
+                    ImportPathKind::Module => {
+                        let target_id = match resolve_import_target_for_relink(
+                            &unit_path,
+                            &base_dir,
+                            &path.value,
+                            path.span,
+                            snapshot,
+                            path_to_id,
+                            &mut diags,
+                            next_module_diags,
+                        ) {
+                            Ok(Some((target, loaded_now))) => {
+                                if loaded_now {
+                                    newly_loaded_ids.push(target);
+                                }
+                                target
+                            }
+                            Ok(None) => continue,
+                            Err(()) => return None,
+                        };
+                        module_map.modules.entry(name.name.clone()).or_insert_with(|| {
+                            module_link_for_registry(&snapshot.registry, target_id)
+                        });
                     }
-                    Ok(None) => continue,
-                    Err(()) => return None,
-                };
-                module_map
-                    .modules
-                    .entry(name.name.clone())
-                    .or_insert_with(|| module_link_for_registry(&snapshot.registry, target_id));
+                    ImportPathKind::Asset(kind) => {
+                        let Some(asset) = load_import_asset_for_relink(
+                            snapshot,
+                            &unit_path,
+                            &base_dir,
+                            &path.value,
+                            path.span,
+                            kind,
+                            &mut diags,
+                        ) else {
+                            continue;
+                        };
+                        import_assets.entry(name.name.clone()).or_insert(asset);
+                    }
+                    ImportPathKind::UnsupportedAssetExtension => diags.push(Diag {
+                        level: Level::Error,
+                        code: None,
+                        message: unsupported_import_extension_message(&path.value),
+                        span: path.span,
+                        path: Some(unit_path.clone()),
+                    }),
+                }
             }
             ImportSpec::AliasFrom { alias, path, .. } => {
-                let target_id = match resolve_import_target_for_relink(
-                    &base_dir,
-                    &path.value,
-                    path.span,
-                    snapshot,
-                    path_to_id,
-                    &mut diags,
-                    next_module_diags,
-                ) {
-                    Ok(Some((target, loaded_now))) => {
-                        if loaded_now {
-                            newly_loaded_ids.push(target);
-                        }
-                        target
+                match classify_import_path(&path.value) {
+                    ImportPathKind::Module => {
+                        let target_id = match resolve_import_target_for_relink(
+                            &unit_path,
+                            &base_dir,
+                            &path.value,
+                            path.span,
+                            snapshot,
+                            path_to_id,
+                            &mut diags,
+                            next_module_diags,
+                        ) {
+                            Ok(Some((target, loaded_now))) => {
+                                if loaded_now {
+                                    newly_loaded_ids.push(target);
+                                }
+                                target
+                            }
+                            Ok(None) => continue,
+                            Err(()) => return None,
+                        };
+                        module_map.modules.entry(alias.name.clone()).or_insert_with(|| {
+                            module_link_for_registry(&snapshot.registry, target_id)
+                        });
                     }
-                    Ok(None) => continue,
-                    Err(()) => return None,
-                };
-                module_map
-                    .modules
-                    .entry(alias.name.clone())
-                    .or_insert_with(|| module_link_for_registry(&snapshot.registry, target_id));
+                    ImportPathKind::Asset(_) => diags.push(Diag {
+                        level: Level::Error,
+                        code: None,
+                        message: asset_import_form_message().to_string(),
+                        span: decl.span,
+                        path: Some(unit_path.clone()),
+                    }),
+                    ImportPathKind::UnsupportedAssetExtension => diags.push(Diag {
+                        level: Level::Error,
+                        code: None,
+                        message: unsupported_import_extension_message(&path.value),
+                        span: path.span,
+                        path: Some(unit_path.clone()),
+                    }),
+                }
             }
             ImportSpec::NamedFrom { names, path } => {
-                let target_id = match resolve_import_target_for_relink(
-                    &base_dir,
-                    &path.value,
-                    path.span,
-                    snapshot,
-                    path_to_id,
-                    &mut diags,
-                    next_module_diags,
-                ) {
-                    Ok(Some((target, loaded_now))) => {
-                        if loaded_now {
-                            newly_loaded_ids.push(target);
+                match classify_import_path(&path.value) {
+                    ImportPathKind::Module => {
+                        let target_id = match resolve_import_target_for_relink(
+                            &unit_path,
+                            &base_dir,
+                            &path.value,
+                            path.span,
+                            snapshot,
+                            path_to_id,
+                            &mut diags,
+                            next_module_diags,
+                        ) {
+                            Ok(Some((target, loaded_now))) => {
+                                if loaded_now {
+                                    newly_loaded_ids.push(target);
+                                }
+                                target
+                            }
+                            Ok(None) => continue,
+                            Err(()) => return None,
+                        };
+                        let Some(target_exports) = snapshot
+                            .registry
+                            .modules
+                            .get(&target_id)
+                            .map(|unit| &unit.exports)
+                        else {
+                            return None;
+                        };
+                        for name in names {
+                            if let Some(prev_span) = import_item_spans.get(&name.name).copied() {
+                                diags.push(Diag {
+                                    level: Level::Error,
+                                    code: None,
+                                    message: format!("duplicate import {}", name.name),
+                                    span: name.span,
+                                    path: Some(unit_path.clone()),
+                                });
+                                diags.push(Diag {
+                                    level: Level::Error,
+                                    code: None,
+                                    message: format!("previous import of {} here", name.name),
+                                    span: prev_span,
+                                    path: Some(unit_path.clone()),
+                                });
+                                continue;
+                            }
+                            if !module_exports_contains(target_exports, &name.name) {
+                                diags.push(Diag {
+                                    level: Level::Error,
+                                    code: None,
+                                    message: format!("unknown import {} in {}", name.name, path.value),
+                                    span: name.span,
+                                    path: Some(unit_path.clone()),
+                                });
+                                continue;
+                            }
+                            import_items.insert(
+                                name.name.clone(),
+                                module_link_for_registry(&snapshot.registry, target_id),
+                            );
+                            import_item_spans.insert(name.name.clone(), name.span);
                         }
-                        target
                     }
-                    Ok(None) => continue,
-                    Err(()) => return None,
-                };
-                let Some(target_exports) = snapshot
-                    .registry
-                    .modules
-                    .get(&target_id)
-                    .map(|unit| &unit.exports)
-                else {
-                    return None;
-                };
-                for name in names {
-                    if let Some(prev_span) = import_item_spans.get(&name.name).copied() {
-                        diags.push(Diag {
-                            level: Level::Error,
-                            code: None,
-                            message: format!("duplicate import {}", name.name),
-                            span: name.span,
-                            path: Some(unit_path.clone()),
-                        });
-                        diags.push(Diag {
-                            level: Level::Error,
-                            code: None,
-                            message: format!("previous import of {} here", name.name),
-                            span: prev_span,
-                            path: Some(unit_path.clone()),
-                        });
-                        continue;
-                    }
-                    if !module_exports_contains(target_exports, &name.name) {
-                        diags.push(Diag {
-                            level: Level::Error,
-                            code: None,
-                            message: format!("unknown import {} in {}", name.name, path.value),
-                            span: name.span,
-                            path: Some(unit_path.clone()),
-                        });
-                        continue;
-                    }
-                    import_items.insert(
-                        name.name.clone(),
-                        module_link_for_registry(&snapshot.registry, target_id),
-                    );
-                    import_item_spans.insert(name.name.clone(), name.span);
+                    ImportPathKind::Asset(_) => diags.push(Diag {
+                        level: Level::Error,
+                        code: None,
+                        message: asset_import_form_message().to_string(),
+                        span: decl.span,
+                        path: Some(unit_path.clone()),
+                    }),
+                    ImportPathKind::UnsupportedAssetExtension => diags.push(Diag {
+                        level: Level::Error,
+                        code: None,
+                        message: unsupported_import_extension_message(&path.value),
+                        span: path.span,
+                        path: Some(unit_path.clone()),
+                    }),
                 }
             }
         }
@@ -604,10 +854,11 @@ fn build_module_links_for_registry(
 
     newly_loaded_ids.sort_unstable();
     newly_loaded_ids.dedup();
-    Some((module_map, import_items, diags, newly_loaded_ids))
+    Some((module_map, import_items, import_assets, diags, newly_loaded_ids))
 }
 
 fn resolve_import_target_for_relink(
+    importer_path: &Path,
     base_dir: &Path,
     raw: &str,
     span: Span,
@@ -616,6 +867,29 @@ fn resolve_import_target_for_relink(
     diags: &mut Vec<Diag>,
     next_module_diags: &mut HashMap<PathBuf, Vec<Diag>>,
 ) -> Result<Option<(usize, bool)>, ()> {
+    let Some(path) = resolve_import_path_for_relink(
+        importer_path,
+        base_dir,
+        raw,
+        span,
+        snapshot,
+        diags,
+    )? else {
+        return Ok(None);
+    };
+    let (id, loaded_now) =
+        ensure_module_loaded_for_relink(snapshot, path_to_id, &path, next_module_diags)?;
+    Ok(Some((id, loaded_now)))
+}
+
+fn resolve_import_path_for_relink(
+    importer_path: &Path,
+    base_dir: &Path,
+    raw: &str,
+    span: Span,
+    snapshot: &WorkspaceSnapshot,
+    diags: &mut Vec<Diag>,
+) -> Result<Option<PathBuf>, ()> {
     if raw.starts_with("dep:") {
         let Some((dep, rel)) = parse_dep_import(raw) else {
             diags.push(Diag {
@@ -623,7 +897,7 @@ fn resolve_import_target_for_relink(
                 code: None,
                 message: "dependency imports require dep:<name>/<path>".to_string(),
                 span,
-                path: None,
+                path: Some(importer_path.to_path_buf()),
             });
             return Ok(None);
         };
@@ -633,7 +907,7 @@ fn resolve_import_target_for_relink(
                 code: None,
                 message: format!("unknown dependency {dep}"),
                 span,
-                path: None,
+                path: Some(importer_path.to_path_buf()),
             });
             return Ok(None);
         };
@@ -641,18 +915,16 @@ fn resolve_import_target_for_relink(
         if dep_path.extension().is_none() {
             dep_path.set_extension("fuse");
         }
-        let (id, loaded_now) =
-            ensure_module_loaded_for_relink(snapshot, path_to_id, &dep_path, next_module_diags)?;
-        return Ok(Some((id, loaded_now)));
+        return Ok(Some(normalized_path(dep_path.as_path())));
     }
-    let path = if raw.starts_with("root:") {
+    if raw.starts_with("root:") {
         let Some(rel) = parse_root_import(raw) else {
             diags.push(Diag {
                 level: Level::Error,
                 code: None,
                 message: "root imports require root:<path>".to_string(),
                 span,
-                path: None,
+                path: Some(importer_path.to_path_buf()),
             });
             return Ok(None);
         };
@@ -662,20 +934,92 @@ fn resolve_import_target_for_relink(
                 code: None,
                 message: "root import path escapes workspace root".to_string(),
                 span,
-                path: None,
+                path: Some(importer_path.to_path_buf()),
             });
             return Ok(None);
         };
-        path
+        return Ok(Some(path));
+    }
+    Ok(resolve_import_path_value(
+        base_dir,
+        &snapshot.workspace_root,
+        raw,
+    ))
+}
+
+fn load_import_asset_for_relink(
+    snapshot: &WorkspaceSnapshot,
+    importer_path: &Path,
+    base_dir: &Path,
+    raw: &str,
+    span: Span,
+    kind: ImportedAssetKind,
+    diags: &mut Vec<Diag>,
+) -> Option<ImportedAsset> {
+    let path = resolve_import_path_for_relink(importer_path, base_dir, raw, span, snapshot, diags)
+        .ok()??;
+    let key = normalized_path(path.as_path());
+    let bytes = if let Some(override_text) = snapshot.overrides.get(&key) {
+        override_text.as_bytes().to_vec()
     } else {
-        let Some(path) = resolve_import_path_value(base_dir, &snapshot.workspace_root, raw) else {
-            return Ok(None);
-        };
-        path
+        match std::fs::read(&key) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                diags.push(Diag {
+                    level: Level::Error,
+                    code: None,
+                    message: format!("missing asset file {}", key.display()),
+                    span,
+                    path: Some(importer_path.to_path_buf()),
+                });
+                return None;
+            }
+            Err(err) => {
+                diags.push(Diag {
+                    level: Level::Error,
+                    code: None,
+                    message: format!("failed to read asset {}: {err}", key.display()),
+                    span,
+                    path: Some(importer_path.to_path_buf()),
+                });
+                return None;
+            }
+        }
     };
-    let (id, loaded_now) =
-        ensure_module_loaded_for_relink(snapshot, path_to_id, &path, next_module_diags)?;
-    Ok(Some((id, loaded_now)))
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(_) => {
+            diags.push(Diag {
+                level: Level::Error,
+                code: None,
+                message: "asset file is not valid UTF-8".to_string(),
+                span: Span::default(),
+                path: Some(key.clone()),
+            });
+            return None;
+        }
+    };
+    let value = match kind {
+        ImportedAssetKind::Markdown => ImportedAssetValue::Markdown(text),
+        ImportedAssetKind::Json => match fuse_rt::json::decode(&text) {
+            Ok(json) => ImportedAssetValue::Json(json),
+            Err(err) => {
+                diags.push(Diag {
+                    level: Level::Error,
+                    code: None,
+                    message: format!("invalid json: {err}"),
+                    span: Span::default(),
+                    path: Some(key.clone()),
+                });
+                return None;
+            }
+        },
+    };
+    Some(ImportedAsset {
+        path: key,
+        kind,
+        value,
+    })
 }
 
 fn ensure_module_loaded_for_relink(
@@ -709,6 +1053,7 @@ fn ensure_module_loaded_for_relink(
             program,
             modules: ModuleMap::default(),
             import_items: HashMap::new(),
+            import_assets: HashMap::new(),
             exports: ModuleExports::default(),
         };
         snapshot.registry.modules.insert(next_id, unit);
@@ -748,6 +1093,7 @@ fn ensure_module_loaded_for_relink(
         program,
         modules: ModuleMap::default(),
         import_items: HashMap::new(),
+        import_assets: HashMap::new(),
         exports: ModuleExports::default(),
     };
     snapshot.registry.modules.insert(next_id, unit);
@@ -760,7 +1106,7 @@ fn ensure_module_loaded_for_relink(
     Ok((next_id, true))
 }
 
-fn replace_loader_diags_for_modules(
+fn replace_loader_diags_for_paths(
     loader_diags: &mut Vec<Diag>,
     next_by_module: &HashMap<PathBuf, Vec<Diag>>,
 ) {
@@ -1017,6 +1363,7 @@ pub(crate) struct WorkspaceIndex {
     pub(crate) calls: Vec<WorkspaceCall>,
     pub(crate) module_alias_exports: HashMap<String, HashMap<String, HashSet<String>>>,
     pub(crate) redirects: HashMap<usize, usize>,
+    pub(crate) import_path_targets: HashMap<String, Vec<ImportPathTarget>>,
     /// Maps each file URI to the set of file URIs it directly imports.
     /// Used for completion locality weighting: symbols from directly-imported modules
     /// rank higher within group 02 than symbols from only transitively-imported modules.
@@ -1057,6 +1404,12 @@ pub(crate) struct QualifiedRef {
     pub(crate) target: usize,
 }
 
+#[derive(Clone)]
+pub(crate) struct ImportPathTarget {
+    pub(crate) span: Span,
+    pub(crate) uri: String,
+}
+
 impl WorkspaceIndex {
     pub(crate) fn definition_at(
         &self,
@@ -1082,6 +1435,23 @@ impl WorkspaceIndex {
         }
         let def = self.def_for_target(def_id)?;
         Some(def)
+    }
+
+    pub(crate) fn import_path_target_at(
+        &self,
+        uri: &str,
+        line: usize,
+        character: usize,
+    ) -> Option<&str> {
+        let file_idx = *self.file_by_uri.get(uri)?;
+        let file = &self.files[file_idx];
+        let offsets = line_offsets(&file.text);
+        let offset = line_col_to_offset(&file.text, &offsets, line, character);
+        self.import_path_targets
+            .get(uri)?
+            .iter()
+            .find(|target| span_contains(target.span, offset))
+            .map(|target| target.uri.as_str())
     }
 
     pub(crate) fn rename_edits(
@@ -1903,6 +2273,21 @@ fn serialize_workspace_index(index: &WorkspaceIndex) -> Option<String> {
         aliases_obj.insert(file_uri.clone(), JsonValue::Object(inner));
     }
 
+    let mut import_targets_obj = BTreeMap::new();
+    for (file_uri, targets) in &index.import_path_targets {
+        let items: Vec<JsonValue> = targets
+            .iter()
+            .map(|target| {
+                let mut m = BTreeMap::new();
+                m.insert("s".to_string(), JsonValue::Number(target.span.start as f64));
+                m.insert("e".to_string(), JsonValue::Number(target.span.end as f64));
+                m.insert("uri".to_string(), JsonValue::String(target.uri.clone()));
+                JsonValue::Object(m)
+            })
+            .collect();
+        import_targets_obj.insert(file_uri.clone(), JsonValue::Array(items));
+    }
+
     // imported_module_uris: HashMap<String, HashSet<String>>
     let mut imported_obj = BTreeMap::new();
     for (file_uri, module_uris) in &index.imported_module_uris {
@@ -1921,12 +2306,13 @@ fn serialize_workspace_index(index: &WorkspaceIndex) -> Option<String> {
     }
 
     let mut root = BTreeMap::new();
-    root.insert("v".to_string(), JsonValue::Number(1.0));
+    root.insert("v".to_string(), JsonValue::Number(2.0));
     root.insert("files".to_string(), JsonValue::Array(files_json));
     root.insert("defs".to_string(), JsonValue::Array(global_defs_json));
     root.insert("refs".to_string(), JsonValue::Array(global_refs_json));
     root.insert("calls".to_string(), JsonValue::Array(global_calls_json));
     root.insert("aliases".to_string(), JsonValue::Object(aliases_obj));
+    root.insert("import_paths".to_string(), JsonValue::Object(import_targets_obj));
     root.insert("imported".to_string(), JsonValue::Object(imported_obj));
     root.insert("redirects".to_string(), JsonValue::Object(redirects_obj));
 
@@ -1939,7 +2325,7 @@ fn deserialize_workspace_index(json: &str) -> Option<WorkspaceIndex> {
         return None;
     };
     match root.get("v") {
-        Some(JsonValue::Number(v)) if *v as u32 == 1 => {}
+        Some(JsonValue::Number(v)) if *v as u32 == 2 => {}
         _ => return None,
     }
 
@@ -2253,6 +2639,44 @@ fn deserialize_workspace_index(json: &str) -> Option<WorkspaceIndex> {
         _ => HashMap::new(),
     };
 
+    let import_path_targets: HashMap<String, Vec<ImportPathTarget>> =
+        match root.get("import_paths") {
+            Some(JsonValue::Object(outer)) => outer
+                .iter()
+                .filter_map(|(file_uri, arr_v)| {
+                    let JsonValue::Array(arr) = arr_v else {
+                        return None;
+                    };
+                    let targets: Vec<ImportPathTarget> = arr
+                        .iter()
+                        .filter_map(|value| {
+                            let JsonValue::Object(m) = value else {
+                                return None;
+                            };
+                            let start = match m.get("s") {
+                                Some(JsonValue::Number(n)) => *n as usize,
+                                _ => return None,
+                            };
+                            let end = match m.get("e") {
+                                Some(JsonValue::Number(n)) => *n as usize,
+                                _ => return None,
+                            };
+                            let uri = match m.get("uri") {
+                                Some(JsonValue::String(uri)) => uri.clone(),
+                                _ => return None,
+                            };
+                            Some(ImportPathTarget {
+                                span: fusec::span::Span::new(start, end),
+                                uri,
+                            })
+                        })
+                        .collect();
+                    Some((file_uri.clone(), targets))
+                })
+                .collect(),
+            _ => HashMap::new(),
+        };
+
     let imported_module_uris: HashMap<String, HashSet<String>> = match root.get("imported") {
         Some(JsonValue::Object(outer)) => outer
             .iter()
@@ -2281,6 +2705,7 @@ fn deserialize_workspace_index(json: &str) -> Option<WorkspaceIndex> {
         calls,
         module_alias_exports,
         redirects,
+        import_path_targets,
         imported_module_uris,
     })
 }
@@ -2354,6 +2779,7 @@ fn build_workspace_from_registry(
     }
     let mut calls = Vec::new();
     let mut module_alias_exports = HashMap::new();
+    let mut import_path_targets: HashMap<String, Vec<ImportPathTarget>> = HashMap::new();
     let mut imported_module_uris: HashMap<String, HashSet<String>> = HashMap::new();
     // Pre-built to avoid borrow conflicts: file index → URI.
     let file_uri_by_idx: HashMap<usize, String> = files
@@ -2420,6 +2846,23 @@ fn build_workspace_from_registry(
         }
         if !alias_exports.is_empty() {
             module_alias_exports.insert(file.uri.clone(), alias_exports);
+        }
+
+        let mut path_targets = Vec::new();
+        for item in &unit.program.items {
+            let Item::Import(decl) = item else {
+                continue;
+            };
+            let Some((span, target_uri)) = import_path_target_for_decl(registry, unit, decl) else {
+                continue;
+            };
+            path_targets.push(ImportPathTarget {
+                span,
+                uri: target_uri,
+            });
+        }
+        if !path_targets.is_empty() {
+            import_path_targets.insert(file.uri.clone(), path_targets);
         }
 
         // Collect the set of file URIs directly imported by this file.
@@ -2553,8 +2996,47 @@ fn build_workspace_from_registry(
         calls,
         module_alias_exports,
         redirects,
+        import_path_targets,
         imported_module_uris,
     })
+}
+
+fn import_path_target_for_decl(
+    registry: &ModuleRegistry,
+    unit: &fusec::loader::ModuleUnit,
+    decl: &ImportDecl,
+) -> Option<(Span, String)> {
+    match &decl.spec {
+        ImportSpec::Module { .. } => None,
+        ImportSpec::ModuleFrom { name, path } => {
+            if let Some(asset) = unit.import_assets.get(&name.name) {
+                return Some((path.span, path_to_uri(&asset.path)));
+            }
+            let link = unit.modules.get(&name.name)?;
+            let target = registry.get(link.id)?;
+            if target.path.to_string_lossy().starts_with('<') {
+                return None;
+            }
+            Some((path.span, path_to_uri(&target.path)))
+        }
+        ImportSpec::NamedFrom { names, path } => {
+            let first = names.first()?;
+            let link = unit.import_items.get(&first.name)?;
+            let target = registry.get(link.id)?;
+            if target.path.to_string_lossy().starts_with('<') {
+                return None;
+            }
+            Some((path.span, path_to_uri(&target.path)))
+        }
+        ImportSpec::AliasFrom { alias, path, .. } => {
+            let link = unit.modules.get(&alias.name)?;
+            let target = registry.get(link.id)?;
+            if target.path.to_string_lossy().starts_with('<') {
+                return None;
+            }
+            Some((path.span, path_to_uri(&target.path)))
+        }
+    }
 }
 
 fn import_binding_name(detail: &str) -> Option<&str> {

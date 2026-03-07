@@ -1,0 +1,8 @@
+{
+  "release": "0.9.7",
+  "features": [
+    "markdown_imports",
+    "json_imports"
+  ],
+  "stable": true
+}

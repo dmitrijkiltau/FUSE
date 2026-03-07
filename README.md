@@ -103,6 +103,26 @@ db.exec("""create table if not exists users (
 )""")
 ```
 
+## Static asset imports
+
+FUSE keeps imports strict and deterministic, but `0.9.7` also allows checked value imports from
+Markdown and JSON files:
+
+```fuse
+import Docs from "./README.md"
+import SeedData from "./seed.json"
+
+app "assets":
+  print(Docs)
+  print(json.encode(SeedData))
+```
+
+- `.md` imports bind the exact UTF-8 file contents as `String`
+- `.json` imports bind the decoded runtime value
+- only `import Name from "path.ext"` is supported for asset files in `0.9.7`
+- asset imports are values, not modules: no named asset imports, no module aliases, no custom
+  import-loader/plugin system
+
 ## Module capabilities
 
 Capability boundaries are declared at module top-level and enforced at compile-time:

@@ -26,7 +26,9 @@ use crate::db::{DEFAULT_DB_POOL_SIZE, Db, Query, parse_db_pool_size, parse_db_po
 use crate::frontend::html_shorthand::{CanonicalizationPhase, validate_named_args_for_phase};
 use crate::frontend::html_tag_builtin::should_use_html_tag_builtin;
 use crate::html_tags::{self, HtmlTagKind};
-use crate::loader::{ModuleId, ModuleLink, ModuleMap, ModuleRegistry};
+use crate::loader::{
+    ImportedAsset, ImportedAssetValue, ModuleId, ModuleLink, ModuleMap, ModuleRegistry,
+};
 use crate::observability;
 use crate::refinement::{
     NumberLiteral, RefinementConstraint, base_is_string_like, parse_constraints,
@@ -627,6 +629,7 @@ pub struct Interpreter {
     enums: HashMap<String, EnumDecl>,
     module_maps: HashMap<ModuleId, ModuleMap>,
     module_import_items: HashMap<ModuleId, HashMap<String, ModuleLink>>,
+    module_import_assets: HashMap<ModuleId, HashMap<String, ImportedAsset>>,
     config_owner: HashMap<String, ModuleId>,
     current_module: ModuleId,
     current_http_request: Option<HttpRequestContext>,
@@ -720,8 +723,11 @@ impl Interpreter {
         let mut enums = HashMap::new();
         let mut module_import_items: HashMap<ModuleId, HashMap<String, ModuleLink>> =
             HashMap::new();
+        let mut module_import_assets: HashMap<ModuleId, HashMap<String, ImportedAsset>> =
+            HashMap::new();
         functions.insert(0, HashMap::new());
         module_import_items.insert(0, HashMap::new());
+        module_import_assets.insert(0, HashMap::new());
         for item in &program.items {
             match item {
                 Item::Fn(decl) => {
@@ -772,6 +778,7 @@ impl Interpreter {
             enums,
             module_maps: HashMap::from([(0, modules)]),
             module_import_items,
+            module_import_assets,
             config_owner,
             current_module: 0,
             current_http_request: None,
@@ -793,9 +800,12 @@ impl Interpreter {
         let mut module_maps = HashMap::new();
         let mut module_import_items: HashMap<ModuleId, HashMap<String, ModuleLink>> =
             HashMap::new();
+        let mut module_import_assets: HashMap<ModuleId, HashMap<String, ImportedAsset>> =
+            HashMap::new();
         for (id, unit) in &registry.modules {
             module_maps.insert(*id, unit.modules.clone());
             module_import_items.insert(*id, unit.import_items.clone());
+            module_import_assets.insert(*id, unit.import_assets.clone());
             for item in &unit.program.items {
                 match item {
                     Item::Fn(decl) => {
@@ -847,6 +857,7 @@ impl Interpreter {
             enums,
             module_maps,
             module_import_items,
+            module_import_assets,
             config_owner,
             current_module: registry.root,
             current_http_request: None,
@@ -875,6 +886,7 @@ impl Interpreter {
             enums: self.enums.clone(),
             module_maps: self.module_maps.clone(),
             module_import_items: self.module_import_items.clone(),
+            module_import_assets: self.module_import_assets.clone(),
             config_owner: self.config_owner.clone(),
             current_module: self.current_module,
             current_http_request: None,
@@ -1859,6 +1871,13 @@ impl Interpreter {
     fn resolve_ident(&self, name: &str) -> ExecResult<Value> {
         if let Some(val) = self.env.get(name) {
             return Ok(val);
+        }
+        if let Some(asset) = self
+            .module_import_assets
+            .get(&self.current_module)
+            .and_then(|assets| assets.get(name))
+        {
+            return Ok(runtime_value_for_imported_asset(asset));
         }
         if let Some(func) = self.resolve_function_ref(self.current_module, name) {
             return Ok(Value::Function(func));
@@ -5139,6 +5158,13 @@ impl Interpreter {
     }
 
     // email validation lives in fuse-rt
+}
+
+fn runtime_value_for_imported_asset(asset: &ImportedAsset) -> Value {
+    match &asset.value {
+        ImportedAssetValue::Markdown(text) => Value::String(text.clone()),
+        ImportedAssetValue::Json(json) => crate::runtime_types::json_to_value(json),
+    }
 }
 
 #[derive(Clone, Default)]

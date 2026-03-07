@@ -571,6 +571,18 @@ HTTP client notes:
   `status: Int?`, `headers: Map<String, String>`, `body: String?`
 - response/error header maps expose lowercase header names
 
+Imported asset runtime values:
+
+- `import Docs from "./README.md"` evaluates to an immutable `String` containing the exact UTF-8
+  file contents
+- `import SeedData from "./seed.json"` evaluates to an immutable runtime value equivalent to
+  `json.decode(text)`
+- asset loading and JSON parsing happen during load/check; successful execution does not perform an
+  additional runtime file read for imported assets
+- missing files, unreadable files, invalid UTF-8, and invalid JSON fail during load/check
+- relative, `root:`, and `dep:` resolution semantics match ordinary import resolution
+- asset imports are distinct from `asset(path)` public-URL lookup and `svg.inline(path)` HTML loading
+
 Compile-time sugar affecting HTML builtins:
 
 - HTML block syntax (`div(): ...`) lowers to normal calls with explicit attrs + `List<Html>` children

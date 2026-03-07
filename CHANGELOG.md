@@ -2,6 +2,44 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.7] - 2026-03-07
+
+### Added
+
+- Checked static asset imports for Markdown and JSON files:
+  - `import Docs from "./README.md"` binds raw UTF-8 contents as `String`
+  - `import SeedData from "./seed.json"` binds a decoded runtime value
+- Asset import resolution now supports relative, `root:`, and `dep:` paths using the same package
+  resolution rules as module imports.
+- Loader diagnostics for asset-specific failures:
+  - missing asset file
+  - unreadable asset file
+  - invalid UTF-8 asset contents
+  - invalid JSON syntax
+  - unsupported explicit import extensions
+  - unsupported asset import forms (`named` / `alias` imports)
+- LSP support for asset imports:
+  - definition/navigation on imported asset paths
+  - incremental relinking when imported asset files change
+  - asset-file diagnostics surfaced through the workspace graph
+- New examples for static asset imports:
+  - `examples/markdown_import.fuse`
+  - `examples/json_import.fuse`
+
+### Changed
+
+- Import path classification now treats explicit `.md` and `.json` targets as value imports rather
+  than FUSE modules.
+- Asset imports are intentionally restricted to single-binding form only:
+  `import Name from "path.ext"`.
+- Guide/spec/reference docs now describe asset import semantics and distinguish them from
+  `asset(path)` URL lookup and `svg.inline(path)` HTML loading.
+
+### Migration
+
+- No language/runtime migration is required from `0.9.6` to `0.9.7`.
+- To import checked repository assets, use only `import Name from "path.ext"` with `.md` or `.json`.
+
 ## [0.9.6] - 2026-03-07
 
 ### Added

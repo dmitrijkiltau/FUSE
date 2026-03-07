@@ -42,6 +42,8 @@ FUSE is not:
    - New syntax/features must justify complexity against core mission.
    - `0.9.0` HTML attr simplification (remove map/comma forms, keep one canonical form) is a
      reference example of preferred direction.
+   - closed-set conveniences such as built-in `.md` / `.json` asset imports are acceptable only
+     when they do not open a general loader/plugin surface.
 
 ## Explicit "Will Not Do" List
 
@@ -51,6 +53,7 @@ FUSE will not add the following language classes in the current product identity
 - ad-hoc polymorphism (trait-style overload systems)
 - runtime reflection/introspection APIs that alter semantic behavior
 - macro systems (compile-time code generation / syntax rewriting by users)
+- user-defined import loaders / compile-time file-type plugin APIs
 - operator overloading or custom operators
 - inheritance-heavy object model design
 - backend-specific language dialects

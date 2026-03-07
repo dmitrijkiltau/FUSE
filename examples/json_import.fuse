@@ -1,0 +1,4 @@
+import SeedData from "./json_import.json"
+
+app "JsonImportDemo":
+  print(json.encode(SeedData))

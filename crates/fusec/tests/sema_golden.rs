@@ -1,3 +1,7 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use fusec::{diag::Diag, parse_source, sema};
 
 fn analyze_raw(src: &str) -> Vec<Diag> {
@@ -47,6 +51,23 @@ fn assert_diag_codes(src: &str, expected: &[&str]) {
     let mut expected_sorted: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
     expected_sorted.sort();
     assert_eq!(actual, expected_sorted);
+}
+
+fn temp_dir(prefix: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("{prefix}_{nanos}"));
+    fs::create_dir_all(&dir).expect("create temp dir");
+    dir
+}
+
+fn write(path: &Path, text: &str) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("create parent dirs");
+    }
+    fs::write(path, text).expect("write file");
 }
 
 #[test]
@@ -244,6 +265,60 @@ fn describe_user(user: User) -> String:
     User(name=n) -> n
 "#;
     assert_diags(src, &[]);
+}
+
+#[test]
+fn accepts_markdown_asset_import_as_string_value() {
+    let dir = temp_dir("fuse_sema_asset_markdown");
+    let main_path = dir.join("main.fuse");
+    write(&dir.join("README.md"), "# Policy\n");
+    let src = r#"
+import Docs from "./README.md"
+
+fn main() -> String:
+  return Docs
+"#;
+    let (registry, load_diags) = fusec::load_program_with_modules(&main_path, src);
+    assert!(
+        load_diags.is_empty(),
+        "unexpected loader diagnostics: {:?}",
+        load_diags.iter().map(|diag| &diag.message).collect::<Vec<_>>()
+    );
+    let (_analysis, diags) = sema::analyze_registry(&registry);
+    assert!(
+        diags.is_empty(),
+        "unexpected semantic diagnostics: {:?}",
+        diags.iter().map(|diag| &diag.message).collect::<Vec<_>>()
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reports_duplicate_asset_import_bindings() {
+    let dir = temp_dir("fuse_sema_asset_duplicates");
+    let main_path = dir.join("main.fuse");
+    write(&dir.join("a.md"), "A\n");
+    write(&dir.join("b.md"), "B\n");
+    let src = r#"
+import Docs from "./a.md"
+import Docs from "./b.md"
+
+fn main() -> String:
+  return Docs
+"#;
+    let (registry, load_diags) = fusec::load_program_with_modules(&main_path, src);
+    assert!(
+        load_diags.is_empty(),
+        "unexpected loader diagnostics: {:?}",
+        load_diags.iter().map(|diag| &diag.message).collect::<Vec<_>>()
+    );
+    let (_analysis, diags) = sema::analyze_registry(&registry);
+    let messages: Vec<String> = diags.into_iter().map(|diag| diag.message).collect();
+    assert!(
+        messages.iter().any(|message| message == "duplicate symbol: Docs"),
+        "expected duplicate asset import diagnostic, got {messages:?}"
+    );
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]

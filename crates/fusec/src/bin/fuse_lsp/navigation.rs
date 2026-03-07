@@ -5,7 +5,7 @@ use fuse_rt::json::JsonValue;
 use super::super::{
     LspState, WorkspaceDef, WorkspaceIndex, build_workspace_index_cached,
     extract_include_declaration, extract_position, is_callable_def_kind, location_json,
-    span_range_json,
+    range_json, span_range_json,
 };
 
 pub(crate) fn handle_definition(
@@ -19,6 +19,9 @@ pub(crate) fn handle_definition(
         Some(index) => index,
         None => return JsonValue::Null,
     };
+    if let Some(target_uri) = index.import_path_target_at(&uri, line, character) {
+        return JsonValue::Array(vec![zero_location_json(target_uri)]);
+    }
     let Some(def) = index.definition_at(&uri, line, character) else {
         return JsonValue::Null;
     };
@@ -260,4 +263,11 @@ fn call_hierarchy_item_json(index: &WorkspaceIndex, def: &WorkspaceDef) -> Optio
         );
     }
     Some(JsonValue::Object(out))
+}
+
+fn zero_location_json(uri: &str) -> JsonValue {
+    let mut out = BTreeMap::new();
+    out.insert("uri".to_string(), JsonValue::String(uri.to_string()));
+    out.insert("range".to_string(), range_json(0, 0, 0, 0));
+    JsonValue::Object(out)
 }
