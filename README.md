@@ -258,6 +258,8 @@ Global CLI output option:
 - `--diagnostics json` switches CLI diagnostics on stderr to JSON Lines suitable for editor/CI
   consumers. Diagnostic entries use fields:
   `kind="diagnostic"`, `level`, `code?`, `message`, `path?`, `line?`, `column?`, `span_start`, `span_end`.
+  Wrapper-side command/manifest/dev/file failures emit `kind="cli_message"` with `level`,
+  `code?`, and `message`.
   Loader/import diagnostics now use stable codes including `FUSE_IMPORT_*`, `FUSE_ASSET_*`,
   `FUSE_DEP_CYCLE`, `FUSE_TYPE_DERIVE_*`, and `FUSE_SYMBOL_DUPLICATE`.
   Runtime execution failures emitted through the validation envelope use stable codes such as
@@ -266,6 +268,8 @@ Global CLI output option:
   generic fallback. Structured config/env binding failures remain path-addressed validation
   payloads (typically `invalid_value`). Direct AOT binaries keep the matching stable message
   taxonomy in fatal envelopes even though they do not emit JSON diagnostics.
+  Common wrapper-side JSON codes include `wrapper_unknown_command`, `wrapper_unknown_backend`,
+  `wrapper_missing_subcommand`, `wrapper_manifest_missing`, `wrapper_cwd`, and `wrapper_file_read`.
   Command-step entries use:
   `kind="command_step"`, `command`, `message`.
 - `fuse check|run|build|test|clean` emit consistent stderr step markers:

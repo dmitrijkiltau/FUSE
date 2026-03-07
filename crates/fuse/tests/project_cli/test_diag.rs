@@ -174,6 +174,76 @@ fn unknown_command_uses_error_prefix() {
 }
 
 #[test]
+fn unknown_command_emits_coded_cli_message_in_json_mode() {
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("bad-command")
+        .arg("--diagnostics")
+        .arg("json")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse bad-command --diagnostics json");
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("\"kind\":\"cli_message\""), "stderr: {stderr}");
+    assert!(stderr.contains("\"code\":\"wrapper_unknown_command\""), "stderr: {stderr}");
+    assert!(stderr.contains("unknown command: bad-command"), "stderr: {stderr}");
+}
+
+#[test]
+fn unknown_backend_emits_coded_cli_message_in_json_mode() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_basic_manifest_project(
+        &dir,
+        r#"
+app "Demo":
+  print("ok")
+"#,
+    );
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&dir)
+        .arg("--backend")
+        .arg("bogus")
+        .arg("--diagnostics")
+        .arg("json")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse run with bogus backend");
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("\"kind\":\"cli_message\""), "stderr: {stderr}");
+    assert!(stderr.contains("\"code\":\"wrapper_unknown_backend\""), "stderr: {stderr}");
+    assert!(stderr.contains("unknown backend: bogus"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deps_missing_subcommand_emits_coded_cli_message_in_json_mode() {
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("deps")
+        .arg("--diagnostics")
+        .arg("json")
+        .arg("--color")
+        .arg("never")
+        .output()
+        .expect("run fuse deps --diagnostics json");
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("\"kind\":\"cli_message\""), "stderr: {stderr}");
+    assert!(stderr.contains("\"code\":\"wrapper_missing_subcommand\""), "stderr: {stderr}");
+    assert!(stderr.contains("missing deps subcommand"), "stderr: {stderr}");
+}
+
+#[test]
 fn check_strict_architecture_flag_enforces_additional_sema_guards() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");

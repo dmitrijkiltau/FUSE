@@ -394,6 +394,8 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
     `{"kind":"diagnostic","level":"error|warning","message":"...","path":"...","line":N,"column":N,"span_start":N,"span_end":N}`
   - command-step entries:
     `{"kind":"command_step","command":"check|run|build|test","message":"start|ok|failed|validation failed|..."}`
+  - wrapper/CLI entries outside compiler diagnostics:
+    `{"kind":"cli_message","level":"error|warning","code?":"...","message":"..."}`
 - runtime execution failures reported through the validation envelope use stable field codes where
   possible, including `runtime_config_decode`, `runtime_type_spec_error`,
   `runtime_null_access`, `runtime_index_bounds`, `runtime_invalid_index`, `runtime_field_access`,
@@ -405,6 +407,12 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
   `invalid_value` with the failing config path and decode message
 - direct AOT binaries do not emit JSON diagnostics, but their fatal envelopes preserve the same
   stable runtime message taxonomy for config/env decode failures and operator-path failures
+- wrapper-side JSON `cli_message` failures use stable codes for common command/manifest/dev/file
+  failure classes, including `wrapper_unknown_command`, `wrapper_unknown_backend`,
+  `wrapper_missing_subcommand`, `wrapper_unknown_subcommand`, `wrapper_manifest_missing`,
+  `wrapper_manifest_required`, `wrapper_cwd`, `wrapper_file_read`, `wrapper_file_write`,
+  `wrapper_dev_error`, `wrapper_run_error`, `wrapper_runtime_setup`, and
+  `wrapper_format_aborted`
 - keeps JSON validation payloads uncolored/machine-readable
 - `run` CLI argument validation failures exit with code `2`
 
