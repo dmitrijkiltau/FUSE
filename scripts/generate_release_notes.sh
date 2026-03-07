@@ -85,6 +85,9 @@ if [[ -z "$TAG" ]]; then
   TAG="v$VERSION"
 fi
 
+REPOSITORY="${GITHUB_REPOSITORY:-dmitrijkiltau/fuse}"
+SIGNING_IDENTITY="https://github.com/${REPOSITORY}/.github/workflows/release-artifacts.yml@refs/tags/${TAG}"
+
 mkdir -p "$ROOT/tmp" "$(dirname "$OUTPUT")"
 SECTION_FILE="$(mktemp "$ROOT/tmp/release-notes-section.XXXXXX")"
 cleanup() {
@@ -121,13 +124,33 @@ $(cat "$SECTION_FILE")
 - \`fuse-cli-<platform>.tar.gz|.zip\`
 - \`fuse-aot-<platform>.tar.gz|.zip\`
 - \`fuse-vscode-<platform>.vsix\`
+- \`<artifact>.spdx.json\`
 - \`SHA256SUMS\`
+- \`SHA256SUMS.sig\`
+- \`SHA256SUMS.pem\`
 - \`release-artifacts.json\`
+- \`release-provenance.json\`
+- \`release-provenance.sig\`
+- \`release-provenance.pem\`
 
 ## Verification
 
 \`\`\`bash
 sha256sum -c SHA256SUMS
+
+cosign verify-blob \\
+  --certificate SHA256SUMS.pem \\
+  --signature SHA256SUMS.sig \\
+  --certificate-identity "$SIGNING_IDENTITY" \\
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\
+  SHA256SUMS
+
+cosign verify-blob \\
+  --certificate release-provenance.pem \\
+  --signature release-provenance.sig \\
+  --certificate-identity "$SIGNING_IDENTITY" \\
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\
+  release-provenance.json
 \`\`\`
 EOF
 

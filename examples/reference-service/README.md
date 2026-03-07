@@ -42,7 +42,7 @@ FUSE_DB_URL=sqlite://reference-service.db
 ./scripts/fuse build --manifest-path examples/reference-service --aot
 
 # Runs a one-shot `migrate` service first, then starts the app service.
-# The default image tag is v0.9.1. Override with FUSE_VERSION to test a different patch tag:
+# The default image tag is v0.9.4. Override with FUSE_VERSION to test a different patch tag:
 #   FUSE_VERSION=v0.9.2 docker compose ... up --build
 docker compose -f examples/reference-service/docker-compose.yml up --build
 ```
@@ -51,11 +51,11 @@ To test with a specific patch tag without modifying the compose file, set `FUSE_
 environment before running:
 
 ```bash
-export FUSE_VERSION=v0.9.1
+export FUSE_VERSION=v0.9.4
 docker compose -f examples/reference-service/docker-compose.yml up --build
 ```
 
-This overrides the `${FUSE_VERSION:-v0.9.1}` default in `docker-compose.yml` and is passed through
+This overrides the `${FUSE_VERSION:-v0.9.4}` default in `docker-compose.yml` and is passed through
 as the `FUSE_VERSION` build arg to `Dockerfile`.
 
 `docker-compose.yml` uses `Dockerfile` (release Fuse CLI download) and runs migrations in

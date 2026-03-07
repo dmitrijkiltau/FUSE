@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.4] - 2026-03-07
+
+### Added
+
+- Release integrity automation for publishable bundles:
+  - deterministic SPDX JSON SBOM generation for CLI, AOT, and VSIX artifacts
+  - tagged-release provenance manifests with commit/ref/tag/workflow/run identity fields
+  - keyless `cosign` signatures for `SHA256SUMS` and tagged release provenance
+  - `scripts/verify_release_integrity.sh` for end-to-end release bundle validation
+  - `scripts/release_integrity_regression.sh` for fixture-based integrity regression coverage
+
+### Changed
+
+- `.github/workflows/release-artifacts.yml` now aggregates integrity sidecars, verifies signed
+  checksum/SBOM bundles in dry-run mode, and re-validates published release downloads after upload.
+- `release-artifacts.json` now records integrity sidecars when they are present in `dist/`.
+- Release docs and generated release notes now include downloader verification commands for signed
+  checksum manifests and release provenance assets.
+- Reference-service Docker defaults now target `v0.9.4` tags.
+
+### Migration
+
+- No language/runtime migration is required from `0.9.3` to `0.9.4`.
+- Release operators should publish and retain `*.spdx.json`, `SHA256SUMS.sig`,
+  `SHA256SUMS.pem`, and tagged `release-provenance.{json,sig,pem}` assets alongside the existing
+  platform archives.
+
 ## [0.9.3] - 2026-03-07
 
 ### Added

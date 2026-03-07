@@ -7,7 +7,7 @@ USE_CASE_BENCH_MAX_ATTEMPTS="${FUSE_USE_CASE_BENCH_MAX_ATTEMPTS:-3}"
 CLEAR_FUSE_CACHE=0
 SKIP_BENCH=0
 
-TOTAL_STEPS=22
+TOTAL_STEPS=23
 STEP_INDEX=0
 
 usage() {
@@ -51,7 +51,7 @@ if ! [[ "$USE_CASE_BENCH_MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 if [[ "$SKIP_BENCH" -eq 1 ]]; then
-  TOTAL_STEPS=18
+  TOTAL_STEPS=19
 fi
 
 if [[ "$CLEAR_FUSE_CACHE" -eq 1 ]]; then
@@ -167,6 +167,9 @@ run_step "Build and validate VS Code VSIX package"
 
 run_step "Run packaging verifier regression checks"
 "$ROOT/scripts/packaging_verifier_regression.sh"
+
+run_step "Run release integrity regression checks"
+"$ROOT/scripts/release_integrity_regression.sh"
 
 run_step "Build host CLI release artifact and checksum metadata"
 "$ROOT/scripts/package_cli_artifacts.sh" --release

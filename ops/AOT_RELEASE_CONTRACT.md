@@ -60,6 +60,7 @@ These targets are enforced as release-go/no-go criteria for the AOT rollout.
    `clippy`).
 2. Release artifact workflow uses Node.js `24` for VSIX packaging parity.
 3. Release metadata generation uses `SOURCE_DATE_EPOCH` pinned to the release commit timestamp.
+4. Release signing uses GitHub Actions OIDC keyless certificates via `cosign`.
 
 ## Deterministic metadata contract
 
@@ -68,7 +69,11 @@ These targets are enforced as release-go/no-go criteria for the AOT rollout.
    - deterministic artifact ordering
    - stable `generatedAtUtc` when `SOURCE_DATE_EPOCH` is set
    - optional `sourceDateEpoch` in `release-artifacts.json` for traceability
-3. Release workflows must set `SOURCE_DATE_EPOCH` when generating publishable metadata.
+   - integrity sidecar coverage (`SHA256SUMS`, SBOMs, provenance, signature/certificate files) in metadata when present
+3. `scripts/generate_release_sboms.sh` and `scripts/generate_release_provenance.sh` must emit
+   stable timestamps when `SOURCE_DATE_EPOCH` is set.
+4. Release workflows must set `SOURCE_DATE_EPOCH` when generating publishable metadata, SBOMs,
+   or provenance.
 
 ## Known non-determinism sources
 
@@ -84,7 +89,8 @@ These targets are enforced as release-go/no-go criteria for the AOT rollout.
    `ghcr.io/dmitrijkiltau/fuse-aot-demo:*`).
 3. Verify archive integrity for CLI/AOT/VSIX payloads before publish.
 4. Publish SHA-256 checksums + metadata manifest for every release bundle.
-5. Evaluate reproducibility per target class; do not compare checksums across unlike targets.
+5. Publish signed checksum/provenance sidecars plus SPDX JSON SBOMs for every tagged release bundle.
+6. Evaluate reproducibility per target class; do not compare checksums across unlike targets.
 
 ## Static profile policy
 
