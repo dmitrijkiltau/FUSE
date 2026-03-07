@@ -7,6 +7,9 @@ type Note:
   id: String
   title: String
 
+type NoteTitleRow:
+  title: String
+
 fn seed():
   db.exec("create table if not exists notes (id text primary key, title text not null)")
   db.exec("delete from notes")
@@ -20,16 +23,16 @@ fn remove_second():
   db.from("notes").delete().where("id", "=", "n2").exec()
 
 fn first_title() -> String:
-  let rows = db.from("notes").select(["title"]).where("id", "=", "n1").limit(1).all()
-  return rows[0]["title"]
+  let row = db.from("notes").select(["title"]).where("id", "=", "n1").limit(1).one<NoteTitleRow>()
+  return row?.title ?? ""
 
 fn all_titles() -> String:
-  let rows = db.from("notes").select(["title"]).order_by("id", "asc").all()
+  let rows = db.from("notes").select(["title"]).order_by("id", "asc").all<NoteTitleRow>()
   var out = ""
   for row in rows:
     if out != "":
       out = out + ","
-    out = out + row["title"]
+    out = out + row.title
   return out
 
 app "DbQueryBuilder":

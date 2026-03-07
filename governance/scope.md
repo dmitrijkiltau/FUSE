@@ -74,6 +74,9 @@ FUSE is currently scoped as a strict, typed language with integrated boundary/ru
 - strict architecture compile mode (`--strict-architecture`) enforcing capability purity,
   cross-layer import-cycle rejection, and error-domain isolation
 - SQLite-backed DB runtime and migration workflow
+- HTML DSL component composition with implicit `attrs`/`children`, using boundary-safe conventions:
+  pass presentation attrs through `attrs`, nested markup through `children`, and normalize typed
+  boundary data before render
 - service-oriented package workflow (`fuse check/run/dev/test/build`,
   `fuse clean --cache`, `fuse deps lock`, `fuse deps publish-check`,
   frozen lock enforcement)

@@ -1,6 +1,6 @@
-use fusec::{parse_source, sema};
+use fusec::{diag::Diag, parse_source, sema};
 
-fn analyze(src: &str) -> Vec<String> {
+fn analyze_raw(src: &str) -> Vec<Diag> {
     let (program, parse_diags) = parse_source(src);
     if !parse_diags.is_empty() {
         let mut out = String::new();
@@ -13,6 +13,11 @@ fn analyze(src: &str) -> Vec<String> {
         panic!("expected parse success, got diagnostics:\n{out}");
     }
     let (_analysis, diags) = sema::analyze_program(&program);
+    diags
+}
+
+fn analyze(src: &str) -> Vec<String> {
+    let diags = analyze_raw(src);
     let mut out = Vec::new();
     for diag in diags {
         out.push(format!("{:?}: {}", diag.level, diag.message));
@@ -21,8 +26,24 @@ fn analyze(src: &str) -> Vec<String> {
     out
 }
 
+fn analyze_codes(src: &str) -> Vec<String> {
+    let mut out: Vec<String> = analyze_raw(src)
+        .into_iter()
+        .filter_map(|diag| diag.code)
+        .collect();
+    out.sort();
+    out
+}
+
 fn assert_diags(src: &str, expected: &[&str]) {
     let actual = analyze(src);
+    let mut expected_sorted: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+    expected_sorted.sort();
+    assert_eq!(actual, expected_sorted);
+}
+
+fn assert_diag_codes(src: &str, expected: &[&str]) {
+    let actual = analyze_codes(src);
     let mut expected_sorted: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
     expected_sorted.sort();
     assert_eq!(actual, expected_sorted);
@@ -521,8 +542,99 @@ fn main():
 "#;
     assert_diags(
         src,
-        &["Error: typed query column mismatch for User: selected [id], expected [id, name]"],
+        &[
+            "Error: typed query projection for User does not match selected columns: missing [name]; expected fields [id, name]",
+        ],
     );
+}
+
+#[test]
+fn rejects_typed_query_without_select_and_reports_expected_fields() {
+    let src = r#"
+requires db
+
+type User:
+  id: Int
+  name: String
+
+fn main():
+  let _bad = db.from("users").all<User>()
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: typed query requires select([...]) before one<T>()/all<T>(); expected User fields [id, name]",
+        ],
+    );
+}
+
+#[test]
+fn rejects_typed_query_non_literal_select_columns() {
+    let src = r#"
+requires db
+
+type User:
+  id: Int
+  name: String
+
+fn main(column: String):
+  let _bad = db.from("users").select([column]).all<User>()
+"#;
+    assert_diags(
+        src,
+        &[
+            "Error: typed query select([...]) must use string literal columns for User; expected fields [id, name]",
+        ],
+    );
+}
+
+#[test]
+fn rejects_typed_query_non_type_result_targets() {
+    let src = r#"
+requires db
+
+fn main():
+  let _bad = db.from("users").select(["id"]).all<String>()
+"#;
+    assert_diags(
+        src,
+        &["Error: typed query result type must be a declared `type`, found String"],
+    );
+}
+
+#[test]
+fn typed_query_diagnostics_emit_stable_codes() {
+    let field_mismatch = r#"
+requires db
+
+type User:
+  id: Int
+  name: String
+
+fn main():
+  let _bad = db.from("users").select(["id"]).all<User>()
+"#;
+    assert_diag_codes(field_mismatch, &["FUSE_TYPED_QUERY_FIELD_MISMATCH"]);
+
+    let missing_select = r#"
+requires db
+
+type User:
+  id: Int
+  name: String
+
+fn main():
+  let _bad = db.from("users").all<User>()
+"#;
+    assert_diag_codes(missing_select, &["FUSE_TYPED_QUERY_SELECT"]);
+
+    let bad_type_arg = r#"
+requires db
+
+fn main():
+  let _bad = db.from("users").select(["id"]).all<String>()
+"#;
+    assert_diag_codes(bad_type_arg, &["FUSE_TYPED_QUERY_TYPE_ARG"]);
 }
 
 #[test]

@@ -48,7 +48,7 @@ APP_PORT=4000 ./scripts/fuse run examples/http_users.fuse
 | `refinement_demo.fuse` | Refinement constraints (`range`, `regex`, `predicate`) |
 | `json_codec.fuse` | `json.encode` / `json.decode` round-trip |
 | `time_crypto.fuse` | `time.*` and `crypto.*` runtime APIs |
-| `db_query_builder.fuse` | DB query-builder workflow (`db.from`) |
+| `db_query_builder.fuse` | DB query-builder workflow with typed read projections (`db.from(...).one<T>()` / `.all<T>()`) |
 
 ## Native backend examples
 
@@ -68,11 +68,11 @@ These exercise the Cranelift JIT backend specifically (`--backend native`):
 
 | Directory | Topic |
 |---|---|
-| `reference-service/` | Full reference service package (`fuse.toml`, auth notes API, templates/assets) |
+| `reference-service/` | Full reference service package (`fuse.toml`, auth notes API, typed query projections, templates/assets) |
 | `strict_arch_demo/` | Multi-file package intended for `fuse check --strict-architecture` |
 | `dep_import/` | Multi-package dependency import example using `dep:` paths |
 
 `reference-service/` remains the canonical end-to-end package example. It includes
 registration/login + session-auth notes API flow, native CSS modules (imports/custom
-properties/nesting), and a client-side JS flow. See
+properties/nesting), typed query projection structs on query-builder reads, and a client-side JS flow. See
 [reference-service/README.md](reference-service/README.md).

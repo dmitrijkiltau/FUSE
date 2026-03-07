@@ -409,3 +409,51 @@ app "Demo":
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn diagnostics_json_includes_typed_query_codes() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let entry = dir.join("main.fuse");
+    fs::write(
+        &entry,
+        r#"
+requires db
+
+type User:
+  id: Int
+  name: String
+
+fn load_missing_select() -> List<User>:
+  return db.from("users").all<User>()
+
+fn load_field_mismatch() -> List<User>:
+  return db.from("users").select(["id"]).all<User>()
+"#,
+    )
+    .expect("write main.fuse");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--diagnostics")
+        .arg("json")
+        .arg("--color")
+        .arg("never")
+        .arg(&entry)
+        .output()
+        .expect("run fuse check --diagnostics json");
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("\"code\":\"FUSE_TYPED_QUERY_SELECT\""),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"code\":\"FUSE_TYPED_QUERY_FIELD_MISMATCH\""),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

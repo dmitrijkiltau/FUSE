@@ -2,7 +2,8 @@
 
 This is the canonical Fuse reference service package.
 It includes registration/login auth, session-scoped CRUD routes, DB migrations, OpenAPI generation,
-native CSS assets, and a server-rendered HTMX UI implemented in Fuse HTML DSL.
+native CSS assets, typed query projection structs for query-builder reads, and a server-rendered
+HTMX UI implemented in Fuse HTML DSL.
 Long SQL statements in this project use multiline triple-quoted strings (`"""..."""`) for readability.
 
 ## Requirements
@@ -42,8 +43,8 @@ FUSE_DB_URL=sqlite://reference-service.db
 ./scripts/fuse build --manifest-path examples/reference-service --aot
 
 # Runs a one-shot `migrate` service first, then starts the app service.
-# The default image tag is v0.9.4. Override with FUSE_VERSION to test a different patch tag:
-#   FUSE_VERSION=v0.9.2 docker compose ... up --build
+# The default image tag is v0.9.5. Override with FUSE_VERSION to test a different patch tag:
+#   FUSE_VERSION=v0.9.4 docker compose ... up --build
 docker compose -f examples/reference-service/docker-compose.yml up --build
 ```
 
@@ -55,11 +56,16 @@ export FUSE_VERSION=v0.9.4
 docker compose -f examples/reference-service/docker-compose.yml up --build
 ```
 
-This overrides the `${FUSE_VERSION:-v0.9.4}` default in `docker-compose.yml` and is passed through
+This overrides the `${FUSE_VERSION:-v0.9.5}` default in `docker-compose.yml` and is passed through
 as the `FUSE_VERSION` build arg to `Dockerfile`.
 
 `docker-compose.yml` uses `Dockerfile` (release Fuse CLI download) and runs migrations in
 deployment via `fuse migrate .` before starting `app-aot`.
+
+Typed query patterns in this package:
+
+- query-builder reads that stay internal to the package use projection structs with `.one<T>()` / `.all<T>()`
+- HTTP route response shapes remain explicit at the boundary, with typed rows converted before return when needed
 
 ## Build
 

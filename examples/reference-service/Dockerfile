@@ -2,7 +2,7 @@
 
 FROM ubuntu:24.04 AS fuse-cli
 
-ARG FUSE_VERSION=v0.9.4
+ARG FUSE_VERSION=v0.9.5
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \

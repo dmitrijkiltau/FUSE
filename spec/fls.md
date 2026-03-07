@@ -262,6 +262,9 @@ Notes:
   (`(`, `.`, `[`, `?`, `?!`), so long call/member/index chains can be wrapped line-by-line.
 - Call-site type arguments are supported only for typed query reads:
   `db.from(...).select([...]).one<T>()` and `.all<T>()`.
+- Typed-query compiler diagnostics use codes `FUSE_TYPED_QUERY_CALL`,
+  `FUSE_TYPED_QUERY_TYPE_ARG`, `FUSE_TYPED_QUERY_SELECT`, and
+  `FUSE_TYPED_QUERY_FIELD_MISMATCH` in JSON diagnostics output.
 - Call argument lists allow line breaks and trailing commas before `)`.
 - Function parameter lists allow line breaks and a trailing comma before `)`.
 - `if` / `else if` / `else` bodies can use either a normal indented block or an inline single statement
@@ -270,6 +273,13 @@ Notes:
 - `component Name:` declares an HTML component with implicit params `attrs: Map<String,String>` and
   `children: List<Html>`; its body must return `Html`. Components are called like functions and accept
   the same HTML attribute shorthand as built-in tags.
+- Practical component convention: use `attrs` as pass-through presentation attributes for the
+  outer HTML boundary element, and read named keys from `attrs` only when the component
+  intentionally documents them.
+- Practical component convention: use `children` as the component content slot for already-built
+  `Html`; keep request/DB shaping outside the component and pass rendered fragments in.
+- Boundary-safe UI composition convention: normalize boundary data into typed values before
+  rendering, instead of treating raw request/DB maps as reusable component contracts.
 - In HTML attribute shorthand, `aria-*` attribute names and values are validated at compile time:
   unknown `aria-*` attributes are rejected; `aria-role` is not a valid attribute (use `role`);
   `aria-hidden`, `aria-expanded`, `aria-checked`, and `aria-pressed` only accept `"true"` or `"false"`;

@@ -3,15 +3,21 @@ requires db
 import Base from "./base"
 import { RequestContext, request_context_session_token, request_context_user_id } from "../../domain"
 
-fn private_note_rows(user_id: String) -> List<Map<String, String>>:
-  var rows: List<Map<String, String>> = []
+type PrivateNoteRow:
+  id: String
+  title: String
+  content: String
+  is_public: String
+
+fn private_note_rows(user_id: String) -> List<PrivateNoteRow>:
+  var rows: List<PrivateNoteRow> = []
   transaction:
     rows = db
       .from("notes")
       .select(["id", "title", "content", "is_public"])
       .where("owner_id", "=", user_id)
       .order_by("id", "desc")
-      .all()
+      .all<PrivateNoteRow>()
   return rows
 
 fn public_note_rows(ctx: RequestContext) -> List<Map<String, String>>:
@@ -78,11 +84,11 @@ fn render_like_badge(note: Map<String, String>, interactive: Bool) -> Html:
     span(class="note-like__count"):
       html.text(likes)
 
-fn render_private_note_card(note: Map<String, String>) -> Html:
-  let id = note["id"]
-  let title = note["title"]
-  let content = note["content"]
-  let published = note["is_public"] == "1"
+fn render_private_note_card(note: PrivateNoteRow) -> Html:
+  let id = note.id
+  let title = note.title
+  let content = note.content
+  let published = note.is_public == "1"
 
   var visibility = "Private"
   var publish_label = "Publish"
