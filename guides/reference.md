@@ -116,6 +116,8 @@ Type derivation:
 with listed fields removed. Field types/defaults are preserved for retained fields.
 
 Base types can be module-qualified (`Foo.User`). Unknown base types or fields are errors.
+Loader diagnostics for derived-type failures use stable codes `FUSE_TYPE_DERIVE_BASE`,
+`FUSE_TYPE_DERIVE_FIELD`, and `FUSE_TYPE_DERIVE_CYCLE`.
 
 ---
 
@@ -208,6 +210,8 @@ Asset import rules:
   typing remains intentionally conservative
 - asset imports are values, not modules: they do not create a namespace and do not expose named exports
 - `import {A, B} from "./data.json"` and `import X as Y from "./data.json"` are load-time errors
+- JSON/LSP diagnostics for asset import form and extension failures use stable codes
+  `FUSE_IMPORT_ASSET_FORM` and `FUSE_IMPORT_UNSUPPORTED_EXTENSION`
 
 Notes:
 
@@ -217,13 +221,17 @@ Notes:
 - function symbols are module-scoped (not global across all loaded modules)
 - unqualified function calls resolve in this order: current module, then named imports
 - module-qualified calls (`Foo.bar`) resolve against the referenced module alias
-- duplicate imported binding names in one module are load-time errors
+- duplicate imported binding names in one module are load-time errors and use
+  code `FUSE_IMPORT_DUPLICATE`
 - duplicate function names across different modules are allowed
 - module-qualified type references are valid in type positions (`Foo.User`, `Foo.Config`)
 - dependency imports use `dep:` import paths (for example, `dep:Auth/lib` or `dep:Fixtures/data.json`)
 - root-qualified imports use `root:` import paths (for example, `root:lib/auth` or `root:content/policy.md`)
 - missing asset files, unreadable files, invalid UTF-8, invalid JSON syntax, unsupported asset
   forms, and unsupported explicit extensions are load-time diagnostics attached to the import path
+- named-import lookup failures use code `FUSE_IMPORT_UNKNOWN`
+- asset load failures use codes `FUSE_ASSET_MISSING`, `FUSE_ASSET_READ`, `FUSE_ASSET_UTF8`, and
+  `FUSE_ASSET_JSON_INVALID`
 
 Package dependency resolution (`dep:` imports):
 
@@ -238,8 +246,14 @@ Package dependency resolution (`dep:` imports):
   always shadow any same-named sub-dependencies.
 - cross-package dependency cycles are a load-time error; the diagnostic identifies the full
   cycle path with `→` separators (for example, `circular import: A → B → A`).
+- dependency-cycle diagnostics use stable code `FUSE_DEP_CYCLE`
 - attempting to use an undeclared dependency name emits a structured error naming the unknown
   dep and listing all declared deps (for example, `unknown dependency 'Foo' — available: Auth, Math`).
+- malformed `dep:` and `root:` imports use stable codes `FUSE_IMPORT_DEP_PATH`,
+  `FUSE_IMPORT_ROOT_PATH`, and `FUSE_IMPORT_ROOT_ESCAPE`; undeclared dependencies use
+  `FUSE_IMPORT_UNKNOWN_DEPENDENCY`
+- duplicate exported nominal/config/service/app symbols across loaded modules use code
+  `FUSE_SYMBOL_DUPLICATE`
 - `fuse deps lock` rewrites `fuse.lock` for the selected package to match the resolved
   dependency graph.
 - `fuse deps lock --check` must fail with code `FUSE_LOCK_OUT_OF_DATE` when the current

@@ -254,6 +254,12 @@ fn loader_emits_structured_unknown_dep_diagnostic() {
 
     assert!(!diags.is_empty(), "expected diagnostics for unknown dep");
     let msg = &diags[0].message;
+    assert_eq!(
+        diags[0].code.as_deref(),
+        Some("FUSE_IMPORT_UNKNOWN_DEPENDENCY"),
+        "unexpected diagnostic code: {:?}",
+        diags[0].code
+    );
     // New diagnostic should mention the dep name and hint about available deps.
     assert!(
         msg.contains("Unknown"),
@@ -262,6 +268,53 @@ fn loader_emits_structured_unknown_dep_diagnostic() {
     assert!(
         msg.contains("available") || msg.contains("no dependencies"),
         "message should hint at available deps: {msg}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn loader_emits_dependency_cycle_code() {
+    let root = temp_dir("fuse_dep_cycle_loader");
+    let a_root = root.join("pkg_a");
+    let b_root = root.join("pkg_b");
+    fs::create_dir_all(&a_root).unwrap();
+    fs::create_dir_all(&b_root).unwrap();
+
+    write(
+        &a_root.join("fuse.toml"),
+        &format!(
+            "[package]\nentry = \"lib.fuse\"\n\n[dependencies]\nB = \"{}\"\n",
+            b_root.display()
+        ),
+    );
+    write(&a_root.join("lib.fuse"), "fn ping() -> Int:\n  return 1\n");
+    write(
+        &b_root.join("fuse.toml"),
+        &format!(
+            "[package]\nentry = \"lib.fuse\"\n\n[dependencies]\nA = \"{}\"\n",
+            a_root.display()
+        ),
+    );
+    write(&b_root.join("lib.fuse"), "fn pong() -> Int:\n  return 2\n");
+
+    let entry = root.join("main.fuse");
+    let src = "import B from \"dep:B/lib\"\nfn main():\n  print(B.pong())\n";
+    write(&entry, src);
+
+    let mut deps: HashMap<String, PathBuf> = HashMap::new();
+    deps.insert("B".to_string(), b_root);
+
+    let (_registry, diags) = fusec::load_program_with_modules_and_deps(&entry, src, &deps);
+    assert!(
+        diags.iter().any(|diag| diag.code.as_deref() == Some("FUSE_DEP_CYCLE")),
+        "expected dependency cycle code, got {:?}",
+        diags.iter().map(|diag| (&diag.code, &diag.message)).collect::<Vec<_>>()
+    );
+    assert!(
+        diags.iter().any(|diag| diag.message.contains("circular")),
+        "expected dependency cycle message, got {:?}",
+        diags.iter().map(|diag| &diag.message).collect::<Vec<_>>()
     );
 
     let _ = fs::remove_dir_all(&root);

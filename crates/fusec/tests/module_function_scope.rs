@@ -123,10 +123,101 @@ import { greet } from "./b"
         "missing duplicate import diagnostic: {messages:?}"
     );
     assert!(
+        diags
+            .iter()
+            .any(|diag| diag.code.as_deref() == Some("FUSE_IMPORT_DUPLICATE")),
+        "missing duplicate import code: {:?}",
+        diags.iter().map(|diag| (&diag.code, &diag.message)).collect::<Vec<_>>()
+    );
+    assert!(
         messages
             .iter()
             .any(|msg| msg == "previous import of greet here"),
         "missing previous import diagnostic: {messages:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn duplicate_exported_symbols_report_stable_loader_code() {
+    let dir = temp_project_dir("duplicate_exported_symbols");
+    let main_path = dir.join("main.fuse");
+    write_file(
+        &dir.join("a.fuse"),
+        r#"
+type User:
+  id: Int
+"#,
+    );
+    write_file(
+        &dir.join("b.fuse"),
+        r#"
+type User:
+  name: String
+"#,
+    );
+    write_file(
+        &main_path,
+        r#"
+import A from "./a"
+import B from "./b"
+
+fn main():
+  print(0)
+"#,
+    );
+
+    let src = fs::read_to_string(&main_path).expect("read root source");
+    let (_registry, diags) = fusec::load_program_with_modules(&main_path, &src);
+    assert!(
+        diags.iter().any(|diag| diag.code.as_deref() == Some("FUSE_SYMBOL_DUPLICATE")),
+        "expected duplicate symbol code, got {:?}",
+        diags.iter().map(|diag| (&diag.code, &diag.message)).collect::<Vec<_>>()
+    );
+    assert!(
+        diags.iter().any(|diag| diag.message == "duplicate symbol: User"),
+        "expected duplicate symbol message, got {:?}",
+        diags.iter().map(|diag| &diag.message).collect::<Vec<_>>()
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn derived_type_failures_report_stable_loader_codes() {
+    let dir = temp_project_dir("derived_type_codes");
+    let main_path = dir.join("main.fuse");
+    write_file(
+        &main_path,
+        r#"
+type User:
+  id: Int
+
+type Public = User without missing
+type Broken = Missing without id
+type LoopA = LoopB without id
+type LoopB = LoopA without id
+"#,
+    );
+
+    let src = fs::read_to_string(&main_path).expect("read root source");
+    let (_registry, diags) = fusec::load_program_with_modules(&main_path, &src);
+    let codes: Vec<_> = diags.iter().filter_map(|diag| diag.code.as_deref()).collect();
+    assert!(
+        codes.contains(&"FUSE_TYPE_DERIVE_FIELD"),
+        "expected FUSE_TYPE_DERIVE_FIELD, got {:?}",
+        diags.iter().map(|diag| (&diag.code, &diag.message)).collect::<Vec<_>>()
+    );
+    assert!(
+        codes.contains(&"FUSE_TYPE_DERIVE_BASE"),
+        "expected FUSE_TYPE_DERIVE_BASE, got {:?}",
+        diags.iter().map(|diag| (&diag.code, &diag.message)).collect::<Vec<_>>()
+    );
+    assert!(
+        codes.contains(&"FUSE_TYPE_DERIVE_CYCLE"),
+        "expected FUSE_TYPE_DERIVE_CYCLE, got {:?}",
+        diags.iter().map(|diag| (&diag.code, &diag.message)).collect::<Vec<_>>()
     );
 
     let _ = fs::remove_dir_all(&dir);

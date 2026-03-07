@@ -122,6 +122,11 @@ app "assets":
 - only `import Name from "path.ext"` is supported for asset files in `0.9.7`
 - asset imports are values, not modules: no named asset imports, no module aliases, no custom
   import-loader/plugin system
+- JSON/LSP diagnostics for loader/import failures use stable code families (`FUSE_IMPORT_*`,
+  `FUSE_ASSET_*`) for editor and CI consumers
+- additional loader consistency coverage now includes dependency cycles (`FUSE_DEP_CYCLE`),
+  derived-type resolution failures (`FUSE_TYPE_DERIVE_*`), and duplicate exported symbols
+  (`FUSE_SYMBOL_DUPLICATE`)
 
 ## Module capabilities
 
@@ -253,6 +258,8 @@ Global CLI output option:
 - `--diagnostics json` switches CLI diagnostics on stderr to JSON Lines suitable for editor/CI
   consumers. Diagnostic entries use fields:
   `kind="diagnostic"`, `level`, `code?`, `message`, `path?`, `line?`, `column?`, `span_start`, `span_end`.
+  Loader/import diagnostics now use stable codes including `FUSE_IMPORT_*`, `FUSE_ASSET_*`,
+  `FUSE_DEP_CYCLE`, `FUSE_TYPE_DERIVE_*`, and `FUSE_SYMBOL_DUPLICATE`.
   Command-step entries use:
   `kind="command_step"`, `command`, `message`.
 - `fuse check|run|build|test|clean` emit consistent stderr step markers:

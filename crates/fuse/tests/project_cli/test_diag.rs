@@ -457,3 +457,41 @@ fn load_field_mismatch() -> List<User>:
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn diagnostics_json_includes_import_asset_codes() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let entry = dir.join("main.fuse");
+    fs::write(
+        &entry,
+        r#"
+import Notes from "./notes.txt"
+
+app "Demo":
+  print(Notes)
+"#,
+    )
+    .expect("write main.fuse");
+    fs::write(dir.join("notes.txt"), "plain text\n").expect("write notes.txt");
+
+    let exe = env!("CARGO_BIN_EXE_fuse");
+    let output = Command::new(exe)
+        .arg("check")
+        .arg("--diagnostics")
+        .arg("json")
+        .arg("--color")
+        .arg("never")
+        .arg(&entry)
+        .output()
+        .expect("run fuse check --diagnostics json");
+    assert!(!output.status.success(), "check unexpectedly succeeded");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("\"code\":\"FUSE_IMPORT_UNSUPPORTED_EXTENSION\""),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

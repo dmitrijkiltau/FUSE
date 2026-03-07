@@ -163,6 +163,14 @@ fn main():
         diags.iter().map(|diag| &diag.message).collect::<Vec<_>>()
     );
     assert!(
+        diags.iter().any(|diag| diag.code.as_deref() == Some("FUSE_ASSET_MISSING")),
+        "missing asset diagnostic should carry FUSE_ASSET_MISSING: {:?}",
+        diags
+            .iter()
+            .map(|diag| (&diag.code, &diag.message))
+            .collect::<Vec<_>>()
+    );
+    assert!(
         diags.iter().any(|diag| diag.path.as_ref() == Some(&main_path)),
         "missing asset diagnostic should attach to importer path"
     );
@@ -189,6 +197,16 @@ fn main():
             .any(|diag| diag.message.contains("invalid json")),
         "expected invalid json diagnostic, got {:?}",
         diags.iter().map(|diag| &diag.message).collect::<Vec<_>>()
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|diag| diag.code.as_deref() == Some("FUSE_ASSET_JSON_INVALID")),
+        "invalid json diagnostic should carry FUSE_ASSET_JSON_INVALID: {:?}",
+        diags
+            .iter()
+            .map(|diag| (&diag.code, &diag.message))
+            .collect::<Vec<_>>()
     );
     assert!(
         diags.iter().any(|diag| {
@@ -218,6 +236,8 @@ fn main():
     let (_registry, named_diags) = fusec::load_program_with_modules(&main_path, named_src);
     assert!(
         named_diags.iter().any(|diag| {
+            diag.code.as_deref() == Some("FUSE_IMPORT_ASSET_FORM")
+                &&
             diag.message
                 .contains("asset imports only support `import Name from \"path.ext\"`")
         }),
@@ -237,6 +257,8 @@ fn main():
     let (_registry, alias_diags) = fusec::load_program_with_modules(&main_path, alias_src);
     assert!(
         alias_diags.iter().any(|diag| {
+            diag.code.as_deref() == Some("FUSE_IMPORT_ASSET_FORM")
+                &&
             diag.message
                 .contains("asset imports only support `import Name from \"path.ext\"`")
         }),
@@ -255,9 +277,10 @@ fn main():
 "#;
     let (_registry, ext_diags) = fusec::load_program_with_modules(&main_path, ext_src);
     assert!(
-        ext_diags
-            .iter()
-            .any(|diag| diag.message.contains("unsupported import extension .txt")),
+        ext_diags.iter().any(|diag| {
+            diag.code.as_deref() == Some("FUSE_IMPORT_UNSUPPORTED_EXTENSION")
+                && diag.message.contains("unsupported import extension .txt")
+        }),
         "expected unsupported extension diagnostic, got {:?}",
         ext_diags
             .iter()

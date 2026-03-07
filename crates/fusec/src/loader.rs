@@ -14,6 +14,27 @@ use crate::span::Span;
 
 pub type ModuleId = usize;
 
+const FUSE_IMPORT_CYCLE: &str = "FUSE_IMPORT_CYCLE";
+const FUSE_IMPORT_MODULE_READ: &str = "FUSE_IMPORT_MODULE_READ";
+const FUSE_IMPORT_ASSET_FORM: &str = "FUSE_IMPORT_ASSET_FORM";
+const FUSE_IMPORT_UNSUPPORTED_EXTENSION: &str = "FUSE_IMPORT_UNSUPPORTED_EXTENSION";
+const FUSE_IMPORT_DUPLICATE: &str = "FUSE_IMPORT_DUPLICATE";
+const FUSE_IMPORT_UNKNOWN: &str = "FUSE_IMPORT_UNKNOWN";
+const FUSE_IMPORT_DEP_PATH: &str = "FUSE_IMPORT_DEP_PATH";
+const FUSE_IMPORT_UNKNOWN_DEPENDENCY: &str = "FUSE_IMPORT_UNKNOWN_DEPENDENCY";
+const FUSE_IMPORT_ROOT_PATH: &str = "FUSE_IMPORT_ROOT_PATH";
+const FUSE_IMPORT_ROOT_ESCAPE: &str = "FUSE_IMPORT_ROOT_ESCAPE";
+const FUSE_ASSET_MISSING: &str = "FUSE_ASSET_MISSING";
+const FUSE_ASSET_READ: &str = "FUSE_ASSET_READ";
+const FUSE_ASSET_UTF8: &str = "FUSE_ASSET_UTF8";
+const FUSE_ASSET_JSON_INVALID: &str = "FUSE_ASSET_JSON_INVALID";
+const FUSE_DEP_CYCLE: &str = "FUSE_DEP_CYCLE";
+const FUSE_TYPE_DERIVE_CYCLE: &str = "FUSE_TYPE_DERIVE_CYCLE";
+const FUSE_TYPE_UNKNOWN: &str = "FUSE_TYPE_UNKNOWN";
+const FUSE_TYPE_DERIVE_BASE: &str = "FUSE_TYPE_DERIVE_BASE";
+const FUSE_TYPE_DERIVE_FIELD: &str = "FUSE_TYPE_DERIVE_FIELD";
+const FUSE_SYMBOL_DUPLICATE: &str = "FUSE_SYMBOL_DUPLICATE";
+
 const STD_ERROR_MODULE: &str = r#"
 type Error:
   code: String
@@ -199,7 +220,9 @@ pub fn load_program_with_modules_and_deps(
     let (transitive_deps, cycle_errors) = build_transitive_deps(deps);
     let mut loader = ModuleLoader::with_deps(&transitive_deps);
     for msg in cycle_errors {
-        loader.diags.error(crate::span::Span::default(), msg);
+        loader
+            .diags
+            .error_with_code(crate::span::Span::default(), FUSE_DEP_CYCLE, msg);
     }
     let root = loader.insert_root(path, src);
     let root = root.unwrap_or(0);
@@ -220,7 +243,9 @@ pub fn load_program_with_modules_and_deps_and_overrides(
     let (transitive_deps, cycle_errors) = build_transitive_deps(deps);
     let mut loader = ModuleLoader::with_deps_and_overrides(&transitive_deps, overrides);
     for msg in cycle_errors {
-        loader.diags.error(crate::span::Span::default(), msg);
+        loader
+            .diags
+            .error_with_code(crate::span::Span::default(), FUSE_DEP_CYCLE, msg);
     }
     let root = loader.insert_root(path, src);
     let root = root.unwrap_or(0);
@@ -315,8 +340,9 @@ impl ModuleLoader {
                 .iter()
                 .map(|p| p.display().to_string())
                 .collect::<Vec<_>>();
-            self.diags.error(
+            self.diags.error_with_code(
                 span,
+                FUSE_IMPORT_CYCLE,
                 format!(
                     "circular import: {} → {}",
                     cycle_path.join(" → "),
@@ -337,8 +363,9 @@ impl ModuleLoader {
                     match fs::read_to_string(&key) {
                         Ok(src) => src,
                         Err(err) => {
-                            self.diags.error(
+                            self.diags.error_with_code(
                                 span,
+                                FUSE_IMPORT_MODULE_READ,
                                 format!("failed to read module {}: {err}", key.display()),
                             );
                             self.visiting.remove(&key);
@@ -442,9 +469,10 @@ impl ModuleLoader {
                             }
                         }
                         ImportPathKind::UnsupportedAssetExtension => {
-                            self.diags.error_at_path(
+                            self.diags.error_at_path_with_code(
                                 importer_path.clone(),
                                 path.span,
+                                FUSE_IMPORT_UNSUPPORTED_EXTENSION,
                                 unsupported_import_extension_message(&path.value),
                             );
                         }
@@ -462,16 +490,18 @@ impl ModuleLoader {
                             }
                         }
                         ImportPathKind::Asset(_) => {
-                            self.diags.error_at_path(
+                            self.diags.error_at_path_with_code(
                                 importer_path.clone(),
                                 span,
+                                FUSE_IMPORT_ASSET_FORM,
                                 asset_import_form_message(),
                             );
                         }
                         ImportPathKind::UnsupportedAssetExtension => {
-                            self.diags.error_at_path(
+                            self.diags.error_at_path_with_code(
                                 importer_path.clone(),
                                 path.span,
+                                FUSE_IMPORT_UNSUPPORTED_EXTENSION,
                                 unsupported_import_extension_message(&path.value),
                             );
                         }
@@ -490,18 +520,23 @@ impl ModuleLoader {
                             let exports = self.modules.get(&module_id).map(|unit| &unit.exports);
                             for name in names {
                                 if let Some(prev_span) = import_item_spans.get(&name.name).copied() {
-                                    self.diags
-                                        .error(name.span, format!("duplicate import {}", name.name));
-                                    self.diags.error(
+                                    self.diags.error_with_code(
+                                        name.span,
+                                        FUSE_IMPORT_DUPLICATE,
+                                        format!("duplicate import {}", name.name),
+                                    );
+                                    self.diags.error_with_code(
                                         prev_span,
+                                        FUSE_IMPORT_DUPLICATE,
                                         format!("previous import of {} here", name.name),
                                     );
                                     continue;
                                 }
                                 let Some(exports) = exports else { continue };
                                 if !exports.contains(&name.name) {
-                                    self.diags.error(
+                                    self.diags.error_with_code(
                                         name.span,
+                                        FUSE_IMPORT_UNKNOWN,
                                         format!("unknown import {} in {}", name.name, path.value),
                                     );
                                     continue;
@@ -511,16 +546,18 @@ impl ModuleLoader {
                             }
                         }
                         ImportPathKind::Asset(_) => {
-                            self.diags.error_at_path(
+                            self.diags.error_at_path_with_code(
                                 importer_path.clone(),
                                 span,
+                                FUSE_IMPORT_ASSET_FORM,
                                 asset_import_form_message(),
                             );
                         }
                         ImportPathKind::UnsupportedAssetExtension => {
-                            self.diags.error_at_path(
+                            self.diags.error_at_path_with_code(
                                 importer_path.clone(),
                                 path.span,
+                                FUSE_IMPORT_UNSUPPORTED_EXTENSION,
                                 unsupported_import_extension_message(&path.value),
                             );
                         }
@@ -584,8 +621,9 @@ impl ModuleLoader {
             return Some(fields.clone());
         }
         if visiting.contains(&key) {
-            self.diags.error(
+            self.diags.error_with_code(
                 Span::default(),
+                FUSE_TYPE_DERIVE_CYCLE,
                 format!("cyclic type derivation for {name}"),
             );
             return None;
@@ -595,8 +633,11 @@ impl ModuleLoader {
         let decl = match self.find_type_decl(module_id, name) {
             Some(decl) => decl,
             None => {
-                self.diags
-                    .error(Span::default(), format!("unknown type {name}"));
+                self.diags.error_with_code(
+                    Span::default(),
+                    FUSE_TYPE_UNKNOWN,
+                    format!("unknown type {name}"),
+                );
                 visiting.remove(&key);
                 return None;
             }
@@ -625,13 +666,22 @@ impl ModuleLoader {
         let (base_module, base_name) = match self.resolve_type_target(module_id, &derive.base) {
             Some(value) => value,
             None => {
-                self.diags.error(
+                self.diags.error_with_code(
                     derive.base.span,
+                    FUSE_TYPE_DERIVE_BASE,
                     format!("unknown base type {}", derive.base.name),
                 );
                 return None;
             }
         };
+        if self.find_type_decl(base_module, &base_name).is_none() {
+            self.diags.error_with_code(
+                derive.base.span,
+                FUSE_TYPE_DERIVE_BASE,
+                format!("unknown base type {}", derive.base.name),
+            );
+            return None;
+        }
         let base_fields = self.resolve_derived_fields(base_module, &base_name, cache, visiting)?;
 
         let mut removed = HashSet::new();
@@ -641,8 +691,9 @@ impl ModuleLoader {
 
         for field in &derive.without {
             if !base_fields.iter().any(|f| f.name.name == field.name) {
-                self.diags.error(
+                self.diags.error_with_code(
                     field.span,
+                    FUSE_TYPE_DERIVE_FIELD,
                     format!("unknown field {} in {}", field.name, derive.base.name),
                 );
             }
@@ -720,20 +771,25 @@ impl ModuleLoader {
             if let Some((prev_id, prev_span)) = self.global_names.get(name) {
                 if *prev_id != module_id {
                     let path = unit.path.clone();
-                    self.diags.error_at_path(
+                    self.diags.error_at_path_with_code(
                         path.clone(),
                         span,
+                        FUSE_SYMBOL_DUPLICATE,
                         format!("duplicate symbol: {name}"),
                     );
                     if let Some(prev_unit) = self.modules.get(prev_id) {
-                        self.diags.error_at_path(
+                        self.diags.error_at_path_with_code(
                             prev_unit.path.clone(),
                             *prev_span,
+                            FUSE_SYMBOL_DUPLICATE,
                             format!("previous definition of {name} here"),
                         );
                     } else {
-                        self.diags
-                            .error(span, format!("previous definition of {name} here"));
+                        self.diags.error_with_code(
+                            span,
+                            FUSE_SYMBOL_DUPLICATE,
+                            format!("previous definition of {name} here"),
+                        );
                     }
                 }
                 continue;
@@ -748,8 +804,11 @@ impl ModuleLoader {
             let (dep, rel) = match rest.split_once('/') {
                 Some((dep, rel)) if !dep.is_empty() && !rel.is_empty() => (dep, rel),
                 _ => {
-                    self.diags
-                        .error(span, "dependency imports require dep:<name>/<path>");
+                    self.diags.error_with_code(
+                        span,
+                        FUSE_IMPORT_DEP_PATH,
+                        "dependency imports require dep:<name>/<path>",
+                    );
                     return base_dir.join(raw);
                 }
             };
@@ -764,8 +823,11 @@ impl ModuleLoader {
                 } else {
                     format!(" — available: {}", available.join(", "))
                 };
-                self.diags
-                    .error(span, format!("unknown dependency '{dep}'{hint}"));
+                self.diags.error_with_code(
+                    span,
+                    FUSE_IMPORT_UNKNOWN_DEPENDENCY,
+                    format!("unknown dependency '{dep}'{hint}"),
+                );
                 return base_dir.join(raw);
             };
             let mut path = root.join(rel);
@@ -776,14 +838,21 @@ impl ModuleLoader {
         }
         if let Some(rel) = raw.strip_prefix("root:") {
             if rel.is_empty() {
-                self.diags.error(span, "root imports require root:<path>");
+                self.diags.error_with_code(
+                    span,
+                    FUSE_IMPORT_ROOT_PATH,
+                    "root imports require root:<path>",
+                );
                 return base_dir.join(raw);
             }
             if let Some(path) = self.resolve_root_path(rel) {
                 return path;
             }
-            self.diags
-                .error(span, "root import path escapes workspace root");
+            self.diags.error_with_code(
+                span,
+                FUSE_IMPORT_ROOT_ESCAPE,
+                "root import path escapes workspace root",
+            );
             return base_dir.join(raw);
         }
         let mut path = PathBuf::from(raw);
@@ -851,17 +920,19 @@ impl ModuleLoader {
             match fs::read(&key) {
                 Ok(bytes) => bytes,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    self.diags.error_at_path(
+                    self.diags.error_at_path_with_code(
                         importer_path.to_path_buf(),
                         span,
+                        FUSE_ASSET_MISSING,
                         format!("missing asset file {}", key.display()),
                     );
                     return None;
                 }
                 Err(err) => {
-                    self.diags.error_at_path(
+                    self.diags.error_at_path_with_code(
                         importer_path.to_path_buf(),
                         span,
+                        FUSE_ASSET_READ,
                         format!("failed to read asset {}: {err}", key.display()),
                     );
                     return None;
@@ -871,9 +942,10 @@ impl ModuleLoader {
         let text = match String::from_utf8(bytes) {
             Ok(text) => text,
             Err(_) => {
-                self.diags.error_at_path(
+                self.diags.error_at_path_with_code(
                     key.clone(),
                     Span::default(),
+                    FUSE_ASSET_UTF8,
                     "asset file is not valid UTF-8",
                 );
                 return None;
@@ -884,9 +956,10 @@ impl ModuleLoader {
             ImportedAssetKind::Json => match rt_json::decode(&text) {
                 Ok(json) => ImportedAssetValue::Json(json),
                 Err(err) => {
-                    self.diags.error_at_path(
+                    self.diags.error_at_path_with_code(
                         key.clone(),
                         Span::default(),
+                        FUSE_ASSET_JSON_INVALID,
                         format!("invalid json: {err}"),
                     );
                     return None;
@@ -957,7 +1030,7 @@ fn is_std_error_virtual_path(path: &Path) -> bool {
 }
 
 fn asset_import_form_message() -> &'static str {
-    "asset imports only support `import Name from \"path.ext\"` in v0.9.7"
+    "asset imports only support `import Name from \"path.ext\"`"
 }
 
 fn unsupported_import_extension_message(raw: &str) -> String {
