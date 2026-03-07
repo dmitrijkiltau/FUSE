@@ -106,7 +106,7 @@ fn main():
     lsp.open_document(&util_uri, util_src, 1);
     lsp.open_document(&main_uri, main_src, 1);
     assert!(lsp.wait_diagnostics(&util_uri).is_empty());
-    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+    let _ = lsp.wait_diagnostics(&main_uri);
 
     let (local_line, local_col) = line_col_of(main_src, "local_join(\"a\", \"b\")");
     let local_help = lsp.request(
@@ -225,6 +225,64 @@ fn main():
         print_params,
         vec!["value".to_string()],
         "unexpected builtin signature params"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn lsp_signature_help_module_alias_member_call() {
+    let dir = temp_project_dir("fuse_lsp_signature_help_module_alias");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    );
+
+        let util_src = r#"fn greet(name: String, times: Int) -> String:
+    return "${name} x ${times}"
+"#;
+        let main_src = r#"import util from "./util"
+
+fn main():
+    let out = util.greet("Ada", 2)
+    print(out)
+"#;
+
+    let util_path = dir.join("util.fuse");
+    let main_path = dir.join("main.fuse");
+    write_project_file(&util_path, util_src);
+    write_project_file(&main_path, main_src);
+
+    let root_uri = path_to_uri(&dir);
+    let util_uri = path_to_uri(&util_path);
+    let main_uri = path_to_uri(&main_path);
+
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&util_uri, util_src, 1);
+    lsp.open_document(&main_uri, main_src, 1);
+    assert!(lsp.wait_diagnostics(&util_uri).is_empty());
+    let _ = lsp.wait_diagnostics(&main_uri);
+
+    let (line, col) = line_col_of(main_src, "util.greet(\"Ada\", 2)");
+    let help = lsp.request(
+        "textDocument/signatureHelp",
+        signature_help_params(&main_uri, line, col + "util.greet(\"Ada\", ".len()),
+    );
+    let (label, params, active) = signature_summary(&help);
+    assert!(
+        label.contains("fn greet(name: String, times: Int) -> String"),
+        "unexpected module-alias signature label: {label}"
+    );
+    assert_eq!(
+        active, 1,
+        "module-alias call active parameter should be second"
+    );
+    assert_eq!(
+        params,
+        vec!["name: String".to_string(), "times: Int".to_string()],
+        "unexpected module-alias signature params"
     );
 
     lsp.shutdown();

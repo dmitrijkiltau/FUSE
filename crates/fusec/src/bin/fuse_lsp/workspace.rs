@@ -1459,15 +1459,19 @@ impl WorkspaceIndex {
         def_id: usize,
         new_name: &str,
     ) -> HashMap<String, Vec<JsonValue>> {
+        let related_targets = self.related_targets_for_def(def_id);
         let mut spans_by_uri: HashMap<String, Vec<Span>> = HashMap::new();
-        if let Some(def) = self.def_for_target(def_id) {
+        for related_target in &related_targets {
+            let Some(def) = self.def_for_target(*related_target) else {
+                continue;
+            };
             spans_by_uri
                 .entry(def.uri.clone())
                 .or_default()
                 .push(def.def.span);
         }
         for reference in &self.refs {
-            if reference.target == def_id {
+            if related_targets.contains(&reference.target) {
                 spans_by_uri
                     .entry(reference.uri.clone())
                     .or_default()

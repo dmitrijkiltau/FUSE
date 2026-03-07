@@ -138,6 +138,64 @@ fn main():
         "prepareRename should return rename range/placeholder: {prepare_text}"
     );
 
+    let (endpoint_call_line, endpoint_call_col) = line_col_of(main_src, "endpoint(\"B\")");
+    let mut rename_endpoint = match position_params(&main_uri, endpoint_call_line, endpoint_call_col + 1)
+    {
+        JsonValue::Object(params) => params,
+        _ => unreachable!(),
+    };
+    rename_endpoint.insert(
+        "newName".to_string(),
+        JsonValue::String("dispatch".to_string()),
+    );
+    let endpoint_rename = lsp.request("textDocument/rename", JsonValue::Object(rename_endpoint));
+    let endpoint_rename_text = json::encode(&endpoint_rename);
+    assert!(
+        endpoint_rename_text.contains(&api_uri) && endpoint_rename_text.contains(&main_uri),
+        "rename should edit definition + importer module: {endpoint_rename_text}"
+    );
+    assert!(
+        endpoint_rename_text.contains("\"newText\":\"dispatch\""),
+        "rename should use the requested symbol name: {endpoint_rename_text}"
+    );
+    let JsonValue::Object(endpoint_rename_root) = &endpoint_rename else {
+        panic!("rename should return workspace edits: {endpoint_rename_text}");
+    };
+    let Some(JsonValue::Object(endpoint_changes)) = endpoint_rename_root.get("changes") else {
+        panic!("rename should return workspace change map: {endpoint_rename_text}");
+    };
+    let Some(JsonValue::Array(main_edits)) = endpoint_changes.get(&main_uri) else {
+        panic!("rename should include main module edits: {endpoint_rename_text}");
+    };
+    assert_eq!(
+        main_edits.len(),
+        2,
+        "rename should rewrite both the named import and the callsite in main: {endpoint_rename_text}"
+    );
+    let mut main_edit_positions = Vec::new();
+    for edit in main_edits {
+        let JsonValue::Object(edit_obj) = edit else {
+            continue;
+        };
+        let Some(JsonValue::Object(range_obj)) = edit_obj.get("range") else {
+            continue;
+        };
+        let Some(JsonValue::Object(start_obj)) = range_obj.get("start") else {
+            continue;
+        };
+        let Some(JsonValue::Number(line)) = start_obj.get("line") else {
+            continue;
+        };
+        let Some(JsonValue::Number(character)) = start_obj.get("character") else {
+            continue;
+        };
+        main_edit_positions.push((*line as usize, *character as usize));
+    }
+    assert!(
+        main_edit_positions.contains(&(1, 9)) && main_edit_positions.contains(&(8, 10)),
+        "rename should cover both the named import and the callsite in main: {endpoint_rename_text}"
+    );
+
     let (print_line, print_col) = line_col_of(main_src, "print(a)");
     let prepare_builtin = lsp.request(
         "textDocument/prepareRename",
