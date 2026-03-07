@@ -72,42 +72,6 @@ fi
 
 mkdir -p "$(dirname "$OUTPUT")" "$(dirname "$METADATA")" "$ROOT/tmp"
 
-HASH_TOOL=""
-if command -v sha256sum >/dev/null 2>&1; then
-  HASH_TOOL="sha256sum"
-elif command -v shasum >/dev/null 2>&1; then
-  HASH_TOOL="shasum"
-elif command -v openssl >/dev/null 2>&1; then
-  HASH_TOOL="openssl"
-else
-  echo "missing SHA-256 tool: install sha256sum, shasum, or openssl" >&2
-  exit 1
-fi
-
-sha256_for_file() {
-  local file="$1"
-  case "$HASH_TOOL" in
-    sha256sum)
-      sha256sum "$file" | awk '{print $1}'
-      ;;
-    shasum)
-      shasum -a 256 "$file" | awk '{print $1}'
-      ;;
-    openssl)
-      openssl dgst -sha256 -r "$file" | awk '{print $1}'
-      ;;
-  esac
-}
-
-iso_utc_from_epoch() {
-  local epoch="$1"
-  if date -u -d "@$epoch" +"%Y-%m-%dT%H:%M:%SZ" >/dev/null 2>&1; then
-    date -u -d "@$epoch" +"%Y-%m-%dT%H:%M:%SZ"
-  else
-    date -u -r "$epoch" +"%Y-%m-%dT%H:%M:%SZ"
-  fi
-}
-
 GENERATED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 SOURCE_EPOCH=""
 if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
@@ -119,32 +83,17 @@ if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
   GENERATED_AT="$(iso_utc_from_epoch "$SOURCE_EPOCH")"
 fi
 
-shopt -s nullglob
-candidates=(
-  "$DIST_DIR"/fuse-cli-*.tar.gz
-  "$DIST_DIR"/fuse-cli-*.zip
-  "$DIST_DIR"/fuse-aot-*.tar.gz
-  "$DIST_DIR"/fuse-aot-*.zip
-  "$DIST_DIR"/fuse-vscode-*.vsix
-)
-shopt -u nullglob
-
 names=()
-for path in "${candidates[@]}"; do
-  if [[ -f "$path" ]]; then
-    names+=("$(basename "$path")")
-  fi
-done
+while IFS= read -r name; do
+  [[ -n "$name" ]] && names+=("$name")
+done < <(list_release_payload_names "$DIST_DIR")
 
 if [[ "${#names[@]}" -eq 0 ]]; then
   echo "no release artifacts found in $DIST_DIR" >&2
   exit 1
 fi
 
-sorted_names=()
-while IFS= read -r name; do
-  sorted_names+=("$name")
-done < <(printf '%s\n' "${names[@]}" | LC_ALL=C sort -u)
+sorted_names=("${names[@]}")
 
 declare -a hashes
 declare -a sizes
@@ -165,6 +114,60 @@ json_escape() {
 }
 
 TMP_META="$(mktemp "$ROOT/tmp/checksum-meta.XXXXXX")"
+detect_integrity_names() {
+  local -a discovered=()
+  local path
+
+  while IFS= read -r -d '' path; do
+    discovered+=("$(basename "$path")")
+  done < <(find "$DIST_DIR" -maxdepth 1 -type f \
+    \( -name 'SHA256SUMS' -o -name 'SHA256SUMS.sig' -o -name 'SHA256SUMS.pem' \
+       -o -name 'release-provenance.json' -o -name 'release-provenance.sig' \
+       -o -name 'release-provenance.pem' -o -name '*.spdx.json' \) \
+    -print0)
+
+  if [[ "${#discovered[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  printf '%s\n' "${discovered[@]}" | LC_ALL=C sort -u
+}
+
+integrity_names=()
+while IFS= read -r name; do
+  [[ -n "$name" ]] && integrity_names+=("$name")
+done < <(detect_integrity_names)
+
+integrity_kind() {
+  local name="$1"
+  case "$name" in
+    SHA256SUMS) printf 'checksums\n' ;;
+    *.spdx.json) printf 'sbom\n' ;;
+    *.sig) printf 'signature\n' ;;
+    *.pem) printf 'certificate\n' ;;
+    release-provenance.json) printf 'provenance\n' ;;
+    *) printf 'auxiliary\n' ;;
+  esac
+}
+
+integrity_subject() {
+  local name="$1"
+  case "$name" in
+    SHA256SUMS.sig|SHA256SUMS.pem) printf 'SHA256SUMS\n' ;;
+    release-provenance.sig|release-provenance.pem) printf 'release-provenance.json\n' ;;
+    *.spdx.json)
+      local stem="${name%.spdx.json}"
+      local payload
+      for payload in "${sorted_names[@]}"; do
+        if [[ "$(release_artifact_stem "$payload")" == "$stem" ]]; then
+          printf '%s\n' "$payload"
+          return 0
+        fi
+      done
+      ;;
+  esac
+}
+
 {
   printf '{\n'
   printf '  "generatedAtUtc": "%s",\n' "$GENERATED_AT"
@@ -186,7 +189,34 @@ TMP_META="$(mktemp "$ROOT/tmp/checksum-meta.XXXXXX")"
       "$size" \
       "$comma"
   done
-  printf '  ]\n'
+  printf '  ]'
+  if [[ "${#integrity_names[@]}" -gt 0 ]]; then
+    printf ',\n'
+    printf '  "integrityArtifacts": [\n'
+    for i in "${!integrity_names[@]}"; do
+      name="${integrity_names[$i]}"
+      hash="$(sha256_for_file "$DIST_DIR/$name")"
+      size="$(wc -c < "$DIST_DIR/$name" | tr -d '[:space:]')"
+      kind="$(integrity_kind "$name")"
+      subject="$(integrity_subject "$name" || true)"
+      comma=","
+      if [[ "$i" -eq $((${#integrity_names[@]} - 1)) ]]; then
+        comma=""
+      fi
+      printf '    {"name": "%s", "kind": "%s", "sha256": "%s", "size": %s' \
+        "$(json_escape "$name")" \
+        "$kind" \
+        "$hash" \
+        "$size"
+      if [[ -n "$subject" ]]; then
+        printf ', "subject": "%s"' "$(json_escape "$subject")"
+      fi
+      printf '}%s\n' "$comma"
+    done
+    printf '  ]\n'
+  else
+    printf '\n'
+  fi
   printf '}\n'
 } >"$TMP_META"
 mv -f "$TMP_META" "$METADATA"

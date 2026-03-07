@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Dry run — build and package artifacts but skip publishing (GitHub Release, container image push, checksum verification)"
+        description: "Dry run — build and verify release integrity artifacts but skip publishing (GitHub Release, container image push)"
         type: boolean
         default: false
         required: false
@@ -98,14 +98,25 @@ jobs:
           if-no-files-found: error
 
   aggregate:
-    name: Aggregate Checksums
+    name: Aggregate Integrity Bundle
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: package
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
 
       - name: Derive reproducible metadata timestamp
         id: source-date
@@ -119,14 +130,57 @@ jobs:
         with:
           path: tmp/release-artifacts
 
-      - name: Build merged checksum metadata
+      - name: Build and verify merged release integrity bundle
         env:
+          DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
           SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.epoch }}
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p dist
           find tmp/release-artifacts -type f \( -name 'fuse-cli-*' -o -name 'fuse-aot-*' -o -name 'fuse-vscode-*.vsix' \) -exec cp {} dist/ \;
           ./scripts/generate_release_checksums.sh --dist dist --output dist/SHA256SUMS --metadata dist/release-artifacts.json
+          ./scripts/generate_release_sboms.sh --dist dist --output-dir dist
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "$DRY_RUN" != "true" ]]; then
+            ./scripts/generate_release_provenance.sh \
+              --dist dist \
+              --output dist/release-provenance.json \
+              --repository "${GITHUB_REPOSITORY}" \
+              --ref "${GITHUB_REF}" \
+              --tag "${GITHUB_REF_NAME}" \
+              --sha "${GITHUB_SHA}" \
+              --workflow-name "${GITHUB_WORKFLOW}" \
+              --workflow-path ".github/workflows/release-artifacts.yml" \
+              --workflow-ref "${GITHUB_REF}" \
+              --event "${GITHUB_EVENT_NAME}" \
+              --actor "${GITHUB_ACTOR}" \
+              --run-id "${GITHUB_RUN_ID}" \
+              --run-attempt "${GITHUB_RUN_ATTEMPT}"
+          fi
+          ./scripts/sign_release_manifest.sh \
+            --input dist/SHA256SUMS \
+            --signature dist/SHA256SUMS.sig \
+            --certificate dist/SHA256SUMS.pem
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "$DRY_RUN" != "true" ]]; then
+            ./scripts/sign_release_manifest.sh \
+              --input dist/release-provenance.json \
+              --signature dist/release-provenance.sig \
+              --certificate dist/release-provenance.pem
+          fi
+          ./scripts/generate_release_checksums.sh --dist dist --output dist/SHA256SUMS --metadata dist/release-artifacts.json
+          verify_args=(
+            --dist dist
+            --repository "${GITHUB_REPOSITORY}"
+            --workflow-name "${GITHUB_WORKFLOW}"
+            --workflow-path ".github/workflows/release-artifacts.yml"
+            --workflow-ref "${GITHUB_REF}"
+            --expected-ref "${GITHUB_REF}"
+            --require-signatures
+          )
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "$DRY_RUN" != "true" ]]; then
+            verify_args+=(--require-provenance --expected-tag "${GITHUB_REF_NAME}" --expected-sha "${GITHUB_SHA}")
+          fi
+          ./scripts/verify_release_integrity.sh "${verify_args[@]}"
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             ./scripts/generate_release_notes.sh --version "${GITHUB_REF_NAME#v}" --tag "${GITHUB_REF_NAME}" --output dist/RELEASE_NOTES.md
           else
@@ -138,6 +192,18 @@ jobs:
             echo '```txt'
             cat dist/SHA256SUMS
             echo '```'
+            echo
+            echo "## Integrity Outputs"
+            echo
+            ls -1 dist/*.spdx.json dist/SHA256SUMS.sig dist/SHA256SUMS.pem 2>/dev/null | sed 's#^#- `#; s#$#`#'
+            if [[ -f dist/release-provenance.json ]]; then
+              printf '%s\n' \
+                '- `dist/release-provenance.json`' \
+                '- `dist/release-provenance.sig`' \
+                '- `dist/release-provenance.pem`'
+            else
+              echo "- provenance skipped (requires tagged publish run)"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Dry-run notice
@@ -147,8 +213,10 @@ jobs:
           {
             echo "## Dry Run"
             echo
-            echo "Artifacts were built and packaged successfully."
-            echo "Publishing (GitHub Release, container image push, checksum verification) was **skipped** because \`dry_run\` is enabled."
+            echo "Artifacts, signatures, and SBOMs were built and verified successfully."
+            echo "Publishing (GitHub Release and container image push) was **skipped** because \`dry_run\` is enabled."
+            echo
+            echo "Release provenance generation is gated to tagged publish runs and was skipped for this dry-run."
             echo
             echo "To publish, re-run this workflow with \`dry_run\` unchecked, or push the release tag."
           } >> "$GITHUB_STEP_SUMMARY"
@@ -162,7 +230,13 @@ jobs:
             dist/fuse-aot-*
             dist/fuse-vscode-*.vsix
             dist/SHA256SUMS
+            dist/SHA256SUMS.sig
+            dist/SHA256SUMS.pem
             dist/release-artifacts.json
+            dist/*.spdx.json
+            dist/release-provenance.json
+            dist/release-provenance.sig
+            dist/release-provenance.pem
             dist/RELEASE_NOTES.md
           if-no-files-found: error
 
@@ -240,7 +314,13 @@ jobs:
             tmp/release-bundle/fuse-aot-*
             tmp/release-bundle/fuse-vscode-*.vsix
             tmp/release-bundle/SHA256SUMS
+            tmp/release-bundle/SHA256SUMS.sig
+            tmp/release-bundle/SHA256SUMS.pem
             tmp/release-bundle/release-artifacts.json
+            tmp/release-bundle/*.spdx.json
+            tmp/release-bundle/release-provenance.json
+            tmp/release-bundle/release-provenance.sig
+            tmp/release-bundle/release-provenance.pem
           fail_on_unmatched_files: true
           generate_release_notes: false
           draft: false
@@ -259,6 +339,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
       - name: Download published assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -268,80 +356,17 @@ jobs:
           gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --dir tmp/published-assets --clobber
           ls -la tmp/published-assets
 
-      - name: Validate SHA256 checksums
+      - name: Validate published release integrity
         shell: bash
         run: |
-          cd tmp/published-assets
-          sha256sum -c SHA256SUMS
-
-      - name: Validate metadata manifest coverage
-        shell: bash
-        run: |
-          node <<'NODE'
-          const fs = require("fs");
-          const path = require("path");
-
-          const dir = path.resolve("tmp/published-assets");
-          const metaPath = path.join(dir, "release-artifacts.json");
-          const raw = fs.readFileSync(metaPath, "utf8");
-          const data = JSON.parse(raw);
-          if (!Array.isArray(data.artifacts) || data.artifacts.length === 0) {
-            throw new Error("release-artifacts.json has no artifacts array entries");
-          }
-          for (const artifact of data.artifacts) {
-            if (!artifact || typeof artifact.name !== "string" || artifact.name.length === 0) {
-              throw new Error("invalid artifact entry in release-artifacts.json");
-            }
-            const filePath = path.join(dir, artifact.name);
-            if (!fs.existsSync(filePath)) {
-              throw new Error(`missing published artifact listed in metadata: ${artifact.name}`);
-            }
-          }
-          console.log("release metadata manifest coverage checks passed");
-          NODE
-
-      - name: Validate VSIX, CLI, and AOT package integrity
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          cli_archives=(tmp/published-assets/fuse-cli-*.tar.gz tmp/published-assets/fuse-cli-*.zip)
-          aot_archives=(tmp/published-assets/fuse-aot-*.tar.gz tmp/published-assets/fuse-aot-*.zip)
-          vsix_archives=(tmp/published-assets/fuse-vscode-*.vsix)
-          shopt -u nullglob
-
-          if [[ "${#cli_archives[@]}" -eq 0 ]]; then
-            echo "no CLI archives found in published release"
-            exit 1
-          fi
-          if [[ "${#aot_archives[@]}" -eq 0 ]]; then
-            echo "no AOT archives found in published release"
-            exit 1
-          fi
-          if [[ "${#vsix_archives[@]}" -eq 0 ]]; then
-            echo "no VSIX archives found in published release"
-            exit 1
-          fi
-
-          for archive in "${cli_archives[@]}"; do
-            name="$(basename "$archive")"
-            platform="${name#fuse-cli-}"
-            platform="${platform%.tar.gz}"
-            platform="${platform%.zip}"
-            ./scripts/verify_cli_artifact.sh --platform "$platform" --archive "$archive"
-          done
-
-          for archive in "${aot_archives[@]}"; do
-            name="$(basename "$archive")"
-            platform="${name#fuse-aot-}"
-            platform="${platform%.tar.gz}"
-            platform="${platform%.zip}"
-            ./scripts/verify_aot_artifact.sh --platform "$platform" --archive "$archive"
-          done
-
-          for archive in "${vsix_archives[@]}"; do
-            name="$(basename "$archive")"
-            platform="${name#fuse-vscode-}"
-            platform="${platform%.vsix}"
-            ./scripts/verify_vscode_vsix.sh --platform "$platform" --vsix "$archive"
-          done
+          ./scripts/verify_release_integrity.sh \
+            --dist tmp/published-assets \
+            --repository "${GITHUB_REPOSITORY}" \
+            --workflow-name "${GITHUB_WORKFLOW}" \
+            --workflow-path ".github/workflows/release-artifacts.yml" \
+            --workflow-ref "${GITHUB_REF}" \
+            --expected-ref "${GITHUB_REF}" \
+            --expected-tag "${GITHUB_REF_NAME}" \
+            --expected-sha "${GITHUB_SHA}" \
+            --require-signatures \
+            --require-provenance

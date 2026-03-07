@@ -394,6 +394,7 @@ Always run Cargo through `scripts/cargo_env.sh` to avoid cross-device link error
 | AOT startup/throughput benchmark | `./scripts/aot_perf_bench.sh` | Cold-start distribution + steady-state throughput comparison (JIT-native vs AOT) |
 | AOT startup SLO gate | `./scripts/check_aot_perf_slo.sh` | Enforces `ops/AOT_RELEASE_CONTRACT.md` cold-start improvement thresholds (`p50`/`p95`) |
 | Packaging verifier regression | `./scripts/packaging_verifier_regression.sh` | Cross-platform CLI+AOT archive and VSIX verifier coverage (including Windows `.exe` naming) |
+| Release integrity regression | `./scripts/release_integrity_regression.sh` | Checks checksum metadata, SPDX SBOM generation, and provenance validation against fixture release bundles |
 | Release smoke | `./scripts/release_smoke.sh` | Full pre-release gate (includes all above) |
 
 CI enforces the release smoke gate via `.github/workflows/pre-release-gate.yml`.
@@ -411,7 +412,13 @@ Canonical artifact names:
 | Official reference image (release tags) | `ghcr.io/dmitrijkiltau/fuse-aot-demo:<tag>` |
 | VS Code extension | `dist/fuse-vscode-<platform>.vsix` |
 | Release checksums | `dist/SHA256SUMS` |
+| Release checksum signature | `dist/SHA256SUMS.sig` |
+| Release checksum certificate | `dist/SHA256SUMS.pem` |
 | Release metadata | `dist/release-artifacts.json` |
+| Release SBOMs | `dist/<artifact>.spdx.json` |
+| Release provenance attestation | `dist/release-provenance.json` |
+| Release provenance signature | `dist/release-provenance.sig` |
+| Release provenance certificate | `dist/release-provenance.pem` |
 
 Supported release matrix platforms:
 `linux-x64`, `macos-arm64`, `windows-x64`.
@@ -437,6 +444,9 @@ Reproducibility + static profile policy: `ops/AOT_RELEASE_CONTRACT.md`.
 # Generate checksums and JSON metadata for release publication
 ./scripts/generate_release_checksums.sh
 
+# Generate deterministic SPDX JSON SBOMs for all release payloads
+SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" ./scripts/generate_release_sboms.sh
+
 # Reproducible metadata timestamp (optional)
 SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" ./scripts/generate_release_checksums.sh
 
@@ -445,6 +455,26 @@ code --install-extension dist/fuse-vscode-linux-x64.vsix
 
 # Regenerate GitHub guide markdown
 ./scripts/generate_guide_docs.sh
+```
+
+For downloaded tagged release assets:
+
+```bash
+sha256sum -c SHA256SUMS
+
+cosign verify-blob \
+  --certificate SHA256SUMS.pem \
+  --signature SHA256SUMS.sig \
+  --certificate-identity "https://github.com/dmitrijkiltau/fuse/.github/workflows/release-artifacts.yml@refs/tags/vX.Y.Z" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+
+cosign verify-blob \
+  --certificate release-provenance.pem \
+  --signature release-provenance.sig \
+  --certificate-identity "https://github.com/dmitrijkiltau/fuse/.github/workflows/release-artifacts.yml@refs/tags/vX.Y.Z" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  release-provenance.json
 ```
 
 ## Repo structure
