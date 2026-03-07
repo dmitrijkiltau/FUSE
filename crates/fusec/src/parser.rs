@@ -2043,6 +2043,22 @@ impl<'a> Parser<'a> {
                 name: "body".to_string(),
                 span: self.prev_span(),
             },
+            TokenKind::Keyword(Keyword::Get) => Ident {
+                name: "get".to_string(),
+                span: self.prev_span(),
+            },
+            TokenKind::Keyword(Keyword::Post) => Ident {
+                name: "post".to_string(),
+                span: self.prev_span(),
+            },
+            TokenKind::Keyword(Keyword::Put) => Ident {
+                name: "put".to_string(),
+                span: self.prev_span(),
+            },
+            TokenKind::Keyword(Keyword::Patch) => Ident {
+                name: "patch".to_string(),
+                span: self.prev_span(),
+            },
             TokenKind::Keyword(Keyword::From) => Ident {
                 name: "from".to_string(),
                 span: self.prev_span(),

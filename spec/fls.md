@@ -563,6 +563,8 @@ Module capabilities:
   (`select`, `where`, `order_by`, `limit`, `insert`, `upsert`, `update`, `delete`, `count`, `one`, `all`, `exec`, `sql`, `params`)
 - typed query forms (`one<T>()`, `all<T>()`) are compile-time checked:
   the type argument must be a declared `type`, and `select([...])` columns must match its fields
+- `requires network` gates `serve(...)` and outbound `http.*` client builtins
+  (`http.request`, `http.get`, `http.post`)
 - `requires time` gates access to runtime `time.*` builtins (`now`, `format`, `parse`, `sleep`)
 - `requires crypto` gates access to runtime `crypto.*` builtins (`hash`, `hmac`, `random_bytes`, `constant_time_eq`)
 - call sites to imported module functions must declare every capability required by the callee module
@@ -598,7 +600,8 @@ post "/users" body UserCreate -> User:
 
 Binding/encoding/error semantics for routes are runtime behavior and are defined in `runtime.md`.
 
-HTTP-specific route primitives (`request.header/cookie` and
-`response.header/cookie/delete_cookie`) are runtime semantics owned by `runtime.md`.
+HTTP-specific route primitives (`request.header/cookie`,
+`response.header/cookie/delete_cookie`, and outbound `http.request/get/post`) are runtime
+semantics owned by `runtime.md`.
 
 See also: [Runtime semantics](runtime.md), [Error model](runtime.md#error-model), [Boundary model](runtime.md#boundary-model).

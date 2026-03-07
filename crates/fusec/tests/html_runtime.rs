@@ -8,8 +8,10 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod support;
-use support::http::{HttpResponse, send_http_request_with_retry};
-use support::net::find_free_port;
+use support::http::{
+    HttpResponse, ScriptedHttpExchange, send_http_request_with_retry, spawn_scripted_http_server,
+};
+use support::net::{find_free_port, skip_if_loopback_unavailable};
 
 fn write_temp_file(name: &str, ext: &str, contents: &str) -> std::path::PathBuf {
     let mut path = std::env::temp_dir();
@@ -173,6 +175,123 @@ fn run_http_program_with_env_requests_capture(
         responses,
         String::from_utf8_lossy(&output.stderr).to_string(),
     )
+}
+
+#[test]
+fn http_client_roundtrip_across_backends() {
+    if skip_if_loopback_unavailable("http_client_roundtrip_across_backends") {
+        return;
+    }
+    let program = r#"
+requires network
+
+app "demo":
+  let get_result = http.get(env("UPSTREAM_GET") ?? "", {"x-trace": "abc"}, 1000)
+  match get_result:
+    Ok(resp):
+      print("GET:${resp.status}:${resp.body}")
+    Err(err):
+      print("GETERR:${err.code}:${err.status ?? 0}:${err.body ?? ""}")
+
+  let post_result = http.post(
+    env("UPSTREAM_POST") ?? "",
+    "{\"name\":\"Ada\"}",
+    {"content-type": "application/json", "x-extra": "1"},
+    1000
+  )
+  match post_result:
+    Ok(resp):
+      print("POST:${resp.status}:${resp.body}")
+    Err(err):
+      print("POSTERR:${err.code}:${err.status ?? 0}:${err.body ?? ""}")
+"#;
+
+    for backend in ["ast", "native"] {
+        let (port, server) = spawn_scripted_http_server(vec![
+            ScriptedHttpExchange {
+                request_line: "GET /ok HTTP/1.1".to_string(),
+                request_contains: vec!["x-trace: abc".to_string()],
+                response: "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Upstream: yes\r\nContent-Length: 2\r\n\r\nok".to_string(),
+            },
+            ScriptedHttpExchange {
+                request_line: "POST /submit HTTP/1.1".to_string(),
+                request_contains: vec![
+                    "content-type: application/json".to_string(),
+                    "x-extra: 1".to_string(),
+                    "{\"name\":\"Ada\"}".to_string(),
+                ],
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 7\r\n\r\ncreated".to_string(),
+            },
+        ]);
+        let env = vec![
+            ("UPSTREAM_GET".to_string(), format!("http://127.0.0.1:{port}/ok")),
+            (
+                "UPSTREAM_POST".to_string(),
+                format!("http://127.0.0.1:{port}/submit"),
+            ),
+        ];
+        let output = run_program_with_env(backend, program, &env);
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        server.join().expect("join scripted upstream server");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "GET:200:ok\nPOST:201:created\n",
+            "{backend} stdout"
+        );
+    }
+}
+
+#[test]
+fn http_client_error_results_across_backends() {
+    if skip_if_loopback_unavailable("http_client_error_results_across_backends") {
+        return;
+    }
+    let program = r#"
+requires network
+
+app "demo":
+  let missing = http.get(env("UPSTREAM_MISSING") ?? "", {}, 1000)
+  match missing:
+    Ok(resp):
+      print("unexpected")
+    Err(err):
+      print("STATUS:${err.code}:${err.status ?? 0}:${err.body ?? ""}")
+
+  let tls = http.get("https://example.com")
+  match tls:
+    Ok(resp):
+      print("unexpected")
+    Err(err):
+      print("TLS:${err.code}")
+"#;
+
+    for backend in ["ast", "native"] {
+        let (port, server) = spawn_scripted_http_server(vec![ScriptedHttpExchange {
+            request_line: "GET /missing HTTP/1.1".to_string(),
+            request_contains: Vec::new(),
+            response: "HTTP/1.1 404 Not Found\r\nContent-Length: 7\r\n\r\nmissing".to_string(),
+        }]);
+        let env = vec![(
+            "UPSTREAM_MISSING".to_string(),
+            format!("http://127.0.0.1:{port}/missing"),
+        )];
+        let output = run_program_with_env(backend, program, &env);
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        server.join().expect("join scripted upstream server");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "STATUS:http_status:404:missing\nTLS:unsupported_scheme\n",
+            "{backend} stdout"
+        );
+    }
 }
 
 #[test]

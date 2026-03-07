@@ -117,6 +117,7 @@ Current capability checks:
 - `db.exec/query/one/from` and `db.from(...).{select,where,order_by,limit,insert,upsert,update,delete,count,one,all,exec}` require `requires db`
 - typed query forms `db.from(...).select([...]).one<T>()` / `.all<T>()` validate rows into declared `type` values
 - `serve(...)` requires `requires network`
+- `http.request/get/post` require `requires network`
 - `time(...)` / `time.*` require `requires time`
 - `crypto.*` requires `requires crypto`
 - calling imported module functions requires declaring the callee module's capabilities
@@ -168,6 +169,30 @@ Observability baseline for HTTP runtime:
 - canonical production health route pattern (non-built-in):
   `get "/health" -> Map<String, String>: return {"status": "ok"}`
 - no runtime plugin extension system (explicit non-goal)
+
+## HTTP client API
+
+Modules with `requires network` can also issue outbound HTTP requests:
+
+- `http.request(method: String, url: String, body?: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error`
+- `http.get(url: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error`
+- `http.post(url: String, body: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error`
+
+`0.9.6` intentionally supports `http://` only. `https://...` fails with `Err(http.error)` and code
+`unsupported_scheme`.
+
+Runtime behavior:
+
+- `2xx` responses return `Ok(http.response)`
+- non-`2xx` responses return `Err(http.error)` with `code = "http_status"`
+- `timeout_ms` defaults to `30000`; `0` disables the socket timeout
+- request/response bodies are plain `String`
+- response/error headers are exposed as `Map<String, String>` with lowercase header names
+
+Response and error shapes:
+
+- `http.response.method`, `url`, `status`, `headers`, `body`
+- `http.error.code`, `message`, `method`, `url`, `status?`, `headers`, `body?`
 
 ## Strict architecture mode
 

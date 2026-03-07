@@ -140,6 +140,7 @@ impl<'a> Checker<'a> {
         env.insert_builtin_with_ty("svg", Ty::External("svg".to_string()));
         env.insert_builtin_with_ty("request", Ty::External("request".to_string()));
         env.insert_builtin_with_ty("response", Ty::External("response".to_string()));
+        env.insert_builtin_with_ty("http", Ty::External("http".to_string()));
         env.insert_builtin("errors");
         let declared_capabilities = module_capabilities
             .get(&module_id)
@@ -422,6 +423,11 @@ impl<'a> Checker<'a> {
                     "db" if matches!(name.name.as_str(), "exec" | "query" | "one" | "from") => {
                         self.require_capability(span, Capability::Db, "db call")
                     }
+                    "http" => self.require_capability(
+                        span,
+                        Capability::Network,
+                        &format!("call http.{}", name.name),
+                    ),
                     "time" => self.require_capability(span, Capability::Time, "time call"),
                     "crypto" => self.require_capability(span, Capability::Crypto, "crypto call"),
                     _ => {}
@@ -1407,6 +1413,9 @@ impl<'a> Checker<'a> {
             "svg" => self.lookup_svg_member(name),
             "request" => self.lookup_request_member(name),
             "response" => self.lookup_response_member(name),
+            "http" => self.lookup_http_member(name),
+            "http.response" => self.lookup_http_response_member(name),
+            "http.error" => self.lookup_http_error_member(name),
             "time" => self.lookup_time_member(name),
             "crypto" => self.lookup_crypto_member(name),
             _ => {
@@ -1581,6 +1590,127 @@ impl<'a> Checker<'a> {
             _ => {
                 self.diags
                     .error(name.span, format!("unknown time method {}", name.name));
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn lookup_http_member(&mut self, name: &crate::ast::Ident) -> Ty {
+        let response_ty = Ty::External("http.response".to_string());
+        let error_ty = Ty::External("http.error".to_string());
+        let headers_ty = Ty::Map(Box::new(Ty::String), Box::new(Ty::String));
+        match name.name.as_str() {
+            "request" => Ty::Fn(FnSig {
+                params: vec![
+                    ParamSig {
+                        name: "method".to_string(),
+                        ty: Ty::String,
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "url".to_string(),
+                        ty: Ty::String,
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "body".to_string(),
+                        ty: Ty::String,
+                        has_default: true,
+                    },
+                    ParamSig {
+                        name: "headers".to_string(),
+                        ty: headers_ty.clone(),
+                        has_default: true,
+                    },
+                    ParamSig {
+                        name: "timeout_ms".to_string(),
+                        ty: Ty::Int,
+                        has_default: true,
+                    },
+                ],
+                ret: Box::new(Ty::Result(Box::new(response_ty), Box::new(error_ty))),
+            }),
+            "get" => Ty::Fn(FnSig {
+                params: vec![
+                    ParamSig {
+                        name: "url".to_string(),
+                        ty: Ty::String,
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "headers".to_string(),
+                        ty: headers_ty,
+                        has_default: true,
+                    },
+                    ParamSig {
+                        name: "timeout_ms".to_string(),
+                        ty: Ty::Int,
+                        has_default: true,
+                    },
+                ],
+                ret: Box::new(Ty::Result(
+                    Box::new(Ty::External("http.response".to_string())),
+                    Box::new(Ty::External("http.error".to_string())),
+                )),
+            }),
+            "post" => Ty::Fn(FnSig {
+                params: vec![
+                    ParamSig {
+                        name: "url".to_string(),
+                        ty: Ty::String,
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "body".to_string(),
+                        ty: Ty::String,
+                        has_default: false,
+                    },
+                    ParamSig {
+                        name: "headers".to_string(),
+                        ty: Ty::Map(Box::new(Ty::String), Box::new(Ty::String)),
+                        has_default: true,
+                    },
+                    ParamSig {
+                        name: "timeout_ms".to_string(),
+                        ty: Ty::Int,
+                        has_default: true,
+                    },
+                ],
+                ret: Box::new(Ty::Result(
+                    Box::new(Ty::External("http.response".to_string())),
+                    Box::new(Ty::External("http.error".to_string())),
+                )),
+            }),
+            _ => {
+                self.diags
+                    .error(name.span, format!("unknown http method {}", name.name));
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn lookup_http_response_member(&mut self, name: &crate::ast::Ident) -> Ty {
+        match name.name.as_str() {
+            "method" | "url" | "body" => Ty::String,
+            "status" => Ty::Int,
+            "headers" => Ty::Map(Box::new(Ty::String), Box::new(Ty::String)),
+            _ => {
+                self.diags
+                    .error(name.span, format!("unknown http response field {}", name.name));
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn lookup_http_error_member(&mut self, name: &crate::ast::Ident) -> Ty {
+        match name.name.as_str() {
+            "code" | "message" | "method" | "url" => Ty::String,
+            "status" => Ty::Option(Box::new(Ty::Int)),
+            "headers" => Ty::Map(Box::new(Ty::String), Box::new(Ty::String)),
+            "body" => Ty::Option(Box::new(Ty::String)),
+            _ => {
+                self.diags
+                    .error(name.span, format!("unknown http error field {}", name.name));
                 Ty::Unknown
             }
         }

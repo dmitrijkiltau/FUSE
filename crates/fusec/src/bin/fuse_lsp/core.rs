@@ -75,8 +75,8 @@ pub(crate) const COMPLETION_KEYWORDS: [&str; 35] = [
     "without",
     "spawn",
 ];
-pub(crate) const COMPLETION_BUILTIN_RECEIVERS: [&str; 8] = [
-    "db", "json", "html", "svg", "request", "response", "time", "crypto",
+pub(crate) const COMPLETION_BUILTIN_RECEIVERS: [&str; 9] = [
+    "db", "json", "html", "svg", "request", "response", "http", "time", "crypto",
 ];
 pub(crate) const COMPLETION_BUILTIN_FUNCTIONS: [&str; 9] = [
     "print",

@@ -235,6 +235,9 @@ pub(crate) struct HostCalls {
     builtin_serve: FuncId,
     builtin_assert: FuncId,
     builtin_asset: FuncId,
+    builtin_http_request: FuncId,
+    builtin_http_get: FuncId,
+    builtin_http_post: FuncId,
     builtin_request_header: FuncId,
     builtin_request_cookie: FuncId,
     builtin_response_header: FuncId,
@@ -390,6 +393,18 @@ impl JitRuntime {
         builder.symbol(
             "fuse_native_builtin_asset",
             fuse_native_builtin_asset as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_http_request",
+            fuse_native_builtin_http_request as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_http_get",
+            fuse_native_builtin_http_get as *const u8,
+        );
+        builder.symbol(
+            "fuse_native_builtin_http_post",
+            fuse_native_builtin_http_post as *const u8,
         );
         builder.symbol(
             "fuse_native_builtin_request_header",
@@ -951,6 +966,27 @@ impl HostCalls {
         let builtin_asset = module
             .declare_function("fuse_native_builtin_asset", Linkage::Import, &builtin_sig)
             .expect("declare builtin asset hostcall");
+        let builtin_http_request = module
+            .declare_function(
+                "fuse_native_builtin_http_request",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin http.request hostcall");
+        let builtin_http_get = module
+            .declare_function(
+                "fuse_native_builtin_http_get",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin http.get hostcall");
+        let builtin_http_post = module
+            .declare_function(
+                "fuse_native_builtin_http_post",
+                Linkage::Import,
+                &builtin_sig,
+            )
+            .expect("declare builtin http.post hostcall");
         let builtin_request_header = module
             .declare_function(
                 "fuse_native_builtin_request_header",
@@ -1181,6 +1217,9 @@ impl HostCalls {
             builtin_serve,
             builtin_assert,
             builtin_asset,
+            builtin_http_request,
+            builtin_http_get,
+            builtin_http_post,
             builtin_request_header,
             builtin_request_cookie,
             builtin_response_header,
@@ -3084,6 +3123,103 @@ extern "C" fn fuse_native_builtin_asset(
     let resolved = crate::runtime_assets::resolve_asset_href(&path);
     *out = NativeValue::string(resolved, heap);
     0
+}
+
+fn decode_http_builtin_args(
+    args: &[NativeValue],
+    heap: &NativeHeap,
+) -> Result<Vec<Value>, &'static str> {
+    let mut values = Vec::with_capacity(args.len());
+    for arg in args {
+        let Some(value) = arg.to_value(heap) else {
+            return Err("http builtin arguments are invalid");
+        };
+        values.push(value);
+    }
+    Ok(values)
+}
+
+fn run_http_builtin_hostcall(
+    heap: &mut NativeHeap,
+    args: &[NativeValue],
+    out: &mut NativeValue,
+    builtin: crate::http_client::HttpBuiltin,
+) -> u8 {
+    let values = match decode_http_builtin_args(args, heap) {
+        Ok(values) => values,
+        Err(message) => return builtin_runtime_error(out, heap, message),
+    };
+    let request = match crate::http_client::parse_http_builtin_args(builtin, &values) {
+        Ok(request) => request,
+        Err(message) => return builtin_runtime_error(out, heap, &message),
+    };
+    let method = request.method.clone();
+    let url = request.url.clone();
+    let value = match crate::http_client::perform_http_request(&request) {
+        Ok(response) => Value::ResultOk(Box::new(crate::http_client::http_response_value(
+            &method, &url, response,
+        ))),
+        Err(error) => Value::ResultErr(Box::new(crate::http_client::http_error_value(error))),
+    };
+    let Some(native) = NativeValue::from_value(&value, heap) else {
+        return builtin_runtime_error(out, heap, "http builtin result value unsupported");
+    };
+    *out = native;
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_http_request(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    run_http_builtin_hostcall(heap, args, out, crate::http_client::HttpBuiltin::Request)
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_http_get(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    run_http_builtin_hostcall(heap, args, out, crate::http_client::HttpBuiltin::Get)
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fuse_native_builtin_http_post(
+    heap: *mut NativeHeap,
+    args: *const NativeValue,
+    len: u64,
+    out: *mut NativeValue,
+) -> u8 {
+    let heap = unsafe { heap.as_mut() };
+    let Some(heap) = heap else {
+        return 2;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 2;
+    };
+    let args = unsafe { std::slice::from_raw_parts(args, len as usize) };
+    run_http_builtin_hostcall(heap, args, out, crate::http_client::HttpBuiltin::Post)
 }
 
 #[unsafe(no_mangle)]
@@ -6804,6 +6940,9 @@ fn compile_function<M: Module>(
                                 "serve" => hostcalls.builtin_serve,
                                 "assert" => hostcalls.builtin_assert,
                                 "asset" => hostcalls.builtin_asset,
+                                "http.request" => hostcalls.builtin_http_request,
+                                "http.get" => hostcalls.builtin_http_get,
+                                "http.post" => hostcalls.builtin_http_post,
                                 "request.header" => hostcalls.builtin_request_header,
                                 "request.cookie" => hostcalls.builtin_request_cookie,
                                 "response.header" => hostcalls.builtin_response_header,
@@ -7747,6 +7886,9 @@ fn block_starts(code: &[Instr]) -> Option<Vec<usize>> {
                     | "serve"
                     | "assert"
                     | "asset"
+                    | "http.request"
+                    | "http.get"
+                    | "http.post"
                     | "request.header"
                     | "request.cookie"
                     | "response.header"
@@ -8328,6 +8470,9 @@ fn analyze_types(
                                 | "serve"
                                 | "assert"
                                 | "asset"
+                                | "http.request"
+                                | "http.get"
+                                | "http.post"
                                 | "request.header"
                                 | "request.cookie"
                                 | "response.header"

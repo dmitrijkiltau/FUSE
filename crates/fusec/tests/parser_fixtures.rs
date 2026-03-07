@@ -371,6 +371,16 @@ fn main():
 }
 
 #[test]
+fn parses_keyword_member_call_target() {
+    let src = r#"
+fn main():
+  http.get("http://127.0.0.1:8080/health")
+  http.post("http://127.0.0.1:8080/submit", "payload")
+"#;
+    assert_parse_ok(src);
+}
+
+#[test]
 fn parses_multiline_call_args() {
     let src = r#"
 fn create_note(id: Id, title: String, content: String):

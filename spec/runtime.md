@@ -523,6 +523,9 @@ See also: [Builtins and runtime subsystems](#builtins-and-runtime-subsystems), [
 - `response.header(name: String, value: String)` appends response headers
 - `response.cookie(name: String, value: String)` appends HTTP-only session cookies
 - `response.delete_cookie(name: String)` emits cookie expiration headers
+- `http.request(method: String, url: String, body?: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error`
+- `http.get(url: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error`
+- `http.post(url: String, body: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error`
 - HTML tag builtins (`html`, `head`, `body`, `div`, `meta`, `button`, ...)
 - `html.text`, `html.raw`, `html.node`, `html.render`
 - `svg.inline(path: String) -> Html`
@@ -551,6 +554,23 @@ Typed env parsing notes:
 - `env_int` / `env_float` / `env_bool` return `null` when the variable is unset.
 - when the variable is set but parsing fails, runtime raises a fatal error.
 
+HTTP client notes:
+
+- outbound client calls are blocking runtime operations
+- `0.9.6` supports `http://` only; `https://...` returns `Err(http.error)` with
+  `code = "unsupported_scheme"`
+- `2xx` responses return `Ok(http.response)`; non-`2xx` responses return `Err(http.error)` with
+  `code = "http_status"`
+- `timeout_ms` defaults to `30000`; `0` disables the timeout; negative values are invalid requests
+- request/response bodies are `String`
+- request headers are sent after lowercase normalization; `host`, `connection`, and
+  `content-length` are reserved and rejected if supplied by user code
+- `http.response` fields: `method: String`, `url: String`, `status: Int`,
+  `headers: Map<String, String>`, `body: String`
+- `http.error` fields: `code: String`, `message: String`, `method: String`, `url: String`,
+  `status: Int?`, `headers: Map<String, String>`, `body: String?`
+- response/error header maps expose lowercase header names
+
 Compile-time sugar affecting HTML builtins:
 
 - HTML block syntax (`div(): ...`) lowers to normal calls with explicit attrs + `List<Html>` children
@@ -568,6 +588,7 @@ fallback behavior.
 - modules declare capabilities with top-level `requires` declarations
 - `db.exec/query/one/from` calls require `requires db`
 - `serve(...)` calls require `requires network`
+- `http.request/get/post` calls require `requires network`
 - `time.*` calls require `requires time`
 - `crypto.*` calls require `requires crypto`
 - calls to imported module functions require the caller to declare the callee module's capabilities
