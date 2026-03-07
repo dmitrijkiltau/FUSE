@@ -9,7 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod support;
 use support::http::{
-    HttpResponse, ScriptedHttpExchange, send_http_request_with_retry,
+    DelayedHttpExchange, HttpResponse, ScriptedHttpExchange, send_http_request_with_retry,
+    spawn_delayed_http_server,
     spawn_handshake_only_https_server, spawn_scripted_http_server, spawn_scripted_https_server,
 };
 use support::net::{find_free_port, skip_if_loopback_unavailable};
@@ -357,6 +358,79 @@ app "demo":
         );
         tls_server.join().expect("join scripted upstream tls server");
         assert_eq!(String::from_utf8_lossy(&output.stdout), "HTTPS:200:ok:hi\n");
+    }
+}
+
+#[test]
+fn http_client_timeout_and_outbound_observability_across_backends() {
+    if skip_if_loopback_unavailable("http_client_timeout_and_outbound_observability_across_backends") {
+        return;
+    }
+    let program = r#"
+requires network
+
+app "demo":
+  let ok = http.get(env("UPSTREAM_OK") ?? "", {}, 1000)
+  match ok:
+    Ok(resp):
+      print("OK:${resp.status}:${resp.body}")
+    Err(err):
+      print("unexpected")
+
+  let slow = http.get(env("UPSTREAM_SLOW") ?? "", {}, 50)
+  match slow:
+    Ok(resp):
+      print("unexpected")
+    Err(err):
+      print("TIMEOUT:${err.code}:${err.message}")
+"#;
+
+    for backend in ["ast", "native"] {
+        let (ok_port, ok_server) = spawn_scripted_http_server(vec![ScriptedHttpExchange {
+            request_line: "GET /ok HTTP/1.1".to_string(),
+            request_contains: Vec::new(),
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_string(),
+        }]);
+        let (slow_port, slow_server) = spawn_delayed_http_server(DelayedHttpExchange {
+            request_line: "GET /slow HTTP/1.1".to_string(),
+            request_contains: Vec::new(),
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nslow".to_string(),
+            delay: std::time::Duration::from_millis(150),
+        });
+        let output = run_program_with_env(
+            backend,
+            program,
+            &[
+                ("UPSTREAM_OK".to_string(), format!("http://127.0.0.1:{ok_port}/ok")),
+                (
+                    "UPSTREAM_SLOW".to_string(),
+                    format!("http://127.0.0.1:{slow_port}/slow"),
+                ),
+                ("FUSE_REQUEST_LOG".to_string(), "structured".to_string()),
+                ("FUSE_METRICS_HOOK".to_string(), "stderr".to_string()),
+            ],
+        );
+        ok_server.join().expect("join ok upstream server");
+        slow_server.join().expect("join slow upstream server");
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("OK:200:ok\n"), "{backend} stdout: {stdout}");
+        assert!(
+            stdout.contains("TIMEOUT:timeout:get http://127.0.0.1:")
+                && stdout.contains("timed out during read after 50ms"),
+            "{backend} stdout: {stdout}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("\"event\":\"http.client.request\""), "{backend} stderr: {stderr}");
+        assert!(stderr.contains("\"metric\":\"http.client.request\""), "{backend} stderr: {stderr}");
+        assert!(stderr.contains(&format!("\"runtime\":\"{backend}\"")), "{backend} stderr: {stderr}");
+        assert!(stderr.contains("\"outcome\":\"success\""), "{backend} stderr: {stderr}");
+        assert!(stderr.contains("\"outcome\":\"error\""), "{backend} stderr: {stderr}");
+        assert!(stderr.contains("\"error_code\":\"timeout\""), "{backend} stderr: {stderr}");
     }
 }
 

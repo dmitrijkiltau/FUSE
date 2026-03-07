@@ -27,6 +27,14 @@ pub struct ScriptedHttpExchange {
     pub response: String,
 }
 
+#[derive(Debug)]
+pub struct DelayedHttpExchange {
+    pub request_line: String,
+    pub request_contains: Vec<String>,
+    pub response: String,
+    pub delay: Duration,
+}
+
 pub fn send_http_request_with_retry(port: u16, request: &str) -> HttpResponse {
     send_http_request_with_retry_for(port, request, Duration::from_secs(6))
 }
@@ -93,6 +101,28 @@ pub fn spawn_scripted_http_server(
                 .write_all(exchange.response.as_bytes())
                 .expect("write scripted upstream response");
         }
+    });
+    (port, handle)
+}
+
+pub fn spawn_delayed_http_server(exchange: DelayedHttpExchange) -> (u16, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind delayed upstream server");
+    let port = listener.local_addr().expect("delayed upstream addr").port();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept delayed upstream request");
+        let request = read_http_request(&mut stream);
+        let first_line = request.lines().next().unwrap_or("");
+        assert_eq!(first_line, exchange.request_line, "delayed upstream request line");
+        for needle in &exchange.request_contains {
+            assert!(
+                request.contains(needle),
+                "delayed upstream request missing `{needle}` in {request}"
+            );
+        }
+        thread::sleep(exchange.delay);
+        stream
+            .write_all(exchange.response.as_bytes())
+            .expect("write delayed upstream response");
     });
     (port, handle)
 }

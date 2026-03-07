@@ -3,7 +3,7 @@ use std::io::Cursor;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
@@ -154,7 +154,16 @@ pub fn parse_http_builtin_args(
     }
 }
 
+#[allow(dead_code)]
 pub fn perform_http_request(request: &HttpClientRequest) -> Result<HttpClientResponse, HttpClientError> {
+    perform_http_request_with_runtime("unknown", request)
+}
+
+pub fn perform_http_request_with_runtime(
+    runtime: &str,
+    request: &HttpClientRequest,
+) -> Result<HttpClientResponse, HttpClientError> {
+    let started = Instant::now();
     let method = normalize_http_method(&request.method).map_err(|message| HttpClientError {
         code: "invalid_request".to_string(),
         message,
@@ -163,7 +172,14 @@ pub fn perform_http_request(request: &HttpClientRequest) -> Result<HttpClientRes
         status: None,
         headers: HashMap::new(),
         body: None,
-    })?;
+    });
+    let method = match method {
+        Ok(method) => method,
+        Err(error) => {
+            crate::observability::emit_http_client_observability(runtime, &request.method, &request.url, None, started.elapsed(), 0, Some(&error.code));
+            return Err(error);
+        }
+    };
     let parsed = parse_http_url(&request.url).map_err(|error| match error {
         ParsedHttpUrlError::InvalidUrl(message) => HttpClientError {
             code: "invalid_url".to_string(),
@@ -183,7 +199,14 @@ pub fn perform_http_request(request: &HttpClientRequest) -> Result<HttpClientRes
             headers: HashMap::new(),
             body: None,
         },
-    })?;
+    });
+    let parsed = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            crate::observability::emit_http_client_observability(runtime, &method, &request.url, None, started.elapsed(), 0, Some(&error.code));
+            return Err(error);
+        }
+    };
     let timeout = timeout_duration(request.timeout_ms).map_err(|message| HttpClientError {
         code: "invalid_request".to_string(),
         message,
@@ -192,7 +215,14 @@ pub fn perform_http_request(request: &HttpClientRequest) -> Result<HttpClientRes
         status: None,
         headers: HashMap::new(),
         body: None,
-    })?;
+    });
+    let timeout = match timeout {
+        Ok(timeout) => timeout,
+        Err(error) => {
+            crate::observability::emit_http_client_observability(runtime, &method, &request.url, None, started.elapsed(), 0, Some(&error.code));
+            return Err(error);
+        }
+    };
     let headers = normalize_headers(&request.headers).map_err(|message| HttpClientError {
         code: "invalid_request".to_string(),
         message,
@@ -201,7 +231,14 @@ pub fn perform_http_request(request: &HttpClientRequest) -> Result<HttpClientRes
         status: None,
         headers: HashMap::new(),
         body: None,
-    })?;
+    });
+    let headers = match headers {
+        Ok(headers) => headers,
+        Err(error) => {
+            crate::observability::emit_http_client_observability(runtime, &method, &request.url, None, started.elapsed(), 0, Some(&error.code));
+            return Err(error);
+        }
+    };
     let response = send_http_request(
         &method,
         &request.url,
@@ -209,11 +246,36 @@ pub fn perform_http_request(request: &HttpClientRequest) -> Result<HttpClientRes
         &request.body,
         &headers,
         timeout,
-    )?;
+    );
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            let response_bytes = error.body.as_ref().map_or(0, String::len);
+            crate::observability::emit_http_client_observability(
+                runtime,
+                &method,
+                &request.url,
+                error.status,
+                started.elapsed(),
+                response_bytes,
+                Some(&error.code),
+            );
+            return Err(error);
+        }
+    };
     if (200..=299).contains(&response.status) {
+        crate::observability::emit_http_client_observability(
+            runtime,
+            &method,
+            &request.url,
+            Some(response.status),
+            started.elapsed(),
+            response.body.len(),
+            None,
+        );
         Ok(response)
     } else {
-        Err(HttpClientError {
+        let error = HttpClientError {
             code: "http_status".to_string(),
             message: format!(
                 "{} {} returned status {}",
@@ -221,12 +283,22 @@ pub fn perform_http_request(request: &HttpClientRequest) -> Result<HttpClientRes
                 request.url,
                 response.status
             ),
-            method,
+            method: method.clone(),
             url: request.url.clone(),
             status: Some(response.status),
             headers: response.headers,
             body: Some(response.body),
-        })
+        };
+        crate::observability::emit_http_client_observability(
+            runtime,
+            &method,
+            &request.url,
+            error.status,
+            started.elapsed(),
+            error.body.as_ref().map_or(0, String::len),
+            Some(&error.code),
+        );
+        Err(error)
     }
 }
 
@@ -514,16 +586,16 @@ fn send_http_request(
 
     stream
         .write_all(&request_bytes)
-        .map_err(|err| io_error_to_http_error(method, url, err))?;
+        .map_err(|err| io_error_to_http_error_for_phase(method, url, "write", timeout, err))?;
     stream
         .flush()
-        .map_err(|err| io_error_to_http_error(method, url, err))?;
+        .map_err(|err| io_error_to_http_error_for_phase(method, url, "write", timeout, err))?;
     if let HttpConnection::Tcp(stream) = &mut stream {
         let _ = stream.shutdown(Shutdown::Write);
     }
 
     let response = read_http_response_bytes(&mut stream)
-        .map_err(|err| io_error_to_http_error(method, url, err))?;
+        .map_err(|err| io_error_to_http_error_for_phase(method, url, "read", timeout, err))?;
     parse_http_response(method, url, &response)
 }
 
@@ -558,13 +630,17 @@ fn connect_tcp_stream(
             Err(err) => last_error = Some(err),
         }
     }
-    let stream = stream.ok_or_else(|| io_error_to_http_error(
-        method,
-        url,
-        last_error.unwrap_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "no resolved addresses")
-        }),
-    ))?;
+    let stream = stream.ok_or_else(|| {
+        io_error_to_http_error_for_phase(
+            method,
+            url,
+            "connect",
+            timeout,
+            last_error.unwrap_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "no resolved addresses")
+            }),
+        )
+    })?;
     let _ = stream.set_read_timeout(timeout);
     let _ = stream.set_write_timeout(timeout);
     Ok(stream)
@@ -607,7 +683,13 @@ fn connect_tls_stream(
                     std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
                 ) =>
             {
-                return Err(io_error_to_http_error(method, url, err));
+                return Err(io_error_to_http_error_for_phase(
+                    method,
+                    url,
+                    "tls_handshake",
+                    timeout,
+                    err,
+                ));
             }
             Err(err) => {
                 return Err(tls_error_to_http_error(
@@ -690,23 +772,59 @@ fn tls_error_to_http_error(method: &str, url: &str, detail: String) -> HttpClien
     }
 }
 
-fn io_error_to_http_error(method: &str, url: &str, err: std::io::Error) -> HttpClientError {
-    let code = if matches!(
+fn io_error_to_http_error_for_phase(
+    method: &str,
+    url: &str,
+    phase: &str,
+    timeout: Option<Duration>,
+    err: std::io::Error,
+) -> HttpClientError {
+    if matches!(
         err.kind(),
         std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
     ) {
-        "timeout"
-    } else {
-        "network_error"
-    };
+        let timeout_suffix = timeout
+            .map(|timeout| format!(" after {}ms", timeout.as_millis()))
+            .unwrap_or_default();
+        return HttpClientError {
+            code: "timeout".to_string(),
+            message: format!(
+                "{} {} timed out during {}{}",
+                method.to_ascii_lowercase(),
+                url,
+                phase_label(phase),
+                timeout_suffix,
+            ),
+            method: method.to_string(),
+            url: url.to_string(),
+            status: None,
+            headers: HashMap::new(),
+            body: None,
+        };
+    }
     HttpClientError {
-        code: code.to_string(),
-        message: format!("{} {} failed: {err}", method.to_ascii_lowercase(), url),
+        code: "network_error".to_string(),
+        message: format!(
+            "{} {} {} failed: {err}",
+            method.to_ascii_lowercase(),
+            url,
+            phase_label(phase),
+        ),
         method: method.to_string(),
         url: url.to_string(),
         status: None,
         headers: HashMap::new(),
         body: None,
+    }
+}
+
+fn phase_label(phase: &str) -> &str {
+    match phase {
+        "connect" => "connect",
+        "write" => "write",
+        "read" => "read",
+        "tls_handshake" => "TLS handshake",
+        _ => phase,
     }
 }
 

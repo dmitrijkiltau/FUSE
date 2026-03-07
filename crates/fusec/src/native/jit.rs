@@ -3155,7 +3155,7 @@ fn run_http_builtin_hostcall(
     };
     let method = request.method.clone();
     let url = request.url.clone();
-    let value = match crate::http_client::perform_http_request(&request) {
+    let value = match crate::http_client::perform_http_request_with_runtime("native", &request) {
         Ok(response) => Value::ResultOk(Box::new(crate::http_client::http_response_value(
             &method, &url, response,
         ))),

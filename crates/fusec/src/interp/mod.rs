@@ -2103,7 +2103,7 @@ impl Interpreter {
                     .map_err(ExecError::Runtime)?;
                 let method = request.method.clone();
                 let url = request.url.clone();
-                match crate::http_client::perform_http_request(&request) {
+                match crate::http_client::perform_http_request_with_runtime("ast", &request) {
                     Ok(response) => Ok(Value::ResultOk(Box::new(
                         crate::http_client::http_response_value(&method, &url, response),
                     ))),

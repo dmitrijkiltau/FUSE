@@ -10,8 +10,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use fuse_rt::json;
 mod support;
 use support::http::{
-    ScriptedHttpExchange, send_http_request_status_body_with_retry,
+    DelayedHttpExchange, ScriptedHttpExchange, send_http_request_status_body_with_retry,
     spawn_scripted_https_server,
+    spawn_delayed_http_server,
     spawn_handshake_only_https_server, spawn_scripted_http_server,
 };
 use support::net::{find_free_port, skip_if_loopback_unavailable};
@@ -361,6 +362,28 @@ fn normalize_tls_output_port(text: &str) -> String {
         return text.to_string();
     };
     format!("{prefix}<port>/{suffix}")
+}
+
+fn normalize_http_client_loopback_port(text: &str) -> String {
+    let normalized_http = normalize_loopback_port_for_scheme(text, "http");
+    normalize_loopback_port_for_scheme(&normalized_http, "https")
+}
+
+fn normalize_loopback_port_for_scheme(text: &str, scheme: &str) -> String {
+    let needle = format!("{scheme}://127.0.0.1:");
+    let Some(start) = text.find(&needle) else {
+        return text.to_string();
+    };
+    let port_start = start + needle.len();
+    let port_end = text[port_start..]
+        .find('/')
+        .map(|offset| port_start + offset)
+        .unwrap_or(text.len());
+    let mut normalized = String::with_capacity(text.len());
+    normalized.push_str(&text[..port_start]);
+    normalized.push_str("<port>");
+    normalized.push_str(&text[port_end..]);
+    normalized
 }
 
 #[test]
@@ -1068,6 +1091,75 @@ app "demo":
     );
     assert!(outputs[0].starts_with("TLS:tls_error:get https://127.0.0.1:"), "stdout: {}", outputs[0]);
     assert!(outputs[0].contains("TLS handshake failed:"), "stdout: {}", outputs[0]);
+}
+
+#[test]
+fn parity_http_client_reserved_header_rejection() {
+    let program = r#"
+requires network
+
+app "demo":
+  let result = http.get("http://127.0.0.1:1/blocked", {"Host": "evil"}, 1000)
+  match result:
+    Ok(resp):
+      print("unexpected")
+    Err(err):
+      print("${err.code}:${err.message}")
+"#;
+
+    let ast = run_temp_program("ast", program, &[]);
+    let native = run_temp_program("native", program, &[]);
+    assert!(ast.status.success(), "ast stderr: {}", String::from_utf8_lossy(&ast.stderr));
+    assert!(native.status.success(), "native stderr: {}", String::from_utf8_lossy(&native.stderr));
+    assert_eq!(String::from_utf8_lossy(&ast.stdout), String::from_utf8_lossy(&native.stdout));
+    assert_eq!(
+        String::from_utf8_lossy(&ast.stdout),
+        "invalid_request:http.* manages header host automatically\n"
+    );
+}
+
+#[test]
+fn parity_http_client_timeout_diagnostics_match_across_backends() {
+    if skip_if_loopback_unavailable("parity_http_client_timeout_diagnostics_match_across_backends") {
+        return;
+    }
+    let program = r#"
+requires network
+
+app "demo":
+  let result = http.get(env("UPSTREAM_SLOW") ?? "", {}, 50)
+  match result:
+    Ok(resp):
+      print("unexpected")
+    Err(err):
+      print("TIMEOUT:${err.code}:${err.message}")
+"#;
+
+    let mut outputs = Vec::new();
+    for backend in ["ast", "native"] {
+        let (slow_port, slow_server) = spawn_delayed_http_server(DelayedHttpExchange {
+            request_line: "GET /slow HTTP/1.1".to_string(),
+            request_contains: Vec::new(),
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nslow".to_string(),
+            delay: Duration::from_millis(150),
+        });
+        let upstream_slow = format!("http://127.0.0.1:{slow_port}/slow");
+        let output = run_temp_program(backend, program, &[("UPSTREAM_SLOW", upstream_slow.as_str())]);
+        assert!(
+            output.status.success(),
+            "{backend} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        slow_server.join().expect("join slow upstream server");
+        outputs.push(String::from_utf8_lossy(&output.stdout).to_string());
+    }
+
+    assert_eq!(
+        normalize_http_client_loopback_port(&outputs[0]),
+        normalize_http_client_loopback_port(&outputs[1])
+    );
+    assert!(outputs[0].contains("TIMEOUT:timeout:"), "stdout: {}", outputs[0]);
+    assert!(outputs[0].contains("timed out during read after 50ms"), "stdout: {}", outputs[0]);
 }
 
 #[test]
