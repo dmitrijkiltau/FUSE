@@ -24,6 +24,7 @@ Top-level declarations:
 - `type`
 - `enum`
 - `config`
+- `component`
 - `service`
 - `app`
 - `migration`
@@ -36,6 +37,7 @@ Core statements:
 - `if` / `else`
 - `match`
 - `for` / `while`
+- `transaction`
 - `break` / `continue`
 - `return`
 

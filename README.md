@@ -37,8 +37,8 @@ boundaries: types, validation, and transport behavior are aligned by default.
 ### What FUSE optimizes for
 
 **Small and strict.** The language intentionally keeps a narrow core: indentation-based blocks,
-explicit declarations (`fn`, `type`, `enum`, `config`, `service`, `app`), and strong types with
-minimal ceremony.
+explicit declarations (`import`, `fn`, `type`, `enum`, `config`, `component`, `service`, `app`,
+`migration`, `test`), and strong types with minimal ceremony.
 
 **Boundaries as first-class language concerns.** Runtime surfaces are built in and consistent
 across backends: config loading, JSON encoding/decoding, validation, and HTTP request/response
