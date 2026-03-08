@@ -113,12 +113,14 @@
               "patterns": [
                 {"include": "#functionCalls"},
                 {"include": "#keywords"},
+                {"include": "#generics"},
                 {"include": "#types"},
                 {"include": "#userTypes"},
                 {"include": "#constants"},
                 {"include": "#numbers"},
                 {"include": "#operators"},
                 {"include": "#strings"},
+                {"include": "#namespaces"},
                 {"include": "#memberAccess"}
               ]
             }

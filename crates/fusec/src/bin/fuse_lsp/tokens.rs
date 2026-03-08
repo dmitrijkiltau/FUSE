@@ -100,13 +100,21 @@ fn semantic_tokens_for_text(
             Some(SEM_HTML_TAG)
         } else {
             match &token.kind {
+                fusec::token::TokenKind::InterpString(_) => {
+                    collect_interp_string_semantic_rows(
+                        text,
+                        token.span,
+                        &symbol_types,
+                        range,
+                        &mut rows,
+                    );
+                    None
+                }
                 fusec::token::TokenKind::Keyword(fusec::token::Keyword::From) => {
                     semantic_member_token_type(&tokens, idx).or(Some(SEM_KEYWORD))
                 }
                 fusec::token::TokenKind::Keyword(_) => Some(SEM_KEYWORD),
-                fusec::token::TokenKind::String(_) | fusec::token::TokenKind::InterpString(_) => {
-                    Some(SEM_STRING)
-                }
+                fusec::token::TokenKind::String(_) => Some(SEM_STRING),
                 fusec::token::TokenKind::Int(_) | fusec::token::TokenKind::Float(_) => {
                     Some(SEM_NUMBER)
                 }
@@ -179,6 +187,201 @@ fn semantic_tokens_for_text(
 struct HtmlSemanticSpans {
     attr_name_spans: HashSet<(usize, usize)>,
     dsl_name_spans: HashSet<(usize, usize)>,
+}
+
+fn collect_interp_string_semantic_rows(
+    text: &str,
+    span: Span,
+    symbol_types: &HashMap<(usize, usize), usize>,
+    range: Option<Span>,
+    rows: &mut Vec<SemanticTokenRow>,
+) {
+    let Some(raw) = text.get(span.start..span.end) else {
+        return;
+    };
+    let quote_len = if raw.starts_with("\"\"\"") { 3 } else { 1 };
+    if span.end < span.start.saturating_add(quote_len * 2) {
+        return;
+    }
+    let content_start = span.start + quote_len;
+    let content_end = span.end - quote_len;
+    let mut chunk_start = content_start;
+    let mut cursor = content_start;
+
+    while cursor < content_end {
+        let Some(slice) = text.get(cursor..content_end) else {
+            break;
+        };
+        let Some(ch) = slice.chars().next() else {
+            break;
+        };
+        if ch == '\\' {
+            cursor += ch.len_utf8();
+            if cursor < content_end {
+                let Some(escaped) = text.get(cursor..content_end).and_then(|rest| rest.chars().next()) else {
+                    break;
+                };
+                cursor += escaped.len_utf8();
+            }
+            continue;
+        }
+        if ch == '$' {
+            let expr_open = cursor + ch.len_utf8();
+            if expr_open < content_end
+                && text
+                    .get(expr_open..content_end)
+                    .and_then(|rest| rest.chars().next())
+                    .is_some_and(|next| next == '{')
+            {
+                push_semantic_row(rows, Span::new(chunk_start, cursor), SEM_STRING, range);
+                let expr_start = expr_open + 1;
+                let Some(expr_end) = find_interpolation_expr_end(text, expr_start, content_end) else {
+                    return;
+                };
+                collect_embedded_expr_semantic_rows(
+                    text,
+                    expr_start,
+                    expr_end,
+                    symbol_types,
+                    range,
+                    rows,
+                );
+                cursor = expr_end + 1;
+                chunk_start = cursor;
+                continue;
+            }
+        }
+        cursor += ch.len_utf8();
+    }
+
+    push_semantic_row(rows, Span::new(chunk_start, content_end), SEM_STRING, range);
+}
+
+fn find_interpolation_expr_end(text: &str, expr_start: usize, content_end: usize) -> Option<usize> {
+    let mut cursor = expr_start;
+    let mut depth = 1usize;
+    let mut string_delim: Option<usize> = None;
+    let mut escape = false;
+
+    while cursor < content_end {
+        let slice = text.get(cursor..content_end)?;
+        if string_delim == Some(3) && slice.starts_with("\"\"\"") {
+            string_delim = None;
+            cursor += 3;
+            escape = false;
+            continue;
+        }
+        let ch = slice.chars().next()?;
+        if let Some(delim) = string_delim {
+            if escape {
+                escape = false;
+                cursor += ch.len_utf8();
+                continue;
+            }
+            if ch == '\\' {
+                escape = true;
+                cursor += ch.len_utf8();
+                continue;
+            }
+            if delim == 1 && ch == '"' {
+                string_delim = None;
+            }
+            cursor += ch.len_utf8();
+            continue;
+        }
+        if slice.starts_with("\"\"\"") {
+            string_delim = Some(3);
+            cursor += 3;
+            continue;
+        }
+        if ch == '"' {
+            string_delim = Some(1);
+            cursor += ch.len_utf8();
+            continue;
+        }
+        if ch == '{' {
+            depth += 1;
+        } else if ch == '}' {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return Some(cursor);
+            }
+        }
+        cursor += ch.len_utf8();
+    }
+
+    None
+}
+
+fn collect_embedded_expr_semantic_rows(
+    text: &str,
+    expr_start: usize,
+    expr_end: usize,
+    symbol_types: &HashMap<(usize, usize), usize>,
+    range: Option<Span>,
+    rows: &mut Vec<SemanticTokenRow>,
+) {
+    let Some(expr_text) = text.get(expr_start..expr_end) else {
+        return;
+    };
+    let mut diags = fusec::diag::Diagnostics::default();
+    let mut expr_tokens = fusec::lexer::lex(expr_text, &mut diags);
+    for token in &mut expr_tokens {
+        token.span.start += expr_start;
+        token.span.end += expr_start;
+    }
+    for (idx, token) in expr_tokens.iter().enumerate() {
+        let Some(token_type) = semantic_token_type_for_token(&expr_tokens, idx, symbol_types) else {
+            continue;
+        };
+        push_semantic_row(rows, token.span, token_type, range);
+    }
+}
+
+fn push_semantic_row(
+    rows: &mut Vec<SemanticTokenRow>,
+    span: Span,
+    token_type: usize,
+    range: Option<Span>,
+) {
+    if span.start >= span.end {
+        return;
+    }
+    if let Some(range) = range {
+        if span.end < range.start || span.start > range.end {
+            return;
+        }
+    }
+    rows.push(SemanticTokenRow { span, token_type });
+}
+
+fn semantic_token_type_for_token(
+    tokens: &[fusec::token::Token],
+    idx: usize,
+    symbol_types: &HashMap<(usize, usize), usize>,
+) -> Option<usize> {
+    let token = tokens.get(idx)?;
+    match &token.kind {
+        fusec::token::TokenKind::Keyword(fusec::token::Keyword::From) => {
+            semantic_member_token_type(tokens, idx).or(Some(SEM_KEYWORD))
+        }
+        fusec::token::TokenKind::Keyword(_) => Some(SEM_KEYWORD),
+        fusec::token::TokenKind::String(_) => Some(SEM_STRING),
+        fusec::token::TokenKind::InterpString(_) => None,
+        fusec::token::TokenKind::Int(_) | fusec::token::TokenKind::Float(_) => Some(SEM_NUMBER),
+        fusec::token::TokenKind::DocComment(_) => Some(SEM_COMMENT),
+        fusec::token::TokenKind::Bool(_) | fusec::token::TokenKind::Null => Some(SEM_KEYWORD),
+        fusec::token::TokenKind::Ident(name) => symbol_types
+            .get(&(token.span.start, token.span.end))
+            .copied()
+            .or_else(|| semantic_ident_fallback(tokens, idx, name))
+            .or(Some(SEM_VARIABLE)),
+        fusec::token::TokenKind::Indent
+        | fusec::token::TokenKind::Dedent
+        | fusec::token::TokenKind::Newline
+        | fusec::token::TokenKind::Eof
+        | fusec::token::TokenKind::Punct(_) => None,
+    }
 }
 
 fn collect_html_semantic_spans(program: &Program) -> HtmlSemanticSpans {
