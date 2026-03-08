@@ -169,7 +169,8 @@ Fallible boundaries require explicit error domains:
 `transaction:` introduces a constrained DB transaction scope:
 
 - commits on success, rolls back on block failure
-- requires `requires db`
+- the containing module must declare `requires db`
+- the containing module must not declare non-`db` capabilities
 - rejects `spawn`, `await`, early `return`, and `break`/`continue` inside the block
 - rejects non-`db` capability usage inside the block
 
