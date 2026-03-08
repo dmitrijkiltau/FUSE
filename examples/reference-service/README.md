@@ -13,7 +13,7 @@ Long SQL statements in this project use multiline triple-quoted strings (`"""...
 ## Run
 
 ```bash
-./scripts/fuse run examples/reference-service
+./scripts/fuse run --manifest-path examples/reference-service
 ```
 
 Open the UI:
@@ -32,7 +32,7 @@ FUSE_DB_URL=sqlite://reference-service.db
 ## Migrate DB
 
 ```bash
-./scripts/fuse migrate examples/reference-service
+./scripts/fuse migrate --manifest-path examples/reference-service
 ```
 
 ## Docker Compose (with migrations)
@@ -87,8 +87,10 @@ CSS pipeline:
 ## OpenAPI
 
 ```bash
-./scripts/fuse openapi --manifest-path examples/reference-service > /tmp/reference-service.openapi.json
+./scripts/fuse openapi --manifest-path examples/reference-service > examples/reference-service/build/openapi.json
 ```
+
+The checked-in OpenAPI artifact lives at `build/openapi.json`.
 
 ## API
 
@@ -102,12 +104,13 @@ CSS pipeline:
 - `PUT /api/sessions/{token}/notes/{id}/visibility`
 - `DELETE /api/sessions/{token}/notes/{id}` (idempotent)
 - `POST /api/sessions/{token}/public/notes/{id}/likes` (idempotent; non-owner only)
+- `DELETE /api/sessions/{token}/public/notes/{id}/likes` (idempotent; non-owner only)
 - `GET /api/public/notes`
 - `GET /api/public/notes/{id}`
 
 Private session routes are owner-scoped: users only see and mutate their own notes.
 Published notes are readable without authentication via the public routes.
-Authenticated non-owners can leave likes on published notes.
+Authenticated non-owners can leave or remove likes on published notes.
 
 ## UI routes (HTMX + Html DSL)
 
@@ -121,6 +124,7 @@ Authenticated non-owners can leave likes on published notes.
 - `PUT /ui/notes/{id}/visibility`
 - `DELETE /ui/notes/{id}`
 - `POST /ui/public/notes/{id}/likes`
+- `DELETE /ui/public/notes/{id}/likes`
 - `GET /ui/public/notes` (public feed fragment; viewer context derived from cookie)
 
 The browser UI no longer depends on client-side note rendering.

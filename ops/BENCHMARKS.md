@@ -56,10 +56,10 @@ Baseline + thresholds live in `benchmarks/use_case_baseline.json`.
   - first `check`: cold package semantic compile/check path
   - second `check`: warm package semantic compile/check path
 - Boundary check times:
-  - `POST /api/notes` with valid and invalid JSON bodies
+  - `POST /api/sessions/{token}/notes` with valid and invalid JSON bodies
   - invalid payload is expected to fail with `400`
 - Validation error overhead:
-  - absolute latency delta between invalid and valid `POST /api/notes`
+  - absolute latency delta between invalid and valid `POST /api/sessions/{token}/notes`
   - emitted as `request_validation_error_overhead_abs_ms`
   - used as a practical signal for validation/error-mapping overhead
 - AOT cold-start distribution:

@@ -481,9 +481,9 @@ EOF
   print_row "Package: reference-service" "check (warm)" "${notes_check_warm_ms} ms"
   print_row "Package: reference-service" "check (incremental edit)" "${notes_check_incremental_edit_ms} ms"
   print_row "Package: reference-service" "migrate" "${notes_migrate_ms} ms"
-  print_row "Runtime: reference-service" "GET /api/notes" "${notes_get_list_ms} ms"
-  print_row "Runtime: reference-service" "POST /api/notes (valid body)" "${notes_post_ok_ms} ms"
-  print_row "Runtime: reference-service" "POST /api/notes (invalid body, 400)" "${notes_post_invalid_ms} ms"
+  print_row "Runtime: reference-service" "GET /api/sessions/{token}/notes" "${notes_get_list_ms} ms"
+  print_row "Runtime: reference-service" "POST /api/sessions/{token}/notes (valid body)" "${notes_post_ok_ms} ms"
+  print_row "Runtime: reference-service" "POST /api/sessions/{token}/notes (invalid body, 400)" "${notes_post_invalid_ms} ms"
   print_row "Frontend integration" "GET / (index)" "${notes_frontend_get_ms} ms"
   print_row "Runtime: reference-service" "validation error overhead abs(POST invalid - POST valid)" "${notes_validation_error_overhead_ms} ms"
   echo
