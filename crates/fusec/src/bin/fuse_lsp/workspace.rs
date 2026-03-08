@@ -3015,6 +3015,16 @@ fn build_workspace_from_registry(
                 target: *target,
             });
             if let Some(module_span) = qualified.module_span {
+                if let Some(local_def_id) = find_module_binding_def(&file.index, &qualified.module) {
+                    let global_id = file.def_map[local_def_id];
+                    refs.push(WorkspaceRef {
+                        uri: file.uri.clone(),
+                        span: module_span,
+                        target: global_id,
+                    });
+                }
+            }
+            if let Some(module_span) = qualified.module_span {
                 if let Some(target_module) = registry.get(*module_id) {
                     if !target_module.path.to_string_lossy().starts_with('<') {
                         module_ref_targets
@@ -3185,6 +3195,21 @@ fn find_import_def(index: &Index, name: &str) -> Option<usize> {
             return None;
         }
         if def.detail.starts_with("import ") {
+            return Some(idx);
+        }
+        None
+    })
+}
+
+fn find_module_binding_def(index: &Index, name: &str) -> Option<usize> {
+    index.defs.iter().enumerate().find_map(|(idx, def)| {
+        if def.kind != SymbolKind::Module {
+            return None;
+        }
+        if def.name != name {
+            return None;
+        }
+        if def.detail.starts_with("module ") {
             return Some(idx);
         }
         None
