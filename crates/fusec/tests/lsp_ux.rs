@@ -700,6 +700,58 @@ fn main():
     );
 
     let (core_call_line, core_call_col) = line_col_of(main_src, "Core.plus_one(1)");
+    let mut alias_def_doc = BTreeMap::new();
+    alias_def_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    let mut alias_def_pos = BTreeMap::new();
+    alias_def_pos.insert("line".to_string(), JsonValue::Number(core_call_line as f64));
+    alias_def_pos.insert(
+        "character".to_string(),
+        JsonValue::Number((core_call_col + 1) as f64),
+    );
+    let mut alias_def_params = BTreeMap::new();
+    alias_def_params.insert("textDocument".to_string(), JsonValue::Object(alias_def_doc));
+    alias_def_params.insert("position".to_string(), JsonValue::Object(alias_def_pos));
+    send_request(
+        &mut stdin,
+        2,
+        "textDocument/definition",
+        JsonValue::Object(alias_def_params),
+    );
+    let alias_definition = wait_response(&mut stdout, 2);
+    let alias_definition_text = json::encode(&alias_definition);
+    assert!(
+        alias_definition_text.contains(&core_uri),
+        "definition on root module alias receiver should resolve to root module file: {alias_definition_text}"
+    );
+
+    let mut hover_doc = BTreeMap::new();
+    hover_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    let mut hover_pos = BTreeMap::new();
+    hover_pos.insert("line".to_string(), JsonValue::Number(core_call_line as f64));
+    hover_pos.insert(
+        "character".to_string(),
+        JsonValue::Number((core_call_col + 1) as f64),
+    );
+    let mut hover_params = BTreeMap::new();
+    hover_params.insert("textDocument".to_string(), JsonValue::Object(hover_doc));
+    hover_params.insert("position".to_string(), JsonValue::Object(hover_pos));
+    send_request(
+        &mut stdin,
+        3,
+        "textDocument/hover",
+        JsonValue::Object(hover_params),
+    );
+    let alias_hover = wait_response(&mut stdout, 3);
+    let alias_hover_text = json::encode(&alias_hover);
+    assert!(
+        alias_hover_text.contains("Module") && alias_hover_text.contains("Core"),
+        "hover on root module alias receiver should describe the module binding: {alias_hover_text}"
+    );
+    assert!(
+        alias_hover_text.contains(&core_uri) && alias_hover_text.contains("plus_one"),
+        "hover on root module alias receiver should include the target module and exports: {alias_hover_text}"
+    );
+
     let mut def_doc = BTreeMap::new();
     def_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
     let mut def_pos = BTreeMap::new();
@@ -713,11 +765,11 @@ fn main():
     def_params.insert("position".to_string(), JsonValue::Object(def_pos));
     send_request(
         &mut stdin,
-        2,
+        4,
         "textDocument/definition",
         JsonValue::Object(def_params),
     );
-    let definition = wait_response(&mut stdout, 2);
+    let definition = wait_response(&mut stdout, 4);
     let definition_text = json::encode(&definition);
     assert!(
         definition_text.contains(&core_uri),
@@ -725,6 +777,33 @@ fn main():
     );
 
     let (dep_call_line, dep_call_col) = line_col_of(main_src, "Auth.plus_one(a)");
+    let mut alias_refs_doc = BTreeMap::new();
+    alias_refs_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    let mut alias_refs_pos = BTreeMap::new();
+    alias_refs_pos.insert("line".to_string(), JsonValue::Number(dep_call_line as f64));
+    alias_refs_pos.insert(
+        "character".to_string(),
+        JsonValue::Number((dep_call_col + 1) as f64),
+    );
+    let mut alias_refs_ctx = BTreeMap::new();
+    alias_refs_ctx.insert("includeDeclaration".to_string(), JsonValue::Bool(true));
+    let mut alias_refs_params = BTreeMap::new();
+    alias_refs_params.insert("textDocument".to_string(), JsonValue::Object(alias_refs_doc));
+    alias_refs_params.insert("position".to_string(), JsonValue::Object(alias_refs_pos));
+    alias_refs_params.insert("context".to_string(), JsonValue::Object(alias_refs_ctx));
+    send_request(
+        &mut stdin,
+        5,
+        "textDocument/references",
+        JsonValue::Object(alias_refs_params),
+    );
+    let alias_refs = wait_response(&mut stdout, 5);
+    let alias_refs_text = json::encode(&alias_refs);
+    assert!(
+        alias_refs_text.contains(&main_uri),
+        "references on dependency module alias receiver should include the local binding and use site: {alias_refs_text}"
+    );
+
     let mut refs_doc = BTreeMap::new();
     refs_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
     let mut refs_pos = BTreeMap::new();
@@ -741,24 +820,56 @@ fn main():
     refs_params.insert("context".to_string(), JsonValue::Object(refs_ctx));
     send_request(
         &mut stdin,
-        3,
+        6,
         "textDocument/references",
         JsonValue::Object(refs_params),
     );
-    let refs = wait_response(&mut stdout, 3);
+    let refs = wait_response(&mut stdout, 6);
     let refs_text = json::encode(&refs);
     assert!(
         refs_text.contains(&main_uri) && refs_text.contains(&dep_uri),
         "references should include caller and dependency declaration: {refs_text}"
     );
 
+    let mut rename_doc = BTreeMap::new();
+    rename_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    let mut rename_pos = BTreeMap::new();
+    rename_pos.insert("line".to_string(), JsonValue::Number(dep_call_line as f64));
+    rename_pos.insert(
+        "character".to_string(),
+        JsonValue::Number((dep_call_col + 1) as f64),
+    );
+    let mut rename_params = BTreeMap::new();
+    rename_params.insert("textDocument".to_string(), JsonValue::Object(rename_doc));
+    rename_params.insert("position".to_string(), JsonValue::Object(rename_pos));
+    rename_params.insert(
+        "newName".to_string(),
+        JsonValue::String("Accounts".to_string()),
+    );
     send_request(
         &mut stdin,
-        4,
+        7,
+        "textDocument/rename",
+        JsonValue::Object(rename_params),
+    );
+    let rename = wait_response(&mut stdout, 7);
+    let rename_text = json::encode(&rename);
+    assert!(
+        rename_text.contains("Accounts"),
+        "rename on dependency module alias receiver should include requested name: {rename_text}"
+    );
+    assert!(
+        rename_text.contains(&main_uri) && !rename_text.contains(&dep_uri),
+        "rename on dependency module alias receiver should stay local to the importing module: {rename_text}"
+    );
+
+    send_request(
+        &mut stdin,
+        8,
         "shutdown",
         JsonValue::Object(BTreeMap::new()),
     );
-    let _ = wait_response(&mut stdout, 4);
+    let _ = wait_response(&mut stdout, 8);
     send_notification(&mut stdin, "exit", JsonValue::Object(BTreeMap::new()));
     let status = child.wait().expect("wait lsp");
     assert!(status.success(), "fuse-lsp exited with {status}");
