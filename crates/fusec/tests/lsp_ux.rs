@@ -968,3 +968,246 @@ fn main():
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn lsp_code_actions_and_formatting_smoke_over_jsonrpc() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        "[package]\nentry = \"main_missing.fuse\"\napp = \"Demo\"\n",
+    )
+    .expect("write fuse.toml");
+
+    let util_src = r#"fn greet(name: String, times: Int) -> String:
+  return "${name} x ${times}"
+
+fn helper(input: String) -> String:
+  return input
+"#;
+    let main_missing_src = r#"import { helper } from "./util"
+
+fn main():
+  let err = NotFound()
+  print(helper("Ada"))
+  print(err)
+"#;
+    let main_unsorted_src = r#"import { helper, greet } from "./util"
+
+fn main():
+  print(greet(helper("Ada"), 1))
+"#;
+    let main_unformatted_src = r#"fn main():
+    let x=1
+    print(x)
+"#;
+
+    let util_path = dir.join("util.fuse");
+    let missing_path = dir.join("main_missing.fuse");
+    let unsorted_path = dir.join("main_unsorted.fuse");
+    let format_path = dir.join("main_unformatted.fuse");
+    fs::write(&util_path, util_src).expect("write util.fuse");
+    fs::write(&missing_path, main_missing_src).expect("write main_missing.fuse");
+    fs::write(&unsorted_path, main_unsorted_src).expect("write main_unsorted.fuse");
+    fs::write(&format_path, main_unformatted_src).expect("write main_unformatted.fuse");
+
+    let root_uri = path_to_uri(&dir);
+    let util_uri = path_to_uri(&util_path);
+    let missing_uri = path_to_uri(&missing_path);
+    let unsorted_uri = path_to_uri(&unsorted_path);
+    let format_uri = path_to_uri(&format_path);
+
+    let (mut child, mut stdin, mut stdout) = spawn_lsp();
+
+    let mut init_params = BTreeMap::new();
+    init_params.insert("rootUri".to_string(), JsonValue::String(root_uri));
+    send_request(&mut stdin, 1, "initialize", JsonValue::Object(init_params));
+    let _ = wait_response(&mut stdout, 1);
+    send_notification(
+        &mut stdin,
+        "initialized",
+        JsonValue::Object(BTreeMap::new()),
+    );
+
+    let mut util_doc = BTreeMap::new();
+    util_doc.insert("uri".to_string(), JsonValue::String(util_uri.clone()));
+    util_doc.insert(
+        "languageId".to_string(),
+        JsonValue::String("fuse".to_string()),
+    );
+    util_doc.insert("version".to_string(), JsonValue::Number(1.0));
+    util_doc.insert("text".to_string(), JsonValue::String(util_src.to_string()));
+    let mut util_open_params = BTreeMap::new();
+    util_open_params.insert("textDocument".to_string(), JsonValue::Object(util_doc));
+    send_notification(
+        &mut stdin,
+        "textDocument/didOpen",
+        JsonValue::Object(util_open_params),
+    );
+
+    let mut missing_doc = BTreeMap::new();
+    missing_doc.insert("uri".to_string(), JsonValue::String(missing_uri.clone()));
+    missing_doc.insert(
+        "languageId".to_string(),
+        JsonValue::String("fuse".to_string()),
+    );
+    missing_doc.insert("version".to_string(), JsonValue::Number(1.0));
+    missing_doc.insert(
+        "text".to_string(),
+        JsonValue::String(main_missing_src.to_string()),
+    );
+    let mut missing_open_params = BTreeMap::new();
+    missing_open_params.insert("textDocument".to_string(), JsonValue::Object(missing_doc));
+    send_notification(
+        &mut stdin,
+        "textDocument/didOpen",
+        JsonValue::Object(missing_open_params),
+    );
+
+    let util_diags = wait_diagnostics(&mut stdout, &util_uri);
+    assert!(
+        util_diags.is_empty(),
+        "expected no util diagnostics, got {}",
+        json::encode(&JsonValue::Array(util_diags))
+    );
+    let missing_diags = wait_diagnostics(&mut stdout, &missing_uri);
+    assert!(
+        !missing_diags.is_empty(),
+        "expected missing-import diagnostics"
+    );
+
+    let mut action_doc = BTreeMap::new();
+    action_doc.insert("uri".to_string(), JsonValue::String(missing_uri.clone()));
+    let mut range_start = BTreeMap::new();
+    range_start.insert("line".to_string(), JsonValue::Number(0.0));
+    range_start.insert("character".to_string(), JsonValue::Number(0.0));
+    let mut range_end = BTreeMap::new();
+    range_end.insert("line".to_string(), JsonValue::Number(20.0));
+    range_end.insert("character".to_string(), JsonValue::Number(0.0));
+    let mut range = BTreeMap::new();
+    range.insert("start".to_string(), JsonValue::Object(range_start));
+    range.insert("end".to_string(), JsonValue::Object(range_end));
+    let mut context = BTreeMap::new();
+    context.insert(
+        "diagnostics".to_string(),
+        JsonValue::Array(missing_diags.clone()),
+    );
+    let mut action_params = BTreeMap::new();
+    action_params.insert("textDocument".to_string(), JsonValue::Object(action_doc));
+    action_params.insert("range".to_string(), JsonValue::Object(range.clone()));
+    action_params.insert("context".to_string(), JsonValue::Object(context));
+    send_request(
+        &mut stdin,
+        2,
+        "textDocument/codeAction",
+        JsonValue::Object(action_params),
+    );
+    let missing_actions = wait_response(&mut stdout, 2);
+    let missing_actions_text = json::encode(&missing_actions);
+    assert!(
+        missing_actions_text.contains("Import NotFound from std.Error"),
+        "raw codeAction should include missing-import quickfix: {missing_actions_text}"
+    );
+
+    let mut unsorted_doc = BTreeMap::new();
+    unsorted_doc.insert("uri".to_string(), JsonValue::String(unsorted_uri.clone()));
+    unsorted_doc.insert(
+        "languageId".to_string(),
+        JsonValue::String("fuse".to_string()),
+    );
+    unsorted_doc.insert("version".to_string(), JsonValue::Number(1.0));
+    unsorted_doc.insert(
+        "text".to_string(),
+        JsonValue::String(main_unsorted_src.to_string()),
+    );
+    let mut unsorted_open_params = BTreeMap::new();
+    unsorted_open_params.insert("textDocument".to_string(), JsonValue::Object(unsorted_doc));
+    send_notification(
+        &mut stdin,
+        "textDocument/didOpen",
+        JsonValue::Object(unsorted_open_params),
+    );
+    let unsorted_diags = wait_diagnostics(&mut stdout, &unsorted_uri);
+    assert!(
+        unsorted_diags.is_empty(),
+        "unexpected diagnostics in organize-imports scenario: {}",
+        json::encode(&JsonValue::Array(unsorted_diags))
+    );
+
+    let mut organize_doc = BTreeMap::new();
+    organize_doc.insert("uri".to_string(), JsonValue::String(unsorted_uri.clone()));
+    let mut organize_context = BTreeMap::new();
+    organize_context.insert("diagnostics".to_string(), JsonValue::Array(Vec::new()));
+    let mut organize_params = BTreeMap::new();
+    organize_params.insert("textDocument".to_string(), JsonValue::Object(organize_doc));
+    organize_params.insert("range".to_string(), JsonValue::Object(range.clone()));
+    organize_params.insert("context".to_string(), JsonValue::Object(organize_context));
+    send_request(
+        &mut stdin,
+        3,
+        "textDocument/codeAction",
+        JsonValue::Object(organize_params),
+    );
+    let organize_actions = wait_response(&mut stdout, 3);
+    let organize_actions_text = json::encode(&organize_actions);
+    assert!(
+        organize_actions_text.contains("Organize imports")
+            && organize_actions_text.contains("greet, helper"),
+        "raw codeAction should include organize-imports edit: {organize_actions_text}"
+    );
+
+    let mut format_doc = BTreeMap::new();
+    format_doc.insert("uri".to_string(), JsonValue::String(format_uri.clone()));
+    format_doc.insert(
+        "languageId".to_string(),
+        JsonValue::String("fuse".to_string()),
+    );
+    format_doc.insert("version".to_string(), JsonValue::Number(1.0));
+    format_doc.insert(
+        "text".to_string(),
+        JsonValue::String(main_unformatted_src.to_string()),
+    );
+    let mut format_open_params = BTreeMap::new();
+    format_open_params.insert("textDocument".to_string(), JsonValue::Object(format_doc));
+    send_notification(
+        &mut stdin,
+        "textDocument/didOpen",
+        JsonValue::Object(format_open_params),
+    );
+    let format_diags = wait_diagnostics(&mut stdout, &format_uri);
+    assert!(
+        format_diags.is_empty(),
+        "formatter scenario should parse without diagnostics: {}",
+        json::encode(&JsonValue::Array(format_diags))
+    );
+
+    let mut format_req_doc = BTreeMap::new();
+    format_req_doc.insert("uri".to_string(), JsonValue::String(format_uri.clone()));
+    let mut format_params = BTreeMap::new();
+    format_params.insert("textDocument".to_string(), JsonValue::Object(format_req_doc));
+    send_request(
+        &mut stdin,
+        4,
+        "textDocument/formatting",
+        JsonValue::Object(format_params),
+    );
+    let formatting = wait_response(&mut stdout, 4);
+    let formatting_text = json::encode(&formatting);
+    assert!(
+        formatting_text.starts_with('['),
+        "raw formatting response should be an edit array: {formatting_text}"
+    );
+
+    send_request(
+        &mut stdin,
+        5,
+        "shutdown",
+        JsonValue::Object(BTreeMap::new()),
+    );
+    let _ = wait_response(&mut stdout, 5);
+    send_notification(&mut stdin, "exit", JsonValue::Object(BTreeMap::new()));
+    let status = child.wait().expect("wait lsp");
+    assert!(status.success(), "fuse-lsp exited with {status}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
