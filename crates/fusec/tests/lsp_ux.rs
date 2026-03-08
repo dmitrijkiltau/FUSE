@@ -752,6 +752,48 @@ fn main():
         "hover on root module alias receiver should include the target module and exports: {alias_hover_text}"
     );
 
+    let mut completion_doc = BTreeMap::new();
+    completion_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    let mut completion_pos = BTreeMap::new();
+    completion_pos.insert("line".to_string(), JsonValue::Number(core_call_line as f64));
+    completion_pos.insert(
+        "character".to_string(),
+        JsonValue::Number((core_call_col + "Core.pl".len()) as f64),
+    );
+    let mut completion_params = BTreeMap::new();
+    completion_params.insert(
+        "textDocument".to_string(),
+        JsonValue::Object(completion_doc),
+    );
+    completion_params.insert("position".to_string(), JsonValue::Object(completion_pos));
+    send_request(
+        &mut stdin,
+        4,
+        "textDocument/completion",
+        JsonValue::Object(completion_params),
+    );
+    let alias_completion = wait_response(&mut stdout, 4);
+    let alias_completion_text = json::encode(&alias_completion);
+    assert!(
+        alias_completion_text.contains("\"label\":\"plus_one\""),
+        "completion on root module alias receiver should include exported members: {alias_completion_text}"
+    );
+
+    let mut symbol_params = BTreeMap::new();
+    symbol_params.insert("query".to_string(), JsonValue::String("Core".to_string()));
+    send_request(
+        &mut stdin,
+        5,
+        "workspace/symbol",
+        JsonValue::Object(symbol_params),
+    );
+    let symbols = wait_response(&mut stdout, 5);
+    let symbols_text = json::encode(&symbols);
+    assert!(
+        symbols_text.contains("\"name\":\"Core\"") && symbols_text.contains(&main_uri),
+        "workspace symbols should include imported module aliases: {symbols_text}"
+    );
+
     let mut prepare_doc = BTreeMap::new();
     prepare_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
     let mut prepare_pos = BTreeMap::new();
@@ -765,11 +807,11 @@ fn main():
     prepare_params.insert("position".to_string(), JsonValue::Object(prepare_pos));
     send_request(
         &mut stdin,
-        4,
+        6,
         "textDocument/prepareRename",
         JsonValue::Object(prepare_params),
     );
-    let prepare = wait_response(&mut stdout, 4);
+    let prepare = wait_response(&mut stdout, 6);
     let prepare_text = json::encode(&prepare);
     assert!(
         prepare_text.contains("\"placeholder\":\"Core\"")
@@ -790,11 +832,11 @@ fn main():
     def_params.insert("position".to_string(), JsonValue::Object(def_pos));
     send_request(
         &mut stdin,
-        5,
+        7,
         "textDocument/definition",
         JsonValue::Object(def_params),
     );
-    let definition = wait_response(&mut stdout, 5);
+    let definition = wait_response(&mut stdout, 7);
     let definition_text = json::encode(&definition);
     assert!(
         definition_text.contains(&core_uri),
@@ -818,11 +860,11 @@ fn main():
     alias_refs_params.insert("context".to_string(), JsonValue::Object(alias_refs_ctx));
     send_request(
         &mut stdin,
-        6,
+        8,
         "textDocument/references",
         JsonValue::Object(alias_refs_params),
     );
-    let alias_refs = wait_response(&mut stdout, 6);
+    let alias_refs = wait_response(&mut stdout, 8);
     let alias_refs_text = json::encode(&alias_refs);
     assert!(
         alias_refs_text.contains(&main_uri),
@@ -845,11 +887,11 @@ fn main():
     refs_params.insert("context".to_string(), JsonValue::Object(refs_ctx));
     send_request(
         &mut stdin,
-        7,
+        9,
         "textDocument/references",
         JsonValue::Object(refs_params),
     );
-    let refs = wait_response(&mut stdout, 7);
+    let refs = wait_response(&mut stdout, 9);
     let refs_text = json::encode(&refs);
     assert!(
         refs_text.contains(&main_uri) && refs_text.contains(&dep_uri),
@@ -869,11 +911,11 @@ fn main():
     dep_prepare_params.insert("position".to_string(), JsonValue::Object(dep_prepare_pos));
     send_request(
         &mut stdin,
-        8,
+        10,
         "textDocument/prepareRename",
         JsonValue::Object(dep_prepare_params),
     );
-    let dep_prepare = wait_response(&mut stdout, 8);
+    let dep_prepare = wait_response(&mut stdout, 10);
     let dep_prepare_text = json::encode(&dep_prepare);
     assert!(
         dep_prepare_text.contains("\"placeholder\":\"Auth\"")
@@ -898,11 +940,11 @@ fn main():
     );
     send_request(
         &mut stdin,
-        9,
+        11,
         "textDocument/rename",
         JsonValue::Object(rename_params),
     );
-    let rename = wait_response(&mut stdout, 9);
+    let rename = wait_response(&mut stdout, 11);
     let rename_text = json::encode(&rename);
     assert!(
         rename_text.contains("Accounts"),
@@ -915,11 +957,11 @@ fn main():
 
     send_request(
         &mut stdin,
-        10,
+        12,
         "shutdown",
         JsonValue::Object(BTreeMap::new()),
     );
-    let _ = wait_response(&mut stdout, 10);
+    let _ = wait_response(&mut stdout, 12);
     send_notification(&mut stdin, "exit", JsonValue::Object(BTreeMap::new()));
     let status = child.wait().expect("wait lsp");
     assert!(status.success(), "fuse-lsp exited with {status}");
