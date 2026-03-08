@@ -1,9 +1,53 @@
+requires db
+
 import Base from "./base"
 import { RequestContext, request_context_session_token, request_context_user_id } from "../../domain"
+import { username_for_user_id } from "../../auth"
 
-fn auth_form(prefix: String, action: String, button_label: String, button_class: String, toggle_id: String, switch_label: String) -> Html:
-  let email_id = "${prefix}-email"
-  let password_id = "${prefix}-password"
+fn login_form(action: String, button_label: String, button_class: String, toggle_id: String, switch_label: String) -> Html:
+  let identifier_id = "login-identifier"
+  let password_id = "login-password"
+
+  return form(
+    class="create-form auth-form"
+    hx_post=action
+    hx_ext="json-enc"
+    hx_target="#app-shell"
+    hx_swap="outerHTML"
+  ):
+    div(class="form-group"):
+      label(class="form-label" for=identifier_id):
+        "Email or username"
+      input(
+        class="form-input"
+        type="text"
+        id=identifier_id
+        name="identifier"
+        placeholder="you@example.com or ada"
+        required="required"
+      )
+    div(class="form-group"):
+      label(class="form-label" for=password_id):
+        "Password"
+      input(
+        class="form-input"
+        type="password"
+        id=password_id
+        name="password"
+        minlength="8"
+        required="required"
+      )
+    div(class="create-form__footer auth-form__footer"):
+      label(class="auth-switch" for=toggle_id):
+        span(class="btn btn--link btn--sm auth-switch__button"):
+          html.text(switch_label)
+      button(type="submit" class=button_class):
+        html.text(button_label)
+
+fn register_form(action: String, button_label: String, button_class: String, toggle_id: String, switch_label: String) -> Html:
+  let email_id = "register-email"
+  let username_id = "register-username"
+  let password_id = "register-password"
 
   return form(
     class="create-form auth-form"
@@ -21,6 +65,20 @@ fn auth_form(prefix: String, action: String, button_label: String, button_class:
         id=email_id
         name="email"
         placeholder="you@example.com"
+        required="required"
+      )
+    div(class="form-group"):
+      label(class="form-label" for=username_id):
+        "Username"
+      input(
+        class="form-input"
+        type="text"
+        id=username_id
+        name="username"
+        placeholder="ada"
+        pattern="[A-Za-z0-9_.+-]{3,32}"
+        minlength="3"
+        maxlength="32"
         required="required"
       )
     div(class="form-group"):
@@ -51,9 +109,9 @@ fn render_guest_auth_section() -> Html:
       input(id=toggle_id type="checkbox" class="btn--checkbox auth-panel__toggle" hidden="hidden")
       div(class="auth-stack"):
         div(class="auth-stack__pane auth-stack__pane--login"):
-          auth_form("login", "/ui/auth/login", "Login", "btn btn--primary", toggle_id, "Need an account? Register")
+          login_form("/ui/auth/login", "Login", "btn btn--primary", toggle_id, "Need an account? Register")
         div(class="auth-stack__pane auth-stack__pane--register"):
-          auth_form("register", "/ui/auth/register", "Register", "btn btn--primary", toggle_id, "Have an account? Login")
+          register_form("/ui/auth/register", "Register", "btn btn--primary", toggle_id, "Have an account? Login")
 
 fn render_session_section(ctx: RequestContext) -> Html:
   let session_token = request_context_session_token(ctx)
@@ -62,10 +120,11 @@ fn render_session_section(ctx: RequestContext) -> Html:
 
   let logout_url = "/ui/auth/logout"
   let uid = request_context_user_id(ctx)
+  let username = username_for_user_id(uid)
 
   return div(class="page__session"):
     p(class="page__session-copy"):
-      html.text("Signed in as ${uid}.")
+      html.text("Signed in as ${username}.")
     div(class="auth-actions"):
       button(
         type="button"

@@ -1,7 +1,7 @@
 # Reference service example
 
 This is the canonical Fuse reference service package.
-It includes registration/login auth, session-scoped CRUD routes, DB migrations, OpenAPI generation,
+It includes registration/login auth with usernames, session-scoped CRUD routes, DB migrations, OpenAPI generation,
 native CSS assets, typed query projection structs for query-builder reads, and a server-rendered
 HTMX UI implemented in Fuse HTML DSL.
 Long SQL statements in this project use multiline triple-quoted strings (`"""..."""`) for readability.
@@ -130,6 +130,9 @@ Authenticated non-owners can leave or remove likes on published notes.
 The browser UI no longer depends on client-side note rendering.
 Session state is persisted using an HTTP-only `sid` cookie (set by UI auth routes).
 The package now declares a single HTTP service, so `fuse run` does not require `FUSE_SERVICE`.
+Registration now requires a `username`, and login accepts either email or username.
+The server-rendered UI shows usernames for signed-in users and public-note attribution.
+The public JSON note APIs still expose `owner_id` as the stable internal ownership field.
 
 UI module layout:
 

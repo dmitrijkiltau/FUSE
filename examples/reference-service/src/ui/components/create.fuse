@@ -1,3 +1,5 @@
+requires db
+
 import Auth from "./auth"
 import { RequestContext, request_context_session_token } from "../../domain"
 
