@@ -2,7 +2,54 @@
 
 All notable changes to this project are documented in this file.
 
-## [0.9.8] - Unreleased
+## [0.9.9] - 2026-03-08
+
+### Changed
+
+- Dependency graph cycle diagnostics are now part of the machine-readable contract via `FUSE_DEP_CYCLE`.
+- Derived-type loader failures now use stable `FUSE_TYPE_DERIVE_*` codes.
+- Duplicate exported-symbol loader failures now use `FUSE_SYMBOL_DUPLICATE`.
+- Runtime execution envelopes classify common failures under stable `runtime_*` codes instead of
+  collapsing everything to generic `runtime_error`.
+- Config/env decode failures classify under `runtime_config_decode`; direct AOT fatal envelopes
+  cover matching config/operator runtime message taxonomy.
+- Wrapper-side JSON `cli_message` failures now carry stable codes for common command/backend/
+  manifest/subcommand/file/dev failure classes.
+- Module-alias receiver hover now shows the imported module target and its exported symbols
+  instead of only the local binding stub.
+- Module-alias receiver `references` and `rename`/`prepareRename` now track the local module
+  binding and its use sites.
+- Cross-module `rename` now rewrites named-import bindings in dependent modules in addition to
+  the definition and call sites.
+- `workspace/symbol` exact-match queries on imported module aliases now rank ahead of substring
+  competitors.
+- Raw `lsp_ux` JSON-RPC smoke now covers alias-heavy `definition`, `hover`, `references`,
+  `prepareRename`, `rename`, `completion`, `workspace/symbol`, `signatureHelp`, code actions,
+  and formatting.
+- The `examples/reference-service/` README now uses explicit `--manifest-path` for all command
+  examples, lists both like and unlike API/UI routes, and documents the checked-in OpenAPI
+  artifact location.
+- Checked-in `examples/reference-service/build/openapi.json` refreshed to include unlike/delete
+  operations that were missing from the previous generation.
+- `examples/README.md` corrected to describe the reference-service as a server-rendered HTMX UI
+  flow instead of stale client-side JS wording.
+- `ops/BENCHMARKS.md` and `scripts/use_case_bench.sh` print labels updated to the actual
+  session-scoped note routes exercised by the benchmark harness.
+- `README.md` transaction section extended to include the module-level capability guardrail:
+  the containing module must not declare non-`db` capabilities.
+
+### Fixed
+
+- Module-alias receiver `definition` now navigates to the imported module file instead of
+  bouncing back to the local import binding.
+- Alias-routed `textDocument/signatureHelp` now returns correct parameter/active-parameter
+  metadata for both direct calls and module-alias member calls.
+
+### Migration
+
+- No language/runtime migration is required from `0.9.8` to `0.9.9`.
+
+## [0.9.8] - 2026-03-07
 
 ### Added
 

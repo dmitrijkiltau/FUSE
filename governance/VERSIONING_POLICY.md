@@ -76,6 +76,9 @@ Recent release-line notes:
   and DB boundary-model completion (`all<T>/one<T>`, `upsert`, migration namespacing).
   It includes a documented HTML attribute syntax cleanup with diagnostics-assisted migration
   (`FUSE_HTML_ATTR_MAP`, `FUSE_HTML_ATTR_COMMA`).
+- `0.9.9` is a non-breaking contract audit and tooling polish release: diagnostic code coverage,
+  LSP alias-routing correctness, example/reference-service alignment, and spec/doc consistency.
+  No language/runtime migration is required from `0.9.8`.
 
 - semantic regressions across AST/native are release blockers on all active release lines. (VM removed per RFC 0007.)
 
