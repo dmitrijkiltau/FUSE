@@ -456,9 +456,7 @@ Always run Cargo through `scripts/cargo_env.sh` to avoid cross-device link error
 |---|---|---|
 | Semantic suite | `./scripts/semantic_suite.sh` | Parser, type system, and boundary contract tests |
 | Authority parity | `./scripts/authority_parity.sh` | AST/native semantic authority plus AST/native/AOT observable parity lock (errors/JSON/logging/panic taxonomy/transaction/spawn) |
-| LSP suite | `./scripts/lsp_suite.sh` | LSP contracts, navigation, completions, code actions |
-| LSP performance | `./scripts/lsp_perf_reliability.sh` | Cancellation handling and responsiveness budgets |
-| LSP incremental | `./scripts/lsp_workspace_incremental.sh` | Workspace cache correctness |
+| LSP suite | `./scripts/lsp_suite.sh` | LSP contracts, navigation/refactor, signature help, completion, code actions, incremental workspace behavior, perf/reliability, VS Code path resolution, and latency SLOs |
 | Benchmarks | `./scripts/use_case_bench.sh` | Real-world workload metrics (`--median-of-3` available for reliability runs) |
 | Reliability repeat | `./scripts/reliability_repeat.sh --iterations 2` | Repeat-run stability checks for parity/LSP/benchmark-sensitive paths |
 | AOT startup/throughput benchmark | `./scripts/aot_perf_bench.sh` | Cold-start distribution + steady-state throughput comparison (JIT-native vs AOT) |

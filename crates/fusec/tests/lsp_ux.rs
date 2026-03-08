@@ -357,6 +357,34 @@ fn main():
         "hover missing range: {hover_text}"
     );
 
+    let mut sig_doc = BTreeMap::new();
+    sig_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    let mut sig_pos = BTreeMap::new();
+    sig_pos.insert("line".to_string(), JsonValue::Number(call_line as f64));
+    sig_pos.insert(
+        "character".to_string(),
+        JsonValue::Number((call_greet_col + "greet(user, ".len()) as f64),
+    );
+    let mut sig_params = BTreeMap::new();
+    sig_params.insert("textDocument".to_string(), JsonValue::Object(sig_doc));
+    sig_params.insert("position".to_string(), JsonValue::Object(sig_pos));
+    send_request(
+        &mut stdin,
+        11,
+        "textDocument/signatureHelp",
+        JsonValue::Object(sig_params),
+    );
+    let sig_help = wait_response(&mut stdout, 11);
+    let sig_help_text = json::encode(&sig_help);
+    assert!(
+        sig_help_text.contains("fn greet(user: Person, times: Int) -> String"),
+        "raw signatureHelp should include imported function signature: {sig_help_text}"
+    );
+    assert!(
+        sig_help_text.contains("\"activeParameter\":1"),
+        "raw signatureHelp should report the active parameter for imported calls: {sig_help_text}"
+    );
+
     let mut completion_doc = BTreeMap::new();
     completion_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
     let mut completion_pos = BTreeMap::new();
@@ -753,6 +781,34 @@ fn main():
     assert!(
         alias_hover_text.contains(&core_uri) && alias_hover_text.contains("plus_one"),
         "hover on root module alias receiver should include the target module and exports: {alias_hover_text}"
+    );
+
+    let mut alias_sig_doc = BTreeMap::new();
+    alias_sig_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    let mut alias_sig_pos = BTreeMap::new();
+    alias_sig_pos.insert("line".to_string(), JsonValue::Number(core_call_line as f64));
+    alias_sig_pos.insert(
+        "character".to_string(),
+        JsonValue::Number((core_call_col + "Core.plus_one(".len()) as f64),
+    );
+    let mut alias_sig_params = BTreeMap::new();
+    alias_sig_params.insert("textDocument".to_string(), JsonValue::Object(alias_sig_doc));
+    alias_sig_params.insert("position".to_string(), JsonValue::Object(alias_sig_pos));
+    send_request(
+        &mut stdin,
+        13,
+        "textDocument/signatureHelp",
+        JsonValue::Object(alias_sig_params),
+    );
+    let alias_sig_help = wait_response(&mut stdout, 13);
+    let alias_sig_help_text = json::encode(&alias_sig_help);
+    assert!(
+        alias_sig_help_text.contains("fn plus_one(value: Int) -> Int"),
+        "raw signatureHelp should include module-alias member signatures: {alias_sig_help_text}"
+    );
+    assert!(
+        alias_sig_help_text.contains("\"activeParameter\":0"),
+        "raw signatureHelp should report the active parameter for module-alias member calls: {alias_sig_help_text}"
     );
 
     let mut completion_doc = BTreeMap::new();
