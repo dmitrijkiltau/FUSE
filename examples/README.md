@@ -80,5 +80,6 @@ These exercise the Cranelift JIT backend specifically (`--backend native`):
 
 `reference-service/` remains the canonical end-to-end package example. It includes
 registration/login + session-auth notes API flow, native CSS modules (imports/custom
-properties/nesting), typed query projection structs on query-builder reads, and a client-side JS flow. See
+properties/nesting), typed query projection structs on query-builder reads, and a server-rendered
+HTMX UI flow. See
 [reference-service/README.md](reference-service/README.md).

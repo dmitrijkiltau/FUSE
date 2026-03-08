@@ -37,8 +37,8 @@ boundaries: types, validation, and transport behavior are aligned by default.
 ### What FUSE optimizes for
 
 **Small and strict.** The language intentionally keeps a narrow core: indentation-based blocks,
-explicit declarations (`fn`, `type`, `enum`, `config`, `service`, `app`), and strong types with
-minimal ceremony.
+explicit declarations (`import`, `fn`, `type`, `enum`, `config`, `component`, `service`, `app`,
+`migration`, `test`), and strong types with minimal ceremony.
 
 **Boundaries as first-class language concerns.** Runtime surfaces are built in and consistent
 across backends: config loading, JSON encoding/decoding, validation, and HTTP request/response
@@ -122,6 +122,11 @@ app "assets":
 - only `import Name from "path.ext"` is supported for asset files in `0.9.7`
 - asset imports are values, not modules: no named asset imports, no module aliases, no custom
   import-loader/plugin system
+- JSON/LSP diagnostics for loader/import failures use stable code families (`FUSE_IMPORT_*`,
+  `FUSE_ASSET_*`) for editor and CI consumers
+- additional loader consistency coverage now includes dependency cycles (`FUSE_DEP_CYCLE`),
+  derived-type resolution failures (`FUSE_TYPE_DERIVE_*`), and duplicate exported symbols
+  (`FUSE_SYMBOL_DUPLICATE`)
 
 ## Module capabilities
 
@@ -164,7 +169,8 @@ Fallible boundaries require explicit error domains:
 `transaction:` introduces a constrained DB transaction scope:
 
 - commits on success, rolls back on block failure
-- requires `requires db`
+- the containing module must declare `requires db`
+- the containing module must not declare non-`db` capabilities
 - rejects `spawn`, `await`, early `return`, and `break`/`continue` inside the block
 - rejects non-`db` capability usage inside the block
 
@@ -253,6 +259,18 @@ Global CLI output option:
 - `--diagnostics json` switches CLI diagnostics on stderr to JSON Lines suitable for editor/CI
   consumers. Diagnostic entries use fields:
   `kind="diagnostic"`, `level`, `code?`, `message`, `path?`, `line?`, `column?`, `span_start`, `span_end`.
+  Wrapper-side command/manifest/dev/file failures emit `kind="cli_message"` with `level`,
+  `code?`, and `message`.
+  Loader/import diagnostics now use stable codes including `FUSE_IMPORT_*`, `FUSE_ASSET_*`,
+  `FUSE_DEP_CYCLE`, `FUSE_TYPE_DERIVE_*`, and `FUSE_SYMBOL_DUPLICATE`.
+  Runtime execution failures emitted through the validation envelope use stable codes such as
+  `runtime_config_decode`, `runtime_index_bounds`, `runtime_type_error`,
+  `runtime_invalid_arguments`, and `runtime_null_access`, with `runtime_error` retained as the
+  generic fallback. Structured config/env binding failures remain path-addressed validation
+  payloads (typically `invalid_value`). Direct AOT binaries keep the matching stable message
+  taxonomy in fatal envelopes even though they do not emit JSON diagnostics.
+  Common wrapper-side JSON codes include `wrapper_unknown_command`, `wrapper_unknown_backend`,
+  `wrapper_missing_subcommand`, `wrapper_manifest_missing`, `wrapper_cwd`, and `wrapper_file_read`.
   Command-step entries use:
   `kind="command_step"`, `command`, `message`.
 - `fuse check|run|build|test|clean` emit consistent stderr step markers:
@@ -439,9 +457,7 @@ Always run Cargo through `scripts/cargo_env.sh` to avoid cross-device link error
 |---|---|---|
 | Semantic suite | `./scripts/semantic_suite.sh` | Parser, type system, and boundary contract tests |
 | Authority parity | `./scripts/authority_parity.sh` | AST/native semantic authority plus AST/native/AOT observable parity lock (errors/JSON/logging/panic taxonomy/transaction/spawn) |
-| LSP suite | `./scripts/lsp_suite.sh` | LSP contracts, navigation, completions, code actions |
-| LSP performance | `./scripts/lsp_perf_reliability.sh` | Cancellation handling and responsiveness budgets |
-| LSP incremental | `./scripts/lsp_workspace_incremental.sh` | Workspace cache correctness |
+| LSP suite | `./scripts/lsp_suite.sh` | LSP contracts, navigation/refactor, signature help, completion, code actions, incremental workspace behavior, perf/reliability, VS Code path resolution, and latency SLOs |
 | Benchmarks | `./scripts/use_case_bench.sh` | Real-world workload metrics (`--median-of-3` available for reliability runs) |
 | Reliability repeat | `./scripts/reliability_repeat.sh --iterations 2` | Repeat-run stability checks for parity/LSP/benchmark-sensitive paths |
 | AOT startup/throughput benchmark | `./scripts/aot_perf_bench.sh` | Cold-start distribution + steady-state throughput comparison (JIT-native vs AOT) |

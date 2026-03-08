@@ -513,6 +513,10 @@ where
                 Backend::Ast => {
                     let mut interp = Interpreter::with_registry(&registry);
                     if let Err(err) = interp.run_app(app) {
+                        if matches!(diagnostics_format, DiagnosticFormat::Json) {
+                            emit_error_json(&err);
+                            return 1;
+                        }
                         eprintln!("run error: {err}");
                         return 1;
                     }
@@ -529,6 +533,10 @@ where
                     };
                     let mut vm = crate::native::NativeVm::new(&native);
                     if let Err(err) = vm.run_app(app) {
+                        if matches!(diagnostics_format, DiagnosticFormat::Json) {
+                            emit_error_json(&err);
+                            return 1;
+                        }
                         eprintln!("run error: {err}");
                         return 1;
                     }
@@ -764,7 +772,66 @@ fn emit_error_json(message: &str) {
         eprintln!("{message}");
         return;
     }
-    emit_validation_error("$", "runtime_error", message);
+    emit_validation_error("$", classify_runtime_error_code(message), message);
+}
+
+fn classify_runtime_error_code(message: &str) -> &'static str {
+    let message = message.trim();
+    if message.starts_with("invalid JSON value:")
+        || message.starts_with("invalid Int:")
+        || message.starts_with("invalid Float:")
+        || message.starts_with("invalid Bool:")
+        || message.starts_with("invalid Bytes")
+        || message.starts_with("env override not supported for type ")
+        || message.contains("config env overrides")
+    {
+        return "runtime_config_decode";
+    }
+    if message == "Option expects 1 type argument"
+        || message == "Result expects 2 type arguments"
+        || message == "List expects 1 type argument"
+        || message == "Map expects 2 type arguments"
+        || message.starts_with("validation not supported for ")
+    {
+        return "runtime_type_spec_error";
+    }
+    if message == "null access" {
+        return "runtime_null_access";
+    }
+    if message == "index out of bounds" {
+        return "runtime_index_bounds";
+    }
+    if message == "list index must be Int" || message == "map keys must be strings" {
+        return "runtime_invalid_index";
+    }
+    if message.starts_with("field lookup failed:") {
+        return "runtime_field_access";
+    }
+    if message == "assignment target must be an indexable value"
+        || message == "assignment target must be a struct field"
+    {
+        return "runtime_invalid_assignment_target";
+    }
+    if message == "await expects a Task value" {
+        return "runtime_task_expected";
+    }
+    if message.starts_with("range expects")
+        || message == "range start must be <= end"
+        || message == "invalid range bounds"
+    {
+        return "runtime_range_error";
+    }
+    if message.starts_with("unsupported comparison")
+        || message == "unsupported + operands"
+        || message == "cannot iterate over value"
+        || message.starts_with("expected iterator, got")
+    {
+        return "runtime_type_error";
+    }
+    if message.contains(" expects ") || message.starts_with("expected ") {
+        return "runtime_invalid_arguments";
+    }
+    "runtime_error"
 }
 
 fn diagnostics_format_from_env() -> DiagnosticFormat {

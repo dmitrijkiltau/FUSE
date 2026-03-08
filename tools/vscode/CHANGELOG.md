@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.9 — 2026-03-08
+
+### Changed
+
+- Release metadata updated to `0.9.9`.
+- Extension capabilities list updated to include signature help, rename safety checks, call
+  hierarchy, and workspace symbol search.
+
 ## 0.7.0 — 2026-02-28
 
 ### Changed

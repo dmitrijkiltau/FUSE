@@ -61,6 +61,21 @@ impl Diagnostics {
         });
     }
 
+    pub fn error_at_path_with_code<P, C, S>(&mut self, path: P, span: Span, code: C, message: S)
+    where
+        P: Into<PathBuf>,
+        C: Into<String>,
+        S: Into<String>,
+    {
+        self.diags.push(Diag {
+            level: Level::Error,
+            code: Some(code.into()),
+            message: message.into(),
+            span,
+            path: Some(path.into()),
+        });
+    }
+
     pub fn warning<S: Into<String>>(&mut self, span: Span, message: S) {
         self.diags.push(Diag {
             level: Level::Warning,

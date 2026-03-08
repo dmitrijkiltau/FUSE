@@ -1363,6 +1363,7 @@ pub(crate) struct WorkspaceIndex {
     pub(crate) calls: Vec<WorkspaceCall>,
     pub(crate) module_alias_exports: HashMap<String, HashMap<String, HashSet<String>>>,
     pub(crate) redirects: HashMap<usize, usize>,
+    pub(crate) module_ref_targets: HashMap<String, Vec<ImportPathTarget>>,
     pub(crate) import_path_targets: HashMap<String, Vec<ImportPathTarget>>,
     /// Maps each file URI to the set of file URIs it directly imports.
     /// Used for completion locality weighting: symbols from directly-imported modules
@@ -1454,20 +1455,41 @@ impl WorkspaceIndex {
             .map(|target| target.uri.as_str())
     }
 
+    pub(crate) fn module_ref_target_at(
+        &self,
+        uri: &str,
+        line: usize,
+        character: usize,
+    ) -> Option<&str> {
+        let file_idx = *self.file_by_uri.get(uri)?;
+        let file = &self.files[file_idx];
+        let offsets = line_offsets(&file.text);
+        let offset = line_col_to_offset(&file.text, &offsets, line, character);
+        self.module_ref_targets
+            .get(uri)?
+            .iter()
+            .find(|target| span_contains(target.span, offset))
+            .map(|target| target.uri.as_str())
+    }
+
     pub(crate) fn rename_edits(
         &self,
         def_id: usize,
         new_name: &str,
     ) -> HashMap<String, Vec<JsonValue>> {
+        let related_targets = self.related_targets_for_def(def_id);
         let mut spans_by_uri: HashMap<String, Vec<Span>> = HashMap::new();
-        if let Some(def) = self.def_for_target(def_id) {
+        for related_target in &related_targets {
+            let Some(def) = self.def_for_target(*related_target) else {
+                continue;
+            };
             spans_by_uri
                 .entry(def.uri.clone())
                 .or_default()
                 .push(def.def.span);
         }
         for reference in &self.refs {
-            if reference.target == def_id {
+            if related_targets.contains(&reference.target) {
                 spans_by_uri
                     .entry(reference.uri.clone())
                     .or_default()
@@ -2273,6 +2295,21 @@ fn serialize_workspace_index(index: &WorkspaceIndex) -> Option<String> {
         aliases_obj.insert(file_uri.clone(), JsonValue::Object(inner));
     }
 
+    let mut module_refs_obj = BTreeMap::new();
+    for (file_uri, targets) in &index.module_ref_targets {
+        let items: Vec<JsonValue> = targets
+            .iter()
+            .map(|target| {
+                let mut m = BTreeMap::new();
+                m.insert("s".to_string(), JsonValue::Number(target.span.start as f64));
+                m.insert("e".to_string(), JsonValue::Number(target.span.end as f64));
+                m.insert("uri".to_string(), JsonValue::String(target.uri.clone()));
+                JsonValue::Object(m)
+            })
+            .collect();
+        module_refs_obj.insert(file_uri.clone(), JsonValue::Array(items));
+    }
+
     let mut import_targets_obj = BTreeMap::new();
     for (file_uri, targets) in &index.import_path_targets {
         let items: Vec<JsonValue> = targets
@@ -2312,6 +2349,7 @@ fn serialize_workspace_index(index: &WorkspaceIndex) -> Option<String> {
     root.insert("refs".to_string(), JsonValue::Array(global_refs_json));
     root.insert("calls".to_string(), JsonValue::Array(global_calls_json));
     root.insert("aliases".to_string(), JsonValue::Object(aliases_obj));
+    root.insert("module_refs".to_string(), JsonValue::Object(module_refs_obj));
     root.insert("import_paths".to_string(), JsonValue::Object(import_targets_obj));
     root.insert("imported".to_string(), JsonValue::Object(imported_obj));
     root.insert("redirects".to_string(), JsonValue::Object(redirects_obj));
@@ -2639,6 +2677,43 @@ fn deserialize_workspace_index(json: &str) -> Option<WorkspaceIndex> {
         _ => HashMap::new(),
     };
 
+    let module_ref_targets: HashMap<String, Vec<ImportPathTarget>> = match root.get("module_refs") {
+        Some(JsonValue::Object(outer)) => outer
+            .iter()
+            .filter_map(|(file_uri, arr_v)| {
+                let JsonValue::Array(arr) = arr_v else {
+                    return None;
+                };
+                let targets: Vec<ImportPathTarget> = arr
+                    .iter()
+                    .filter_map(|value| {
+                        let JsonValue::Object(m) = value else {
+                            return None;
+                        };
+                        let start = match m.get("s") {
+                            Some(JsonValue::Number(n)) => *n as usize,
+                            _ => return None,
+                        };
+                        let end = match m.get("e") {
+                            Some(JsonValue::Number(n)) => *n as usize,
+                            _ => return None,
+                        };
+                        let uri = match m.get("uri") {
+                            Some(JsonValue::String(uri)) => uri.clone(),
+                            _ => return None,
+                        };
+                        Some(ImportPathTarget {
+                            span: fusec::span::Span::new(start, end),
+                            uri,
+                        })
+                    })
+                    .collect();
+                Some((file_uri.clone(), targets))
+            })
+            .collect(),
+        _ => HashMap::new(),
+    };
+
     let import_path_targets: HashMap<String, Vec<ImportPathTarget>> =
         match root.get("import_paths") {
             Some(JsonValue::Object(outer)) => outer
@@ -2705,6 +2780,7 @@ fn deserialize_workspace_index(json: &str) -> Option<WorkspaceIndex> {
         calls,
         module_alias_exports,
         redirects,
+        module_ref_targets,
         import_path_targets,
         imported_module_uris,
     })
@@ -2779,6 +2855,7 @@ fn build_workspace_from_registry(
     }
     let mut calls = Vec::new();
     let mut module_alias_exports = HashMap::new();
+    let mut module_ref_targets: HashMap<String, Vec<ImportPathTarget>> = HashMap::new();
     let mut import_path_targets: HashMap<String, Vec<ImportPathTarget>> = HashMap::new();
     let mut imported_module_uris: HashMap<String, HashSet<String>> = HashMap::new();
     // Pre-built to avoid borrow conflicts: file index → URI.
@@ -2937,6 +3014,29 @@ fn build_workspace_from_registry(
                 span: qualified.span,
                 target: *target,
             });
+            if let Some(module_span) = qualified.module_span {
+                if let Some(local_def_id) = find_module_binding_def(&file.index, &qualified.module) {
+                    let global_id = file.def_map[local_def_id];
+                    refs.push(WorkspaceRef {
+                        uri: file.uri.clone(),
+                        span: module_span,
+                        target: global_id,
+                    });
+                }
+            }
+            if let Some(module_span) = qualified.module_span {
+                if let Some(target_module) = registry.get(*module_id) {
+                    if !target_module.path.to_string_lossy().starts_with('<') {
+                        module_ref_targets
+                            .entry(file.uri.clone())
+                            .or_default()
+                            .push(ImportPathTarget {
+                                span: module_span,
+                                uri: path_to_uri(&target_module.path),
+                            });
+                    }
+                }
+            }
             refs.push(WorkspaceRef {
                 uri: file.uri.clone(),
                 span: qualified.span,
@@ -2996,6 +3096,7 @@ fn build_workspace_from_registry(
         calls,
         module_alias_exports,
         redirects,
+        module_ref_targets,
         import_path_targets,
         imported_module_uris,
     })
@@ -3094,6 +3195,21 @@ fn find_import_def(index: &Index, name: &str) -> Option<usize> {
             return None;
         }
         if def.detail.starts_with("import ") {
+            return Some(idx);
+        }
+        None
+    })
+}
+
+fn find_module_binding_def(index: &Index, name: &str) -> Option<usize> {
+    index.defs.iter().enumerate().find_map(|(idx, def)| {
+        if def.kind != SymbolKind::Module {
+            return None;
+        }
+        if def.name != name {
+            return None;
+        }
+        if def.detail.starts_with("module ") {
             return Some(idx);
         }
         None

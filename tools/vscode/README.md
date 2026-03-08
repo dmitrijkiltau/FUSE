@@ -30,8 +30,11 @@ Supported capabilities:
 - Diagnostics (on open, change, and close)
 - Formatting
 - Hover, go-to-definition, and references
-- Rename
+- Signature help
+- Rename and prepare-rename safety checks
+- Call hierarchy
 - Completion / autocomplete
+- Workspace symbol search
 - Semantic tokens and inlay hints
 - Code actions (unresolved import fixes, config-field scaffolding, organize imports)
 

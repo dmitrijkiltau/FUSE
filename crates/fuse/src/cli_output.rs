@@ -174,7 +174,59 @@ fn cli_message_json(level: &str, message: &str) -> rt_json::JsonValue {
         "message".to_string(),
         rt_json::JsonValue::String(message.to_string()),
     );
+    if let Some(code) = classify_cli_message_code(level, message) {
+        object.insert(
+            "code".to_string(),
+            rt_json::JsonValue::String(code.to_string()),
+        );
+    }
     rt_json::JsonValue::Object(object)
+}
+
+fn classify_cli_message_code(level: &str, message: &str) -> Option<&'static str> {
+    if level != "error" {
+        return None;
+    }
+    if message.starts_with("unknown command:") {
+        return Some("wrapper_unknown_command");
+    }
+    if message.starts_with("unknown backend:") {
+        return Some("wrapper_unknown_backend");
+    }
+    if message == "missing deps subcommand" {
+        return Some("wrapper_missing_subcommand");
+    }
+    if message.starts_with("unknown deps subcommand:") {
+        return Some("wrapper_unknown_subcommand");
+    }
+    if message.starts_with("missing manifest:") {
+        return Some("wrapper_manifest_missing");
+    }
+    if message == "dependencies require a manifest directory" {
+        return Some("wrapper_manifest_required");
+    }
+    if message.starts_with("cwd error:") {
+        return Some("wrapper_cwd");
+    }
+    if message.starts_with("failed to read ") {
+        return Some("wrapper_file_read");
+    }
+    if message.starts_with("failed to write ") {
+        return Some("wrapper_file_write");
+    }
+    if message.starts_with("dev error:") {
+        return Some("wrapper_dev_error");
+    }
+    if message.starts_with("run error:") {
+        return Some("wrapper_run_error");
+    }
+    if message == "no root module loaded" || message == "no root fn main found for CLI binding" {
+        return Some("wrapper_runtime_setup");
+    }
+    if message == "formatting aborted due to parse/sema errors" {
+        return Some("wrapper_format_aborted");
+    }
+    None
 }
 
 fn command_step_json(command: &str, message: &str) -> rt_json::JsonValue {

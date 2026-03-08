@@ -528,15 +528,30 @@ fn run_clean_command(args: &[String]) -> i32 {
 }
 
 fn run_deps_command(args: &[String]) -> i32 {
-    if args.is_empty() {
+    let mut subcmd_idx = 0usize;
+    while subcmd_idx < args.len() {
+        let arg = &args[subcmd_idx];
+        match arg.as_str() {
+            "--diagnostics" | "--color" => {
+                subcmd_idx += 2;
+            }
+            _ if arg.starts_with("--diagnostics=") || arg.starts_with("--color=") => {
+                subcmd_idx += 1;
+            }
+            _ => break,
+        }
+    }
+    if subcmd_idx >= args.len() {
         emit_cli_error("missing deps subcommand");
         emit_usage();
         return 1;
     }
-    let (subcmd, rest) = args.split_first().unwrap();
+    let subcmd = &args[subcmd_idx];
+    let mut rest: Vec<String> = args[..subcmd_idx].to_vec();
+    rest.extend_from_slice(&args[subcmd_idx + 1..]);
     match subcmd.as_str() {
-        "lock" => run_deps_lock_command(rest),
-        "publish-check" => run_deps_publish_check_command(rest),
+        "lock" => run_deps_lock_command(&rest),
+        "publish-check" => run_deps_publish_check_command(&rest),
         _ => {
             emit_cli_error(&format!("unknown deps subcommand: {subcmd}"));
             emit_usage();

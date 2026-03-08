@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        FUSE_VERSION: ${FUSE_VERSION:-v0.9.8}
+        FUSE_VERSION: ${FUSE_VERSION:-v0.9.9}
     entrypoint: ["fuse", "migrate", "."]
     environment:
       FUSE_DB_URL: "sqlite:///app/data/reference-service.db"
@@ -15,7 +15,7 @@ services:
     build:
       context: .
       args:
-        FUSE_VERSION: ${FUSE_VERSION:-v0.9.8}
+        FUSE_VERSION: ${FUSE_VERSION:-v0.9.9}
     depends_on:
       migrate:
         condition: service_completed_successfully
