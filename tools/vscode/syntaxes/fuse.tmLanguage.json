@@ -8,6 +8,7 @@
     {"include": "#fnDefinitions"},
     {"include": "#definitions"},
     {"include": "#fields"},
+    {"include": "#bindings"},
     {"include": "#structLiterals"},
     {"include": "#functionCalls"},
     {"include": "#errorTypes"},
@@ -165,11 +166,38 @@
       "patterns": [
         {
           "name": "meta.definition.function.fuse",
-          "match": "^\\s*(fn)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
-          "captures": {
-            "1": {"name": "keyword.declaration.fuse"},
-            "2": {"name": "entity.name.function.fuse"}
-          }
+          "begin": "^(\\s*)(fn)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s*(\\()",
+          "beginCaptures": {
+            "2": {"name": "keyword.declaration.fuse"},
+            "3": {"name": "entity.name.function.fuse"},
+            "4": {"name": "punctuation.section.parameters.begin.fuse"}
+          },
+          "end": "$",
+          "patterns": [
+            {
+              "name": "punctuation.section.parameters.end.fuse",
+              "match": "\\)"
+            },
+            {
+              "name": "punctuation.separator.comma.fuse",
+              "match": ","
+            },
+            {
+              "name": "punctuation.separator.colon.fuse",
+              "match": ":"
+            },
+            {
+              "name": "keyword.operator.arrow.fuse",
+              "match": "->"
+            },
+            {
+              "name": "variable.parameter.fuse",
+              "match": "\\b[a-z_][A-Za-z0-9_]*\\b(?=\\s*:)"
+            },
+            {"include": "#generics"},
+            {"include": "#types"},
+            {"include": "#userTypes"}
+          ]
         }
       ]
     },
@@ -218,6 +246,18 @@
           "match": "^\\s*([a-z_][A-Za-z0-9_]*)\\s*:",
           "captures": {
             "1": {"name": "variable.other.property.fuse"}
+          }
+        }
+      ]
+    },
+    "bindings": {
+      "patterns": [
+        {
+          "name": "meta.binding.fuse",
+          "match": "\\b(let|var)\\s+([a-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {"name": "keyword.other.fuse"},
+            "2": {"name": "variable.other.local.fuse"}
           }
         }
       ]
@@ -355,7 +395,7 @@
       "patterns": [
         {
           "name": "support.type.builtin.fuse",
-          "match": "\\b(Int|Float|Bool|String|Id|Email|Bytes|Error|Unit)\\b"
+          "match": "\\b(Int|Float|Bool|String|Id|Email|Bytes|Error|Html|Unit)\\b"
         },
         {
           "name": "support.type.generic.fuse",

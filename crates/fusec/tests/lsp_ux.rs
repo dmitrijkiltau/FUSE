@@ -609,6 +609,126 @@ fn main():
 }
 
 #[test]
+fn lsp_semantic_tokens_distinguish_signature_types_params_and_locals() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    )
+    .expect("write fuse.toml");
+
+    let main_src = r#"type PrivateNoteRow:
+  title: String
+
+fn render_private_note_card(note: PrivateNoteRow) -> Html:
+  let title = note.title
+  return div():
+    html.text(title)
+
+fn main():
+  let note = PrivateNoteRow(title="hello")
+  render_private_note_card(note)
+"#;
+    let main_path = dir.join("main.fuse");
+    fs::write(&main_path, main_src).expect("write main.fuse");
+
+    let root_uri = path_to_uri(&dir);
+    let main_uri = path_to_uri(&main_path);
+
+    let (mut child, mut stdin, mut stdout) = spawn_lsp();
+
+    let mut init_params = BTreeMap::new();
+    init_params.insert("rootUri".to_string(), JsonValue::String(root_uri));
+    send_request(&mut stdin, 1, "initialize", JsonValue::Object(init_params));
+    let _ = wait_response(&mut stdout, 1);
+    send_notification(
+        &mut stdin,
+        "initialized",
+        JsonValue::Object(BTreeMap::new()),
+    );
+
+    let mut main_doc = BTreeMap::new();
+    main_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    main_doc.insert(
+        "languageId".to_string(),
+        JsonValue::String("fuse".to_string()),
+    );
+    main_doc.insert("version".to_string(), JsonValue::Number(1.0));
+    main_doc.insert("text".to_string(), JsonValue::String(main_src.to_string()));
+    let mut main_open_params = BTreeMap::new();
+    main_open_params.insert("textDocument".to_string(), JsonValue::Object(main_doc));
+    send_notification(
+        &mut stdin,
+        "textDocument/didOpen",
+        JsonValue::Object(main_open_params),
+    );
+
+    let main_diags = wait_diagnostics(&mut stdout, &main_uri);
+    assert!(
+        main_diags.is_empty(),
+        "expected no main diagnostics, got {}",
+        json::encode(&JsonValue::Array(main_diags))
+    );
+
+    let mut sem_doc = BTreeMap::new();
+    sem_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    let mut sem_params = BTreeMap::new();
+    sem_params.insert("textDocument".to_string(), JsonValue::Object(sem_doc));
+    send_request(
+        &mut stdin,
+        2,
+        "textDocument/semanticTokens/full",
+        JsonValue::Object(sem_params),
+    );
+    let sem = wait_response(&mut stdout, 2);
+    let sem_text = json::encode(&sem);
+    assert!(
+        sem_text.contains("\"data\"") && !sem_text.contains("\"data\":[]"),
+        "semantic tokens unexpectedly empty: {sem_text}"
+    );
+
+    let rows = semantic_rows(&sem);
+    let (type_decl_line, type_decl_col) = line_col_of(main_src, "PrivateNoteRow:");
+    let (type_ref_line, type_ref_col) = line_col_of(main_src, "note: PrivateNoteRow");
+    let type_ref_col = type_ref_col + "note: ".len();
+    let (fn_decl_line, fn_decl_col) = line_col_of(main_src, "render_private_note_card(note");
+    let (fn_call_line, fn_call_col) = line_col_of(main_src, "render_private_note_card(note)");
+    let (param_line, param_col) = line_col_of(main_src, "note: PrivateNoteRow");
+    let (local_line, local_col) = line_col_of(main_src, "title = note.title");
+
+    let type_decl_ty =
+        token_type_at(&rows, type_decl_line, type_decl_col).expect("token for type decl");
+    let type_ref_ty =
+        token_type_at(&rows, type_ref_line, type_ref_col).expect("token for type ref");
+    let fn_decl_ty =
+        token_type_at(&rows, fn_decl_line, fn_decl_col).expect("token for function decl");
+    let fn_call_ty =
+        token_type_at(&rows, fn_call_line, fn_call_col).expect("token for function call");
+    let param_ty = token_type_at(&rows, param_line, param_col).expect("token for parameter");
+    let local_ty = token_type_at(&rows, local_line, local_col).expect("token for local");
+
+    assert_eq!(type_decl_ty, type_ref_ty, "custom type ref token mismatch");
+    assert_eq!(fn_decl_ty, fn_call_ty, "function token mismatch");
+    assert_ne!(param_ty, local_ty, "parameter and local should differ");
+    assert_ne!(param_ty, type_ref_ty, "parameter should not look like a type");
+    assert_ne!(fn_decl_ty, param_ty, "function should not look like a parameter");
+
+    send_request(
+        &mut stdin,
+        3,
+        "shutdown",
+        JsonValue::Object(BTreeMap::new()),
+    );
+    let _ = wait_response(&mut stdout, 3);
+    send_notification(&mut stdin, "exit", JsonValue::Object(BTreeMap::new()));
+    let status = child.wait().expect("wait lsp");
+    assert!(status.success(), "fuse-lsp exited with {status}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn lsp_multi_package_definition_and_references_smoke() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");
