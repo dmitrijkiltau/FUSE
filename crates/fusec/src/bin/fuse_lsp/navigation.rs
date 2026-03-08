@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 use fuse_rt::json::JsonValue;
 
 use super::super::{
-    LspState, WorkspaceDef, WorkspaceIndex, build_workspace_index_cached,
+    LspState, SymbolKind, WorkspaceDef, WorkspaceIndex, build_workspace_index_cached,
     extract_include_declaration, extract_position, is_callable_def_kind, location_json,
     range_json, span_range_json,
 };
@@ -52,6 +52,24 @@ pub(crate) fn handle_hover(state: &mut LspState, obj: &BTreeMap<String, JsonValu
         def.def.name,
         def.def.detail.trim()
     );
+    if def.def.kind == SymbolKind::Module {
+        if let Some(target_uri) = index.module_ref_target_at(&uri, line, character) {
+            value.push_str("\n\nResolves to ");
+            value.push_str(target_uri);
+            let exports = index.alias_exports_for_module(&uri, &def.def.name);
+            if !exports.is_empty() {
+                value.push_str("\n\nExports: ");
+                for (idx, export) in exports.iter().enumerate() {
+                    if idx > 0 {
+                        value.push_str(", ");
+                    }
+                    value.push('`');
+                    value.push_str(export);
+                    value.push('`');
+                }
+            }
+        }
+    }
     if let Some(doc) = &def.def.doc {
         if !doc.trim().is_empty() {
             value.push_str("\n\n");

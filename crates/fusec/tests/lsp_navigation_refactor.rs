@@ -88,6 +88,24 @@ fn main():
         "definition on module alias receiver should resolve to util module: {alias_definition_text}"
     );
 
+    let alias_hover = lsp.request(
+        "textDocument/hover",
+        position_params(&main_uri, main_greet_line, main_greet_col + 1),
+    );
+    let alias_hover_text = json::encode(&alias_hover);
+    assert!(
+        alias_hover_text.contains("\"kind\":\"markdown\""),
+        "hover on module alias receiver should return markdown contents: {alias_hover_text}"
+    );
+    assert!(
+        alias_hover_text.contains("Module") && alias_hover_text.contains("util"),
+        "hover on module alias receiver should describe the local module binding: {alias_hover_text}"
+    );
+    assert!(
+        alias_hover_text.contains(&util_uri) && alias_hover_text.contains("greet"),
+        "hover on module alias receiver should describe the target module and exports: {alias_hover_text}"
+    );
+
     let definition = lsp.request(
         "textDocument/definition",
         position_params(
