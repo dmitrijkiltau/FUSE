@@ -289,6 +289,68 @@ fn lsp_navigation_refactor_workspace_symbol_and_call_hierarchy() {
 }
 
 #[test]
+fn lsp_workspace_symbol_ranks_imported_module_alias_exact_match_first() {
+    let dir = temp_project_dir("fuse_lsp_workspace_symbol_alias_rank");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    );
+
+    let core_src = r#"fn plus_one(value: Int) -> Int:
+  return value + 1
+"#;
+    let main_src = r#"import Core from "root:lib/core"
+
+fn CoreThing(value: Int) -> Int:
+  return value + 1
+
+fn main():
+  print(Core.plus_one(CoreThing(1)))
+"#;
+
+    let core_path = dir.join("lib").join("core.fuse");
+    let main_path = dir.join("main.fuse");
+    write_project_file(&core_path, core_src);
+    write_project_file(&main_path, main_src);
+
+    let root_uri = path_to_uri(&dir);
+    let core_uri = path_to_uri(&core_path);
+    let main_uri = path_to_uri(&main_path);
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&core_uri, core_src, 1);
+    lsp.open_document(&main_uri, main_src, 1);
+    assert!(lsp.wait_diagnostics(&core_uri).is_empty());
+    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+
+    let mut symbol_params = BTreeMap::new();
+    symbol_params.insert("query".to_string(), JsonValue::String("Core".to_string()));
+    let symbols = lsp.request("workspace/symbol", JsonValue::Object(symbol_params));
+    let symbols_text = json::encode(&symbols);
+    let symbol_names_core = symbol_names(&symbols);
+    assert!(
+        symbols_text.contains("\"name\":\"Core\"")
+            && symbols_text.contains("\"name\":\"CoreThing\""),
+        "workspace symbols missing alias-heavy entries: {symbols_text}"
+    );
+    let core_idx = symbol_names_core
+        .iter()
+        .position(|name| name == "Core")
+        .expect("Core symbol");
+    let core_thing_idx = symbol_names_core
+        .iter()
+        .position(|name| name == "CoreThing")
+        .expect("CoreThing symbol");
+    assert!(
+        core_idx < core_thing_idx,
+        "expected imported module alias exact match to rank before substring matches, got {symbol_names_core:?}"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn lsp_completion_symbols_and_member_methods() {
     let fixture = create_workspace_fixture("fuse_lsp_completion");
     let root_uri = path_to_uri(&fixture.dir);

@@ -590,13 +590,16 @@ fn lsp_multi_package_definition_and_references_smoke() {
     )
     .expect("write fuse.toml");
 
-    let main_src = r#"import Core from "root:lib/core"
+        let main_src = r#"import Core from "root:lib/core"
 import Auth from "dep:Auth/lib"
 
+type CoreThing:
+    value: Int
+
 fn main():
-  let a = Core.plus_one(1)
-  let b = Auth.plus_one(a)
-  print(b)
+    let a = Core.plus_one(1)
+    let b = Auth.plus_one(a)
+    print(b)
 "#;
     let core_src = r#"fn plus_one(value: Int) -> Int:
   return value + 1
@@ -792,6 +795,14 @@ fn main():
     assert!(
         symbols_text.contains("\"name\":\"Core\"") && symbols_text.contains(&main_uri),
         "workspace symbols should include imported module aliases: {symbols_text}"
+    );
+    let core_symbol_pos = symbols_text.find("\"name\":\"Core\"").expect("Core symbol");
+    let core_thing_symbol_pos = symbols_text
+        .find("\"name\":\"CoreThing\"")
+        .expect("CoreThing symbol");
+    assert!(
+        core_symbol_pos < core_thing_symbol_pos,
+        "workspace symbol exact alias match should rank before substring matches: {symbols_text}"
     );
 
     let mut prepare_doc = BTreeMap::new();
