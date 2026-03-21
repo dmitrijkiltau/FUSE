@@ -376,7 +376,6 @@ All notable changes to this project are documented in this file.
 - Documentation delivery moved to a GitHub-first guide surface:
   - `guides/` now contains generated `reference.md`, `onboarding.md`, and `boundary-contracts.md`
   - `docs/` site package was removed
-  - `scripts/generate_guide_docs.sh` now generates guides under `guides/`
 
 ### Migration
 

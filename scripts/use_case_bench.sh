@@ -300,7 +300,7 @@ run_single_iteration() {
   BENCH_REGISTER_RESP=$(curl -sS --max-time 3 \
     -X POST \
     -H 'content-type: application/json' \
-    --data '{"email":"bench@test.local","password":"benchpass1234"}' \
+    --data '{"username":"benchuser","email":"bench@test.local","password":"benchpass1234"}' \
     "http://127.0.0.1:${PORT}/api/auth/register")
   BENCH_TOKEN=$(echo "$BENCH_REGISTER_RESP" | grep -oP '"token"\s*:\s*\{\s*"value"\s*:\s*"\K[^"]+')
   if [[ -z "$BENCH_TOKEN" ]]; then

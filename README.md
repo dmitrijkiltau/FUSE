@@ -429,8 +429,6 @@ SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" ./scripts/generate_release_
 # Install a packaged VSIX example
 code --install-extension dist/fuse-vscode-linux-x64.vsix
 
-# Regenerate GitHub guide markdown
-./scripts/generate_guide_docs.sh
 ```
 
 For downloaded tagged release assets:

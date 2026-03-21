@@ -11,7 +11,6 @@ source "$ROOT/scripts/lib/common.sh"
 
 VERSION=""
 SKIP_BENCH=0
-SKIP_GUIDE_REGEN=0
 WORKSPACE_PUBLISH_CHECKS=0
 CLEAR_FUSE_CACHE=0
 
@@ -28,7 +27,6 @@ Arguments:
 Options:
   --skip-bench       Skip AOT SLO and benchmark regression checks
                      (use when bench artifacts are not available locally)
-  --skip-guide-regen Skip regenerating guide docs (use when already up to date)
   --workspace-publish-checks
                      Run optional workspace publish-readiness checks
   --clear-fuse-cache Remove all .fuse-cache directories under the repo before preflight
@@ -41,10 +39,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-bench)
       SKIP_BENCH=1
-      shift
-      ;;
-    --skip-guide-regen)
-      SKIP_GUIDE_REGEN=1
       shift
       ;;
     --workspace-publish-checks)
@@ -167,41 +161,7 @@ check_changelog() {
 preflight_step "CHANGELOG.md contains $VERSION entry" check_changelog
 
 # ---------------------------------------------------------------------------
-# 3. Guide docs are up to date
-# ---------------------------------------------------------------------------
-
-if [[ "$SKIP_GUIDE_REGEN" -eq 1 ]]; then
-  printf "\n[preflight] guide regeneration skipped (--skip-guide-regen)\n"
-else
-  check_guides() {
-    local tmp
-    tmp="$(mktemp -d)"
-    cp "$ROOT/guides/reference.md"          "$tmp/reference.md"         2>/dev/null || true
-    cp "$ROOT/guides/onboarding.md"         "$tmp/onboarding.md"        2>/dev/null || true
-    cp "$ROOT/guides/boundary-contracts.md" "$tmp/boundary-contracts.md" 2>/dev/null || true
-
-    "$ROOT/scripts/generate_guide_docs.sh" >/dev/null 2>&1 || {
-      echo "  generate_guide_docs.sh failed" >&2
-      rm -rf "$tmp"
-      return 1
-    }
-
-    local changed=0
-    for f in reference.md onboarding.md boundary-contracts.md; do
-      if ! diff -q "$tmp/$f" "$ROOT/guides/$f" >/dev/null 2>&1; then
-        echo "  guides/$f is out of date — commit the regenerated version" >&2
-        changed=1
-      fi
-    done
-    rm -rf "$tmp"
-    return "$changed"
-  }
-
-  preflight_step "guide docs up to date" check_guides
-fi
-
-# ---------------------------------------------------------------------------
-# 4. Optional workspace publish-readiness gate
+# 3. Optional workspace publish-readiness gate
 # ---------------------------------------------------------------------------
 
 if [[ "$WORKSPACE_PUBLISH_CHECKS" -eq 1 ]]; then
