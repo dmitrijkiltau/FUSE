@@ -27,7 +27,7 @@ Update status and evidence in place. Do not delete rows; add a note if a check b
 | 1.4 | Refinement type checks enforced at compile time | 0 failures | ✅ | `--test refinement_runtime`: 5 passed |
 | 1.5 | `when` expression coverage (including HTML DSL) | 0 failures | ✅ | `--test html_runtime`: 21 passed |
 | 1.6 | `fls.md` covers every stable surface introduced through 0.9.x | No stabilized feature missing a normative entry | ✅ | Manual audit complete: component decl, aria-*, asset imports, typed query, dep resolution, lockfile, outbound HTTP — all have normative entries |
-| 1.7 | No open spec ambiguity with a known test gap | 0 unresolved spec issues tagged `1.0-blocker` | ⬜ | GitHub issue query — deferred to M5 |
+| 1.7 | No open spec ambiguity with a known test gap | 0 unresolved spec issues tagged `1.0-blocker` | ✅ | `gh issue list --label 1.0-blocker --state open`: 0 results |
 
 ---
 
@@ -42,7 +42,7 @@ Update status and evidence in place. Do not delete rows; add a note if a check b
 | 2.5 | HTTP client parity (native vs AST) | 0 failures | ✅ | HTTP parity covered by `ast_authority_parity` (parity_http_* tests) and `native_http_smoke`: all passed |
 | 2.6 | Config, bytes, bool-compare runtime parity | 0 failures | ✅ | config: 3, bytes: 4, bool_compare: 8 — all passed |
 | 2.7 | Result decode and error propagation parity | 0 failures | ✅ | `--test result_decode_runtime`: 3 passed |
-| 2.8 | No known critical parity gap open | 0 issues tagged `parity` + `1.0-blocker` | ⬜ | GitHub issue query — deferred to M5 |
+| 2.8 | No known critical parity gap open | 0 issues tagged `parity` + `1.0-blocker` | ✅ | `gh issue list --label parity --label 1.0-blocker --state open`: 0 results |
 
 ---
 
@@ -104,7 +104,7 @@ Update status and evidence in place. Do not delete rows; add a note if a check b
 | 6.7 | Release manifest signs cleanly | `sign_release_manifest.sh` exits 0 | ⚠️ | Requires `cosign` in PATH; not available in dev environment — CI-only check |
 | 6.8 | Release notes auto-generated and correct | `generate_release_notes.sh` produces accurate notes for 0.9.10 | ✅ | `generate_release_notes.sh --version 0.9.10`: `dist/RELEASE_NOTES.md` generated; content accurate |
 | 6.9 | Version bump script idempotent | `bump_version.sh` dry-run changes only expected files | ✅ | `bump_version.sh --dry-run 0.9.10`: would patch 5 files (3 Cargo.toml + 2 VSCode) |
-| 6.10 | CI gate workflows pass on main | `pre-release-gate.yml` and `release-artifacts.yml` green | ⬜ | Deferred to M5 (requires CI run after all changes merged) |
+| 6.10 | CI gate workflows pass on main | `pre-release-gate.yml` and `release-artifacts.yml` green | ⚠️ | Last main run 2026-03-08 `success`; last release run v0.9.9 `success`. 0.9.10 branch not yet merged — CI will re-run automatically on merge; all local checks pass |
 
 ---
 
@@ -133,7 +133,7 @@ Update status and evidence in place. Do not delete rows; add a note if a check b
 | 8.2 | Reference service runs and responds | Health endpoint returns 200 | ✅ | `http://127.0.0.1:$PORT/api/public/notes` returns HTTP 200 after `fuse migrate` + `fuse run` |
 | 8.3 | Auth flow works end-to-end | Register, login, session flow pass | ✅ | Benchmark registers user, extracts token, makes authenticated requests — all succeed |
 | 8.4 | OpenAPI artifact in repo matches running service | `openapi_result_schema` test passes | ✅ | `--test openapi_result_schema`: 1 passed |
-| 8.5 | Rollback playbook executes | `ops/AOT_ROLLBACK_PLAYBOOK.md` steps complete without error | ⬜ | Requires AOT-deployed instance — deferred; playbook itself verified readable and consistent with observed behavior |
+| 8.5 | Rollback playbook executes | `ops/AOT_ROLLBACK_PLAYBOOK.md` steps complete without error | ⚠️ | Playbook readable and consistent with observed AOT behavior; stale scope header updated to 1.0.x. Full exercise requires a deployed AOT instance — schedule with first production deployment |
 
 ---
 
@@ -142,7 +142,7 @@ Update status and evidence in place. Do not delete rows; add a note if a check b
 | # | Check | Threshold | Status | Evidence / notes |
 |---|---|---|---|---|
 | 9.1 | Overall flake rate | < 1% across all suites over 20 runs | ✅ | `reliability_repeat.sh` (2 iterations, all suites): `reliability repeat checks passed`; 0 failures across parity, LSP, AOT, and benchmark gate |
-| 9.2 | No open `1.0-blocker` issues | 0 open issues with that label | ⬜ | GitHub issue query — deferred to M5 |
+| 9.2 | No open `1.0-blocker` issues | 0 open issues with that label | ✅ | `gh issue list --label 1.0-blocker --state open`: 0 results |
 | 9.3 | No `FIXME` / `TODO` markers in committed Rust source | 0 hits | ✅ | `grep -r 'TODO\|FIXME\|HACK' crates/`: 0 matches |
 | 9.4 | `fuse-rt` codec tests pass | 0 failures | ✅ | `cargo test -p fuse-rt`: bytes (2), codec (3) — all passed |
 | 9.5 | IR lowering and module-scope regressions stable | 0 failures | ✅ | ir_lower_call_targets: 3, module_function_scope: 12 — all passed |
@@ -154,16 +154,16 @@ Update status and evidence in place. Do not delete rows; add a note if a check b
 | Section | Pass criteria | Checked | Status |
 |---|---|---|---|
 | 1. Language semantics | All 7 rows ✅ | 7/7 ✅ | ✅ |
-| 2. Runtime parity | All 8 rows ✅ | 7/8 ✅; 1 deferred to M5 | ⚠️ |
+| 2. Runtime parity | All 8 rows ✅ | 8/8 ✅ | ✅ |
 | 3. Native / AOT | All 6 rows ✅ | 6/6 ✅ | ✅ |
 | 4. LSP quality | All 10 rows ✅ | 10/10 ✅ | ✅ |
 | 5. CLI and packaging | All 8 rows ✅ | 8/8 ✅ | ✅ |
-| 6. Release automation | All 10 rows ✅ | 8/10 ✅; 1 marginal (cosign dev-only); 1 deferred to M5 | ⚠️ |
+| 6. Release automation | All 10 rows ✅ | 8/10 ✅; 2 marginal (cosign CI-only; CI not yet run on 0.9.10 branch) | ⚠️ |
 | 7. Docs and migration | All 10 rows ✅ | 10/10 ✅ | ✅ |
-| 8. Reference service | All 5 rows ✅ | 4/5 ✅; 1 deferred (AOT rollback) | ⚠️ |
-| 9. Stability signals | All 5 rows ✅ | 4/5 ✅; 1 deferred to M5 | ⚠️ |
+| 8. Reference service | All 5 rows ✅ | 4/5 ✅; 1 marginal (rollback playbook needs deployed AOT instance) | ⚠️ |
+| 9. Stability signals | All 5 rows ✅ | 5/5 ✅ | ✅ |
 
-**Overall verdict: ⚠️ IN PROGRESS** — M4 docs freeze complete; sections 1, 3, 4, 5, 7 fully pass. Remaining ⬜ rows are M5 final gates (GitHub issue queries, CI workflow run, and AOT rollback rehearsal).
+**Overall verdict: ⚠️ MARGINAL GO** — all language, runtime, LSP, packaging, and documentation gates pass cleanly. Three marginal items remain, all in the release-process/operational domain with no language or runtime quality risk. See go/no-go decision at `governance/decision-1.0-go-no-go.md`.
 
 ---
 

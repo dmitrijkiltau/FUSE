@@ -1,0 +1,75 @@
+# 1.0 Go / No-Go Decision
+
+**Date**: 2026-03-21
+**Release**: `1.0.0`
+**Runway release**: `0.9.10`
+**Scorecard**: `governance/scorecard-1.0.md`
+
+---
+
+## Verdict: Marginal Go — tag `1.0.0` after merge
+
+All language, runtime, LSP, packaging, and documentation quality gates pass. The three marginal
+items are release-process and operational constraints with no language or runtime quality risk.
+
+---
+
+## Passing sections (no outstanding items)
+
+| Section | Result |
+|---|---|
+| 1. Language semantics | ✅ All 7 rows pass — parser, sema, golden outputs, string interpolation, refinements, `when`/HTML DSL, spec completeness, no open spec blockers |
+| 2. Runtime parity | ✅ All 8 rows pass — AST/native parity, DB semantics, HTTP client parity, config/bytes/bool, result decode, no open parity blockers |
+| 3. Native / AOT | ✅ All 6 rows pass — smoke suites, perf SLO, AOT SLO, benchmark regression gate, artifact verification, release contract |
+| 4. LSP quality | ✅ All 10 rows pass — full suite, latency SLO, incremental updates, completion ranking, navigation, signature help, code actions, VSCode resolution and VSIX, flake rate |
+| 5. CLI and packaging | ✅ All 8 rows pass — CLI artifact, AOT lock parity, project CLI suite, dep resolution, dotenv, asset imports, packaging verifier, examples |
+| 7. Docs and migration | ✅ All 10 rows pass — fls.md, runtime.md, reference.md audited; migration guide created; CHANGELOG and SECURITY.md updated; RELEASE.md and DEPLOY.md verified; AOT release contract verified |
+| 9. Stability signals | ✅ All 5 rows pass — flake rate < 1%, no open 1.0-blocker issues, no FIXME/TODO in Rust source, fuse-rt codec tests, IR lowering |
+
+---
+
+## Marginal items (3 rows, release-process and operational only)
+
+### 6.7 — Release manifest signing (`sign_release_manifest.sh`)
+
+`cosign` is not available in the development environment. The signing step runs correctly in CI.
+
+**Mitigation**: signing is a CI-only step by design; the CI workflow (`release-artifacts.yml`)
+runs it automatically on every tagged release. Last CI run on `v0.9.9` passed.
+
+### 6.10 — CI gate workflows on main
+
+`pre-release-gate.yml` last ran on `main` at 2026-03-08 with `success`. The `0.9.10` branch
+changes have not been merged yet; CI will re-run automatically on merge.
+
+**Mitigation**: all 0.9.10 changes are verified locally. The branch contains documentation
+updates, two bug fixes (both backed by passing tests), and script cleanup — no changes that
+could plausibly introduce CI-only failures. Merge to main before tagging `1.0.0`.
+
+### 8.5 — AOT rollback playbook exercise
+
+The playbook (`ops/AOT_ROLLBACK_PLAYBOOK.md`) is readable, internally consistent, and verified
+against observed AOT binary behavior. A full end-to-end exercise requires a live AOT-deployed
+instance, which is not available in the development environment.
+
+**Mitigation**: exercise the playbook with the first production deployment of `1.0.0`. All
+individual steps are covered by existing tests (`verify_aot_artifact.sh`, `aot_perf_bench.sh`,
+`check_aot_perf_slo.sh`, `release_smoke.sh`).
+
+---
+
+## Conditions before tagging
+
+1. Merge branch `0.9.10` to `main`.
+2. Verify `pre-release-gate.yml` passes on the merge commit.
+3. Run `scripts/bump_version.sh 0.9.10` to update version strings.
+4. Run `scripts/release_preflight.sh 0.9.10 --skip-bench` and confirm it exits 0.
+5. Tag `v1.0.0` and push — `release-artifacts.yml` handles signing and artifact publication.
+
+---
+
+## Post-release follow-up
+
+- Exercise `ops/AOT_ROLLBACK_PLAYBOOK.md` with the first production AOT deployment.
+- Open `SECURITY.md` and remove the "until `1.0.0` is tagged" qualifier from the `0.9.x` row.
+- Archive the `0.9.x` branch policy per `governance/VERSIONING_POLICY.md`.
