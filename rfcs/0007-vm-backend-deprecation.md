@@ -26,7 +26,7 @@ Maintaining the VM imposes concrete costs:
 1. **Triple implementation burden.** Every new runtime feature (builtin, hostcall, boundary
    behavior) must be implemented in AST, VM, *and* Native. Removing VM reduces this to two.
 2. **Parity test surface.** The `authority_parity.sh` gate enforces three-way parity. With
-   VM gone, parity narrows to AST vs Native — the only pair that matters for production.
+   VM gone, parity narrows to AST vs Native, which is the only pair that matters for production.
 3. **Default backend already changed.** As of the current release, `fuse run` defaults to
    Native (previously VM). The cached-run path tries `program.native` first, falling back
    to `program.ir` + VM only when no native artifact exists. VM is no longer on the primary
@@ -35,7 +35,7 @@ Maintaining the VM imposes concrete costs:
    strategy. VM has no role in the AOT pipeline; it is an intermediate artifact from the
    pre-Native era.
 5. **`--test` and `--migrate` are AST-only.** The two commands that bypass Native also
-   bypass VM — they are hardcoded to the AST interpreter. VM has no exclusive operational
+   bypass VM because they are hardcoded to the AST interpreter. VM has no exclusive operational
    role.
 
 ## Non-goals
@@ -94,8 +94,8 @@ Scripts or CI pipelines referencing `--backend vm`:
 
 ### 1. Keep VM indefinitely as an internal debugging tool
 
-Rejected. The debugging value of VM is marginal — if a bug exists in IR lowering, it
-manifests identically in VM and Native (they share the same IR). If a bug is in JIT
+Rejected. The debugging value of VM is marginal. If a bug exists in IR lowering, it
+manifests identically in VM and Native because they share the same IR. If a bug is in JIT
 codegen, VM cannot reproduce it. AST vs Native comparison is sufficient for diagnosing
 semantic issues.
 
@@ -108,7 +108,7 @@ at least one release with a deprecation diagnostic.
 ### 3. Keep VM but stop maintaining parity
 
 Rejected. A backend that silently drifts from AST/Native semantics is worse than no
-backend — it produces wrong results without warning. Either maintain full parity or remove.
+backend. It produces wrong results without warning. Either maintain full parity or remove it.
 
 ## Compatibility and migration
 

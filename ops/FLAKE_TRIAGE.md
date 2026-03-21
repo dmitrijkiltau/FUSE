@@ -67,7 +67,7 @@ A flake issue is closed only when:
 ## Known-slow tests
 
 These tests consistently take longer than 60 seconds and trigger the runner's slow-test warning.
-They are not flaky — they pass reliably — but they inflate overall CI duration.
+They are not flaky. They pass reliably, but they inflate overall CI duration.
 
 | Test | Suite | Observed duration | Root cause | Action |
 |---|---|---|---|---|

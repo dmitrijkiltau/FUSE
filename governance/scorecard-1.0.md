@@ -8,10 +8,10 @@
 ## How to read this document
 
 Each row has:
-- **Check** — what is being evaluated
-- **Threshold** — the minimum bar for a PASS verdict
-- **Status** — `✅ PASS` · `⚠️ MARGINAL` · `❌ FAIL` · `⬜ NOT CHECKED`
-- **Evidence / notes** — pointer to the test run, artifact, or commit that establishes the verdict
+- **Check**: what is being evaluated
+- **Threshold**: the minimum bar for a PASS verdict
+- **Status**: `✅ PASS` · `⚠️ MARGINAL` · `❌ FAIL` · `⬜ NOT CHECKED`
+- **Evidence / notes**: pointer to the test run, artifact, or commit that establishes the verdict
 
 Update status and evidence in place. Do not delete rows; add a note if a check becomes irrelevant.
 
@@ -26,7 +26,7 @@ Update status and evidence in place. Do not delete rows; add a note if a check b
 | 1.3 | String interpolation token highlighting correct | 0 failures | ✅ | `--test lsp_contracts`: 3 passed |
 | 1.4 | Refinement type checks enforced at compile time | 0 failures | ✅ | `--test refinement_runtime`: 5 passed |
 | 1.5 | `when` expression coverage (including HTML DSL) | 0 failures | ✅ | `--test html_runtime`: 21 passed |
-| 1.6 | `fls.md` covers every stable surface introduced through 0.9.x | No stabilized feature missing a normative entry | ✅ | Manual audit complete: component decl, aria-*, asset imports, typed query, dep resolution, lockfile, outbound HTTP — all have normative entries |
+| 1.6 | `fls.md` covers every stable surface introduced through 0.9.x | No stabilized feature missing a normative entry | ✅ | Manual audit complete: component decl, aria-*, asset imports, typed query, dep resolution, lockfile, and outbound HTTP all have normative entries |
 | 1.7 | No open spec ambiguity with a known test gap | 0 unresolved spec issues tagged `1.0-blocker` | ✅ | `gh issue list --label 1.0-blocker --state open`: 0 results |
 
 ---
@@ -36,11 +36,11 @@ Update status and evidence in place. Do not delete rows; add a note if a check b
 | # | Check | Threshold | Status | Evidence / notes |
 |---|---|---|---|---|
 | 2.1 | Authority/parity suite passes on main | 0 failures | ✅ | `scripts/authority_parity.sh`: passed (×2 in reliability repeat) |
-| 2.2 | `parity_ast_native.rs` — all test cases identical output | 0 failures | ✅ | `--test parity_ast_native`: 13 passed |
-| 2.3 | `ast_authority_parity.rs` — all test cases identical output | 0 failures | ✅ | `--test ast_authority_parity`: 29 passed |
-| 2.4 | DB semantics: pool, typed query, upsert, transaction — both backends | 0 failures | ✅ | pool: 1, typed_query: 3, upsert: 5, transaction: 2, concurrency: 4, migration: 2 — all passed |
+| 2.2 | `parity_ast_native.rs`: identical output for all test cases | 0 failures | ✅ | `--test parity_ast_native`: 13 passed |
+| 2.3 | `ast_authority_parity.rs`: identical output for all test cases | 0 failures | ✅ | `--test ast_authority_parity`: 29 passed |
+| 2.4 | DB semantics: pool, typed query, upsert, and transaction on both backends | 0 failures | ✅ | pool: 1, typed_query: 3, upsert: 5, transaction: 2, concurrency: 4, migration: 2; all passed |
 | 2.5 | HTTP client parity (native vs AST) | 0 failures | ✅ | HTTP parity covered by `ast_authority_parity` (parity_http_* tests) and `native_http_smoke`: all passed |
-| 2.6 | Config, bytes, bool-compare runtime parity | 0 failures | ✅ | config: 3, bytes: 4, bool_compare: 8 — all passed |
+| 2.6 | Config, bytes, bool-compare runtime parity | 0 failures | ✅ | config: 3, bytes: 4, bool_compare: 8; all passed |
 | 2.7 | Result decode and error propagation parity | 0 failures | ✅ | `--test result_decode_runtime`: 3 passed |
 | 2.8 | No known critical parity gap open | 0 issues tagged `parity` + `1.0-blocker` | ✅ | `gh issue list --label parity --label 1.0-blocker --state open`: 0 results |
 
@@ -50,7 +50,7 @@ Update status and evidence in place. Do not delete rows; add a note if a check b
 
 | # | Check | Threshold | Status | Evidence / notes |
 |---|---|---|---|---|
-| 3.1 | All native smoke suites pass | 0 failures across all `native_*_smoke` targets | ✅ | 11 smoke suites, 1 test each — all passed |
+| 3.1 | All native smoke suites pass | 0 failures across all `native_*_smoke` targets | ✅ | 11 smoke suites, 1 test each; all passed |
 | 3.2 | Native perf baseline within SLO | ≤ baseline + 10% | ✅ | `native_perf_check.sh`: cold=3.6ms (limit 800ms), warm=12.8ms (limit 200ms) |
 | 3.3 | AOT perf SLO gate | Passes `check_aot_perf_slo.sh` | ✅ | p50 cold=3.1ms vs JIT 174ms (98% faster); passed (×2 in reliability repeat) |
 | 3.4 | Use-case benchmark regression gate | No regression vs. 0.9.9 | ✅ | `check_use_case_bench_regression.sh`: all 9 metrics PASS |
@@ -66,7 +66,7 @@ Update status and evidence in place. Do not delete rows; add a note if a check b
 | 4.1 | Full LSP test suite passes | 0 failures | ✅ | `scripts/lsp_suite.sh`: 10 passed (×2 in reliability repeat) |
 | 4.2 | LSP latency SLO gate | Passes `check_lsp_latency_slo.sh` | ✅ | `check_lsp_latency_slo.sh`: 10 passed (×2 in reliability repeat) |
 | 4.3 | Incremental workspace update stable | 0 failures in `lsp_workspace_incremental` | ✅ | `--test lsp_workspace_incremental`: 10 passed |
-| 4.4 | Completion ranking correct | 0 failures in `lsp_completion_rank` + `lsp_completion_member` | ✅ | rank: 2, member: 4 — all passed |
+| 4.4 | Completion ranking correct | 0 failures in `lsp_completion_rank` + `lsp_completion_member` | ✅ | rank: 2, member: 4; all passed |
 | 4.5 | Navigation and refactor stable | 0 failures in `lsp_navigation_refactor` | ✅ | `--test lsp_navigation_refactor`: 6 passed |
 | 4.6 | Signature help stable | 0 failures in `lsp_signature_help` | ✅ | `--test lsp_signature_help`: 3 passed |
 | 4.7 | Code actions stable | 0 failures in `lsp_code_actions` | ✅ | `--test lsp_code_actions`: 10 passed |
@@ -95,16 +95,16 @@ Update status and evidence in place. Do not delete rows; add a note if a check b
 
 | # | Check | Threshold | Status | Evidence / notes |
 |---|---|---|---|---|
-| 6.1 | Release preflight passes | `release_preflight.sh` exits 0 | ⚠️ | `release_preflight.sh 0.9.10 --skip-bench`: CHANGELOG entry now present; version bump deferred to actual release tag — preflight will pass fully after `bump_version.sh` |
+| 6.1 | Release preflight passes | `release_preflight.sh` exits 0 | ⚠️ | `release_preflight.sh 0.9.10 --skip-bench`: CHANGELOG entry now present; version bump deferred to the actual release tag. Preflight will pass fully after `bump_version.sh` |
 | 6.2 | Release smoke passes | `release_smoke.sh` exits 0 | ✅ | Passed as part of `release_preflight.sh` |
 | 6.3 | Release integrity passes | `release_integrity_regression.sh` and `verify_release_integrity.sh` exit 0 | ✅ | Both passed after running checksums → SBOMs → provenance in correct order |
 | 6.4 | Checksums generated and verifiable | `generate_release_checksums.sh` + spot-verify one artifact | ✅ | Checksums written to `dist/SHA256SUMS`; all artifacts included (SBOMs + archives + VSIX) |
 | 6.5 | SBOM generated | `generate_release_sboms.sh` exits 0; output is non-empty | ✅ | 3 SBOMs generated: aot, cli, vscode (linux-x64) |
 | 6.6 | Provenance generated | `generate_release_provenance.sh` exits 0 | ✅ | Provenance generated with stub CI fields (real run requires `GITHUB_REPOSITORY` etc.) |
-| 6.7 | Release manifest signs cleanly | `sign_release_manifest.sh` exits 0 | ⚠️ | Requires `cosign` in PATH; not available in dev environment — CI-only check |
+| 6.7 | Release manifest signs cleanly | `sign_release_manifest.sh` exits 0 | ⚠️ | Requires `cosign` in PATH; it is not available in the dev environment, so this remains a CI-only check |
 | 6.8 | Release notes auto-generated and correct | `generate_release_notes.sh` produces accurate notes for 0.9.10 | ✅ | `generate_release_notes.sh --version 0.9.10`: `dist/RELEASE_NOTES.md` generated; content accurate |
 | 6.9 | Version bump script idempotent | `bump_version.sh` dry-run changes only expected files | ✅ | `bump_version.sh --dry-run 0.9.10`: would patch 5 files (3 Cargo.toml + 2 VSCode) |
-| 6.10 | CI gate workflows pass on main | `pre-release-gate.yml` and `release-artifacts.yml` green | ⚠️ | Last main run 2026-03-08 `success`; last release run v0.9.9 `success`. 0.9.10 branch not yet merged — CI will re-run automatically on merge; all local checks pass |
+| 6.10 | CI gate workflows pass on main | `pre-release-gate.yml` and `release-artifacts.yml` green | ⚠️ | Last main run 2026-03-08 `success`; last release run v0.9.9 `success`. The 0.9.10 branch is not yet merged, so CI will re-run automatically on merge; all local checks pass |
 
 ---
 
@@ -113,13 +113,13 @@ Update status and evidence in place. Do not delete rows; add a note if a check b
 | # | Check | Threshold | Status | Evidence / notes |
 |---|---|---|---|---|
 | 7.1 | `spec/fls.md` complete for stable surface | No stabilized feature missing normative spec coverage | ✅ | Manual audit against CHANGELOG 0.9.0–0.9.9: all stable surfaces covered (component, aria-*, asset imports, typed query, dep/lock, HTTP client, stable diagnostic codes) |
-| 7.2 | `spec/runtime.md` complete for stable surface | No stabilized runtime behavior undocumented | ✅ | Manual audit against CHANGELOG 0.9.0–0.9.9: HTTP client, HTTPS, TLS, observability, typed query, asset runtime, stable error codes, wrapper cli_message codes — all present |
-| 7.3 | `guides/reference.md` current | No 0.9.x feature omitted | ✅ | Manual audit: HTTP client, asset imports, HTML components, aria-*, typed queries, env vars, concurrency, logging — all covered |
+| 7.2 | `spec/runtime.md` complete for stable surface | No stabilized runtime behavior undocumented | ✅ | Manual audit against CHANGELOG 0.9.0–0.9.9: HTTP client, HTTPS, TLS, observability, typed query, asset runtime, stable error codes, and wrapper cli_message codes are all present |
+| 7.3 | `guides/reference.md` current | No 0.9.x feature omitted | ✅ | Manual audit: HTTP client, asset imports, HTML components, aria-*, typed queries, env vars, concurrency, and logging are all covered |
 | 7.4 | Migration guide exists for 0.9.x → 1.0.0 | `guides/migrations/0.9-to-1.0.md` present and covers all breaking changes | ✅ | `guides/migrations/0.9-to-1.0.md` created: no source migration required; tooling notes for http.*, lockfile, removed generate script |
 | 7.5 | `CHANGELOG.md` entry for 0.9.10 complete | Entry present, accurate, no placeholder text | ✅ | `CHANGELOG.md` entry written: username support, find_repo_root fix, use_case_bench fix, guide docs change |
 | 7.6 | `SECURITY.md` lists 1.0 as supported version | Entry updated before tag | ✅ | `SECURITY.md` updated: `1.0.x` listed as supported; `0.9.x` listed until `1.0.0` is tagged |
 | 7.7 | `ops/RELEASE.md` reflects actual 1.0 release process | Operator can execute without ad hoc fixes | ✅ | `release_preflight.sh` runs `release_smoke.sh` end-to-end; scripts operate without ad hoc fixes |
-| 7.8 | `ops/DEPLOY.md` accurate for reference service | Deployment steps execute cleanly | ✅ | Reference service builds, migrates, and serves HTTP 200 — consistent with `ops/DEPLOY.md` steps |
+| 7.8 | `ops/DEPLOY.md` accurate for reference service | Deployment steps execute cleanly | ✅ | Reference service builds, migrates, and serves HTTP 200, consistent with `ops/DEPLOY.md` |
 | 7.9 | `ops/AOT_RELEASE_CONTRACT.md` matches packaged binary | No delta between doc and observed binary behavior | ✅ | `release_integrity_regression.sh` verifies contract; aot archive integrity passed |
 | 7.10 | Guide docs current | All `guides/` docs hand-maintained; no generation script | ✅ | Generation script removed; guides are manually maintained alongside spec changes |
 
@@ -131,9 +131,9 @@ Update status and evidence in place. Do not delete rows; add a note if a check b
 |---|---|---|---|---|
 | 8.1 | Reference service builds cleanly | 0 compile errors | ✅ | `fuse check --manifest-path examples/reference-service`: passes (used in benchmark check metrics) |
 | 8.2 | Reference service runs and responds | Health endpoint returns 200 | ✅ | `http://127.0.0.1:$PORT/api/public/notes` returns HTTP 200 after `fuse migrate` + `fuse run` |
-| 8.3 | Auth flow works end-to-end | Register, login, session flow pass | ✅ | Benchmark registers user, extracts token, makes authenticated requests — all succeed |
+| 8.3 | Auth flow works end-to-end | Register, login, session flow pass | ✅ | Benchmark registers a user, extracts the token, and makes authenticated requests successfully |
 | 8.4 | OpenAPI artifact in repo matches running service | `openapi_result_schema` test passes | ✅ | `--test openapi_result_schema`: 1 passed |
-| 8.5 | Rollback playbook executes | `ops/AOT_ROLLBACK_PLAYBOOK.md` steps complete without error | ⚠️ | Playbook readable and consistent with observed AOT behavior; stale scope header updated to 1.0.x. Full exercise requires a deployed AOT instance — schedule with first production deployment |
+| 8.5 | Rollback playbook executes | `ops/AOT_ROLLBACK_PLAYBOOK.md` steps complete without error | ⚠️ | Playbook is readable and consistent with observed AOT behavior; stale scope header updated to 1.0.x. A full exercise requires a deployed AOT instance, so schedule it with the first production deployment |
 
 ---
 
@@ -144,8 +144,8 @@ Update status and evidence in place. Do not delete rows; add a note if a check b
 | 9.1 | Overall flake rate | < 1% across all suites over 20 runs | ✅ | `reliability_repeat.sh` (2 iterations, all suites): `reliability repeat checks passed`; 0 failures across parity, LSP, AOT, and benchmark gate |
 | 9.2 | No open `1.0-blocker` issues | 0 open issues with that label | ✅ | `gh issue list --label 1.0-blocker --state open`: 0 results |
 | 9.3 | No `FIXME` / `TODO` markers in committed Rust source | 0 hits | ✅ | `grep -r 'TODO\|FIXME\|HACK' crates/`: 0 matches |
-| 9.4 | `fuse-rt` codec tests pass | 0 failures | ✅ | `cargo test -p fuse-rt`: bytes (2), codec (3) — all passed |
-| 9.5 | IR lowering and module-scope regressions stable | 0 failures | ✅ | ir_lower_call_targets: 3, module_function_scope: 12 — all passed |
+| 9.4 | `fuse-rt` codec tests pass | 0 failures | ✅ | `cargo test -p fuse-rt`: bytes (2), codec (3); all passed |
+| 9.5 | IR lowering and module-scope regressions stable | 0 failures | ✅ | ir_lower_call_targets: 3, module_function_scope: 12; all passed |
 
 ---
 
@@ -163,7 +163,7 @@ Update status and evidence in place. Do not delete rows; add a note if a check b
 | 8. Reference service | All 5 rows ✅ | 4/5 ✅; 1 marginal (rollback playbook needs deployed AOT instance) | ⚠️ |
 | 9. Stability signals | All 5 rows ✅ | 5/5 ✅ | ✅ |
 
-**Overall verdict: ⚠️ MARGINAL GO** — all language, runtime, LSP, packaging, and documentation gates pass cleanly. Three marginal items remain, all in the release-process/operational domain with no language or runtime quality risk. See go/no-go decision at `governance/decision-1.0-go-no-go.md`.
+**Overall verdict: ⚠️ MARGINAL GO.** All language, runtime, LSP, packaging, and documentation gates pass cleanly. Three marginal items remain, all in the release-process/operational domain with no language or runtime quality risk. See go/no-go decision at `governance/decision-1.0-go-no-go.md`.
 
 ---
 

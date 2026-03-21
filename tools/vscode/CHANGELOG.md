@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.9 — 2026-03-08
+## 0.9.9 (2026-03-08)
 
 ### Changed
 
@@ -8,21 +8,21 @@
 - Extension capabilities list updated to include signature help, rename safety checks, call
   hierarchy, and workspace symbol search.
 
-## 0.7.0 — 2026-02-28
+## 0.7.0 (2026-02-28)
 
 ### Changed
 
 - Release metadata updated to `0.7.0`.
 - Packaging/docs align with the `v0.7.0` release artifact and verification flow.
 
-## 0.4.0 — 2026-02-22
+## 0.4.0 (2026-02-22)
 
 ### Changed
 
 - Release metadata updated to `0.4.0`.
 - Release packaging/docs align with the `v0.4.0` artifact + verification flow.
 
-## 0.3.2 — 2026-02-22
+## 0.3.2 (2026-02-22)
 
 ### Changed
 
@@ -30,14 +30,14 @@
 - Release packaging/docs now align with platform artifact matrix and checksum publication flow.
 - Packaging guidance now explicitly covers Windows bundled-binary (`.exe`) handling.
 
-## 0.2.0 — 2026-02-22
+## 0.2.0 (2026-02-22)
 
 ### Changed
 
 - Packaging artifact switched to installable `.vsix` (`dist/fuse-vscode-<platform>.vsix`).
 - Packaging workflow now validates VSIX contents and bundled platform binary integrity.
 
-## 0.1.0 — 2026-02-21
+## 0.1.0 (2026-02-21)
 
 Initial release, matching FUSE v0.1.0.
 
@@ -56,5 +56,5 @@ Initial release, matching FUSE v0.1.0.
 
 ### Configuration
 
-- `fuse.lspPath` — override the `fuse-lsp` binary location
+- `fuse.lspPath`: override the `fuse-lsp` binary location
 - Auto-detection: bundled binary → `dist/fuse-lsp` in workspace → `PATH`

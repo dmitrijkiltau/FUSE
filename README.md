@@ -256,12 +256,12 @@ backend = "native"
 
 ### Manifest sections
 
-- `[package]` — entry point, app name, backend selection
-- `[serve]` — `openapi_ui`, `openapi_path` for built-in OpenAPI UI
-- `[assets]` — CSS asset paths, file watching, content hashing
-- `[assets.hooks]` — `before_build` for external pre-build hooks
-- `[vite]` — `dev_url` for dev proxy fallback, `dist_dir` for production statics
-- `[dependencies]` — package dependencies
+- `[package]`: entry point, app name, backend selection
+- `[serve]`: `openapi_ui`, `openapi_path` for the built-in OpenAPI UI
+- `[assets]`: CSS asset paths, file watching, content hashing
+- `[assets.hooks]`: `before_build` for external pre-build hooks
+- `[vite]`: `dev_url` for dev proxy fallback, `dist_dir` for production statics
+- `[dependencies]`: package dependencies
 
 ### Dependency contract
 
@@ -334,13 +334,13 @@ The CLI loads `.env` from the package directory and sets only missing variables.
 
 | Variable | Default | Description |
 |---|---|---|
-| `FUSE_DB_URL` | — | Database connection URL (`sqlite://path`) |
-| `DATABASE_URL` | — | Fallback DB URL when `FUSE_DB_URL` is unset |
+| `FUSE_DB_URL` | `unset` | Database connection URL (`sqlite://path`) |
+| `DATABASE_URL` | `unset` | Fallback DB URL when `FUSE_DB_URL` is unset |
 | `FUSE_CONFIG` | `config.toml` | Config file path |
 | `FUSE_HOST` | `127.0.0.1` | HTTP server bind host |
 | `FUSE_LOG` | `info` | Minimum log level (`trace`/`debug`/`info`/`warn`/`error`) |
-| `NO_COLOR` | — | Disables ANSI color when set |
-| `FUSE_REQUEST_LOG` | — | `structured` for JSON request logging on stderr |
+| `NO_COLOR` | `unset` | Disables ANSI color when set |
+| `FUSE_REQUEST_LOG` | `unset` | `structured` for JSON request logging on stderr |
 
 → `spec/runtime.md` § Environment variables for the full reference.
 

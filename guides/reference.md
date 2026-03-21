@@ -1,7 +1,7 @@
 # FUSE Language Reference
 
 FUSE is a small, strict language for CLI tools and HTTP services. Every runtime
-surface — config loading, JSON binding, validation, HTTP routing — is built in and
+surface, including config loading, JSON binding, validation, and HTTP routing, is built in and
 type-checked. This document is the primary reference for developers and AI agents
 learning the language. For normative grammar and runtime semantics see `spec/fls.md`
 and `spec/runtime.md`.
@@ -80,7 +80,7 @@ let query = """
   select *
   from users
   where id = ?
-"""                                        # multiline — interpolation works here too
+"""                                        # multiline string; interpolation works here too
 
 # Comments use #. Doc comments (##) attach to the next declaration.
 ## This doc comment belongs to the function below.
@@ -102,7 +102,7 @@ let p2 = Point(x = 0.0, y = 0.0, label = "zero")
 # Field access:
 print(p.label)
 
-# Derived type — removes fields from a base type:
+# Derived type that removes fields from a base type:
 type PublicUser = User without password, secret
 ```
 
@@ -138,7 +138,7 @@ fn find(id: Id) -> User?:     # User? is Option<User>
   ...
 
 let u = find("x")
-let name = u?.name            # optional field access — null if u is null
+let name = u?.name            # optional field access; yields null if u is null
 let display = u?.name ?? "anonymous"   # null-coalescing
 
 match u:
@@ -152,7 +152,7 @@ match u:
 fn create(email: Email) -> User!ValidationError:   # T!E is Result<T, E>
   ...
 
-# T! without an error domain is a compile-time error — always name the error type.
+# T! without an error domain is a compile-time error. Always name the error type.
 
 let result = create("bad")
 match result:
@@ -235,7 +235,7 @@ match result:
   Err(e):
     log("error", e.message)
 
-# Struct pattern — bind by field name:
+# Struct pattern with field-name bindings:
 match point:
   Point(x = 0.0, y = 0.0) -> print("origin")
   Point(x = px, y = py)   -> print("at ${px}, ${py}")
@@ -313,11 +313,11 @@ then named imports.
 ## Modules and Imports
 
 ```fuse
-# Module import — access via qualified name:
+# Module import with qualified access:
 import Auth from "./auth"
 let token = Auth.create_token(user.id)
 
-# Named import — bring specific names into scope:
+# Named import that brings specific names into scope:
 import {hash, verify} from "./crypto_util"
 let h = hash("sha256", data)
 
@@ -338,7 +338,7 @@ print(Policy)
 print(json.encode(Seeds))
 ```
 
-Asset imports are values, not modules — no namespace, no named exports.
+Asset imports are values, not modules. They do not create a namespace or expose named exports.
 
 ### Capabilities
 
@@ -359,7 +359,7 @@ requires crypto
 | `crypto` | `crypto.*` |
 
 Calling an imported function that requires a capability you haven't declared is a
-compile-time error — capabilities don't leak across module boundaries silently.
+compile-time error. Capabilities do not leak across module boundaries silently.
 
 ---
 
@@ -565,7 +565,7 @@ let row = db.one("select * from users where id = ?", [id])
 ### Query builder
 
 ```fuse
-# Typed reads — columns must match the target type fields:
+# Typed reads; columns must match the target type fields:
 let users = db.from("users")
   .select(["id", "name", "role"])
   .where("role", "=", "admin")
@@ -623,7 +623,7 @@ Migrations run in ascending name order. Applied migrations are tracked in
 
 ## Error Handling
 
-### ?! — bang-chain propagation
+### Bang-chain propagation with ?!
 
 ```fuse
 # Propagate Result errors up the call stack:
@@ -680,7 +680,7 @@ fn fetch_all(ids: List<Id>) -> List<User>:
   let t2 = spawn:
     load_from_db(ids[1])
 
-  # Await results — both must be awaited before scope exit:
+  # Await results. Both must be awaited before scope exit:
   let u1 = await t1
   let u2 = await t2
   return [u1, u2]
@@ -839,7 +839,7 @@ CLI binding rules:
 ## Assets
 
 ```fuse
-import Policy from "./POLICY.md"     # immutable String — exact UTF-8 contents
+import Policy from "./POLICY.md"     # immutable String containing the exact UTF-8 contents
 import Seeds  from "./seed.json"     # decoded runtime value (like json.decode result)
 
 fn show_policy() -> Html:
@@ -945,29 +945,29 @@ supported for asset files (no named or aliased asset imports).
 
 | Variable | Default | Description |
 |---|---|---|
-| `FUSE_DB_URL` | — | Database URL (`sqlite://path`) |
-| `DATABASE_URL` | — | Fallback when `FUSE_DB_URL` is unset |
+| `FUSE_DB_URL` | `unset` | Database URL (`sqlite://path`) |
+| `DATABASE_URL` | `unset` | Fallback when `FUSE_DB_URL` is unset |
 | `FUSE_DB_POOL_SIZE` | `1` | SQLite connection pool size |
 | `FUSE_CONFIG` | `config.toml` | Config file path |
 | `FUSE_HOST` | `127.0.0.1` | HTTP server bind host |
-| `FUSE_SERVICE` | — | Select service when multiple are declared |
-| `FUSE_MAX_REQUESTS` | — | Stop server after N requests (useful in tests) |
+| `FUSE_SERVICE` | `unset` | Select service when multiple are declared |
+| `FUSE_MAX_REQUESTS` | `unset` | Stop server after N requests (useful in tests) |
 | `FUSE_LOG` | `info` | Minimum log level (`trace`/`debug`/`info`/`warn`/`error`) |
 | `FUSE_COLOR` | `auto` | ANSI color (`auto`/`always`/`never`) |
-| `NO_COLOR` | — | Disable ANSI color when set |
-| `FUSE_REQUEST_LOG` | — | `structured` for JSON request logs on stderr |
-| `FUSE_METRICS_HOOK` | — | `stderr` for per-request metrics lines |
-| `FUSE_OPENAPI_JSON_PATH` | — | Serve OpenAPI JSON at this path |
-| `FUSE_OPENAPI_UI_PATH` | — | Serve OpenAPI UI at this path |
-| `FUSE_ASSET_MAP` | — | Logical→public URL mappings for `asset()` |
-| `FUSE_VITE_PROXY_URL` | — | Forward unknown routes to Vite dev server |
-| `FUSE_SVG_DIR` | — | Override SVG base directory for `svg.inline` |
-| `FUSE_STATIC_DIR` | — | Serve static files from this directory |
+| `NO_COLOR` | `unset` | Disable ANSI color when set |
+| `FUSE_REQUEST_LOG` | `unset` | `structured` for JSON request logs on stderr |
+| `FUSE_METRICS_HOOK` | `unset` | `stderr` for per-request metrics lines |
+| `FUSE_OPENAPI_JSON_PATH` | `unset` | Serve OpenAPI JSON at this path |
+| `FUSE_OPENAPI_UI_PATH` | `unset` | Serve OpenAPI UI at this path |
+| `FUSE_ASSET_MAP` | `unset` | Logical→public URL mappings for `asset()` |
+| `FUSE_VITE_PROXY_URL` | `unset` | Forward unknown routes to Vite dev server |
+| `FUSE_SVG_DIR` | `unset` | Override SVG base directory for `svg.inline` |
+| `FUSE_STATIC_DIR` | `unset` | Serve static files from this directory |
 | `FUSE_STATIC_INDEX` | `index.html` | Directory fallback when `FUSE_STATIC_DIR` is set |
-| `FUSE_DEV_MODE` | — | Enable development-mode runtime behavior |
-| `FUSE_AOT_BUILD_INFO` | — | Print AOT build metadata and exit (AOT binaries only) |
-| `FUSE_AOT_STARTUP_TRACE` | — | Emit startup diagnostic line (AOT binaries only) |
-| `FUSE_AOT_REQUEST_LOG_DEFAULT` | — | Default to structured request logging in AOT release |
+| `FUSE_DEV_MODE` | `unset` | Enable development-mode runtime behavior |
+| `FUSE_AOT_BUILD_INFO` | `unset` | Print AOT build metadata and exit (AOT binaries only) |
+| `FUSE_AOT_STARTUP_TRACE` | `unset` | Emit startup diagnostic line (AOT binaries only) |
+| `FUSE_AOT_REQUEST_LOG_DEFAULT` | `unset` | Default to structured request logging in AOT release |
 
 ---
 
@@ -975,6 +975,6 @@ supported for asset files (no named or aliased asset imports).
 
 - Database: SQLite only (no ORM layer).
 - No generics, reflection, macros, or custom operators.
-- No inheritance — use composition and `type X = Y without ...` derivation.
-- Task model: structured only — no detached tasks, no callbacks.
-- Redirects: manual — `3xx` responses surface as `http.error` with `code = "http_status"`.
+- No inheritance. Use composition and `type X = Y without ...` derivation.
+- Task model is structured only; there are no detached tasks or callbacks.
+- Redirects are manual; `3xx` responses surface as `http.error` with `code = "http_status"`.

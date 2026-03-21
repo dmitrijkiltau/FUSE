@@ -505,7 +505,7 @@ All notable changes to this project are documented in this file.
 
 - Reference service with CRUD operations, user authentication, note visibility/public
   access, and like functionality.
-- Native spawn task implementation (`run_native_spawn_task`) — spawned async tasks now
+- Native spawn task implementation (`run_native_spawn_task`). Spawned async tasks now
   execute entirely on the native backend instead of falling back to the VM.
 - Note card UI enhancements with checkbox-based edit and visibility actions.
 
@@ -536,7 +536,7 @@ All notable changes to this project are documented in this file.
 ### Migration
 
 - Remove `--backend vm` from any CLI invocations or scripts.
-- Rebuild cached artifacts (`fuse build --clean`) — `program.ir` is no longer produced.
+- Rebuild cached artifacts (`fuse build --clean`). `program.ir` is no longer produced.
 - No language source migration is required from `0.4.x` to `0.5.0`.
 
 ## [0.4.0] - 2026-02-22

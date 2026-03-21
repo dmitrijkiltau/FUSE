@@ -319,7 +319,7 @@ Declarations:
 - `EnumDecl { name, variants, doc }`
 - `EnumVariant { name, payload }`
 - `FnDecl { name, params, ret, body, doc }`
-- `ComponentDecl { name, body, doc }` — implicit params `attrs: Map<String, String>` and `children: List<Html>` are injected into the body scope; return type is `Html`
+- `ComponentDecl { name, body, doc }`; implicit params `attrs: Map<String, String>` and `children: List<Html>` are injected into the body scope, and the return type is `Html`
 - `ServiceDecl { name, base_path, routes, doc }`
 - `RouteDecl { verb, path, body_type, ret_type, body }`
 - `ConfigDecl { name, fields, doc }`
@@ -564,7 +564,7 @@ Package dependency resolution (`dep:` imports):
   cycle path with `→` separators (for example, `circular import: A → B → A`).
 - dependency-cycle diagnostics use stable code `FUSE_DEP_CYCLE`
 - attempting to use an undeclared dependency name emits a structured error naming the unknown
-  dep and listing all declared deps (for example, `unknown dependency 'Foo' — available: Auth, Math`).
+  dep and listing all declared deps (for example, reporting `Foo` as unknown and listing `Auth` and `Math` as the available options).
 - malformed `dep:` and `root:` imports use stable codes `FUSE_IMPORT_DEP_PATH`,
   `FUSE_IMPORT_ROOT_PATH`, and `FUSE_IMPORT_ROOT_ESCAPE`; undeclared dependencies use
   `FUSE_IMPORT_UNKNOWN_DEPENDENCY`

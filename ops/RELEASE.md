@@ -43,7 +43,7 @@ Three scripts cover the full release cycle:
    ```
 2. **Update `CHANGELOG.md`:**
    - Move relevant items from `Unreleased` into the new version section (e.g. `## [0.9.10] - 2026-03-07`).
-3. **Run preflight** — verifies version consistency, changelog, guide freshness, authority parity, smoke, AOT SLO, and benchmark regression gates:
+3. **Run preflight.** This verifies version consistency, changelog, guide freshness, authority parity, smoke, AOT SLO, and benchmark regression gates:
    ```sh
    ./scripts/release_preflight.sh 0.9.10
    ```
