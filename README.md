@@ -65,7 +65,7 @@ Patch releases (`0.9.1`, …) stabilize this line with non-breaking improvements
 Compatibility is defined by documented behavior in `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, and
 `governance/VERSIONING_POLICY.md`.
 Historical upgrade guidance is in:
-`guides/migrations/0.8-to-0.9.md` and `guides/migrations/0.1-to-0.2.md`.
+`guides/migrations/0.8-to-0.9.md`.
 
 ## Requirements
 
@@ -505,7 +505,7 @@ Reproducibility + static profile policy: `ops/AOT_RELEASE_CONTRACT.md`.
 ./scripts/package_aot_artifact.sh --release --manifest-path .
 
 # Build official reference container image from release archive
-./scripts/package_aot_container_image.sh --archive dist/fuse-aot-linux-x64.tar.gz --tag v0.8.0
+./scripts/package_aot_container_image.sh --archive dist/fuse-aot-linux-x64.tar.gz --tag vX.Y.Z
 
 # Package VS Code extension with bundled LSP (.vsix + integrity check)
 ./scripts/package_vscode_extension.sh --release
@@ -579,7 +579,6 @@ If two documents disagree, defer to the owning document listed for that tier.
 | `guides/onboarding.md` | Onboarding walkthrough |
 | `guides/reference.md` | Generated developer reference |
 | `guides/migrations/0.8-to-0.9.md` | Migration guide for `0.8.x -> 0.9.0` |
-| `guides/migrations/0.1-to-0.2.md` | Migration guide for `0.1.x -> 0.2.0` |
 
 ### Operations contracts
 

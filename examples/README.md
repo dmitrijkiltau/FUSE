@@ -40,6 +40,7 @@ HTTPS_URL=https://example.com/ ./scripts/fuse run examples/http_client_https.fus
 | `interp_demo.fuse` | String interpolation |
 | `markdown_import.fuse` | Markdown asset import (`./markdown_import.md`) as raw `String` |
 | `spawn_error.fuse` | Spawn/await task failure propagation |
+| `spawn_bench.fuse` | Parallel-spawn throughput benchmark (8 tasks; used by `use_case_bench.sh`) |
 | `box_shared.fuse` | Shared `box` state mutation |
 | `transaction_demo.fuse` | `transaction:` commit/rollback behavior with typed error result |
 | `capability_demo.fuse` | Capability-gated cross-module calls (`requires db` + `requires network`) |
@@ -54,6 +55,7 @@ HTTPS_URL=https://example.com/ ./scripts/fuse run examples/http_client_https.fus
 | `json_import.fuse` | JSON asset import (`./json_import.json`) as a decoded runtime value |
 | `json_codec.fuse` | `json.encode` / `json.decode` round-trip |
 | `time_crypto.fuse` | `time.*` and `crypto.*` runtime APIs |
+| `component_demo.fuse` | HTML DSL reusable components (`component`, `attrs`, `children`) |
 | `db_query_builder.fuse` | DB query-builder workflow with typed read projections (`db.from(...).one<T>()` / `.all<T>()`) |
 
 ## Native backend examples

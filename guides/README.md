@@ -8,7 +8,6 @@ GitHub-readable guide surface for FUSE.
 - [Boundary Contracts](boundary-contracts.md)
 - [Developer Reference](reference.md)
 - [Migration: 0.8.x -> 0.9.0](migrations/0.8-to-0.9.md)
-- [Migration: 0.1.x -> 0.2.0](migrations/0.1-to-0.2.md)
 
 ## Regeneration
 
