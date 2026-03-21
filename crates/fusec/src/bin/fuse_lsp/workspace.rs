@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use fuse_rt::json::JsonValue;
@@ -1369,6 +1369,10 @@ pub(crate) struct WorkspaceIndex {
     /// Used for completion locality weighting: symbols from directly-imported modules
     /// rank higher within group 02 than symbols from only transitively-imported modules.
     pub(crate) imported_module_uris: HashMap<String, HashSet<String>>,
+    /// Maps each file URI to a map of (reachable_uri -> BFS depth from that file).
+    /// Depth 0 = directly imported, depth 1 = imported by a direct import, etc.
+    /// Clamped at 7. Derived from `imported_module_uris`; not persisted.
+    pub(crate) transitive_import_depth: HashMap<String, HashMap<String, u8>>,
 }
 
 pub(crate) struct WorkspaceFile {
@@ -2782,6 +2786,7 @@ fn deserialize_workspace_index(json: &str) -> Option<WorkspaceIndex> {
         redirects,
         module_ref_targets,
         import_path_targets,
+        transitive_import_depth: compute_transitive_import_depth(&imported_module_uris),
         imported_module_uris,
     })
 }
@@ -3098,8 +3103,43 @@ fn build_workspace_from_registry(
         redirects,
         module_ref_targets,
         import_path_targets,
+        transitive_import_depth: compute_transitive_import_depth(&imported_module_uris),
         imported_module_uris,
     })
+}
+
+/// Computes the BFS transitive import depth from each file to every reachable file.
+/// Returned as `HashMap<origin_uri, HashMap<target_uri, depth>>` where depth 0 = directly
+/// imported, depth 1 = imported by a direct import, etc., clamped at 7.
+pub(crate) fn compute_transitive_import_depth(
+    imported: &HashMap<String, HashSet<String>>,
+) -> HashMap<String, HashMap<String, u8>> {
+    let mut result: HashMap<String, HashMap<String, u8>> = HashMap::new();
+    for origin in imported.keys() {
+        let mut depths: HashMap<String, u8> = HashMap::new();
+        let mut queue: VecDeque<(&str, u8)> = VecDeque::new();
+        if let Some(direct) = imported.get(origin.as_str()) {
+            for uri in direct {
+                if depths.insert(uri.clone(), 0).is_none() {
+                    queue.push_back((uri.as_str(), 0));
+                }
+            }
+        }
+        while let Some((uri, depth)) = queue.pop_front() {
+            if depth >= 6 {
+                continue;
+            }
+            if let Some(next) = imported.get(uri) {
+                for next_uri in next {
+                    if depths.insert(next_uri.clone(), depth + 1).is_none() {
+                        queue.push_back((next_uri.as_str(), depth + 1));
+                    }
+                }
+            }
+        }
+        result.insert(origin.clone(), depths);
+    }
+    result
 }
 
 fn import_path_target_for_decl(

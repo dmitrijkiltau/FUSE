@@ -655,8 +655,9 @@ impl<'a> Checker<'a> {
             StmtKind::Expr(expr) => {
                 let expr_ty = self.check_expr(expr);
                 if matches!(expr_ty, Ty::Task(_)) {
-                    self.diags.error(
+                    self.diags.error_with_code(
                         expr.span,
+                        "FUSE_DETACHED_TASK",
                         "detached task is forbidden; await it or bind it and await before scope exit",
                     );
                 }
@@ -799,8 +800,9 @@ impl<'a> Checker<'a> {
                         let missing_are_defaulted = provided <= total
                             && sig.params[provided..].iter().all(|param| param.has_default);
                         if !missing_are_defaulted {
-                            self.diags.error(
+                            self.diags.error_with_code(
                                 expr.span,
+                                "FUSE_WRONG_ARITY",
                                 format!(
                                     "expected {} arguments, got {}",
                                     sig.params.len(),

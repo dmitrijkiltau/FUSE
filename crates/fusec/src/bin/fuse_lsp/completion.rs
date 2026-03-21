@@ -227,6 +227,7 @@ fn signature_candidates_for_target(
         }
         out.push(candidate.info);
     }
+    out.truncate(4);
     out
 }
 
@@ -250,6 +251,7 @@ fn push_named_workspace_signatures(
     name: &str,
     same_file_rank: u8,
 ) {
+    let depth_map = index.transitive_import_depth.get(uri);
     let directly_imported = index.imported_module_uris.get(uri);
     for def in &index.defs {
         if def.def.kind != SymbolKind::Function || def.def.name != name {
@@ -257,10 +259,12 @@ fn push_named_workspace_signatures(
         }
         let locality = if def.uri == uri {
             0
+        } else if let Some(&depth) = depth_map.and_then(|m| m.get(&def.uri)) {
+            depth.min(6).saturating_add(1)
         } else if directly_imported.is_some_and(|set| set.contains(&def.uri)) {
             1
         } else {
-            2
+            7
         };
         push_workspace_signature(ranked, same_file_rank.saturating_add(locality), def);
     }
@@ -896,6 +900,8 @@ pub(crate) fn handle_completion(
     let current_container = completion_callable_name_at_cursor(&program, offset)
         .or_else(|| index.and_then(|index| completion_container_name(index, &uri, offset)));
     let directly_imported = index.and_then(|idx| idx.imported_module_uris.get(uri.as_str()));
+    let transitive_depth = index.and_then(|idx| idx.transitive_import_depth.get(uri.as_str()));
+    let in_html_context = cursor_in_html_context(&program, offset);
     let mut candidates: HashMap<String, CompletionCandidate> = HashMap::new();
 
     if let Some(base) = member_base {
@@ -942,6 +948,7 @@ pub(crate) fn handle_completion(
                     &uri,
                     current_container.as_deref(),
                     directly_imported,
+                    transitive_depth,
                 );
                 let kind = completion_kind_for_symbol_kind(def.def.kind);
                 let detail = if def.def.detail.is_empty() {
@@ -989,15 +996,17 @@ pub(crate) fn handle_completion(
                 0,
             );
         }
-        for tag in fusec::html_tags::all_html_tags() {
-            upsert_completion_candidate(
-                &mut candidates,
-                tag,
-                3,
-                Some("html tag builtin".to_string()),
-                3,
-                0,
-            );
+        if in_html_context {
+            for tag in fusec::html_tags::all_html_tags() {
+                upsert_completion_candidate(
+                    &mut candidates,
+                    tag,
+                    3,
+                    Some("html tag builtin".to_string()),
+                    3,
+                    0,
+                );
+            }
         }
         for keyword in COMPLETION_KEYWORDS {
             upsert_completion_candidate(&mut candidates, keyword, 14, None, 4, 0);
@@ -1009,7 +1018,15 @@ pub(crate) fn handle_completion(
 
     let mut entries: Vec<(String, CompletionCandidate)> = candidates
         .into_iter()
-        .filter(|(label, _)| completion_label_matches(label, prefix))
+        .filter_map(|(label, mut candidate)| {
+            let quality = completion_label_matches(&label, prefix)?;
+            if quality > 0 {
+                // Subsequence-only match: push to bottom of sort order.
+                candidate.sort_group = candidate.sort_group.max(2);
+                candidate.locality = 7;
+            }
+            Some((label, candidate))
+        })
         .collect();
     entries.sort_by(|(left_label, left), (right_label, right)| {
         left.sort_group
@@ -1112,13 +1129,31 @@ fn upsert_completion_candidate(
     }
 }
 
-fn completion_label_matches(label: &str, prefix: &str) -> bool {
+/// Returns `Some(0)` for a prefix match, `Some(1)` for a subsequence-only match,
+/// or `None` if the label does not match the prefix at all.
+fn completion_label_matches(label: &str, prefix: &str) -> Option<u8> {
     if prefix.is_empty() {
-        return true;
+        return Some(0);
     }
     let label_lower = label.to_lowercase();
     let prefix_lower = prefix.to_lowercase();
-    label_lower.starts_with(&prefix_lower)
+    if label_lower.starts_with(&prefix_lower) {
+        return Some(0);
+    }
+    // Subsequence fallback: every char of prefix must appear in order in label.
+    let mut label_iter = label_lower.chars();
+    let mut all_matched = true;
+    for pc in prefix_lower.chars() {
+        if label_iter.find(|&lc| lc == pc).is_none() {
+            all_matched = false;
+            break;
+        }
+    }
+    if all_matched {
+        Some(1)
+    } else {
+        None
+    }
 }
 
 fn completion_ident_start(text: &str, offset: usize) -> usize {
@@ -1338,18 +1373,22 @@ fn completion_callable_name_at_cursor(program: &Program, cursor: usize) -> Optio
 /// `sort_group` follows the standard 00–04 ranking bands.
 /// `locality` is only meaningful when `sort_group == 2`:
 ///   0 = symbol's module is directly imported by the current file (locality-adjacent),
-///   1 = symbol's module is only transitively reachable.
+///   1..=6 = BFS distance through the import graph (clamped at 6),
+///   7 = not reachable via the import graph.
 fn completion_symbol_sort_group(
     def: &WorkspaceDef,
     uri: &str,
     container: Option<&str>,
     directly_imported: Option<&std::collections::HashSet<String>>,
+    transitive_depth: Option<&std::collections::HashMap<String, u8>>,
 ) -> (u8, u8) {
     if def.uri != uri {
-        let locality = if directly_imported.is_some_and(|set| set.contains(&def.uri)) {
+        let locality = if let Some(&depth) = transitive_depth.and_then(|m| m.get(&def.uri)) {
+            depth.min(6)
+        } else if directly_imported.is_some_and(|set| set.contains(&def.uri)) {
             0
         } else {
-            1
+            7
         };
         return (2, locality);
     }
@@ -1360,6 +1399,28 @@ fn completion_symbol_sort_group(
         return (1, 0);
     }
     (1, 0)
+}
+
+/// Returns true when `cursor` is inside a Component or App body — the contexts where
+/// HTML tag names are valid call targets.  Outside these bodies, HTML tag completions
+/// add noise without being useful.
+fn cursor_in_html_context(program: &Program, cursor: usize) -> bool {
+    for item in &program.items {
+        match item {
+            Item::Component(decl) => {
+                if span_contains(decl.body.span, cursor) {
+                    return true;
+                }
+            }
+            Item::App(decl) => {
+                if span_contains(decl.body.span, cursor) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn is_lexical_local_symbol(def: &SymbolDef) -> bool {
