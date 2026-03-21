@@ -725,6 +725,13 @@ fn collect_rustc_link_search_paths(
 }
 
 fn find_repo_root(start: &Path) -> Result<PathBuf, String> {
+    // Explicit override for test environments where the build temp dir is outside the repo tree.
+    if let Ok(root) = std::env::var("FUSE_REPO_ROOT") {
+        let path = PathBuf::from(root);
+        if path.join("scripts").join("cargo_env.sh").exists() {
+            return Ok(path);
+        }
+    }
     let mut current = Some(start);
     while let Some(path) = current {
         let candidate = path.join("scripts").join("cargo_env.sh");
@@ -732,6 +739,18 @@ fn find_repo_root(start: &Path) -> Result<PathBuf, String> {
             return Ok(path.to_path_buf());
         }
         current = path.parent();
+    }
+    // Fallback: walk up from the process working directory. When invoked from within the
+    // repository (e.g. during `cargo test`), the CWD is inside the repo tree even if the
+    // runner source was emitted to a temp directory outside it.
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut current = Some(cwd.as_path().to_path_buf());
+        while let Some(path) = current {
+            if path.join("scripts").join("cargo_env.sh").exists() {
+                return Ok(path);
+            }
+            current = path.parent().map(|p| p.to_path_buf());
+        }
     }
     Err("failed to locate repo root".to_string())
 }
