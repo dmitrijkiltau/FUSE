@@ -1,1097 +1,980 @@
-# FUSE Developer Reference
+# FUSE Language Reference
 
-_Auto-generated from `spec/fls.md`, `spec/runtime.md`, and `governance/scope.md` by `scripts/generate_guide_docs.sh`._
-
-This document is the reference for building applications with FUSE.
-If you are new to FUSE, start with [Onboarding Guide](onboarding.md) and [Boundary Contracts](boundary-contracts.md) before this reference.
-
----
-
-## Install and Downloads
-
-Release artifacts are published on GitHub Releases:
-
-- https://github.com/dmitrijkiltau/FUSE/releases
+FUSE is a small, strict language for CLI tools and HTTP services. Every runtime
+surface — config loading, JSON binding, validation, HTTP routing — is built in and
+type-checked. This document is the primary reference for developers and AI agents
+learning the language. For normative grammar and runtime semantics see `spec/fls.md`
+and `spec/runtime.md`.
 
 ---
 
-## Language at a Glance
+## Declarations
 
-Top-level declarations:
+A FUSE file is a flat sequence of top-level declarations. Order within the file does
+not matter for resolution.
 
-- `import`
-- `fn`
-- `type`
-- `enum`
-- `config`
-- `component`
-- `service`
-- `app`
-- `migration`
-- `test`
+```fuse
+requires db          # capability gate (compile-time)
+requires network
 
-Core statements:
+import Auth from "./auth"             # module import
+import {verify} from "./crypto_util"  # named import
+import Docs from "./README.md"        # asset import (String)
+import Seeds from "./seed.json"       # asset import (decoded value)
 
-- `let` / `var`
-- assignment
-- `if` / `else`
-- `match`
-- `for` / `while`
-- `transaction`
-- `break` / `continue`
-- `return`
+config App:                           # config block
+  port: Int = env_int("PORT") ?? 3000
+  db_url: String = env("DATABASE_URL") ?? "sqlite://app.db"
 
-Core expression features:
+type User:                            # struct declaration
+  id: Id
+  email: Email
+  name: String(1..80)
 
-- null-coalescing: `??`
-- optional access: `?.`, `?[idx]`
-- bang-chain conversion: `?!`
-- ranges: `a..b`
-- concurrency forms: `spawn`, `await`, `box`
+enum Role:                            # enum declaration
+  Admin
+  Member(permissions: List<String>)
+
+fn greet(name: String) -> String:    # function
+  return "Hello, ${name}!"
+
+service Users at "/api":             # HTTP service
+  get "/users/{id: Id}" -> User!NotFound:
+    ...
+
+app "api":                            # entry point
+  serve(App.port)
+
+migration "create_users":            # DB migration
+  db.exec("create table if not exists users (id text primary key, name text)")
+
+test "greet returns greeting":        # test block
+  assert(greet("world") == "Hello, world!")
+
+component Card:                       # HTML component
+  return div(class="card"):
+    children
+```
 
 ---
+
 ## Types
 
-- `Int`, `Float`, `Bool`, `String`, `Bytes`, `Html`
-- `Id`, `Email`
-- `Error`
-- `List<T>`, `Map<K,V>`, `Option<T>`, `Result<T,E>`
-- user-defined `type` and `enum` are nominal
+### Primitives
 
-Reserved namespace:
+```fuse
+let s: String = "hello"
+let n: Int    = 42
+let f: Float  = 3.14
+let b: Bool   = true
+let id: Id    = "usr_01"     # non-empty string
+let em: Email = "a@b.com"   # simple local@domain check
+```
 
-- `std.Error.*` is reserved for standardized runtime error behavior.
+### Strings
 
-Type shorthand:
+```fuse
+let greeting = "Hello, ${name}!"          # interpolation in standard strings
 
-- `T?` desugars to `Option<T>`.
-- `null` is the optional empty value.
-- `x ?? y` is null-coalescing.
-- `x?.field` and `x?[idx]` are optional access forms.
-- `Some` / `None` are valid match patterns.
+let query = """
+  select *
+  from users
+  where id = ?
+"""                                        # multiline — interpolation works here too
 
-Result types:
+# Comments use #. Doc comments (##) attach to the next declaration.
+## This doc comment belongs to the function below.
+fn example(): ...
+```
 
-- `T!E` desugars to `Result<T, E>`.
-- `T!` is invalid; result types must declare an explicit error domain.
-- for function/service return boundaries, each `E` must be a declared nominal `type` or `enum` (including chained forms like `T!AuthError!DbError`)
-- `expr ?! err` applies bang-chain error conversion.
-- `expr ?!` is propagation-only for `Result<T,E>`; `Option<T> ?!` requires an explicit `err`.
+### Structs
 
-Refinements:
+```fuse
+type Point:
+  x: Float
+  y: Float
+  label: String = "origin"    # default value
 
-Refinements attach predicates to primitive base types in type positions:
+# Construct with named fields:
+let p = Point(x = 1.0, y = 2.0)
+let p2 = Point(x = 0.0, y = 0.0, label = "zero")
 
-- `String(1..80)`
-- `Int(0..130)`
-- `Float(0.0..1.0)`
-- `String(regex("^[a-z0-9_-]+$"))`
-- `String(1..80, regex("^[a-z]"), predicate(is_slug))`
+# Field access:
+print(p.label)
 
-Constraint forms:
+# Derived type — removes fields from a base type:
+type PublicUser = User without password, secret
+```
 
-- range literals (`1..80`, `0..130`, `0.0..1.0`)
-- `regex("<pattern>")` on string-like bases
-- `predicate(<fn_ident>)` where the function signature is `fn(<base>) -> Bool`
+### Enums
+
+```fuse
+enum Status:
+  Active
+  Suspended(reason: String)
+  Banned(reason: String, since: Int)
+
+# Match on an enum:
+match user.status:
+  Active -> serve_request()
+  Suspended(reason = r):
+    return Err(std.Error.Forbidden(message = "suspended: ${r}"))
+  Banned(reason = r, since = _):
+    return Err(std.Error.Forbidden(message = "banned: ${r}"))
+```
+
+Enums encode to JSON as a tagged object:
+
+```json
+{ "type": "Suspended", "data": "terms violation" }
+```
+
+No payload omits `data`. Multiple payloads use an array for `data`.
+
+### Options
+
+```fuse
+fn find(id: Id) -> User?:     # User? is Option<User>
+  ...
+
+let u = find("x")
+let name = u?.name            # optional field access — null if u is null
+let display = u?.name ?? "anonymous"   # null-coalescing
+
+match u:
+  None -> print("not found")
+  Some(user) -> print(user.name)
+```
+
+### Results
+
+```fuse
+fn create(email: Email) -> User!ValidationError:   # T!E is Result<T, E>
+  ...
+
+# T! without an error domain is a compile-time error — always name the error type.
+
+let result = create("bad")
+match result:
+  Ok(user) -> print(user.id)
+  Err(e)   -> print(e.message)
+```
+
+### Refinements
+
+Refinements attach constraints to primitive types and are validated at boundaries
+(struct construction, JSON decode, config loading, route params).
+
+```fuse
+type Slug:
+  value: String(1..80, regex("^[a-z0-9-]+$"))
+
+type Measurement:
+  weight_kg: Float(0.0..500.0)
+  age: Int(0..130)
+
+# Custom predicate:
+fn is_even(n: Int) -> Bool: return n % 2 == 0
+type EvenInt:
+  n: Int(predicate(is_even))
+```
+
+Constraints apply left-to-right. `regex` is valid on `String`, `Id`, and `Email`.
 
 ### Type inference
 
-- local inference for `let` / `var`
-- function parameter types are required
-- function return type is optional
+```fuse
+let x = 42           # inferred Int
+let s = "hello"      # inferred String
+var items = [1, 2]   # inferred List<Int>
 
-### Comparison operators
-
-- Equality operators (`==`, `!=`) are defined for same-typed scalar pairs:
-  `Int`, `Float`, `Bool`, `String`, and `Bytes`.
-- Relational operators (`<`, `<=`, `>`, `>=`) are defined for numeric pairs (`Int`, `Float`).
-- Comparisons outside supported operand pairs are invalid.
-
-Runtime error behavior for unsupported pairs is defined in
-[Expression operator behavior](runtime.md#expression-operator-behavior).
-
-Type derivation:
-
-`type PublicUser = User without password, secret` creates a new nominal type derived from `User`
-with listed fields removed. Field types/defaults are preserved for retained fields.
-
-Base types can be module-qualified (`Foo.User`). Unknown base types or fields are errors.
-Loader diagnostics for derived-type failures use stable codes `FUSE_TYPE_DERIVE_BASE`,
-`FUSE_TYPE_DERIVE_FIELD`, and `FUSE_TYPE_DERIVE_CYCLE`.
+# Parameter types are always required. Return types are optional (inferred when omitted).
+fn double(n: Int) -> Int:
+  return n * 2
+```
 
 ---
 
-## Strings, Interpolation, and Comments
+## Variables and Control Flow
 
-- String forms:
-  - standard double-quoted strings: `"hello"`
-  - triple-quoted strings: `"""hello\nworld"""` (multiline allowed)
-- Escapes: `\n`, `\t`, `\r`, `\\`, `\"`. Unknown escapes pass through (`\$` produces `$`).
-- Interpolation: `${expr}` inside both string forms.
-
-- Line comment: `# ...`
-- Doc comment: `## ...` attaches to the next declaration
-
-## Indentation
-
-FUSE uses Python-style block structure with strict space rules.
-
-- Indentation is measured in spaces only (tabs are illegal).
-- Indent width is not fixed, but must be consistent within a file.
-- A block starts after `:` at end of line.
-- New indentation level must be strictly greater than previous.
-- Dedent closes blocks until indentation matches a previous level.
-- Empty lines are ignored.
-- Lines inside parentheses/brackets/braces ignore indentation semantics (implicit line joining).
-
-INDENT/DEDENT reference algorithm:
-
-- Maintain a stack `indents` starting with `[0]`.
-- For each logical line not inside `()[]{}`:
-  - Let `col` be count of leading spaces.
-  - If `col > top(indents)`: emit `INDENT`, push `col`.
-  - If `col < top(indents)`: while `col < top(indents)` emit `DEDENT`, pop;
-    error if `col != top(indents)` after popping.
-  - Else: continue.
-
----
-
-## Match and Patterns
-
-`match` executes the first case whose pattern matches the value.
-
-Case forms:
-
-- `Pattern -> Expr` is a single-expression case (sugar for `Pattern: return Expr`).
-- `Pattern:` followed by an indented block is the full block form.
-
-Pattern forms:
-
-- `_` — wildcard, matches any value
-- `Literal` — integer, float, string, or bool literal
-- `None` — matches optional empty value
-- `Some(x)` — matches optional present value, binds the payload to `x`
-- `Ok(x)` / `Err(e)` — matches result variants, binds the payload
-- `EnumVariant` — matches a no-payload enum variant by name
-- `EnumVariant(x, y)` — matches an enum variant with positional payload bindings
-- `TypeName(field = pattern, ...)` — matches struct fields by name
-
----
-## Imports and Modules
-
-`import` declarations are resolved at load time.
-
-Import path classification:
-
-- paths with no explicit extension are module imports and default to `.fuse`
-- explicit `.fuse` paths are module imports
-- explicit `.md` paths are Markdown asset imports
-- explicit `.json` paths are JSON asset imports
-- any other explicit extension in import position is rejected as unsupported
-
-Module imports register an alias for qualified access (`Foo.bar`, `Foo.Config.field`, `Foo.Enum.Variant`).
-Named imports bring specific items into local scope.
-
-Module import resolution rules:
-
-- `import Foo` loads `Foo.fuse` from the current file directory.
-- `import X from "path"` loads `path` relative to current file; `.fuse` is added if missing.
-- `import {A, B} from "path"` loads module and imports listed names into local scope.
-- `import X as Y from "path"` loads `path` and registers the module under alias `Y` for qualified access.
-- `import X from "root:path/to/module"` loads from package root (`fuse.toml` directory); if no manifest is found, root falls back to the entry module directory.
-
-Asset import rules:
-
-- asset imports are supported only as `import Name from "path.ext"` where `ext` is `.md` or `.json`
-- `root:` and `dep:` path resolution apply to asset imports using the same repository/package rules
-  as module imports
-- `.md` imports bind a local immutable `String` containing the exact UTF-8 file contents
-- `.json` imports bind a local immutable runtime value equivalent to `json.decode(text)`; static
-  typing remains intentionally conservative
-- asset imports are values, not modules: they do not create a namespace and do not expose named exports
-- `import {A, B} from "./data.json"` and `import X as Y from "./data.json"` are load-time errors
-- JSON/LSP diagnostics for asset import form and extension failures use stable codes
-  `FUSE_IMPORT_ASSET_FORM` and `FUSE_IMPORT_UNSUPPORTED_EXTENSION`
-
-Notes:
-
-- module imports do not automatically import all members into local scope
-- named imports do not create a module alias
-- asset imports do not create a module alias or a named-export set
-- function symbols are module-scoped (not global across all loaded modules)
-- unqualified function calls resolve in this order: current module, then named imports
-- module-qualified calls (`Foo.bar`) resolve against the referenced module alias
-- duplicate imported binding names in one module are load-time errors and use
-  code `FUSE_IMPORT_DUPLICATE`
-- duplicate function names across different modules are allowed
-- module-qualified type references are valid in type positions (`Foo.User`, `Foo.Config`)
-- dependency imports use `dep:` import paths (for example, `dep:Auth/lib` or `dep:Fixtures/data.json`)
-- root-qualified imports use `root:` import paths (for example, `root:lib/auth` or `root:content/policy.md`)
-- missing asset files, unreadable files, invalid UTF-8, invalid JSON syntax, unsupported asset
-  forms, and unsupported explicit extensions are load-time diagnostics attached to the import path
-- named-import lookup failures use code `FUSE_IMPORT_UNKNOWN`
-- asset load failures use codes `FUSE_ASSET_MISSING`, `FUSE_ASSET_READ`, `FUSE_ASSET_UTF8`, and
-  `FUSE_ASSET_JSON_INVALID`
-
-Package dependency resolution (`dep:` imports):
-
-- dependencies are declared in `fuse.toml` under `[dependencies]` using any of three syntaxes:
-  `Auth = "./deps/auth"` (bare path), `Auth = { path = "./deps/auth" }` (inline table),
-  `[dependencies.Auth] path = "./deps/auth"` (section table).
-- `dep:<Name>/<path>` resolves against `<dep-root>` using ordinary import classification:
-  module targets default to `.fuse` when no extension is present, while explicit `.md` / `.json`
-  targets remain asset imports.
-- dependency resolution is transitive: each dependency's own `fuse.toml` is read and its
-  named sub-dependencies are merged into the consumer's dep map; the direct consumer's deps
-  always shadow any same-named sub-dependencies.
-- cross-package dependency cycles are a load-time error; the diagnostic identifies the full
-  cycle path with `→` separators (for example, `circular import: A → B → A`).
-- dependency-cycle diagnostics use stable code `FUSE_DEP_CYCLE`
-- attempting to use an undeclared dependency name emits a structured error naming the unknown
-  dep and listing all declared deps (for example, `unknown dependency 'Foo' — available: Auth, Math`).
-- malformed `dep:` and `root:` imports use stable codes `FUSE_IMPORT_DEP_PATH`,
-  `FUSE_IMPORT_ROOT_PATH`, and `FUSE_IMPORT_ROOT_ESCAPE`; undeclared dependencies use
-  `FUSE_IMPORT_UNKNOWN_DEPENDENCY`
-- duplicate exported nominal/config/service/app symbols across loaded modules use code
-  `FUSE_SYMBOL_DUPLICATE`
-- `fuse deps lock` rewrites `fuse.lock` for the selected package to match the resolved
-  dependency graph.
-- `fuse deps lock --check` must fail with code `FUSE_LOCK_OUT_OF_DATE` when the current
-  lockfile differs from the resolved dependency graph.
-- `fuse check|run|build|test --frozen` must fail with code `FUSE_LOCK_FROZEN` before command
-  execution if dependency resolution would change `fuse.lock`.
-- `fuse deps publish-check` walks all `fuse.toml` files under the selected root and reports
-  per-package manifest-entry or lock-readiness failures.
-- `fuse clean --cache` removes `.fuse-cache` directories under the selected root; when no path
-  is supplied it uses the current working directory, and `--manifest-path <path>` may point to
-  either a package directory or a `fuse.toml` file.
-- the `fuse check --workspace` flag walks the directory tree from the current working directory,
-  discovers all `fuse.toml` manifests that declare a `[package].entry`, and checks each package
-  independently; results are summarised with a per-package pass/fail line followed by a total.
-- in `--workspace` mode, a lightweight file-timestamp cache (`.fuse-cache/check-<hash>.tsv`) is
-  maintained per entry point; a workspace check that hits a valid cache prints
-  `check: ok (cached, no changes)` and exits immediately; the cache is invalidated after any
-  diagnostic error; these caches are not automatically swept outside command-specific invalidation,
-  so `fuse clean --cache` is the supported manual prune path.
-
-Module capabilities:
-
-- modules may declare capability requirements with top-level `requires` declarations
-- allowed capabilities are `db`, `crypto`, `network`, and `time`
-- duplicate capability declarations in one module are semantic errors
-- capability checks are compile-time only (no runtime capability guard)
-- calls requiring capabilities are rejected when the current module does not declare them
-- `requires db` gates `db.exec/query/one/from` and query-builder calls reachable from `db.from(...)`
-  (`select`, `where`, `order_by`, `limit`, `insert`, `upsert`, `update`, `delete`, `count`, `one`, `all`, `exec`, `sql`, `params`)
-- typed query forms (`one<T>()`, `all<T>()`) are compile-time checked:
-  the type argument must be a declared `type`, and `select([...])` columns must match its fields
-- `requires network` gates `serve(...)` and outbound `http.*` client builtins
-  (`http.request`, `http.get`, `http.post`)
-- `requires time` gates access to runtime `time.*` builtins (`now`, `format`, `parse`, `sleep`)
-- `requires crypto` gates access to runtime `crypto.*` builtins (`hash`, `hmac`, `random_bytes`, `constant_time_eq`)
-- call sites to imported module functions must declare every capability required by the callee module
-  (capability leakage across module boundaries is rejected)
-- `transaction` blocks are valid only in modules with `requires db` and no additional capabilities
-
-Strict architecture mode (`--strict-architecture`) adds compile-time architectural checks:
-
-- capability purity: modules must not declare unused capabilities
-- cross-layer cycle detection: import graphs that form cycles between logical layers are rejected
-- error-domain isolation: a module's function/service boundary signatures must not mix error
-  domains from multiple modules
-
----
-
-## Services and HTTP Contracts
-
-Route syntax uses typed path params inside the route string, for example:
+### let and var
 
 ```fuse
-get "/users/{id: Id}" -> User:
-  ...
+let x = 10        # immutable binding
+var count = 0     # mutable binding
+count = count + 1
 ```
 
-The `body` keyword introduces the request body type:
+### if / else
 
 ```fuse
-post "/users" body UserCreate -> User:
-  ...
+if count > 10:
+  print("high")
+else if count > 5:
+  print("medium")
+else:
+  print("low")
+
+# Inline form:
+if flag: x = 1
 ```
 
-Binding/encoding/error semantics for routes are runtime behavior and are defined in `runtime.md`.
+### match
 
-HTTP-specific route primitives (`request.header/cookie`,
-`response.header/cookie/delete_cookie`, and outbound `http.request/get/post`) are runtime
-semantics owned by `runtime.md`.
+```fuse
+match value:
+  0 -> print("zero")
+  1 -> print("one")
+  _ -> print("other")
+
+# Block form (multiple statements):
+match result:
+  Ok(data):
+    process(data)
+    log("done")
+  Err(e):
+    log("error", e.message)
+
+# Struct pattern — bind by field name:
+match point:
+  Point(x = 0.0, y = 0.0) -> print("origin")
+  Point(x = px, y = py)   -> print("at ${px}, ${py}")
+```
+
+### for and while
+
+```fuse
+for item in items:
+  print(item)
+
+for value in map:     # iterates values only; keys are not exposed in for bodies
+  print(value)
+
+var i = 0
+while i < 10:
+  i = i + 1
+
+# break / continue work as expected:
+for x in list:
+  if x == 0: continue
+  if x < 0: break
+  process(x)
+```
+
+### Ranges
+
+```fuse
+for i in 1..5:       # inclusive: [1, 2, 3, 4, 5]
+  print(i)
+
+let digits = 0..9    # List<Int>
+```
+
+Float ranges step by `1.0`. `a > b` is a runtime error.
+
+### List and Map indexing
+
+```fuse
+let first = items[0]         # runtime error if out of bounds
+let val   = map["key"]       # null if key is missing
+items[0]  = "updated"        # bounds-checked assignment
+map["k"]  = "v"              # insert or overwrite
+
+let safe = items?[0]         # null if out of bounds (optional index)
+```
 
 ---
 
-## Static Restrictions
+## Functions
 
-### Spawn static restrictions
+```fuse
+fn add(a: Int, b: Int) -> Int:
+  return a + b
 
-Inside a `spawn` block, semantic analysis rejects:
+# Default parameter values:
+fn greet(name: String = "world") -> String:
+  return "Hello, ${name}!"
 
-- `box` capture/use (including captured outer boxed bindings)
-- runtime side-effect builtins (`db.*`, `serve`, `print`, `input`, `log`, `env`, `env_int`, `env_float`, `env_bool`, `asset`, `svg.inline`)
-- mutation of captured outer bindings
+greet()            # "Hello, world!"
+greet("FUSE")      # "Hello, FUSE!"
 
-Structured task lifetime checks are also enforced at compile time:
+# Named arguments at call sites:
+fn range_check(value: Int, min: Int = 0, max: Int = 100) -> Bool:
+  return value >= min and value <= max
 
-- detached task expressions are rejected
-- spawned task bindings must be awaited before leaving lexical scope
-- reassigning a spawned task binding before `await` is rejected
+range_check(value = 50, max = 80)
+```
 
-These restrictions are part of the language contract for deterministic cross-backend concurrency.
-
-### Transaction static restrictions
-
-`transaction:` defines a compiler-constrained block for deterministic DB transaction scope.
-
-Inside a `transaction` block, semantic analysis rejects:
-
-- `spawn` expressions
-- `await` expressions
-- early `return`
-- loop control flow (`break` / `continue`)
-- capability use outside `db`
-
-Module-level guardrails for `transaction` blocks:
-
-- the containing module must declare `requires db`
-- the containing module must not declare non-`db` capabilities
+Functions are module-scoped. Unqualified calls resolve in the current module first,
+then named imports.
 
 ---
 
-## Runtime Behavior
+## Modules and Imports
 
-### Expression operator behavior
+```fuse
+# Module import — access via qualified name:
+import Auth from "./auth"
+let token = Auth.create_token(user.id)
 
-Comparison behavior is shared across AST/native backends:
+# Named import — bring specific names into scope:
+import {hash, verify} from "./crypto_util"
+let h = hash("sha256", data)
 
-- `==` / `!=` support same-typed pairs for `Int`, `Float`, `Bool`, `String`, and `Bytes`.
-- `<`, `<=`, `>`, `>=` support numeric pairs (`Int`, `Float`) only.
-- unsupported comparison operand pairs produce runtime errors.
+# Alias import:
+import Helpers as H from "./helpers"
 
-### Validation and boundary enforcement
+# Package root import (from fuse.toml directory):
+import Config from "root:config/defaults"
 
-Validation is applied at runtime in these places:
+# Dependency import (declared in fuse.toml [dependencies]):
+import {validate} from "dep:Validator/lib"
 
-- struct literal construction (`Type(...)`)
-- JSON decode for HTTP body
-- config loading
-- CLI flag binding
-- route parameter parsing
+# Asset imports:
+import Policy from "./POLICY.md"    # Policy is a String
+import Seeds  from "./seed.json"    # Seeds is a decoded runtime value
 
-There is no global "validate on assignment" mode.
-
-#### Default values
-
-Defaults are applied before validation:
-
-- missing field with default -> default is used
-- missing optional field -> `null`
-- explicit `null` stays `null` (even if a default exists)
-
-#### Built-in refinements
-
-Refinements support range, regex, and predicate constraints:
-
-- `String(1..80)` length constraint
-- `String(regex("^[a-z0-9_-]+$"))` pattern constraint
-- `String(1..80, regex("^[a-z]"), predicate(is_slug))` mixed constraints, left-to-right
-- `Int(0..130)` numeric range
-- `Float(0.0..1.0)` numeric range
-
-Rules:
-
-- `regex("...")` is valid on string-like refined bases (`String`, `Id`, `Email`).
-- `predicate(fn_name)` requires a function signature `fn(<base>) -> Bool`.
-
-#### `Id` and `Email`
-
-- `Id` is a non-empty string.
-- `Email` uses a simple `local@domain` check with a `.` in the domain.
-
-### JSON behavior
-
-#### Structs
-
-- encode to JSON objects with declared field names
-- all fields are included (including defaults)
-- `null` represents optional empty value
-
-#### Struct decoding
-
-- missing field with default -> default value
-- missing field with no default -> error
-- optional fields accept missing or `null`
-- unknown fields -> error
-
-#### Enums
-
-Enums use a tagged object format:
-
-```json
-{ "type": "Variant", "data": ... }
+print(Policy)
+print(json.encode(Seeds))
 ```
 
-Rules:
+Asset imports are values, not modules — no namespace, no named exports.
 
-- no payload: omit `data`
-- single payload: `data` is the value
-- multiple payloads: `data` is an array
+### Capabilities
 
-#### Built-in types and generics
+Capabilities gate access to runtime builtins at compile time.
 
-- `String`, `Id`, `Email` -> JSON string
-- `Bytes` -> JSON base64 string (standard alphabet with `=` padding)
-- `Html` -> JSON string via `html.render(...)` output
-- `Bool`, `Int`, `Float` -> JSON number/bool
-- `List<T>` -> JSON array
-- `Map<K,V>` -> JSON object (runtime requires `K = String`)
-- user-defined `struct` and `enum` decode with same validation model as struct literals
-- `Result<T,E>` -> tagged object:
-  - `{"type":"Ok","data":...}` decodes as `Ok(T)`
-  - `{"type":"Err","data":...}` decodes as `Err(E)`
-
-`Bytes` use base64 text at JSON/config/CLI boundaries. Runtime values are raw bytes.
-`Html` values are runtime trees and are not parsed from config/env/CLI.
-
-### Errors and HTTP status mapping
-
-The runtime recognizes a small set of error struct names for standardized HTTP status mapping
-and error JSON formatting.
-
-Canonical names (from `std.Error`):
-
-- `std.Error.Validation`
-- `std.Error`
-- `std.Error.BadRequest`
-- `std.Error.Unauthorized`
-- `std.Error.Forbidden`
-- `std.Error.NotFound`
-- `std.Error.Conflict`
-
-Other names do not participate in standardized mapping/formatting behavior.
-
-### Error JSON shape
-
-Errors are rendered as JSON with a single `error` object:
-
-```json
-{
-  "error": {
-    "code": "validation_error",
-    "message": "validation failed",
-    "fields": [
-      { "path": "email", "code": "invalid_value", "message": "invalid email address" }
-    ]
-  }
-}
+```fuse
+requires db
+requires network
+requires time
+requires crypto
 ```
 
-Rules:
+| Capability | Gates access to |
+|---|---|
+| `db` | `db.*`, `transaction:` |
+| `network` | `serve(...)`, `http.*` |
+| `time` | `time.*` |
+| `crypto` | `crypto.*` |
 
-- `std.Error.Validation` uses `message` and `fields`
-  (list of structs with `path`, `code`, `message`).
-- `std.Error` uses `code` and `message`. Other fields are ignored for JSON output.
-- `std.Error.BadRequest`, `std.Error.Unauthorized`,
-  `std.Error.Forbidden`, `std.Error.NotFound`,
-  `std.Error.Conflict` use their `message` field if present, otherwise a default message.
-- Any other error value renders as `internal_error`.
+Calling an imported function that requires a capability you haven't declared is a
+compile-time error — capabilities don't leak across module boundaries silently.
 
-Status mapping uses the error name first, then `std.Error.status` if present:
+---
 
-- `std.Error.Validation` -> 400
-- `std.Error.BadRequest` -> 400
-- `std.Error.Unauthorized` -> 401
-- `std.Error.Forbidden` -> 403
-- `std.Error.NotFound` -> 404
-- `std.Error.Conflict` -> 409
-- `std.Error` with `status: Int` -> that status
-- anything else -> 500
+## Config
 
-`expr ?! err` behavior:
+```fuse
+config App:
+  port:    Int    = env_int("PORT") ?? 3000
+  host:    String = env("HOST") ?? "0.0.0.0"
+  db_url:  String = env("DATABASE_URL") ?? "sqlite://app.db"
+  debug:   Bool   = false
 
-- `T!E` is `Result<T, E>`.
-- `T!` is a compile-time error (explicit error domains are required).
-- for function/service return boundaries, each error domain must be a declared nominal `type` or `enum`
-
-`expr ?! err` rules:
-
-- If `expr` is `Option<T>` and is `None`, return `Err(err)`.
-- If `expr` is `Result<T, E>` and is `Err`, replace the error with `err`.
-- If `expr ?!` omits `err`, `Result` propagates the existing error.
-- `Option<T> ?!` without an explicit `err` is a compile-time error.
-
-### Config and CLI binding
+app "server":
+  serve(App.port)
+```
 
 Config values resolve in this order:
+1. Environment variable (e.g. `APP_PORT` for `App.port`)
+2. Config file (`config.toml` by default, override with `FUSE_CONFIG`)
+3. Default expression in the `config` block
 
-1. environment variables (override config file)
-2. config file (default `config.toml`, overridable via `FUSE_CONFIG`)
-3. default expressions
+The CLI loads `.env` from the package directory and injects missing variables before
+resolution. Existing env vars are never overridden by `.env`.
 
-The `fuse` CLI also loads `.env` from the package directory (if present) and injects any missing
-variables before this resolution. Existing environment variables are never overridden by `.env`.
+Env var naming: `App.dbUrl` → `APP_DB_URL` (camelCase splits to `SNAKE_CASE`).
 
-Config file format is a minimal TOML-like subset:
+Config values support scalars (`Int`, `Float`, `Bool`, `String`, `Id`, `Email`,
+`Bytes`) and `Option<T>` directly. `List`, `Map`, structs, and enums are accepted as
+JSON text.
 
-```toml
-[App]
-port = 3000
-dbUrl = "sqlite://app.db"
+---
+
+## Services and HTTP
+
+```fuse
+requires network
+
+config App:
+  port: Int = env_int("PORT") ?? 3000
+
+type UserCreate:
+  email: Email
+  name:  String(1..80)
+
+type NotFound:
+  message: String
+
+service Users at "/api":
+  get "/users" -> List<User>:
+    return db.from("users").all<User>()
+
+  get "/users/{id: Id}" -> User!NotFound:
+    let row = db.from("users").where("id", "=", id).one<User>()
+    return row ?! NotFound(message = "user ${id} not found")
+
+  post "/users" body UserCreate -> User!std.Error.Validation:
+    db.from("users").insert(body).exec()
+    return db.from("users").where("email", "=", body.email).one<User>() ?! ...
+
+app "api":
+  serve(App.port)
 ```
 
-Notes:
+Route path params use `{name: Type}`. Supported types for params: scalars and
+`Option<T>` of scalars. Refinement constraints apply at parse time.
 
-- only section headers and `key = value` pairs are supported
-- values are parsed as strings (with basic `"` escapes), then converted using env-var conversion rules
+The `body` keyword binds the JSON request body to `body` in the handler. Unknown
+fields in the body are a validation error.
 
-Env override naming derives from config and field names:
+### Reading request context
 
-- `App.port` -> `APP_PORT`
-- `dbUrl` -> `DB_URL`
-- hyphens become underscores; camelCase splits to `SNAKE_CASE`
-- runtime prints a hint when it detects a likely env-name typo
-  (for example `APP_DBURL` vs expected `APP_DB_URL`)
-
-Type support levels for config values (env and file values):
-
-- **Full**: scalars (`Int`, `Float`, `Bool`, `String`, `Id`, `Email`, `Bytes`) and `Option<T>`.
-- **Structured via JSON text**: `List<T>`, `Map<String,V>`, user-defined `struct`, user-defined `enum`.
-- **Rejected**: `Html`, `Map<K,V>` where `K != String`, `Result<T,E>`.
-
-Compatibility notes:
-
-- `Bytes` must be valid base64 text; invalid base64 is a validation error.
-- for structured values, parse failures (invalid JSON/type mismatch/unknown field) surface as
-  validation errors on the target field path.
-
-CLI binding:
-
-CLI binding is enabled when program args are passed after the file (or after `--`):
-
-```bash
-fuse run file.fuse -- --name=Codex
+```fuse
+service Api at "/":
+  get "/profile" -> Profile:
+    let token  = request.cookie("session") ?! std.Error.Unauthorized(message = "no session")
+    let req_id = request.header("x-request-id")
+    # ... decode token, load profile
 ```
 
-Rules:
+### Setting response headers and cookies
 
-- flags only (no positional arguments)
-- `--flag value` and `--flag=value` are supported
-- `--flag` sets `Bool` to `true`; `--no-flag` sets it to `false`
-- unknown flags are validation errors
-- multiple values for the same flag are rejected
-- binding calls `fn main` from the root module directly; `app` block is ignored when program args are present
+```fuse
+  post "/login" body Credentials -> Session!AuthError:
+    let session = Auth.create(body) ?!
+    response.cookie("session", session.token)
+    response.header("x-custom", "value")
+    return session
 
-Type support levels mirror config/env parsing:
+  post "/logout" -> Map<String, String>:
+    response.delete_cookie("session")
+    return {"status": "ok"}
+```
 
-- **Full**: scalar types and `Option<T>`.
-- **Structured via JSON text**: `List<T>`, `Map<String,V>`, user-defined `struct`, user-defined `enum`.
-- **Rejected**: `Html`, `Map<K,V>` with non-`String` keys, `Result<T,E>`.
+### Error → HTTP status mapping
 
-For `Bytes`, CLI values must be base64 text.
+Return a standard error type to get automatic status codes:
 
-Validation errors are printed as JSON on stderr and usually exit with code 2.
+| Type | Status |
+|---|---|
+| `std.Error.Validation` | 400 |
+| `std.Error.BadRequest` | 400 |
+| `std.Error.Unauthorized` | 401 |
+| `std.Error.Forbidden` | 403 |
+| `std.Error.NotFound` | 404 |
+| `std.Error.Conflict` | 409 |
+| `std.Error` with `status: Int` | that status |
+| anything else | 500 |
 
-`fuse` CLI wrapper output contract (`check|run|build|test`):
+Error JSON shape:
 
-- emits stderr step markers: `[command] start` and `[command] ok|failed|validation failed`
-- when AOT output is requested, `fuse build` emits deterministic progress stages:
-  `[build] aot [n/6] ...`
-- `--diagnostics json` switches diagnostics on stderr to JSON Lines:
-  - diagnostic entries:
-    `{"kind":"diagnostic","level":"error|warning","message":"...","path":"...","line":N,"column":N,"span_start":N,"span_end":N}`
-  - command-step entries:
-    `{"kind":"command_step","command":"check|run|build|test","message":"start|ok|failed|validation failed|..."}`
-  - wrapper/CLI entries outside compiler diagnostics:
-    `{"kind":"cli_message","level":"error|warning","code?":"...","message":"..."}`
-- runtime execution failures reported through the validation envelope use stable field codes where
-  possible, including `runtime_config_decode`, `runtime_type_spec_error`,
-  `runtime_null_access`, `runtime_index_bounds`, `runtime_invalid_index`, `runtime_field_access`,
-  `runtime_invalid_assignment_target`, `runtime_task_expected`, `runtime_range_error`,
-  `runtime_type_error`, and `runtime_invalid_arguments`; unmatched failures fall back to
-  `runtime_error`
-- config/env decode failures that arise during structured config binding remain field-addressed
-  validation payloads (`error.code="validation_error"`) and usually use path-local field code
-  `invalid_value` with the failing config path and decode message
-- direct AOT binaries do not emit JSON diagnostics, but their fatal envelopes preserve the same
-  stable runtime message taxonomy for config/env decode failures and operator-path failures
-- wrapper-side JSON `cli_message` failures use stable codes for common command/manifest/dev/file
-  failure classes, including `wrapper_unknown_command`, `wrapper_unknown_backend`,
-  `wrapper_missing_subcommand`, `wrapper_unknown_subcommand`, `wrapper_manifest_missing`,
-  `wrapper_manifest_required`, `wrapper_cwd`, `wrapper_file_read`, `wrapper_file_write`,
-  `wrapper_dev_error`, `wrapper_run_error`, `wrapper_runtime_setup`, and
-  `wrapper_format_aborted`
-- keeps JSON validation payloads uncolored/machine-readable
-- `run` CLI argument validation failures exit with code `2`
+```json
+{ "error": { "code": "not_found", "message": "user not found" } }
+```
+
+`std.Error.Validation` adds a `fields` array:
+
+```json
+{ "error": { "code": "validation_error", "message": "...",
+             "fields": [{ "path": "email", "code": "invalid_value", "message": "..." }] } }
+```
 
 ---
 
-## HTTP Runtime
+## HTTP Client
 
-### Routing
+```fuse
+requires network
 
-- paths are split on `/` and matched segment-by-segment
-- route params use `{name: Type}` and must occupy the whole segment
-- params parse with env-like scalar/optional/refined rules
-- `body` introduces a JSON request body bound to `body` in the handler
+fn fetch_user(id: String) -> Map<String, String>!http.error:
+  let resp = http.get(
+    "https://api.example.com/users/${id}",
+    headers = {"Authorization": "Bearer ${token}"}
+  ) ?!
+  return json.decode(resp.body)
 
-### Response
+fn post_event(url: String, payload: String) -> Bool!http.error:
+  let resp = http.post(url, body = payload, timeout_ms = 5000) ?!
+  return resp.status == 200
+```
 
-- successful values encode as JSON with `Content-Type: application/json` by default
-- if route return type is `Html` (or `Result<Html, E>` on success), response is rendered once with
-  `Content-Type: text/html; charset=utf-8`
-- route handlers may append response headers via `response.header(name, value)`
-- route handlers may manage cookies via `response.cookie(name, value)` and
-  `response.delete_cookie(name)` (emitted as `Set-Cookie` headers)
-- `Result` errors are mapped using the status rules above
-- unsupported HTTP methods return `405` with `internal_error` JSON
-- no HTMX-specific runtime mode: HTMX-style flows are ordinary `Html` route returns
+API:
+- `http.get(url, headers?, timeout_ms?) -> http.response!http.error`
+- `http.post(url, body, headers?, timeout_ms?) -> http.response!http.error`
+- `http.request(method, url, body?, headers?, timeout_ms?) -> http.response!http.error`
 
-### Request primitives
+`http.response` fields: `method`, `url`, `status`, `headers`, `body`
+`http.error` fields: `code`, `message`, `method`, `url`, `status?`, `headers`, `body?`
 
-- route handlers may read inbound headers with `request.header(name)` (case-insensitive)
-- route handlers may read cookie values with `request.cookie(name)`
-- `request.*` and `response.*` primitives are only valid while evaluating an HTTP route handler
+Error codes: `http_status` (non-2xx), `tls_error`, `timeout`, `network_error`,
+`invalid_url`, `invalid_request`, `invalid_response`, `unsupported_scheme`.
 
-### Observability baseline
-
-Request ID propagation:
-
-- each HTTP request resolves one request ID with precedence:
-  1. inbound `x-request-id` (if valid)
-  2. inbound `x-correlation-id` (if valid)
-  3. runtime-generated ID (`req-<hex>`)
-- runtime normalizes the resolved value into request headers, so
-  `request.header("x-request-id")` returns the lifecycle request ID inside route handlers
-- runtime emits `X-Request-Id` on HTTP responses for runtime-owned handlers and runtime-generated
-  status/error responses
-- Vite proxy fallback forwards `X-Request-Id` upstream and injects it into the proxied response
-
-Structured request logging mode:
-
-- opt-in via `FUSE_REQUEST_LOG=structured` (`1`/`true` are also accepted)
-- emits one JSON line to stderr per handled request with stable fields:
-  `event`, `runtime`, `request_id`, `method`, `path`, `status`, `duration_ms`, `response_bytes`
-- disabled by default; does not change runtime semantics
-- release AOT binaries support optional default posture:
-  if `FUSE_AOT_REQUEST_LOG_DEFAULT` is truthy and `FUSE_REQUEST_LOG` is unset,
-  runtime sets `FUSE_REQUEST_LOG=structured` before startup
-
-Metrics hook extension point (non-semantic):
-
-- opt-in via `FUSE_METRICS_HOOK=stderr`
-- emits one line per handled request on stderr as:
-  `metrics: <json>`
-- stable JSON fields:
-  `metric` (`http.server.request`), `runtime`, `request_id`, `method`, `path`, `status`,
-  `duration_ms`
-- unsupported/empty hook values are treated as no-op
-- hook emission is best-effort and must not change request/response behavior
+`timeout_ms` defaults to `30000`. `0` disables the timeout. Redirects are manual
+(`3xx` surfaces as `http_status`).
 
 ---
 
-## Builtins
+## Database
 
-- `print(value)` prints stringified value to stdout
-- `input(prompt: String = "") -> String` prints optional prompt and reads one line from stdin
-- `log(...)` writes log lines to stderr (see Logging)
-- `db.exec/query/one` execute SQL against configured DB
-- `db.from(table)` builds parameterized queries
-- `transaction:` opens a constrained DB transaction scope (`BEGIN`/`COMMIT`/`ROLLBACK`)
-- `assert(cond, message?)` throws runtime error when `cond` is false
-- `env(name: String) -> String?` returns env var or `null`
-- `env_int(name: String) -> Int?` returns parsed env var as `Int` or `null`
-- `env_float(name: String) -> Float?` returns parsed env var as `Float` or `null`
-- `env_bool(name: String) -> Bool?` returns parsed env var as `Bool` or `null`
-- `asset(path: String) -> String` resolves to hashed/static public URL when asset map is configured
-- `serve(port)` starts HTTP server on `FUSE_HOST:port`
-- `request.header(name: String) -> String?` reads inbound HTTP headers
-- `request.cookie(name: String) -> String?` reads inbound HTTP cookie values
-- `response.header(name: String, value: String)` appends response headers
-- `response.cookie(name: String, value: String)` appends HTTP-only session cookies
-- `response.delete_cookie(name: String)` emits cookie expiration headers
-- `http.request(method: String, url: String, body?: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error`
-- `http.get(url: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error`
-- `http.post(url: String, body: String, headers?: Map<String, String>, timeout_ms?: Int) -> http.response!http.error`
-- HTML tag builtins (`html`, `head`, `body`, `div`, `meta`, `button`, ...)
-- `html.text`, `html.raw`, `html.node`, `html.render`
-- `svg.inline(path: String) -> Html`
-- `json.encode(value) -> String` serializes a value to a JSON string
-- `json.decode(text: String) -> Value` parses a JSON string into a runtime value
-- `time.now() -> Int` returns Unix epoch milliseconds
-- `time.sleep(ms: Int)` blocks the current execution for `ms` milliseconds
-- `time.format(epoch: Int, fmt: String) -> String` formats epoch milliseconds (UTC)
-- `time.parse(text: String, fmt: String) -> Int!Error` parses text to epoch milliseconds
-- `crypto.hash(algo: String, data: Bytes) -> Bytes` supports `sha256` / `sha512`
-- `crypto.hmac(algo: String, key: Bytes, data: Bytes) -> Bytes` supports `sha256` / `sha512`
-- `crypto.random_bytes(n: Int) -> Bytes` returns cryptographically secure random bytes
-- `crypto.constant_time_eq(a: Bytes, b: Bytes) -> Bool` compares bytes in constant-time form
+```fuse
+requires db
 
-`input` behavior notes:
+config App:
+  db_url: String = env("FUSE_DB_URL") ?? "sqlite://app.db"
 
-- prompt text is written without a trailing newline
-- trailing `\n`/`\r\n` is trimmed from the returned line
-- in non-interactive mode with no stdin data, runtime fails with:
-  `input requires stdin data in non-interactive mode`
-- `input()` / `input("...")` resolve to the CLI input builtin; HTML input tags remain available
-  through tag-form calls such as `input(type="text")`
+migration "create_users":
+  db.exec("""
+    create table if not exists users (
+      id   text primary key,
+      name text not null,
+      role text not null default 'member'
+    )
+  """)
 
-Typed env parsing notes:
+type User:
+  id:   Id
+  name: String
+  role: String
 
-- `env_int` / `env_float` / `env_bool` return `null` when the variable is unset.
-- when the variable is set but parsing fails, runtime raises a fatal error.
+fn all_users() -> List<User>:
+  return db.from("users").select(["id", "name", "role"]).all<User>()
 
-HTTP client notes:
+fn find_user(id: Id) -> User?:
+  return db.from("users").where("id", "=", id).select(["id", "name", "role"]).one<User>()
 
-- outbound client calls are blocking runtime operations
-- supported outbound schemes are `http://` and validated `https://`; any other well-formed scheme
-  returns `Err(http.error)` with `code = "unsupported_scheme"`
-- `2xx` responses return `Ok(http.response)`; non-`2xx` responses return `Err(http.error)` with
-  `code = "http_status"`
-- HTTPS handshake and certificate-validation failures return `Err(http.error)` with
-  `code = "tls_error"`
-- `timeout_ms` defaults to `30000`; `0` disables the timeout; negative values are invalid requests
-- timeout failures use `code = "timeout"` and include the failing phase in the message when the
-  runtime can distinguish it (`connect`, `tls handshake`, `write`, or `read`)
-- request/response bodies are `String`
-- request headers are sent after lowercase normalization; `host`, `connection`, and
-  `content-length` are reserved and rejected if supplied by user code
-- malformed URLs use `code = "invalid_url"`; other request-shaping failures such as invalid
-  timeout/header/method data use `code = "invalid_request"`
-- DNS/connect failures use `code = "network_error"`; malformed HTTP response bytes use
-  `code = "invalid_response"`
-- redirects remain manual in `0.9.x`; `3xx` responses surface through the same `http_status`
-  error contract as other non-`2xx` responses
-- `http.response` fields: `method: String`, `url: String`, `status: Int`,
-  `headers: Map<String, String>`, `body: String`
-- `http.error` fields: `code: String`, `message: String`, `method: String`, `url: String`,
-  `status: Int?`, `headers: Map<String, String>`, `body: String?`
-- response/error header maps expose lowercase header names
-- when structured request logs or stderr metrics hooks are enabled, outbound requests emit
-  `http.client.request` events carrying runtime, method, URL, outcome, status, response bytes,
-  and error-code fields where available
+fn create_user(id: Id, name: String) -> Bool:
+  db.from("users").insert(User(id = id, name = name, role = "member")).exec()
+  return true
+```
 
-Imported asset runtime values:
+### Raw SQL
 
-- `import Docs from "./README.md"` evaluates to an immutable `String` containing the exact UTF-8
-  file contents
-- `import SeedData from "./seed.json"` evaluates to an immutable runtime value equivalent to
-  `json.decode(text)`
-- asset loading and JSON parsing happen during load/check; successful execution does not perform an
-  additional runtime file read for imported assets
-- missing files, unreadable files, invalid UTF-8, and invalid JSON fail during load/check
-- relative, `root:`, and `dep:` resolution semantics match ordinary import resolution
-- asset imports are distinct from `asset(path)` public-URL lookup and `svg.inline(path)` HTML loading
+```fuse
+# Execute (no return):
+db.exec("delete from users where role = ?", ["banned"])
 
-Compile-time sugar affecting HTML builtins:
+# All rows as List<Map<String, Value>>:
+let rows = db.query("select id, name from users where active = ?", [true])
 
-- HTML block syntax (`div(): ...`) lowers to normal calls with explicit attrs + `List<Html>` children
-- bare string literals in HTML blocks lower to `html.text(...)`
-- `if`/`for` child statements in HTML blocks lower to internal list-producing control expressions
-- attribute shorthand (`div(class=expr)`) lowers to attrs maps
-- comma-separated HTML attrs and map-literal HTML attrs are compile-time parser errors
-  (`FUSE_HTML_ATTR_COMMA`, `FUSE_HTML_ATTR_MAP`); runtime semantics are unchanged
+# First row or null:
+let row = db.one("select * from users where id = ?", [id])
+```
 
----
+### Query builder
 
-## Database (SQLite)
+```fuse
+# Typed reads — columns must match the target type fields:
+let users = db.from("users")
+  .select(["id", "name", "role"])
+  .where("role", "=", "admin")
+  .order_by("name", "asc")
+  .limit(20)
+  .all<User>()
 
-Database access is intentionally minimal and currently uses SQLite via a pooled set of
-connections.
+# Write operations:
+db.from("users").insert(user).exec()
+db.from("users").upsert(user).exec()
+db.from("users").where("id", "=", id).update("name", new_name).exec()
+db.from("users").where("id", "=", id).delete().exec()
 
-Configuration sources:
+let n = db.from("users").where("role", "=", "admin").count()
+```
 
-- `FUSE_DB_URL`
-- `App.dbUrl` if config has been loaded
-- `FUSE_DB_POOL_SIZE` (default `1`) for pool sizing
-- `App.dbPoolSize` as optional fallback when `FUSE_DB_POOL_SIZE` is unset
+`where` operators: `=`, `!=`, `<`, `<=`, `>`, `>=`, `like`, `in`.
+`in` expects a non-empty list and expands to `IN (?, ?, ...)`.
 
-URL format:
+### Transactions
 
-- `sqlite://path` or `sqlite:path`
+```fuse
+# Modules using transaction: must have requires db and no other capability.
+requires db
 
-Builtins:
+fn transfer(from_id: Id, to_id: Id, amount: Int):
+  transaction:
+    db.from("accounts").where("id", "=", from_id).update("balance", balance - amount).exec()
+    db.from("accounts").where("id", "=", to_id).update("balance", balance + amount).exec()
+  # commits on success, rolls back if the block fails
+```
 
-- `db.exec(sql, params?)` executes SQL batch (no return value)
-- `db.query(sql, params?)` returns `List<Map<String, Value>>`
-- `db.one(sql, params?)` returns first row map or `null`
-- `db.from(table)` returns `Query` builder
-- `transaction:` opens a transaction, executes its block, commits on success, and rolls back on
-  block failure
-
-Query builder methods (immutable style; each returns a new `Query`):
-
-- `Query.select(columns)`
-- `Query.where(column, op, value)`
-- `Query.order_by(column, dir)` where `dir` is `asc`/`desc`
-- `Query.limit(n)` where `n >= 0`
-- `Query.insert(structValue)` builds `insert into ...` from struct fields
-- `Query.upsert(structValue)` builds `insert or replace into ...` from struct fields
-- `Query.update(column, value)` builds/extends `set` clauses
-- `Query.delete()` builds `delete from ...`
-- `Query.count()` executes a `count(*)` query and returns `Int`
-- `Query.one()` returns first row `Map<String, Value>?`
-- `Query.all()` returns `List<Map<String, Value>>`
-- `Query.one<T>()` returns `T?` using boundary-style struct decode/validation for each row
-- `Query.all<T>()` returns `List<T>` using boundary-style struct decode/validation for each row
-- `Query.exec()`
-- `Query.sql()` and `Query.params()` for inspection/debugging
-
-Typed query constraints:
-
-- typed query forms are valid only on `one<T>()` and `all<T>()`
-- the type argument must be a declared `type`
-- typed query forms require `select([...])` with string-literal columns before `one<T>()`/`all<T>()`
-- selected column names must match the target type field names at compile time
-- qualified column names are matched by their final segment (`users.id` -> `id`) during typed
-  field validation
-- typed-query compiler diagnostics use codes `FUSE_TYPED_QUERY_CALL`,
-  `FUSE_TYPED_QUERY_TYPE_ARG`, `FUSE_TYPED_QUERY_SELECT`, and
-  `FUSE_TYPED_QUERY_FIELD_MISMATCH` in JSON diagnostics output
-
-Parameter binding:
-
-- SQL uses positional `?` placeholders with `List` params
-- supported param types: `null`, `Int`, `Float`, `Bool`, `String`, `Bytes`
-  (boxed/results are unwrapped)
-- `in` expects non-empty list and expands to `IN (?, ?, ...)`
-- runtime DB failures include SQL text and a parameter summary
-
-Identifier constraints:
-
-- table/column names must be identifiers (`col` or `table.col`)
-- `where` operators: `=`, `!=`, `<`, `<=`, `>`, `>=`, `like`, `in` (case-insensitive)
-- `order_by` direction: `asc` or `desc`
-
-Value mapping:
-
-- `NULL` -> `null`
-- integers -> `Int`
-- reals -> `Float`
-- text -> `String`
-- blobs -> `Bytes`
-
-Connection pool behavior:
-
-- DB calls use pooled SQLite connections.
-- the active connection is pinned for migration and `transaction:` scopes (`BEGIN`/`COMMIT`/`ROLLBACK`).
-- pool-size values must be integer `>= 1`; invalid values report runtime/config errors.
+Inside `transaction:`: no `spawn`, no `await`, no early `return`, no `break`/`continue`.
 
 ### Migrations
 
-`migration <name>:` declares a migration block.
+```fuse
+migration "001_create_users":
+  db.exec("create table if not exists users (id text primary key, name text)")
 
-Run migrations with:
-
-```bash
-fuse migrate path/to/file.fuse
+migration "002_add_role":
+  db.exec("alter table users add column role text not null default 'member'")
 ```
 
-Rules:
-
-- migrations are collected from all loaded modules
-- run order is ascending by migration name
-- applied migrations are tracked in `__fuse_migrations(package, name)` with a composite primary key
-- migration package namespace is sourced from `[package].name` in the nearest `fuse.toml`
-  (defaults to empty string when absent)
-- legacy single-column history tables (`id` primary key) are upgraded in-place to `(package, name)`
-  without re-running already-applied single-package migrations
-- only up migrations exist today (no down/rollback)
-- migrations execute via AST interpreter
-
-### Tests
-
-`test "name":` declares a test block.
-
-Run tests with:
+Run pending migrations:
 
 ```bash
-fuse test path/to/file.fuse
-fuse test --filter smoke path/to/file.fuse
+fuse migrate src/main.fuse
 ```
 
-Rules:
+Migrations run in ascending name order. Applied migrations are tracked in
+`__fuse_migrations(package, name)`.
 
-- tests are collected from all loaded modules
-- run order is ascending by test name
-- `--filter <pattern>` runs only tests whose names contain the pattern (case-sensitive substring match)
-- tests execute via AST interpreter
-- failures report non-zero exit
+---
 
-Project check incremental mode:
+## Error Handling
 
-- `fuse check` writes `.fuse/build/check.meta` (or `.fuse/build/check.strict.meta` with `--strict-architecture`)
-- warm checks reuse module content hashes from this metadata and skip unchanged-module rechecks
+### ?! — bang-chain propagation
+
+```fuse
+# Propagate Result errors up the call stack:
+fn get_user(id: Id) -> User!NotFound:
+  let row = db.from("users").where("id", "=", id).one<User>()
+  return row ?! NotFound(message = "not found")
+
+# Option ?! requires an explicit error value:
+let token = request.cookie("session") ?! std.Error.Unauthorized(message = "no session")
+
+# Result ?! without a value propagates the existing error:
+let data = fetch_remote() ?!
+
+# Chain multiple error domains on the return type:
+fn create(input: Input) -> Output!ValidationError!DbError: ...
+```
+
+### Explicit match
+
+```fuse
+match db.from("users").where("id", "=", id).one<User>():
+  None    -> return Err(NotFound(message = "not found"))
+  Some(u) -> return Ok(u)
+
+match http.get(url):
+  Ok(resp)  -> return json.decode(resp.body)
+  Err(e)    -> log("error", "fetch failed", e.code)
+```
+
+### Error types
+
+Declare your own error types as regular structs:
+
+```fuse
+type NotFound:
+  message: String
+
+type AuthError:
+  code:    String
+  message: String
+```
+
+Use `std.Error.*` for automatic HTTP status mapping (see Services section).
 
 ---
 
 ## Concurrency
 
-`spawn:` creates a task and returns `Task<T>` where `T` is block result.
-Spawned tasks run on a shared worker pool. Execution is asynchronous relative to the caller
-and may overlap with other spawned tasks.
+```fuse
+fn fetch_all(ids: List<Id>) -> List<User>:
+  # Spawn parallel tasks:
+  let t1 = spawn:
+    load_from_db(ids[0])
+  let t2 = spawn:
+    load_from_db(ids[1])
 
-`await expr` waits on a task and yields its result.
+  # Await results — both must be awaited before scope exit:
+  let u1 = await t1
+  let u2 = await t2
+  return [u1, u2]
+```
 
-Structured concurrency is enforced at compile time:
+Rules enforced at compile time:
+- Detached task expressions are rejected (must assign to a binding).
+- A spawned task binding must be `await`ed before leaving its scope.
+- Spawned task bindings cannot be reassigned before `await`.
 
-- detached task expressions are invalid
-- spawned task bindings must be awaited before scope exit
-- spawned task bindings cannot be reassigned before `await`
-- `transaction:` blocks reject `spawn` and `await`
+Inside `spawn:` blocks, the following are rejected: `box` access, `db.*`, `serve`,
+`print`, `log`, `env*`, `asset`, `svg.inline`, and mutation of captured outer bindings.
+Keep side effects on the parent path; use `spawn` for pure compute.
 
-`Task<T>` is an opaque runtime type; task values are consumed via `await` only.
+### Shared mutable state
 
-Spawn determinism restrictions are enforced at compile time by semantic analysis.
-See [Spawn static restrictions](fls.md#spawn-static-restrictions) for the full list.
+```fuse
+let counter = box 0       # shared mutable cell
 
-`box expr` creates a shared mutable cell. Boxed values are transparently dereferenced in most
-expressions; assigning boxed bindings updates shared cell state. `spawn` blocks cannot capture or
-use boxed state.
+# Update from multiple call sites:
+counter = counter + 1
+
+# spawn blocks cannot capture or use boxed state.
+```
 
 ---
 
-## Loops, Indexing, and Ranges
+## HTML DSL
 
-### Loops
+```fuse
+requires network
 
-- `for` iterates over `List<T>` (yields each element) and `Map<K, V>` (yields values only; keys are not available in `for` loop bodies)
-- `break` exits nearest loop
-- `continue` skips to next iteration
+component Layout:
+  return html():
+    head():
+      meta(charset="utf-8")
+      title(): "My App"
+    body(class="app"):
+      children          # slot for child content
 
-### Indexing
+component Button:
+  let label = attrs["label"] ?? "Click"
+  return button(attrs class="btn"):
+    label
 
-- `list[idx]` reads list element; `idx` must be in-bounds `Int`
-- out-of-bounds list access raises runtime error
-- `map[key]` reads map element; missing key yields `null`
+fn home_page() -> Html:
+  return Layout():
+    h1(): "Welcome"
+    Button(label="Get started")
+    div(class="list"):
+      for user in users:
+        div(class="item"): user.name
+```
 
-Assignment targets allow:
+### Component rules
 
-- `list[idx] = value` (bounds-checked)
-- `map[key] = value` (insert/overwrite)
+- `component Name:` body must return `Html`.
+- Implicit params: `attrs: Map<String, String>`, `children: List<Html>`.
+- Use `attrs` as pass-through presentation attributes on the outer boundary element.
+- Use `children` as the content slot for already-rendered `Html`.
 
-Optional access in assignment targets (for example `foo?.bar = x`, `items?[0] = x`) errors when base is `null`.
+### Attribute shorthand
 
-### Ranges
+```fuse
+div(class="hero" id="main")         # space-separated, no commas
+button(aria_label="Close" type="button")   # _ → - for aria-* and data-* attrs
+```
 
-`a..b` evaluates to inclusive numeric `List`.
+`aria-*` attribute names and values are validated at compile time. Unknown `aria-*`
+names, wrong bool values (`aria-hidden` only accepts `"true"` / `"false"`), and
+`aria-role` (use `role` instead) are compile-time errors.
 
-- only numeric bounds are allowed
-- if `a > b`, runtime error
-- float ranges step by `1.0` (for example `1.5..3.5` -> `[1.5, 2.5, 3.5]`)
+### HTML builtins
+
+`html.text(s)`, `html.raw(s)`, `html.node(tag, attrs, children)`, `html.render(h) -> String`
+`svg.inline(path: String) -> Html` (requires `FUSE_SVG_DIR` or package-relative path)
+
+Bare string literals in HTML blocks lower to `html.text(...)` automatically.
+
+---
+
+## Testing
+
+```fuse
+test "add works":
+  assert(1 + 1 == 2)
+
+test "user validation rejects short names":
+  let result = validate_name("")
+  match result:
+    Err(_) -> assert(true)
+    Ok(_)  -> assert(false, "expected error")
+
+test "db round-trip":
+  db.exec("delete from users")
+  create_user("u1", "Alice")
+  let u = find_user("u1")
+  assert(u?.name == "Alice")
+```
+
+```bash
+fuse test src/main.fuse
+fuse test --filter "validation" src/main.fuse   # substring match, case-sensitive
+```
+
+Tests run in ascending name order via the AST interpreter.
 
 ---
 
 ## Logging
 
-`log` is a minimal runtime logging builtin shared by all backends.
+```fuse
+log("server started")                        # INFO
+log("warn", "high memory usage")             # WARN
+log("error", "db connection failed")         # ERROR
+log("debug", "request received", request)    # structured JSON (2+ args after level)
+```
 
-Usage:
+Output format: `[LEVEL] message` on stderr. ANSI color respects `FUSE_COLOR` / `NO_COLOR`.
 
-- `log("message")` logs at `INFO`
-- `log("warn", "message")` logs at `WARN`
-- if there are 2+ args and first arg is known level (`trace`, `debug`, `info`, `warn`, `error`),
-  it is treated as level; the rest are stringified and joined with spaces
-- if there is at least one extra argument after the message, `log` emits JSON
+`FUSE_LOG` sets the minimum level (default `info`). Levels: `trace`, `debug`, `info`,
+`warn`, `error`.
 
-Output:
+Structured log output (when a data argument is present):
 
-- `[LEVEL] message` to stderr
-  (`LEVEL` token may be ANSI-colored; honors `FUSE_COLOR=auto|always|never` and `NO_COLOR`)
-- JSON logs are emitted as a single stderr line
-
-Filtering:
-
-- `FUSE_LOG` sets minimum level (default `info`)
-
-Structured logging:
-
-- `log("info", "message", data)` emits JSON:
-  `{"level":"info","message":"message","data":<json>}`
-- if multiple data values are provided, `data` is a JSON array
+```json
+{"level":"debug","message":"request received","data":{...}}
+```
 
 ---
 
-## Tooling and Package Commands
+## CLI Apps
 
-Common package commands:
+```fuse
+fn main(name: String = "world", count: Int = 1):
+  for _ in 1..count:
+    print("Hello, ${name}!")
 
-- `fuse check` — parse and semantic-check a package
-- `fuse run` — run a package
-- `fuse dev` — run in watch/dev mode with live reload
-- `fuse test` — run test blocks
-- `fuse build` — compile to a native binary
-- `fuse clean --cache` — remove `.fuse-cache` directories under a selected root
-- `fuse fmt` — format a source file
-- `fuse openapi` — emit an OpenAPI JSON document
-- `fuse migrate` — execute pending migration blocks
-- `fuse lsp` — start the language server
+app "hello":
+  main()
+```
 
-Useful flags:
+```bash
+fuse run main.fuse -- --name=FUSE --count=3
+```
 
-- `fuse build --clean` — remove `.fuse/build` before building
-- `--workspace` — check all packages under the current directory
-- `--strict-architecture` — enable architectural purity checks
-- `--diagnostics json` — emit diagnostics as JSON Lines on stderr
+CLI binding rules:
+- Flags only, no positional args.
+- `--flag value` and `--flag=value` both work.
+- `--flag` sets `Bool` to `true`; `--no-flag` sets it to `false`.
+- Unknown flags are validation errors (exit code 2).
+- When CLI args are present, `app` is bypassed and `fn main` is called directly.
 
-`fuse.toml` manifest sections:
+---
 
-| Section | Purpose |
+## Assets
+
+```fuse
+import Policy from "./POLICY.md"     # immutable String — exact UTF-8 contents
+import Seeds  from "./seed.json"     # decoded runtime value (like json.decode result)
+
+fn show_policy() -> Html:
+  return pre(): Policy
+
+fn seed_db():
+  for row in Seeds:
+    db.from("users").insert(row).exec()
+```
+
+Asset imports are values, not modules. Only `import Name from "path.ext"` is
+supported for asset files (no named or aliased asset imports).
+
+---
+
+## Builtins Reference
+
+### I/O
+
+| Builtin | Signature | Description |
+|---|---|---|
+| `print` | `(value) -> ()` | Print stringified value to stdout |
+| `input` | `(prompt: String = "") -> String` | Read one line from stdin (trims trailing newline) |
+| `log` | `(level?, message, data?) -> ()` | Write to stderr (see Logging) |
+
+### Environment
+
+| Builtin | Returns | Description |
+|---|---|---|
+| `env(name)` | `String?` | Env var value or `null` |
+| `env_int(name)` | `Int?` | Parsed env var or `null`; fatal if set but not parseable |
+| `env_float(name)` | `Float?` | Parsed env var or `null`; fatal if set but not parseable |
+| `env_bool(name)` | `Bool?` | Parsed env var or `null`; fatal if set but not parseable |
+
+### JSON
+
+| Builtin | Signature | Description |
+|---|---|---|
+| `json.encode` | `(value) -> String` | Serialize any value to JSON |
+| `json.decode` | `(text: String) -> Value` | Parse JSON string to runtime value |
+
+### Time (`requires time`)
+
+| Builtin | Signature | Description |
+|---|---|---|
+| `time.now` | `() -> Int` | Unix epoch milliseconds |
+| `time.sleep` | `(ms: Int)` | Block for ms milliseconds |
+| `time.format` | `(epoch: Int, fmt: String) -> String` | Format epoch ms (UTC) |
+| `time.parse` | `(text: String, fmt: String) -> Int!Error` | Parse to epoch ms |
+
+### Crypto (`requires crypto`)
+
+| Builtin | Signature | Description |
+|---|---|---|
+| `crypto.hash` | `(algo: String, data: Bytes) -> Bytes` | `sha256` / `sha512` |
+| `crypto.hmac` | `(algo: String, key: Bytes, data: Bytes) -> Bytes` | HMAC |
+| `crypto.random_bytes` | `(n: Int) -> Bytes` | Cryptographically secure random |
+| `crypto.constant_time_eq` | `(a: Bytes, b: Bytes) -> Bool` | Timing-safe compare |
+
+### Database (`requires db`)
+
+| Builtin | Signature | Description |
+|---|---|---|
+| `db.exec` | `(sql, params?)` | Execute SQL, no return value |
+| `db.query` | `(sql, params?)` | `List<Map<String, Value>>` |
+| `db.one` | `(sql, params?)` | `Map<String, Value>?` |
+| `db.from` | `(table: String) -> Query` | Start a query builder chain |
+| `transaction:` | block | BEGIN/COMMIT/ROLLBACK scope |
+| `assert` | `(cond: Bool, message?: String)` | Runtime error when `cond` is false |
+
+### HTTP server (`requires network`)
+
+| Builtin | Description |
 |---|---|
-| `[package]` | Entry source file (`entry`), app/service name (`app`), runtime backend (`backend`) |
-| `[build]` | Build outputs: `native_bin` binary path, `openapi` JSON output path |
-| `[serve]` | Server defaults: `static_dir` for static file serving |
-| `[assets]` | Named asset entries (CSS, JS) and `watch` flag |
-| `[assets.hooks]` | Build hooks for asset processing |
-| `[vite]` | Vite dev server integration settings |
-| `[dependencies]` | Package dependencies for `dep:` import paths |
+| `serve(port: Int)` | Start HTTP server on `FUSE_HOST:port` |
+| `request.header(name)` | Inbound header value (case-insensitive), `String?` |
+| `request.cookie(name)` | Inbound cookie value, `String?` |
+| `response.header(name, value)` | Append response header |
+| `response.cookie(name, value)` | Append `Set-Cookie` |
+| `response.delete_cookie(name)` | Emit cookie expiration header |
+
+### HTTP client (`requires network`)
+
+| Builtin | Signature |
+|---|---|
+| `http.get` | `(url, headers?, timeout_ms?) -> http.response!http.error` |
+| `http.post` | `(url, body, headers?, timeout_ms?) -> http.response!http.error` |
+| `http.request` | `(method, url, body?, headers?, timeout_ms?) -> http.response!http.error` |
+
+### Assets and HTML
+
+| Builtin | Description |
+|---|---|
+| `asset(path: String) -> String` | Resolve hashed public URL (requires `FUSE_ASSET_MAP`) |
+| `svg.inline(path: String) -> Html` | Inline SVG as `Html` |
+| `html.text(s: String) -> Html` | Text node |
+| `html.raw(s: String) -> Html` | Unescaped HTML node |
+| `html.render(h: Html) -> String` | Render `Html` to string |
 
 ---
 
-## Runtime Environment Variables
+## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `FUSE_DB_URL` | — | Database connection URL (`sqlite://path`) |
+| `FUSE_DB_URL` | — | Database URL (`sqlite://path`) |
+| `DATABASE_URL` | — | Fallback when `FUSE_DB_URL` is unset |
 | `FUSE_DB_POOL_SIZE` | `1` | SQLite connection pool size |
 | `FUSE_CONFIG` | `config.toml` | Config file path |
 | `FUSE_HOST` | `127.0.0.1` | HTTP server bind host |
-| `FUSE_SERVICE` | — | Selects service when multiple are declared |
-| `FUSE_MAX_REQUESTS` | — | Stop server after N requests (useful for tests) |
-| `FUSE_LOG` | `info` | Minimum log level (`trace`, `debug`, `info`, `warn`, `error`) |
-| `FUSE_COLOR` | `auto` | ANSI color mode (`auto`, `always`, `never`) |
-| `NO_COLOR` | — | Disables ANSI color when set (any value) |
-| `FUSE_REQUEST_LOG` | — | Set to `structured` (or `1`/`true`) for JSON request logging on stderr |
-| `FUSE_METRICS_HOOK` | — | Set to `stderr` for per-request metrics lines |
-| `FUSE_DEV_RELOAD_WS_URL` | — | Enables dev HTML script injection (`/__reload` client) with reload + compile-error overlay events |
-| `FUSE_OPENAPI_JSON_PATH` | — | Enables built-in OpenAPI JSON endpoint at this path |
-| `FUSE_OPENAPI_UI_PATH` | — | Enables built-in OpenAPI UI at this path |
-| `FUSE_ASSET_MAP` | — | Logical-path to public-URL mappings for `asset(path)` |
-| `FUSE_VITE_PROXY_URL` | — | Fallback proxy for unknown routes to Vite dev server |
+| `FUSE_SERVICE` | — | Select service when multiple are declared |
+| `FUSE_MAX_REQUESTS` | — | Stop server after N requests (useful in tests) |
+| `FUSE_LOG` | `info` | Minimum log level (`trace`/`debug`/`info`/`warn`/`error`) |
+| `FUSE_COLOR` | `auto` | ANSI color (`auto`/`always`/`never`) |
+| `NO_COLOR` | — | Disable ANSI color when set |
+| `FUSE_REQUEST_LOG` | — | `structured` for JSON request logs on stderr |
+| `FUSE_METRICS_HOOK` | — | `stderr` for per-request metrics lines |
+| `FUSE_OPENAPI_JSON_PATH` | — | Serve OpenAPI JSON at this path |
+| `FUSE_OPENAPI_UI_PATH` | — | Serve OpenAPI UI at this path |
+| `FUSE_ASSET_MAP` | — | Logical→public URL mappings for `asset()` |
+| `FUSE_VITE_PROXY_URL` | — | Forward unknown routes to Vite dev server |
 | `FUSE_SVG_DIR` | — | Override SVG base directory for `svg.inline` |
 | `FUSE_STATIC_DIR` | — | Serve static files from this directory |
-| `FUSE_STATIC_INDEX` | `index.html` | Fallback file for directory requests when `FUSE_STATIC_DIR` is set |
-
-### AOT binary environment variables
-
-The following variables are only effective in compiled AOT binaries (`fuse build --release`):
-
-| Variable | Description |
-|---|---|
-| `FUSE_AOT_BUILD_INFO` | Print AOT build metadata and exit |
-| `FUSE_AOT_STARTUP_TRACE` | Emit a startup diagnostic line to stderr |
-| `FUSE_AOT_REQUEST_LOG_DEFAULT` | Default to structured request logging when `FUSE_REQUEST_LOG` is unset |
+| `FUSE_STATIC_INDEX` | `index.html` | Directory fallback when `FUSE_STATIC_DIR` is set |
+| `FUSE_DEV_MODE` | — | Enable development-mode runtime behavior |
+| `FUSE_AOT_BUILD_INFO` | — | Print AOT build metadata and exit (AOT binaries only) |
+| `FUSE_AOT_STARTUP_TRACE` | — | Emit startup diagnostic line (AOT binaries only) |
+| `FUSE_AOT_REQUEST_LOG_DEFAULT` | — | Default to structured request logging in AOT release |
 
 ---
 
-## Constraints
+## Practical Constraints
 
-Current practical constraints:
-
-- SQLite-focused database runtime
-- no full ORM layer
-- task model is still evolving
+- Database: SQLite only (no ORM layer).
+- No generics, reflection, macros, or custom operators.
+- No inheritance — use composition and `type X = Y without ...` derivation.
+- Task model: structured only — no detached tasks, no callbacks.
+- Redirects: manual — `3xx` responses surface as `http.error` with `code = "http_status"`.

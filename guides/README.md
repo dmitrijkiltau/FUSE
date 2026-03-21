@@ -8,12 +8,8 @@ GitHub-readable guide surface for FUSE.
 - [Boundary Contracts](boundary-contracts.md)
 - [Developer Reference](reference.md)
 - [Migration: 0.8.x -> 0.9.0](migrations/0.8-to-0.9.md)
-- [Migration: 0.1.x -> 0.2.0](migrations/0.1-to-0.2.md)
+- [Migration: 0.9.x -> 1.0.0](migrations/0.9-to-1.0.md)
 
-## Regeneration
+## Editing
 
-Generated guides are produced from `guides/src/*.fuse` plus spec/governance sources:
-
-```bash
-./scripts/generate_guide_docs.sh
-```
+All guide docs are hand-maintained. Update the relevant file directly in the same PR whenever observable language or runtime behavior changes.

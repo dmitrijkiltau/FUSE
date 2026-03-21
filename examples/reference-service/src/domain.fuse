@@ -40,8 +40,9 @@ fn request_context_user_id(ctx: RequestContext) -> String:
 
 type RegisterInput:
   email: String(3..120)
+  username: String(3..32, regex("^[A-Za-z0-9_.+-]+$"))
   password: String(8..128)
 
 type LoginInput:
-  email: String(3..120)
+  identifier: String(3..120)
   password: String(8..128)

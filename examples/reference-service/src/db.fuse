@@ -16,3 +16,55 @@ migration 003:
 migration 004:
   db.exec("create table if not exists note_likes (note_id text not null, user_id text not null, primary key (note_id, user_id))")
   db.exec("create index if not exists idx_note_likes_note_id on note_likes(note_id)")
+
+migration 005:
+  var has_username = false
+  var has_username_lookup = false
+  let user_columns = db.query("pragma table_info(users)")
+  for column in user_columns:
+    if column["name"] == "username":
+      has_username = true
+    if column["name"] == "username_lookup":
+      has_username_lookup = true
+
+  if has_username == false:
+    db.exec("alter table users add column username text not null default ''")
+  if has_username_lookup == false:
+    db.exec("alter table users add column username_lookup text not null default ''")
+
+  let rows = db.query("select id, email, username from users order by id asc")
+  for row in rows:
+    var base = row["username"]
+    if base == "":
+      base = row["email"]
+      let candidates = db.query(
+        "select case when instr(?, '@') > 0 then substr(?, 1, instr(?, '@') - 1) else ? end as username",
+        [row["email"], row["email"], row["email"], row["email"]]
+      )
+      for candidate in candidates:
+        base = candidate["username"]
+
+    if base == "":
+      base = "user"
+
+    var username = base
+    var suffix = 2
+    var collision = true
+    while collision:
+      collision = false
+      let existing = db.query(
+        "select id from users where username_lookup = lower(?) and id != ? limit 1",
+        [username, row["id"]]
+      )
+      for taken in existing:
+        collision = true
+      if collision:
+        username = "${base}_${suffix}"
+        suffix = suffix + 1
+
+    db.exec(
+      "update users set username = ?, username_lookup = lower(?) where id = ?",
+      [username, username, row["id"]]
+    )
+
+  db.exec("create unique index if not exists idx_users_username_lookup on users(username_lookup)")

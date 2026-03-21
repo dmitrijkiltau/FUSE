@@ -65,7 +65,7 @@ Patch releases (`0.9.1`, …) stabilize this line with non-breaking improvements
 Compatibility is defined by documented behavior in `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, and
 `governance/VERSIONING_POLICY.md`.
 Historical upgrade guidance is in:
-`guides/migrations/0.8-to-0.9.md` and `guides/migrations/0.1-to-0.2.md`.
+`guides/migrations/0.8-to-0.9.md`.
 
 ## Requirements
 
@@ -184,17 +184,7 @@ Service routes can directly access HTTP headers/cookies without custom runtime g
 - `response.cookie(name: String, value: String)` appends `Set-Cookie` headers
 - `response.delete_cookie(name: String)` emits cookie-expiration `Set-Cookie` headers
 
-Observability baseline for HTTP runtime:
-
-- request ID precedence: inbound `x-request-id`, then `x-correlation-id`, otherwise generated
-  `req-<hex>`
-- runtime emits `X-Request-Id` on runtime-owned HTTP responses
-- `request.header("x-request-id")` returns the resolved lifecycle request ID inside route handlers
-- `FUSE_REQUEST_LOG=structured` enables one JSON request log line per handled request on stderr
-- `FUSE_METRICS_HOOK=stderr` enables one metrics line (`metrics: <json>`) per handled request
-- canonical production health route pattern (non-built-in):
-  `get "/health" -> Map<String, String>: return {"status": "ok"}`
-- no runtime plugin extension system (explicit non-goal)
+→ `spec/runtime.md` § HTTP observability for request ID lifecycle, logging env vars, and health route patterns.
 
 ## HTTP client API
 
@@ -206,27 +196,7 @@ Modules with `requires network` can also issue outbound HTTP requests:
 
 The outbound client supports both `http://` and validated `https://` URLs.
 
-Runtime behavior:
-
-- `2xx` responses return `Ok(http.response)`
-- non-`2xx` responses return `Err(http.error)` with `code = "http_status"`
-- HTTPS certificate and hostname validation failures return `Err(http.error)` with
-  `code = "tls_error"`
-- `timeout_ms` defaults to `30000`; `0` disables the socket timeout
-- timeout messages identify the failing transport phase when available (for example connect, TLS
-  handshake, write, or read)
-- request/response bodies are plain `String`
-- request headers are normalized to lowercase; `host`, `connection`, and `content-length` are
-  runtime-owned and rejected if supplied by user code
-- response/error headers are exposed as `Map<String, String>` with lowercase header names
-- redirects remain manual in `0.9.x`; `3xx` responses surface as `http_status`
-- when `FUSE_REQUEST_LOG=structured` or `FUSE_METRICS_HOOK=stderr` is enabled, outbound requests
-  also emit `http.client.request` observability events
-
-Response and error shapes:
-
-- `http.response.method`, `url`, `status`, `headers`, `body`
-- `http.error.code`, `message`, `method`, `url`, `status?`, `headers`, `body?`
+→ `spec/runtime.md` § HTTP client for status codes, TLS behavior, timeout defaults, header rules, redirect policy, and response/error shapes.
 
 ## Strict architecture mode
 
@@ -256,25 +226,8 @@ Global CLI output option:
 - `--color auto|always|never` controls ANSI colors for diagnostics/status output and runtime
   `log(...)` level tags.
   `auto` is default and respects `NO_COLOR`.
-- `--diagnostics json` switches CLI diagnostics on stderr to JSON Lines suitable for editor/CI
-  consumers. Diagnostic entries use fields:
-  `kind="diagnostic"`, `level`, `code?`, `message`, `path?`, `line?`, `column?`, `span_start`, `span_end`.
-  Wrapper-side command/manifest/dev/file failures emit `kind="cli_message"` with `level`,
-  `code?`, and `message`.
-  Loader/import diagnostics now use stable codes including `FUSE_IMPORT_*`, `FUSE_ASSET_*`,
-  `FUSE_DEP_CYCLE`, `FUSE_TYPE_DERIVE_*`, and `FUSE_SYMBOL_DUPLICATE`.
-  Runtime execution failures emitted through the validation envelope use stable codes such as
-  `runtime_config_decode`, `runtime_index_bounds`, `runtime_type_error`,
-  `runtime_invalid_arguments`, and `runtime_null_access`, with `runtime_error` retained as the
-  generic fallback. Structured config/env binding failures remain path-addressed validation
-  payloads (typically `invalid_value`). Direct AOT binaries keep the matching stable message
-  taxonomy in fatal envelopes even though they do not emit JSON diagnostics.
-  Common wrapper-side JSON codes include `wrapper_unknown_command`, `wrapper_unknown_backend`,
-  `wrapper_missing_subcommand`, `wrapper_manifest_missing`, `wrapper_cwd`, and `wrapper_file_read`.
-  Command-step entries use:
-  `kind="command_step"`, `command`, `message`.
-- `fuse check|run|build|test|clean` emit consistent stderr step markers:
-  `[command] start`, `[command] ok|failed|validation failed`.
+- `--diagnostics json` switches CLI diagnostics on stderr to JSON Lines for editor/CI consumers.
+  → `spec/runtime.md` § CLI diagnostics for the full field schema, error code taxonomy, and step marker format.
 - `--frozen` is supported by `fuse check|run|build|test` and fails with
   `[FUSE_LOCK_FROZEN]` if dependency resolution would rewrite `fuse.lock`.
 - `fuse test --filter <pattern>` runs only test blocks whose names contain `<pattern>`
@@ -343,18 +296,7 @@ Rules:
 - Dependency and lockfile diagnostics include machine-readable codes
   (`[FUSE_DEP_*]`, `[FUSE_LOCK_*]`) for CI/tooling parsing.
 
-Lockfile semantics (`fuse.lock`):
-
-- Resolver writes lockfile `version = 1`.
-- Entries store resolved source (`path` or `git+rev`) and requested spec fingerprint.
-- If requested fingerprint matches, lock entry is reused; if it differs, entry is refreshed.
-- Unchanged dependency graphs keep stable lockfile content.
-- `fuse deps lock` refreshes the lockfile for the selected package.
-- `fuse deps lock --check` fails with `[FUSE_LOCK_OUT_OF_DATE]` when the current lockfile
-  differs from the resolved dependency graph.
-- `fuse deps publish-check` walks all `fuse.toml` files under a workspace root and reports
-  missing entry files or out-of-date lockfiles per package.
-- Lockfile format/load errors include remediation guidance to regenerate `fuse.lock`.
+→ `spec/runtime.md` § Lockfile for resolution rules, fingerprint semantics, and `--check` behavior.
 
 ### Build artifacts
 
@@ -371,28 +313,8 @@ Deployable AOT output:
 - `fuse build --release` emits `.fuse/build/program.aot` (`.exe` on Windows) by default.
 - `fuse build --aot` also emits AOT output (debug profile).
 - `[build].native_bin` overrides the AOT output path and remains supported.
-- AOT binaries embed build metadata:
-  `mode`, `profile`, `target`, `rustc`, `cli`, `runtime_cache`, and `contract`.
-  Use `FUSE_AOT_BUILD_INFO=1 <aot-binary>` to print this metadata and exit.
-- `FUSE_AOT_STARTUP_TRACE=1 <aot-binary>` emits a startup diagnostic line with PID + build metadata.
-- Startup order contract:
-  `FUSE_AOT_BUILD_INFO=1` short-circuits before startup trace and before app execution.
-- AOT build/link failures are deterministic command failures with `error:` diagnostics and
-  `[build] failed` step footer.
-- Runtime failures in AOT binaries emit a stable fatal envelope:
-  `fatal: class=<runtime_fatal|panic> pid=<...> message=<...> <build-info>`.
-  For `class=panic`, message starts with
-  `panic_kind=<panic_static_str|panic_string|panic_non_string>`.
-- AOT runtime exit codes are stable: `0` success, `1` runtime failure, `101` panic.
-- Unix `SIGINT`/`SIGTERM` use deterministic graceful shutdown for service loops
-  (`shutdown: runtime=<ast|native> signal=<...> handled_requests=<n>`) with clean exit.
-- AOT runtime config resolution is deterministic: env -> config file (`FUSE_CONFIG` or
-  `config.toml` in process cwd) -> config defaults.
-- AOT runtime does not auto-load `.env`; only process environment is observed.
-- Optional release logging posture: if `FUSE_AOT_REQUEST_LOG_DEFAULT=1` and `FUSE_REQUEST_LOG` is
-  unset, AOT runtime defaults to structured request logs.
-- AOT runtime is sealed: no dynamic backend fallback, no JIT compilation for app execution, and no
-  runtime source compilation.
+
+→ `ops/AOT_RELEASE_CONTRACT.md` for the full AOT binary contract: build metadata, fatal envelope format, exit codes, signal handling, and config resolution order.
 
 Use `fuse build --clean` to clear `.fuse/build`.
 Use `fuse clean --cache [<path>|--manifest-path <path>]` to prune `.fuse-cache` directories
@@ -414,28 +336,13 @@ The CLI loads `.env` from the package directory and sets only missing variables.
 |---|---|---|
 | `FUSE_DB_URL` | — | Database connection URL (`sqlite://path`) |
 | `DATABASE_URL` | — | Fallback DB URL when `FUSE_DB_URL` is unset |
-| `FUSE_DB_POOL_SIZE` | `1` | SQLite connection pool size |
 | `FUSE_CONFIG` | `config.toml` | Config file path |
 | `FUSE_HOST` | `127.0.0.1` | HTTP server bind host |
-| `FUSE_SERVICE` | — | Selects service when multiple are declared |
-| `FUSE_MAX_REQUESTS` | — | Stop server after N requests (useful for tests) |
 | `FUSE_LOG` | `info` | Minimum log level (`trace`/`debug`/`info`/`warn`/`error`) |
-| `FUSE_COLOR` | `auto` | ANSI color mode (`auto`/`always`/`never`) |
 | `NO_COLOR` | — | Disables ANSI color when set |
 | `FUSE_REQUEST_LOG` | — | `structured` for JSON request logging on stderr |
-| `FUSE_METRICS_HOOK` | — | `stderr` for per-request metrics lines |
-| `FUSE_DEV_RELOAD_WS_URL` | — | Dev HTML script injection (`/__reload` client) with reload + compile-error overlay events |
-| `FUSE_OPENAPI_JSON_PATH` | — | Built-in OpenAPI JSON endpoint path |
-| `FUSE_OPENAPI_UI_PATH` | — | Built-in OpenAPI UI path |
-| `FUSE_ASSET_MAP` | — | Logical-path to public-URL mappings for `asset()` |
-| `FUSE_VITE_PROXY_URL` | — | Fallback proxy for unknown routes to Vite dev server |
-| `FUSE_SVG_DIR` | — | Override SVG base directory for `svg.inline` |
-| `FUSE_STATIC_DIR` | — | Serve static files from this directory |
-| `FUSE_STATIC_INDEX` | `index.html` | Fallback file for directory requests |
-| `FUSE_DEV_MODE` | — | Enables development-mode runtime behavior |
-| `FUSE_AOT_BUILD_INFO` | — | Print AOT build metadata and exit (AOT only) |
-| `FUSE_AOT_STARTUP_TRACE` | — | Emit startup diagnostic line (AOT only) |
-| `FUSE_AOT_REQUEST_LOG_DEFAULT` | — | Default to structured request logging (AOT release) |
+
+→ `spec/runtime.md` § Environment variables for the full reference.
 
 ## Development
 
@@ -505,7 +412,7 @@ Reproducibility + static profile policy: `ops/AOT_RELEASE_CONTRACT.md`.
 ./scripts/package_aot_artifact.sh --release --manifest-path .
 
 # Build official reference container image from release archive
-./scripts/package_aot_container_image.sh --archive dist/fuse-aot-linux-x64.tar.gz --tag v0.8.0
+./scripts/package_aot_container_image.sh --archive dist/fuse-aot-linux-x64.tar.gz --tag vX.Y.Z
 
 # Package VS Code extension with bundled LSP (.vsix + integrity check)
 ./scripts/package_vscode_extension.sh --release
@@ -522,8 +429,6 @@ SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" ./scripts/generate_release_
 # Install a packaged VSIX example
 code --install-extension dist/fuse-vscode-linux-x64.vsix
 
-# Regenerate GitHub guide markdown
-./scripts/generate_guide_docs.sh
 ```
 
 For downloaded tagged release assets:
@@ -579,7 +484,6 @@ If two documents disagree, defer to the owning document listed for that tier.
 | `guides/onboarding.md` | Onboarding walkthrough |
 | `guides/reference.md` | Generated developer reference |
 | `guides/migrations/0.8-to-0.9.md` | Migration guide for `0.8.x -> 0.9.0` |
-| `guides/migrations/0.1-to-0.2.md` | Migration guide for `0.1.x -> 0.2.0` |
 
 ### Operations contracts
 

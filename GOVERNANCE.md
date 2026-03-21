@@ -25,10 +25,6 @@ Minimum required:
 2. `scripts/authority_parity.sh`
 3. `scripts/release_smoke.sh`
 
-If guide/spec docs behavior changed, also run:
-
-4. `scripts/generate_guide_docs.sh`
-
 ## Disagreements
 
 - Resolve disagreements in the relevant issue/PR first.

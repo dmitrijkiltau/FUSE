@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, HashSet};
 
 use fuse_rt::json::JsonValue;
 use fusec::ast::{
-    Block, Capability, ConfigDecl, Expr, ExprKind, ImportDecl, ImportSpec, Item, Literal, Program,
-    Stmt, StmtKind, TypeRef, TypeRefKind,
+    Block, CallArg, Capability, ConfigDecl, Expr, ExprKind, ImportDecl, ImportSpec, Item, Literal,
+    Program, Stmt, StmtKind, TypeRef, TypeRefKind,
 };
 use fusec::diag::Level;
 use fusec::frontend::html_shorthand::{HTML_ATTR_COMMA_DIAG_CODE, HTML_ATTR_MAP_DIAG_CODE};
@@ -56,11 +56,25 @@ struct WorkspaceSymbolMatch {
 
 struct WorkspaceSymbolCandidate {
     score: WorkspaceSymbolMatch,
+    kind_tier: u8,
     name: String,
     name_lower: String,
     uri: String,
     span_start: usize,
     symbol: JsonValue,
+}
+
+fn symbol_kind_nav_tier(kind: SymbolKind) -> u8 {
+    match kind {
+        SymbolKind::Function
+        | SymbolKind::Service
+        | SymbolKind::App
+        | SymbolKind::Migration
+        | SymbolKind::Test => 0,
+        SymbolKind::Type | SymbolKind::Enum | SymbolKind::Config => 1,
+        SymbolKind::EnumVariant | SymbolKind::Field | SymbolKind::Module => 2,
+        SymbolKind::Param | SymbolKind::Variable => 3,
+    }
 }
 
 fn extract_code_action_diagnostics(
@@ -102,11 +116,45 @@ fn extract_code_action_diagnostics(
     out
 }
 
+/// Parses an optional kind-filter prefix from the query string.
+/// Supported prefixes: `fn:`, `type:`, `enum:`, `config:`, `service:`.
+/// Returns `(kind_filter, remainder_query)`.
+fn parse_query_kind_filter(query: &str) -> (Option<SymbolKind>, &str) {
+    for (prefix, kind) in [
+        ("fn:", SymbolKind::Function),
+        ("type:", SymbolKind::Type),
+        ("enum:", SymbolKind::Enum),
+        ("config:", SymbolKind::Config),
+        ("service:", SymbolKind::Service),
+    ] {
+        if let Some(rest) = query.strip_prefix(prefix) {
+            return (Some(kind), rest);
+        }
+    }
+    (None, query)
+}
+
+fn kind_matches_filter(kind: SymbolKind, filter: SymbolKind) -> bool {
+    match filter {
+        SymbolKind::Function => matches!(
+            kind,
+            SymbolKind::Function | SymbolKind::Migration | SymbolKind::Test
+        ),
+        SymbolKind::Type => matches!(kind, SymbolKind::Type),
+        SymbolKind::Enum => matches!(kind, SymbolKind::Enum | SymbolKind::EnumVariant),
+        SymbolKind::Config => matches!(kind, SymbolKind::Config),
+        SymbolKind::Service => matches!(kind, SymbolKind::Service | SymbolKind::App),
+        _ => kind == filter,
+    }
+}
+
 pub(crate) fn handle_workspace_symbol(
     state: &mut LspState,
     obj: &BTreeMap<String, JsonValue>,
 ) -> JsonValue {
-    let query = extract_workspace_query(obj).unwrap_or_default();
+    let raw_query = extract_workspace_query(obj).unwrap_or_default();
+    let (kind_filter, query_str) = parse_query_kind_filter(&raw_query);
+    let query = query_str.to_string();
     let mut symbols = Vec::new();
     let index = match build_workspace_index_cached(state, "") {
         Some(index) => index,
@@ -114,6 +162,14 @@ pub(crate) fn handle_workspace_symbol(
     };
     let mut candidates = Vec::new();
     for def in &index.defs {
+        if matches!(def.def.kind, SymbolKind::Param | SymbolKind::Variable) {
+            continue;
+        }
+        if let Some(filter) = kind_filter {
+            if !kind_matches_filter(def.def.kind, filter) {
+                continue;
+            }
+        }
         let Some(score) = workspace_symbol_match_score(&def.def.name, &query) else {
             continue;
         };
@@ -124,6 +180,7 @@ pub(crate) fn handle_workspace_symbol(
         let symbol = symbol_info_json(&def.uri, &file.text, &def.def);
         candidates.push(WorkspaceSymbolCandidate {
             score,
+            kind_tier: symbol_kind_nav_tier(def.def.kind),
             name: def.def.name.clone(),
             name_lower: def.def.name.to_lowercase(),
             uri: def.uri.clone(),
@@ -135,6 +192,7 @@ pub(crate) fn handle_workspace_symbol(
         left.score
             .tier
             .cmp(&right.score.tier)
+            .then_with(|| left.kind_tier.cmp(&right.kind_tier))
             .then_with(|| left.score.start.cmp(&right.score.start))
             .then_with(|| left.score.gaps.cmp(&right.score.gaps))
             .then_with(|| left.score.span.cmp(&right.score.span))
@@ -144,6 +202,8 @@ pub(crate) fn handle_workspace_symbol(
             .then_with(|| left.uri.cmp(&right.uri))
             .then_with(|| left.span_start.cmp(&right.span_start))
     });
+    let cap = if query.is_empty() { 50 } else { 128 };
+    candidates.truncate(cap);
     for candidate in candidates {
         symbols.push(candidate.symbol);
     }
@@ -244,38 +304,52 @@ fn workspace_symbol_initials(name: &str) -> String {
     out
 }
 
+/// Returns `(start, end, gaps)` for the shortest-span subsequence match of `query` in `name`.
+/// For each candidate start position in `name` that begins with the first query character,
+/// attempts a greedy forward match from that position and tracks the (span, gaps) score.
+/// Picks the match with minimum span, breaking ties by fewest gaps.
 fn workspace_symbol_subsequence_match(name: &str, query: &str) -> Option<(usize, usize, usize)> {
-    let mut query_chars = query.chars();
-    let mut needle = query_chars.next()?;
-    let mut start = None;
-    let mut end = 0usize;
-    let mut last_idx = 0usize;
-    let mut gaps = 0usize;
-    let mut matched = 0usize;
+    let name_chars: Vec<char> = name.chars().collect();
+    let query_chars: Vec<char> = query.chars().collect();
+    if query_chars.is_empty() {
+        return None;
+    }
+    let first = query_chars[0];
+    let mut best: Option<(usize, usize, usize)> = None; // (start, end, gaps)
 
-    for (idx, ch) in name.chars().enumerate() {
-        if ch != needle {
+    for start_pos in 0..name_chars.len() {
+        if name_chars[start_pos] != first {
             continue;
         }
-        if start.is_none() {
-            start = Some(idx);
-        } else {
-            gaps = gaps.saturating_add(idx.saturating_sub(last_idx.saturating_add(1)));
+        // Greedy forward match from start_pos
+        let mut qi = 0usize;
+        let mut last_match = start_pos;
+        let mut gaps = 0usize;
+        let mut ni = start_pos;
+        while ni < name_chars.len() && qi < query_chars.len() {
+            if name_chars[ni] == query_chars[qi] {
+                if qi > 0 {
+                    gaps += ni - last_match - 1;
+                }
+                last_match = ni;
+                qi += 1;
+            }
+            ni += 1;
         }
-        last_idx = idx;
-        end = idx.saturating_add(1);
-        matched = matched.saturating_add(1);
-        if let Some(next) = query_chars.next() {
-            needle = next;
-        } else {
-            return Some((start.unwrap_or(0), end, gaps));
+        if qi < query_chars.len() {
+            continue; // didn't match full query from this start
+        }
+        let end = last_match + 1;
+        let span = end - start_pos;
+        let is_better = best.map_or(true, |(best_start, best_end, best_gaps)| {
+            let best_span = best_end - best_start;
+            span < best_span || (span == best_span && gaps < best_gaps)
+        });
+        if is_better {
+            best = Some((start_pos, end, gaps));
         }
     }
-
-    if matched == query.chars().count() {
-        return Some((start.unwrap_or(0), end, gaps));
-    }
-    None
+    best
 }
 
 pub(crate) fn handle_rename(state: &mut LspState, obj: &BTreeMap<String, JsonValue>) -> JsonValue {
@@ -477,6 +551,41 @@ pub(crate) fn handle_code_action(
                 actions.push(code_action_json(&title, "quickfix", edit));
             }
         }
+
+        if diag.code.as_deref() == Some("FUSE_WRONG_ARITY") {
+            if let Some(span) = diag.span {
+                if let Some((expected, got)) = parse_wrong_arity_diag(&diag.message) {
+                    if got > expected {
+                        if let Some(edit) =
+                            wrong_arity_trim_workspace_edit(&uri, &text, &program, span, expected)
+                        {
+                            let surplus = got - expected;
+                            let title = format!(
+                                "Remove {} surplus argument{}",
+                                surplus,
+                                if surplus == 1 { "" } else { "s" }
+                            );
+                            let key = format!("quickfix:{title}:{}:{}", span.start, span.end);
+                            if seen.insert(key) {
+                                actions.push(code_action_json(&title, "quickfix", edit));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if diag.code.as_deref() == Some("FUSE_DETACHED_TASK") {
+            if let Some(span) = diag.span {
+                if let Some(edit) = detached_task_wrap_workspace_edit(&uri, &text, span) {
+                    let title = "Await detached task (let _task = …; await _task)";
+                    let key = format!("quickfix:{title}:{}:{}", span.start, span.end);
+                    if seen.insert(key) {
+                        actions.push(code_action_json(title, "quickfix", edit));
+                    }
+                }
+            }
+        }
     }
 
     if let Some(edit) = organize_imports_workspace_edit(&uri, &text, &imports) {
@@ -545,6 +654,279 @@ fn parse_missing_capability_diag(message: &str) -> Option<Capability> {
         }
     }
     None
+}
+
+/// Parses `"expected N arguments, got M"` → `(expected, got)`.
+fn parse_wrong_arity_diag(message: &str) -> Option<(usize, usize)> {
+    let rest = message.strip_prefix("expected ")?;
+    let (expected_str, rest) = rest.split_once(" arguments, got ")?;
+    let expected: usize = expected_str.parse().ok()?;
+    let got: usize = rest.parse().ok()?;
+    Some((expected, got))
+}
+
+/// Walks the program AST and returns the `args` slice of the first `Call` expression
+/// whose span exactly matches `target_span`.
+fn find_call_args_at_span<'a>(program: &'a Program, target_span: Span) -> Option<&'a [CallArg]> {
+    for item in &program.items {
+        if let Some(args) = find_call_args_in_item(item, target_span) {
+            return Some(args);
+        }
+    }
+    None
+}
+
+fn find_call_args_in_expr<'a>(expr: &'a Expr, target: Span) -> Option<&'a [CallArg]> {
+    if expr.span == target {
+        if let ExprKind::Call { args, .. } = &expr.kind {
+            return Some(args);
+        }
+    }
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            if let Some(found) = find_call_args_in_expr(callee, target) {
+                return Some(found);
+            }
+            for arg in args {
+                if let Some(found) = find_call_args_in_expr(&arg.value, target) {
+                    return Some(found);
+                }
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            if let Some(f) = find_call_args_in_expr(left, target) {
+                return Some(f);
+            }
+            return find_call_args_in_expr(right, target);
+        }
+        ExprKind::Unary { expr: inner, .. }
+        | ExprKind::Await { expr: inner }
+        | ExprKind::Box { expr: inner } => return find_call_args_in_expr(inner, target),
+        ExprKind::Member { base, .. } | ExprKind::OptionalMember { base, .. } => {
+            return find_call_args_in_expr(base, target)
+        }
+        ExprKind::Index { base, index } | ExprKind::OptionalIndex { base, index } => {
+            if let Some(f) = find_call_args_in_expr(base, target) {
+                return Some(f);
+            }
+            return find_call_args_in_expr(index, target);
+        }
+        ExprKind::StructLit { fields, .. } => {
+            for f in fields {
+                if let Some(found) = find_call_args_in_expr(&f.value, target) {
+                    return Some(found);
+                }
+            }
+        }
+        ExprKind::ListLit(items) => {
+            for item in items {
+                if let Some(found) = find_call_args_in_expr(item, target) {
+                    return Some(found);
+                }
+            }
+        }
+        ExprKind::MapLit(pairs) => {
+            for (k, v) in pairs {
+                if let Some(f) = find_call_args_in_expr(k, target).or_else(|| find_call_args_in_expr(v, target)) {
+                    return Some(f);
+                }
+            }
+        }
+        ExprKind::Coalesce { left, right } => {
+            if let Some(f) = find_call_args_in_expr(left, target) {
+                return Some(f);
+            }
+            return find_call_args_in_expr(right, target);
+        }
+        ExprKind::BangChain { expr: inner, error } => {
+            if let Some(f) = find_call_args_in_expr(inner, target) {
+                return Some(f);
+            }
+            if let Some(err) = error {
+                return find_call_args_in_expr(err, target);
+            }
+        }
+        ExprKind::Spawn { block } => return find_call_args_in_block(block, target),
+        ExprKind::HtmlIf {
+            cond,
+            then_children,
+            else_if,
+            else_children,
+        } => {
+            if let Some(f) = find_call_args_in_expr(cond, target) {
+                return Some(f);
+            }
+            for child in then_children.iter().chain(else_children.iter()) {
+                if let Some(f) = find_call_args_in_expr(child, target) {
+                    return Some(f);
+                }
+            }
+            for (branch_cond, children) in else_if {
+                if let Some(f) = find_call_args_in_expr(branch_cond, target) {
+                    return Some(f);
+                }
+                for child in children {
+                    if let Some(f) = find_call_args_in_expr(child, target) {
+                        return Some(f);
+                    }
+                }
+            }
+        }
+        ExprKind::HtmlFor {
+            iter,
+            body_children,
+            ..
+        } => {
+            if let Some(f) = find_call_args_in_expr(iter, target) {
+                return Some(f);
+            }
+            for child in body_children {
+                if let Some(f) = find_call_args_in_expr(child, target) {
+                    return Some(f);
+                }
+            }
+        }
+        ExprKind::InterpString(parts) => {
+            for part in parts {
+                if let fusec::ast::InterpPart::Expr(inner) = part {
+                    if let Some(f) = find_call_args_in_expr(inner, target) {
+                        return Some(f);
+                    }
+                }
+            }
+        }
+        ExprKind::Literal(_) | ExprKind::Ident(_) => {}
+    }
+    None
+}
+
+fn find_call_args_in_block<'a>(block: &'a Block, target: Span) -> Option<&'a [CallArg]> {
+    for stmt in &block.stmts {
+        if let Some(f) = find_call_args_in_stmt(stmt, target) {
+            return Some(f);
+        }
+    }
+    None
+}
+
+fn find_call_args_in_stmt<'a>(stmt: &'a Stmt, target: Span) -> Option<&'a [CallArg]> {
+    match &stmt.kind {
+        StmtKind::Let { expr, .. } | StmtKind::Var { expr, .. } | StmtKind::Expr(expr) => {
+            find_call_args_in_expr(expr, target)
+        }
+        StmtKind::Return { expr: Some(expr) } => find_call_args_in_expr(expr, target),
+        StmtKind::Return { expr: None } => None,
+        StmtKind::While { cond, block } => find_call_args_in_expr(cond, target)
+            .or_else(|| find_call_args_in_block(block, target)),
+        StmtKind::For { iter, block, .. } => find_call_args_in_expr(iter, target)
+            .or_else(|| find_call_args_in_block(block, target)),
+        StmtKind::If { cond, then_block, else_if, else_block } => {
+            if let Some(f) = find_call_args_in_expr(cond, target) {
+                return Some(f);
+            }
+            if let Some(f) = find_call_args_in_block(then_block, target) {
+                return Some(f);
+            }
+            for (elif_cond, elif_block) in else_if {
+                if let Some(f) = find_call_args_in_expr(elif_cond, target)
+                    .or_else(|| find_call_args_in_block(elif_block, target))
+                {
+                    return Some(f);
+                }
+            }
+            if let Some(else_b) = else_block {
+                return find_call_args_in_block(else_b, target);
+            }
+            None
+        }
+        StmtKind::Match { expr, cases } => {
+            if let Some(f) = find_call_args_in_expr(expr, target) {
+                return Some(f);
+            }
+            for (_, block) in cases {
+                if let Some(f) = find_call_args_in_block(block, target) {
+                    return Some(f);
+                }
+            }
+            None
+        }
+        StmtKind::Transaction { block } => find_call_args_in_block(block, target),
+        StmtKind::Assign { target: tgt, expr } => find_call_args_in_expr(expr, target)
+            .or_else(|| find_call_args_in_expr(tgt, target)),
+        StmtKind::Break | StmtKind::Continue => None,
+    }
+}
+
+fn find_call_args_in_item<'a>(item: &'a Item, target: Span) -> Option<&'a [CallArg]> {
+    match item {
+        Item::Fn(decl) => find_call_args_in_block(&decl.body, target),
+        Item::Service(decl) => {
+            for route in &decl.routes {
+                if let Some(f) = find_call_args_in_block(&route.body, target) {
+                    return Some(f);
+                }
+            }
+            None
+        }
+        Item::Component(decl) => find_call_args_in_block(&decl.body, target),
+        Item::App(decl) => find_call_args_in_block(&decl.body, target),
+        Item::Migration(decl) => find_call_args_in_block(&decl.body, target),
+        Item::Test(decl) => find_call_args_in_block(&decl.body, target),
+        Item::Config(decl) => {
+            for field in &decl.fields {
+                if let Some(f) = find_call_args_in_expr(&field.value, target) {
+                    return Some(f);
+                }
+            }
+            None
+        }
+        Item::Type(decl) => {
+            for field in &decl.fields {
+                if let Some(default) = &field.default {
+                    if let Some(f) = find_call_args_in_expr(default, target) {
+                        return Some(f);
+                    }
+                }
+            }
+            None
+        }
+        Item::Import(_) | Item::Enum(_) => None,
+    }
+}
+
+/// Generates a workspace edit that removes surplus arguments from a call expression.
+/// `diag_span` is the span of the Call expression; `expected` is the correct arg count.
+fn wrong_arity_trim_workspace_edit(
+    uri: &str,
+    text: &str,
+    program: &Program,
+    diag_span: Span,
+    expected: usize,
+) -> Option<JsonValue> {
+    let args = find_call_args_at_span(program, diag_span)?;
+    if args.len() <= expected {
+        return None;
+    }
+    // Remove from args[expected-1].span.end to args[last].span.end,
+    // which removes the ", surplus_arg1, surplus_arg2, ..." text.
+    // When expected == 0, remove args[0].span.start to args[last].span.end.
+    let remove_start = if expected == 0 {
+        args[0].span.start
+    } else {
+        args[expected - 1].span.end
+    };
+    let remove_end = args[args.len() - 1].span.end;
+    let remove_span = Span::new(remove_start, remove_end);
+    Some(workspace_edit_with_single_span(uri, text, remove_span, ""))
+}
+
+/// Generates a workspace edit that wraps a bare `spawn { ... }` expression in
+/// `let _task = spawn { ... }; await _task`, turning a detached task into an awaited one.
+fn detached_task_wrap_workspace_edit(uri: &str, text: &str, span: Span) -> Option<JsonValue> {
+    let expr_text = text.get(span.start..span.end)?;
+    let indent = line_indent_at(text, span.start);
+    let new_text = format!("let _task = {expr_text};\n{indent}await _task");
+    Some(workspace_edit_with_single_span(uri, text, span, &new_text))
 }
 
 fn html_attr_comma_workspace_edit(uri: &str, text: &str, span: Span) -> Option<JsonValue> {

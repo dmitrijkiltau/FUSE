@@ -248,14 +248,14 @@ from notes n where n.is_public = "1" and n.id = ?""",
     response.cookie("sid", token)
     return Home.render_page(ctx)
 
-  post "/ui/auth/register" body RegisterInput -> Html!Unauthorized:
+  post "/ui/auth/register" body RegisterInput -> Html!Unauthorized!BadRequest:
     let session = register_user(body) ?!
     let token = session_token(session)
     response.cookie("sid", token)
     let ctx = session_context(token, session_user_id(session))
     return Home.render_shell(ctx)
 
-  post "/ui/auth/login" body LoginInput -> Html!Unauthorized:
+  post "/ui/auth/login" body LoginInput -> Html!Unauthorized!BadRequest:
     let session = login_user(body) ?!
     let token = session_token(session)
     response.cookie("sid", token)

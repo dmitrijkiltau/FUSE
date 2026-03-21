@@ -15,12 +15,15 @@ Server: `crates/fusec/src/bin/fuse-lsp.rs`
   - unresolved symbol import quick fixes
   - missing config-field scaffold quick fixes (`unknown field <x> on <Config>`)
   - `source.organizeImports` with idempotent ordering behavior
+  - surplus-argument removal quick fix (`FUSE_WRONG_ARITY`)
+  - detached-task wrap quick fix (`FUSE_DETACHED_TASK`: wraps bare `spawn` in `let _task = …; await _task`)
 - semantic tokens (full + range)
 - inlay hints
 - call hierarchy
-- workspace symbols
-- completion/autocomplete (`textDocument/completion`)
-- signature help (`textDocument/signatureHelp`)
+- workspace symbols with kind-tier ranking (`Function`/`Service` before `Type`/`Enum` before `Field`), result cap (50 empty / 128 non-empty), `Param`/`Variable` exclusion, and query kind-filter prefixes (`fn:`, `type:`, `enum:`, `config:`, `service:`)
+- completion/autocomplete (`textDocument/completion`) with transitive-import depth locality scoring, HTML tag injection gated to `component`/`app` bodies, and subsequence-fallback label matching
+- signature help (`textDocument/signatureHelp`) capped at 4 candidates per request
+- workspace-index carries BFS transitive-import depth map for per-file locality ranking (computed from `imported_module_uris` at build and cache-load time)
 - workspace-index cache with invalidation on doc/root updates (reduces repeated workspace rebuilds)
 - shared workspace snapshot cache for diagnostics + index requests (single workspace load per document revision)
 - manifest-rooted entry resolution for non-entry files in workspace projects (improves cross-file cache reuse)
@@ -70,9 +73,3 @@ For the current phase, editor support means:
 3. Completion is available for language symbols and core builtins.
 4. Semantic tokens and inlay hints remain stable across parser/sema changes.
 5. VS Code extension can launch the server without custom glue code.
-
-## Next improvements (post-`0.9.0`)
-
-1. Completion/signature ranking refinements for large dependency graphs (reduce noisy candidates).
-2. Additional high-confidence code actions for common sema diagnostics beyond imports/config-field scaffolding.
-3. Symbol search quality improvements (ranking and query ergonomics) for very large workspaces.

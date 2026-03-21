@@ -2,6 +2,35 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.10] - 2026-03-21
+
+### Added
+
+- Username field support in the reference service registration and login flow; `RegisterInput`
+  now requires `username` alongside `email` and `password`, and session tokens include it.
+- Semantic token highlighting test for string interpolation spans (`lsp_contracts`).
+
+### Fixed
+
+- `aot.rs`: `find_repo_root` now falls back to the process working directory when the AOT
+  runner source is emitted to a temp directory outside the repo tree, resolving `aot_parity_lock`
+  failures in local and CI environments.
+- `scripts/use_case_bench.sh`: benchmark registration payload updated to include the `username`
+  field required by the current reference service schema.
+
+### Changed
+
+- Guide docs under `guides/` are now hand-maintained. `scripts/generate_guide_docs.sh` has been
+  removed; all guide content is updated directly in the same PR as the language or runtime change.
+- README updated to reference detailed spec/runtime sections for HTTP observability, client API,
+  CLI diagnostics, and environment variables rather than duplicating that content inline.
+
+### Migration
+
+- No language or runtime migration is required from `0.9.9` to `0.9.10`.
+- See `guides/migrations/0.9-to-1.0.md` for guidance when upgrading from the `0.9.x` line
+  to `1.0.0`.
+
 ## [0.9.9] - 2026-03-08
 
 ### Changed
@@ -376,7 +405,6 @@ All notable changes to this project are documented in this file.
 - Documentation delivery moved to a GitHub-first guide surface:
   - `guides/` now contains generated `reference.md`, `onboarding.md`, and `boundary-contracts.md`
   - `docs/` site package was removed
-  - `scripts/generate_guide_docs.sh` now generates guides under `guides/`
 
 ### Migration
 

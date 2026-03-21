@@ -609,6 +609,249 @@ fn main():
 }
 
 #[test]
+fn lsp_semantic_tokens_distinguish_signature_types_params_and_locals() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    )
+    .expect("write fuse.toml");
+
+    let main_src = r#"type PrivateNoteRow:
+  title: String
+
+fn render_private_note_card(note: PrivateNoteRow) -> Html:
+  let title = note.title
+  return div():
+    html.text(title)
+
+fn main():
+  let note = PrivateNoteRow(title="hello")
+  render_private_note_card(note)
+"#;
+    let main_path = dir.join("main.fuse");
+    fs::write(&main_path, main_src).expect("write main.fuse");
+
+    let root_uri = path_to_uri(&dir);
+    let main_uri = path_to_uri(&main_path);
+
+    let (mut child, mut stdin, mut stdout) = spawn_lsp();
+
+    let mut init_params = BTreeMap::new();
+    init_params.insert("rootUri".to_string(), JsonValue::String(root_uri));
+    send_request(&mut stdin, 1, "initialize", JsonValue::Object(init_params));
+    let _ = wait_response(&mut stdout, 1);
+    send_notification(
+        &mut stdin,
+        "initialized",
+        JsonValue::Object(BTreeMap::new()),
+    );
+
+    let mut main_doc = BTreeMap::new();
+    main_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    main_doc.insert(
+        "languageId".to_string(),
+        JsonValue::String("fuse".to_string()),
+    );
+    main_doc.insert("version".to_string(), JsonValue::Number(1.0));
+    main_doc.insert("text".to_string(), JsonValue::String(main_src.to_string()));
+    let mut main_open_params = BTreeMap::new();
+    main_open_params.insert("textDocument".to_string(), JsonValue::Object(main_doc));
+    send_notification(
+        &mut stdin,
+        "textDocument/didOpen",
+        JsonValue::Object(main_open_params),
+    );
+
+    let main_diags = wait_diagnostics(&mut stdout, &main_uri);
+    assert!(
+        main_diags.is_empty(),
+        "expected no main diagnostics, got {}",
+        json::encode(&JsonValue::Array(main_diags))
+    );
+
+    let mut sem_doc = BTreeMap::new();
+    sem_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    let mut sem_params = BTreeMap::new();
+    sem_params.insert("textDocument".to_string(), JsonValue::Object(sem_doc));
+    send_request(
+        &mut stdin,
+        2,
+        "textDocument/semanticTokens/full",
+        JsonValue::Object(sem_params),
+    );
+    let sem = wait_response(&mut stdout, 2);
+    let sem_text = json::encode(&sem);
+    assert!(
+        sem_text.contains("\"data\"") && !sem_text.contains("\"data\":[]"),
+        "semantic tokens unexpectedly empty: {sem_text}"
+    );
+
+    let rows = semantic_rows(&sem);
+    let (type_decl_line, type_decl_col) = line_col_of(main_src, "PrivateNoteRow:");
+    let (type_ref_line, type_ref_col) = line_col_of(main_src, "note: PrivateNoteRow");
+    let type_ref_col = type_ref_col + "note: ".len();
+    let (fn_decl_line, fn_decl_col) = line_col_of(main_src, "render_private_note_card(note");
+    let (fn_call_line, fn_call_col) = line_col_of(main_src, "render_private_note_card(note)");
+    let (param_line, param_col) = line_col_of(main_src, "note: PrivateNoteRow");
+    let (local_line, local_col) = line_col_of(main_src, "title = note.title");
+
+    let type_decl_ty =
+        token_type_at(&rows, type_decl_line, type_decl_col).expect("token for type decl");
+    let type_ref_ty =
+        token_type_at(&rows, type_ref_line, type_ref_col).expect("token for type ref");
+    let fn_decl_ty =
+        token_type_at(&rows, fn_decl_line, fn_decl_col).expect("token for function decl");
+    let fn_call_ty =
+        token_type_at(&rows, fn_call_line, fn_call_col).expect("token for function call");
+    let param_ty = token_type_at(&rows, param_line, param_col).expect("token for parameter");
+    let local_ty = token_type_at(&rows, local_line, local_col).expect("token for local");
+
+    assert_eq!(type_decl_ty, type_ref_ty, "custom type ref token mismatch");
+    assert_eq!(fn_decl_ty, fn_call_ty, "function token mismatch");
+    assert_ne!(param_ty, local_ty, "parameter and local should differ");
+    assert_ne!(param_ty, type_ref_ty, "parameter should not look like a type");
+    assert_ne!(fn_decl_ty, param_ty, "function should not look like a parameter");
+
+    send_request(
+        &mut stdin,
+        3,
+        "shutdown",
+        JsonValue::Object(BTreeMap::new()),
+    );
+    let _ = wait_response(&mut stdout, 3);
+    send_notification(&mut stdin, "exit", JsonValue::Object(BTreeMap::new()));
+    let status = child.wait().expect("wait lsp");
+    assert!(status.success(), "fuse-lsp exited with {status}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn lsp_semantic_tokens_highlight_string_interpolations() {
+    let dir = temp_project_dir();
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    )
+    .expect("write fuse.toml");
+
+    let main_src = r#"config App:
+  port: Int = 3000
+
+fn greeting(name: String) -> String:
+  return "Hello, ${name}! http://localhost:${App.port}"
+
+app "Demo":
+  print(greeting("Fuse"))
+"#;
+    let main_path = dir.join("main.fuse");
+    fs::write(&main_path, main_src).expect("write main.fuse");
+
+    let root_uri = path_to_uri(&dir);
+    let main_uri = path_to_uri(&main_path);
+
+    let (mut child, mut stdin, mut stdout) = spawn_lsp();
+
+    let mut init_params = BTreeMap::new();
+    init_params.insert("rootUri".to_string(), JsonValue::String(root_uri));
+    send_request(&mut stdin, 1, "initialize", JsonValue::Object(init_params));
+    let _ = wait_response(&mut stdout, 1);
+    send_notification(
+        &mut stdin,
+        "initialized",
+        JsonValue::Object(BTreeMap::new()),
+    );
+
+    let mut main_doc = BTreeMap::new();
+    main_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    main_doc.insert(
+        "languageId".to_string(),
+        JsonValue::String("fuse".to_string()),
+    );
+    main_doc.insert("version".to_string(), JsonValue::Number(1.0));
+    main_doc.insert("text".to_string(), JsonValue::String(main_src.to_string()));
+    let mut main_open_params = BTreeMap::new();
+    main_open_params.insert("textDocument".to_string(), JsonValue::Object(main_doc));
+    send_notification(
+        &mut stdin,
+        "textDocument/didOpen",
+        JsonValue::Object(main_open_params),
+    );
+
+    let main_diags = wait_diagnostics(&mut stdout, &main_uri);
+    assert!(
+        main_diags.is_empty(),
+        "expected no main diagnostics, got {}",
+        json::encode(&JsonValue::Array(main_diags))
+    );
+
+    let mut sem_doc = BTreeMap::new();
+    sem_doc.insert("uri".to_string(), JsonValue::String(main_uri.clone()));
+    let mut sem_params = BTreeMap::new();
+    sem_params.insert("textDocument".to_string(), JsonValue::Object(sem_doc));
+    send_request(
+        &mut stdin,
+        2,
+        "textDocument/semanticTokens/full",
+        JsonValue::Object(sem_params),
+    );
+    let sem = wait_response(&mut stdout, 2);
+    let sem_text = json::encode(&sem);
+    assert!(
+        sem_text.contains("\"data\"") && !sem_text.contains("\"data\":[]"),
+        "semantic tokens unexpectedly empty: {sem_text}"
+    );
+
+    let rows = semantic_rows(&sem);
+    let (config_decl_line, config_decl_col) = line_col_of(main_src, "config App:");
+    let config_decl_col = config_decl_col + "config ".len();
+    let (field_decl_line, field_decl_col) = line_col_of(main_src, "port: Int");
+    let (param_decl_line, param_decl_col) = line_col_of(main_src, "name: String");
+    let (interp_name_line, interp_name_col) = line_col_of(main_src, "${name}");
+    let interp_name_col = interp_name_col + 2;
+    let (interp_app_line, interp_app_col) = line_col_of(main_src, "App.port}");
+    let interp_port_col = interp_app_col + "App.".len();
+    let (string_text_line, string_text_col) = line_col_of(main_src, "Hello, ");
+
+    let config_decl_ty =
+        token_type_at(&rows, config_decl_line, config_decl_col).expect("token for config App");
+    let field_decl_ty =
+        token_type_at(&rows, field_decl_line, field_decl_col).expect("token for field port");
+    let param_decl_ty =
+        token_type_at(&rows, param_decl_line, param_decl_col).expect("token for param name");
+    let interp_name_ty =
+        token_type_at(&rows, interp_name_line, interp_name_col).expect("token for ${name}");
+    let interp_app_ty =
+        token_type_at(&rows, interp_app_line, interp_app_col).expect("token for App in string");
+    let interp_port_ty = token_type_at(&rows, interp_app_line, interp_port_col)
+        .expect("token for port in string");
+    let string_text_ty = token_type_at(&rows, string_text_line, string_text_col)
+        .expect("token for raw string text");
+
+    assert_eq!(param_decl_ty, interp_name_ty, "interpolated name token mismatch");
+    assert_eq!(config_decl_ty, interp_app_ty, "interpolated App token mismatch");
+    assert_eq!(field_decl_ty, interp_port_ty, "interpolated port token mismatch");
+    assert_ne!(string_text_ty, interp_name_ty, "string text should differ from name");
+    assert_ne!(interp_app_ty, interp_port_ty, "App and port should differ");
+
+    send_request(
+        &mut stdin,
+        3,
+        "shutdown",
+        JsonValue::Object(BTreeMap::new()),
+    );
+    let _ = wait_response(&mut stdout, 3);
+    send_notification(&mut stdin, "exit", JsonValue::Object(BTreeMap::new()));
+    let status = child.wait().expect("wait lsp");
+    assert!(status.success(), "fuse-lsp exited with {status}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn lsp_multi_package_definition_and_references_smoke() {
     let dir = temp_project_dir();
     fs::create_dir_all(&dir).expect("create temp dir");

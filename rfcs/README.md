@@ -25,7 +25,7 @@ This directory tracks design decisions for contract-facing FUSE changes.
 
 See `CONTRIBUTING.md` for criteria on when RFCs are required.
 
-## Active RFCs
+## RFC history
 
 - `0001-aot-codegen-pipeline.md` (`Implemented`)
 - `0002-aot-link-runtime-model.md` (`Implemented`)

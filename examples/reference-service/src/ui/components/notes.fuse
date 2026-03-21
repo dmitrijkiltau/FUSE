@@ -26,25 +26,33 @@ fn public_note_rows(ctx: RequestContext) -> List<Map<String, String>>:
   transaction:
     if viewer_id == "":
       rows = db.query("""select n.id, n.title, n.content, n.owner_id,
+  coalesce(nullif(u.username, ''), n.owner_id) as owner_name,
   cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes,
   "0" as liked
-from notes n where n.is_public = "1" order by n.id desc""")
+from notes n
+left join users u on u.id = n.owner_id
+where n.is_public = "1" order by n.id desc""")
     else:
       rows = db.query("""select n.id, n.title, n.content, n.owner_id,
+  coalesce(nullif(u.username, ''), n.owner_id) as owner_name,
   cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes
   , case when exists(
       select 1 from note_likes l where l.note_id = n.id and l.user_id = "${viewer_id}"
     ) then "1" else "0" end as liked
-from notes n where n.is_public = "1" order by n.id desc""")
+from notes n
+left join users u on u.id = n.owner_id
+where n.is_public = "1" order by n.id desc""")
   return rows
 
 fn liked_note_rows(user_id: String) -> List<Map<String, String>>:
   var rows: List<Map<String, String>> = []
   transaction:
     rows = db.query("""select n.id, n.title, n.content, n.owner_id,
+  coalesce(nullif(u.username, ''), n.owner_id) as owner_name,
   cast((select count(*) from note_likes l where l.note_id = n.id) as text) as likes,
   "1" as liked
 from notes n
+left join users u on u.id = n.owner_id
 join note_likes nl on nl.note_id = n.id
 where nl.user_id = "${user_id}" and n.is_public = "1"
 order by n.id desc""")
@@ -220,7 +228,9 @@ fn render_public_note_actions(ctx: RequestContext, note: Map<String, String>) ->
 fn render_public_note_card(ctx: RequestContext, note: Map<String, String>) -> Html:
   let title = note["title"]
   let content = note["content"]
-  let owner_id = note["owner_id"]
+  var owner_name = note["owner_name"]
+  if owner_name == "":
+    owner_name = note["owner_id"]
 
   return div(class="note-card note-card--public"):
     h3(class="note-card__title"):
@@ -229,7 +239,7 @@ fn render_public_note_card(ctx: RequestContext, note: Map<String, String>) -> Ht
       html.text(content)
     div(class="note-card__meta-line"):
       div(class="note-card__meta"):
-        html.text("by ${owner_id}")
+        html.text("by ${owner_name}")
 
     render_public_note_actions(ctx, note)
 

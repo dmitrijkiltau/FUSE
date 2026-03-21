@@ -2,7 +2,7 @@
   "name": "fuse-vscode",
   "displayName": "Fuse Language",
   "description": "Syntax highlighting and LSP support for the Fuse programming language",
-  "version": "0.9.9",
+  "version": "0.9.10",
   "publisher": "fuse",
   "license": "Apache-2.0",
   "homepage": "https://github.com/dmitrijkiltau/FUSE",
@@ -80,6 +80,33 @@
       {
         "language": "fuse",
         "scopes": {
+          "function": [
+            "entity.name.function",
+            "entity.name.function.fuse"
+          ],
+          "type": [
+            "entity.name.type",
+            "entity.name.type.fuse",
+            "support.type.builtin",
+            "support.type.generic",
+            "support.type.user",
+            "support.type.builtin.fuse",
+            "support.type.generic.fuse",
+            "support.type.user.fuse"
+          ],
+          "parameter": [
+            "variable.parameter",
+            "variable.parameter.fuse"
+          ],
+          "variable": [
+            "variable.other.readwrite",
+            "variable.other.local",
+            "variable.other.local.fuse"
+          ],
+          "property": [
+            "variable.other.property",
+            "variable.other.property.fuse"
+          ],
           "htmlTag": [
             "entity.name.tag.html",
             "entity.name.class.fuse"
