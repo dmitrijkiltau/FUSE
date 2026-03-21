@@ -45,8 +45,8 @@ Recommended baseline before opening a PR (see [Quality gates](README.md#quality-
 | Runtime behavior, boundary mapping, builtins, status/error semantics | update `spec/runtime.md`; add/adjust runtime/parity tests |
 | Scope or non-goal boundaries | update `governance/scope.md` and/or `governance/IDENTITY_CHARTER.md` |
 | Versioning/deprecation behavior | update `governance/VERSIONING_POLICY.md` and `CHANGELOG.md` |
-| Guide behavior/content pipeline | update guide source under `guides/src/` and generated markdown under `guides/` |
-| Language/runtime behavior visible in reference docs | run `scripts/generate_guide_docs.sh` to regenerate `guides/reference.md` from `spec/fls.md`, `spec/runtime.md`, and `governance/scope.md` |
+| Guide behavior/content pipeline | update guide source under `guides/src/` and run `scripts/generate_guide_docs.sh` to regenerate `guides/onboarding.md` and `guides/boundary-contracts.md` |
+| Language/runtime behavior visible in reference docs | update `guides/reference.md` directly (hand-maintained; not generated) |
 
 If semantics change and docs are not updated in the same PR, the PR is incomplete.
 

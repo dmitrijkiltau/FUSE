@@ -11,8 +11,11 @@ GitHub-readable guide surface for FUSE.
 
 ## Regeneration
 
-Generated guides are produced from `guides/src/*.fuse` plus spec/governance sources:
+`onboarding.md` and `boundary-contracts.md` are generated from `guides/src/*.fuse`:
 
 ```bash
 ./scripts/generate_guide_docs.sh
 ```
+
+`reference.md` is hand-maintained alongside `spec/fls.md` and `spec/runtime.md`.
+Update it in the same PR whenever observable language behavior changes.

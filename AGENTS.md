@@ -1,20 +1,10 @@
 # Project agent instructions
 
-## Build and test
+See `CONTRIBUTING.md` for the full development setup, required checks, and spec sync rules.
 
-- Always run cargo commands through `scripts/cargo_env.sh` to avoid cross-device link errors.
-- Default test command: `scripts/cargo_env.sh cargo test -p fusec`.
-- Use `scripts/fuse` for CLI commands; dist binaries are for release/distribution only.
+## AI-specific context
 
-## Specs and fixtures
-
-- Keep language specs/docs in sync when semantics or tooling change:
-  - `README.md`
-  - `spec/fls.md`
-  - `governance/scope.md`
-  - `governance/IDENTITY_CHARTER.md`
-  - `governance/EXTENSIBILITY_BOUNDARIES.md`
-  - `spec/runtime.md`
-  - `guides/reference.md` (auto-generated; run `scripts/generate_guide_docs.sh` after updating `spec/fls.md`, `spec/runtime.md`, or `governance/scope.md`)
-- Parser fixtures live in `crates/fusec/tests/parser_fixtures.rs`.
-- Semantic analysis golden tests live in `crates/fusec/tests/sema_golden.rs`.
+- Parser fixtures: `crates/fusec/tests/parser_fixtures.rs`
+- Semantic analysis golden tests: `crates/fusec/tests/sema_golden.rs`
+- Language reference (single file, hand-maintained): `guides/reference.md`
+- Normative specs: `spec/fls.md` (syntax/types) and `spec/runtime.md` (runtime behavior)
