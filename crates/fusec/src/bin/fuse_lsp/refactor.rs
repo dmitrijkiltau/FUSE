@@ -71,7 +71,7 @@ fn symbol_kind_nav_tier(kind: SymbolKind) -> u8 {
         | SymbolKind::App
         | SymbolKind::Migration
         | SymbolKind::Test => 0,
-        SymbolKind::Type | SymbolKind::Enum | SymbolKind::Config => 1,
+        SymbolKind::Type | SymbolKind::Interface | SymbolKind::Enum | SymbolKind::Config => 1,
         SymbolKind::EnumVariant | SymbolKind::Field | SymbolKind::Module => 2,
         SymbolKind::Param | SymbolKind::Variable => 3,
     }
@@ -890,7 +890,7 @@ fn find_call_args_in_item<'a>(item: &'a Item, target: Span) -> Option<&'a [CallA
             }
             None
         }
-        Item::Import(_) | Item::Enum(_) => None,
+        Item::Import(_) | Item::Enum(_) | Item::Interface(_) | Item::Impl(_) => None,
     }
 }
 
@@ -1042,6 +1042,7 @@ fn map_literal_attr_pairs_in_item(item: &Item, span: Span) -> Option<Vec<(String
         Item::App(decl) => map_literal_attr_pairs_in_block(&decl.body, span),
         Item::Migration(decl) => map_literal_attr_pairs_in_block(&decl.body, span),
         Item::Test(decl) => map_literal_attr_pairs_in_block(&decl.body, span),
+        Item::Interface(_) | Item::Impl(_) => None,
     }
 }
 

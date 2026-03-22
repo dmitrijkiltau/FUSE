@@ -11,6 +11,8 @@ use crate::lexer;
 use crate::span::Span;
 use crate::token::{InterpSegment, Keyword, Punct, Token, TokenKind};
 
+const FUSE_RESERVED_KEYWORD: &str = "FUSE_RESERVED_KEYWORD";
+
 pub struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
@@ -99,6 +101,14 @@ impl<'a> Parser<'a> {
         if self.eat_keyword(Keyword::Enum).is_some() {
             let decl = self.parse_enum_decl(doc);
             return Some(Item::Enum(decl));
+        }
+        if self.eat_keyword(Keyword::Interface).is_some() {
+            let decl = self.parse_interface_decl(doc);
+            return Some(Item::Interface(decl));
+        }
+        if self.eat_keyword(Keyword::Impl).is_some() {
+            let decl = self.parse_impl_decl(doc);
+            return Some(Item::Impl(decl));
         }
         if self.eat_keyword(Keyword::Fn).is_some() {
             let decl = self.parse_fn_decl(doc);
@@ -287,7 +297,87 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_interface_decl(&mut self, doc: Option<Doc>) -> InterfaceDecl {
+        let name = self.expect_ident();
+        self.expect_punct(Punct::Colon);
+        self.expect_newline();
+        self.expect_indent();
+        let mut members = Vec::new();
+        while !self.at_dedent() && !self.at_eof() {
+            self.consume_newlines();
+            if self.at_dedent() || self.at_eof() {
+                break;
+            }
+            members.push(self.parse_interface_member());
+        }
+        let end = self.expect_dedent();
+        let span = name.span.merge(end);
+        InterfaceDecl {
+            name,
+            members,
+            doc,
+            span,
+        }
+    }
+
+    fn parse_interface_member(&mut self) -> InterfaceMember {
+        let start = self.peek_span();
+        self.expect_keyword(Keyword::Fn);
+        let (name, params, ret) = self.parse_fn_signature();
+        self.expect_newline();
+        let end = self.prev_span();
+        InterfaceMember {
+            name,
+            params,
+            ret,
+            span: start.merge(end),
+        }
+    }
+
+    fn parse_impl_decl(&mut self, doc: Option<Doc>) -> ImplDecl {
+        let interface = self.parse_type_name();
+        self.expect_keyword(Keyword::For);
+        let target = self.parse_type_name();
+        self.expect_punct(Punct::Colon);
+        self.expect_newline();
+        self.expect_indent();
+        let mut methods = Vec::new();
+        while !self.at_dedent() && !self.at_eof() {
+            self.consume_newlines();
+            if self.at_dedent() || self.at_eof() {
+                break;
+            }
+            let method_doc = self.take_doc_comments();
+            self.expect_keyword(Keyword::Fn);
+            methods.push(self.parse_fn_decl(method_doc));
+        }
+        let end = self.expect_dedent();
+        let span = interface.span.merge(end);
+        ImplDecl {
+            interface,
+            target,
+            methods,
+            doc,
+            span,
+        }
+    }
+
     fn parse_fn_decl(&mut self, doc: Option<Doc>) -> FnDecl {
+        let (name, params, ret) = self.parse_fn_signature();
+        self.expect_punct(Punct::Colon);
+        let body = self.parse_block();
+        let span = name.span.merge(body.span);
+        FnDecl {
+            name,
+            params,
+            ret,
+            body,
+            doc,
+            span,
+        }
+    }
+
+    fn parse_fn_signature(&mut self) -> (Ident, Vec<Param>, Option<TypeRef>) {
         let name = self.expect_ident();
         self.expect_punct(Punct::LParen);
         let mut params = Vec::new();
@@ -312,17 +402,7 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        self.expect_punct(Punct::Colon);
-        let body = self.parse_block();
-        let span = name.span.merge(body.span);
-        FnDecl {
-            name,
-            params,
-            ret,
-            body,
-            doc,
-            span,
-        }
+        (name, params, ret)
     }
 
     fn parse_component_decl(&mut self, doc: Option<Doc>) -> ComponentDecl {
@@ -1936,6 +2016,21 @@ impl<'a> Parser<'a> {
                 name,
                 span: tok.span,
             },
+            TokenKind::Keyword(Keyword::Interface) | TokenKind::Keyword(Keyword::Impl) => {
+                let kw = match tok.kind {
+                    TokenKind::Keyword(kw) => kw,
+                    _ => unreachable!(),
+                };
+                self.diags.error_with_code(
+                    tok.span,
+                    FUSE_RESERVED_KEYWORD,
+                    format!("`{}` is reserved in v1.1; rename this identifier", kw.as_str()),
+                );
+                Ident {
+                    name: kw.as_str().to_string(),
+                    span: tok.span,
+                }
+            }
             TokenKind::Keyword(kw) => Ident {
                 name: kw.as_str().to_string(),
                 span: tok.span,
@@ -2018,60 +2113,92 @@ impl<'a> Parser<'a> {
     }
 
     fn expect_ident(&mut self) -> Ident {
-        match self.bump().kind {
+        let tok = self.bump();
+        match tok.kind {
             TokenKind::Ident(name) => Ident {
                 name,
-                span: self.prev_span(),
+                span: tok.span,
             },
+            TokenKind::Keyword(Keyword::Interface) | TokenKind::Keyword(Keyword::Impl) => {
+                let kw = match tok.kind {
+                    TokenKind::Keyword(kw) => kw,
+                    _ => unreachable!(),
+                };
+                self.diags.error_with_code(
+                    tok.span,
+                    FUSE_RESERVED_KEYWORD,
+                    format!("`{}` is reserved in v1.1; rename this identifier", kw.as_str()),
+                );
+                Ident {
+                    name: kw.as_str().to_string(),
+                    span: tok.span,
+                }
+            }
             _ => {
                 self.error_here("expected identifier");
                 Ident {
                     name: "_".to_string(),
-                    span: self.prev_span(),
+                    span: tok.span,
                 }
             }
         }
     }
 
     fn expect_ident_or_body(&mut self) -> Ident {
-        match self.bump().kind {
+        let tok = self.bump();
+        match tok.kind {
             TokenKind::Ident(name) => Ident {
                 name,
-                span: self.prev_span(),
+                span: tok.span,
             },
             TokenKind::Keyword(Keyword::Body) => Ident {
                 name: "body".to_string(),
-                span: self.prev_span(),
+                span: tok.span,
             },
             TokenKind::Keyword(Keyword::Get) => Ident {
                 name: "get".to_string(),
-                span: self.prev_span(),
+                span: tok.span,
             },
             TokenKind::Keyword(Keyword::Post) => Ident {
                 name: "post".to_string(),
-                span: self.prev_span(),
+                span: tok.span,
             },
             TokenKind::Keyword(Keyword::Put) => Ident {
                 name: "put".to_string(),
-                span: self.prev_span(),
+                span: tok.span,
             },
             TokenKind::Keyword(Keyword::Patch) => Ident {
                 name: "patch".to_string(),
-                span: self.prev_span(),
+                span: tok.span,
             },
             TokenKind::Keyword(Keyword::From) => Ident {
                 name: "from".to_string(),
-                span: self.prev_span(),
+                span: tok.span,
             },
             TokenKind::Keyword(Keyword::Delete) => Ident {
                 name: "delete".to_string(),
-                span: self.prev_span(),
+                span: tok.span,
             },
+            TokenKind::Keyword(Keyword::Interface) | TokenKind::Keyword(Keyword::Impl) => {
+                let kw = match tok.kind {
+                    TokenKind::Keyword(kw) => kw,
+                    _ => unreachable!(),
+                };
+                self.diags.error_with_code(
+                    tok.span,
+                    FUSE_RESERVED_KEYWORD,
+                    format!("`{}` is reserved in v1.1; rename this identifier", kw.as_str()),
+                );
+                Ident {
+                    name: kw.as_str().to_string(),
+                    span: tok.span,
+                }
+            }
             _ => {
                 self.error_here("expected identifier");
                 Ident {
                     name: "_".to_string(),
-                    span: self.prev_span(),
+                    span: tok.span,
                 }
             }
         }
@@ -2242,6 +2369,8 @@ impl ItemStart for TokenKind {
                 | TokenKind::Keyword(Keyword::Requires)
                 | TokenKind::Keyword(Keyword::Type)
                 | TokenKind::Keyword(Keyword::Enum)
+                | TokenKind::Keyword(Keyword::Interface)
+                | TokenKind::Keyword(Keyword::Impl)
                 | TokenKind::Keyword(Keyword::Fn)
                 | TokenKind::Keyword(Keyword::Component)
                 | TokenKind::Keyword(Keyword::Service)

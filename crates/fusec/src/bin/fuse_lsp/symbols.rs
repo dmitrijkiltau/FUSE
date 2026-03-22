@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use fusec::ast::{
-    Block, ConfigDecl, Doc, EnumDecl, Expr, ExprKind, FnDecl, Ident, ImportDecl, ImportSpec, Item,
-    Pattern, PatternKind, Program, ServiceDecl, Stmt, StmtKind, TypeDecl, TypeDerive, TypeRef,
-    TypeRefKind,
+    Block, ConfigDecl, Doc, EnumDecl, Expr, ExprKind, FnDecl, Ident, ImplDecl, ImportDecl,
+    ImportSpec, InterfaceDecl, Item, Pattern, PatternKind, Program, ServiceDecl, Stmt, StmtKind,
+    TypeDecl, TypeDerive, TypeRef, TypeRefKind,
 };
 use fusec::loader::{ImportPathKind, classify_import_path};
 use fusec::span::Span;
@@ -84,6 +84,7 @@ pub(crate) enum SymbolKind {
     Type,
     Enum,
     EnumVariant,
+    Interface,
     Function,
     Config,
     Service,
@@ -102,6 +103,7 @@ impl SymbolKind {
             SymbolKind::Type => 23,
             SymbolKind::Enum => 10,
             SymbolKind::EnumVariant => 22,
+            SymbolKind::Interface => 23,
             SymbolKind::Function => 12,
             SymbolKind::Config => 23,
             SymbolKind::Service => 11,
@@ -120,15 +122,16 @@ impl SymbolKind {
             SymbolKind::Type => 1,
             SymbolKind::Enum => 2,
             SymbolKind::EnumVariant => 3,
-            SymbolKind::Function => 4,
-            SymbolKind::Config => 5,
-            SymbolKind::Service => 6,
-            SymbolKind::App => 7,
-            SymbolKind::Migration => 8,
-            SymbolKind::Test => 9,
-            SymbolKind::Param => 10,
-            SymbolKind::Variable => 11,
-            SymbolKind::Field => 12,
+            SymbolKind::Interface => 4,
+            SymbolKind::Function => 5,
+            SymbolKind::Config => 6,
+            SymbolKind::Service => 7,
+            SymbolKind::App => 8,
+            SymbolKind::Migration => 9,
+            SymbolKind::Test => 10,
+            SymbolKind::Param => 11,
+            SymbolKind::Variable => 12,
+            SymbolKind::Field => 13,
         }
     }
 
@@ -138,15 +141,16 @@ impl SymbolKind {
             1 => Some(SymbolKind::Type),
             2 => Some(SymbolKind::Enum),
             3 => Some(SymbolKind::EnumVariant),
-            4 => Some(SymbolKind::Function),
-            5 => Some(SymbolKind::Config),
-            6 => Some(SymbolKind::Service),
-            7 => Some(SymbolKind::App),
-            8 => Some(SymbolKind::Migration),
-            9 => Some(SymbolKind::Test),
-            10 => Some(SymbolKind::Param),
-            11 => Some(SymbolKind::Variable),
-            12 => Some(SymbolKind::Field),
+            4 => Some(SymbolKind::Interface),
+            5 => Some(SymbolKind::Function),
+            6 => Some(SymbolKind::Config),
+            7 => Some(SymbolKind::Service),
+            8 => Some(SymbolKind::App),
+            9 => Some(SymbolKind::Migration),
+            10 => Some(SymbolKind::Test),
+            11 => Some(SymbolKind::Param),
+            12 => Some(SymbolKind::Variable),
+            13 => Some(SymbolKind::Field),
             _ => None,
         }
     }
@@ -157,6 +161,7 @@ impl SymbolKind {
             SymbolKind::Type => "Type",
             SymbolKind::Enum => "Enum",
             SymbolKind::EnumVariant => "Enum Variant",
+            SymbolKind::Interface => "Interface",
             SymbolKind::Function => "Function",
             SymbolKind::Config => "Config",
             SymbolKind::Service => "Service",
@@ -225,6 +230,29 @@ pub(crate) fn collect_qualified_refs(program: &Program) -> Vec<QualifiedNameRef>
             Item::App(decl) => collect_qualified_block(&decl.body, &mut out),
             Item::Migration(decl) => collect_qualified_block(&decl.body, &mut out),
             Item::Test(decl) => collect_qualified_block(&decl.body, &mut out),
+            Item::Interface(decl) => {
+                for member in &decl.members {
+                    for param in &member.params {
+                        collect_qualified_type_ref(&param.ty, &mut out);
+                    }
+                    if let Some(ret) = &member.ret {
+                        collect_qualified_type_ref(ret, &mut out);
+                    }
+                }
+            }
+            Item::Impl(decl) => {
+                collect_qualified_ident_ref(&decl.interface, &mut out);
+                collect_qualified_ident_ref(&decl.target, &mut out);
+                for method in &decl.methods {
+                    for param in &method.params {
+                        collect_qualified_type_ref(&param.ty, &mut out);
+                    }
+                    if let Some(ret) = &method.ret {
+                        collect_qualified_type_ref(ret, &mut out);
+                    }
+                    collect_qualified_block(&method.body, &mut out);
+                }
+            }
             Item::Import(_) => {}
         }
     }
@@ -459,6 +487,17 @@ fn collect_qualified_pattern(pattern: &Pattern, out: &mut Vec<QualifiedNameRef>)
     }
 }
 
+fn collect_qualified_ident_ref(ident: &Ident, out: &mut Vec<QualifiedNameRef>) {
+    if let Some((module, item)) = split_qualified_name(&ident.name) {
+        out.push(QualifiedNameRef {
+            span: ident.span,
+            module_span: None,
+            module: module.to_string(),
+            item: item.to_string(),
+        });
+    }
+}
+
 fn collect_qualified_type_ref(ty: &TypeRef, out: &mut Vec<QualifiedNameRef>) {
     match &ty.kind {
         TypeRefKind::Simple(ident) => {
@@ -645,6 +684,16 @@ impl<'a> IndexBuilder<'a> {
                         None,
                     );
                 }
+                Item::Interface(decl) => {
+                    self.define_global(
+                        &decl.name,
+                        SymbolKind::Interface,
+                        format!("interface {}", decl.name.name),
+                        decl.doc.as_ref(),
+                        None,
+                    );
+                }
+                Item::Impl(_) => {}
             }
         }
     }
@@ -805,6 +854,8 @@ impl<'a> IndexBuilder<'a> {
                 self.visit_block(&decl.body);
                 self.current_callable = prev;
             }
+            Item::Interface(decl) => self.visit_interface_decl(decl),
+            Item::Impl(decl) => self.visit_impl_decl(decl),
         }
     }
 
@@ -825,6 +876,28 @@ impl<'a> IndexBuilder<'a> {
             for ty in &variant.payload {
                 self.visit_type_ref(ty);
             }
+        }
+    }
+
+    fn visit_interface_decl(&mut self, decl: &InterfaceDecl) {
+        for member in &decl.members {
+            for param in &member.params {
+                self.visit_type_ref(&param.ty);
+            }
+            if let Some(ret) = &member.ret {
+                self.visit_type_ref(ret);
+            }
+        }
+    }
+
+    fn visit_impl_decl(&mut self, decl: &ImplDecl) {
+        self.add_type_ref(&decl.interface);
+        self.add_type_ref(&decl.target);
+        for method in &decl.methods {
+            let prev = self.current_callable;
+            self.current_callable = None;
+            self.visit_fn_decl(method);
+            self.current_callable = prev;
         }
     }
 

@@ -97,6 +97,35 @@ impl Canonicalizer {
                         }
                     }
                 }
+                Item::Interface(decl) => {
+                    for member in &mut decl.members {
+                        for param in &mut member.params {
+                            self.canonicalize_type_ref(&mut param.ty, &ScopeStack::new());
+                            if let Some(default) = &mut param.default {
+                                self.canonicalize_expr(default, &mut ScopeStack::new());
+                            }
+                        }
+                        if let Some(ret) = &mut member.ret {
+                            self.canonicalize_type_ref(ret, &ScopeStack::new());
+                        }
+                    }
+                }
+                Item::Impl(decl) => {
+                    for method in &mut decl.methods {
+                        let mut scope = ScopeStack::new();
+                        for param in &mut method.params {
+                            self.canonicalize_type_ref(&mut param.ty, &scope);
+                            if let Some(default) = &mut param.default {
+                                self.canonicalize_expr(default, &mut scope.clone());
+                            }
+                            scope.declare(param.name.name.clone());
+                        }
+                        if let Some(ret) = &mut method.ret {
+                            self.canonicalize_type_ref(ret, &scope);
+                        }
+                        self.canonicalize_block(&mut method.body, &mut scope);
+                    }
+                }
                 Item::Fn(decl) => {
                     let mut scope = ScopeStack::new();
                     for param in &mut decl.params {

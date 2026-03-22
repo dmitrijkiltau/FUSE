@@ -49,6 +49,8 @@ pub enum Item {
     Import(ImportDecl),
     Type(TypeDecl),
     Enum(EnumDecl),
+    Interface(InterfaceDecl),
+    Impl(ImplDecl),
     Fn(FnDecl),
     Component(ComponentDecl),
     Service(ServiceDecl),
@@ -132,6 +134,31 @@ pub struct EnumDecl {
 pub struct EnumVariant {
     pub name: Ident,
     pub payload: Vec<TypeRef>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InterfaceDecl {
+    pub name: Ident,
+    pub members: Vec<InterfaceMember>,
+    pub doc: Option<Doc>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InterfaceMember {
+    pub name: Ident,
+    pub params: Vec<Param>,
+    pub ret: Option<TypeRef>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ImplDecl {
+    pub interface: Ident,
+    pub target: Ident,
+    pub methods: Vec<FnDecl>,
+    pub doc: Option<Doc>,
     pub span: Span,
 }
 

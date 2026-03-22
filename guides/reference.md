@@ -58,6 +58,41 @@ component Card:                       # HTML component
 
 ---
 
+## Interface Contracts
+
+The initial v1.1 slice adds top-level `interface` declarations and `impl Interface for Type`
+blocks. Interfaces are compile-time contracts, not runtime values or ordinary types.
+`where` constraints are intentionally deferred in this slice, so existing query-builder
+calls like `.where(...)` are unchanged.
+
+```fuse
+interface Encodable:
+  fn encode() -> String
+  fn decode(s: String) -> Self!ParseError
+
+type User:
+  name: String
+
+impl Encodable for User:
+  fn encode() -> String:
+    return self.name
+  fn decode(s: String) -> Self!ParseError:
+    return User(name=s)
+
+fn round_trip(user: User) -> User!ParseError:
+  let encoded = user.encode()
+  return User.decode(encoded)
+```
+
+Rules for the initial slice:
+
+- `interface` names are exportable/importable like `type` and `enum` names.
+- `impl` blocks are declarations, but they are not importable by name.
+- `Self` is only valid inside interface member signatures and impl member signatures/bodies.
+- Instance methods use an implicit immutable `self`; associated methods do not.
+- Using an interface name as a normal type or value is a compile-time error.
+- Duplicate impls for the same `(interface, target)` pair and orphan impls are rejected.
+
 ## Types
 
 ### Primitives

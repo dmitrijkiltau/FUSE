@@ -479,6 +479,12 @@ fn is_query_method(name: &str) -> bool {
     )
 }
 
+fn parse_canonical_function_name(name: &str) -> Option<(ModuleId, &str)> {
+    let rest = name.strip_prefix('m')?;
+    let (module_id, raw_name) = rest.split_once("::")?;
+    Some((module_id.parse().ok()?, raw_name))
+}
+
 fn force_html_input_tag_call(name: &str, args: &[crate::ast::CallArg]) -> bool {
     if name != "input" {
         return false;
@@ -788,6 +794,8 @@ impl Interpreter {
     }
 
     pub fn with_registry(registry: &ModuleRegistry) -> Self {
+        let lowered_registry = crate::frontend::interface_desugar::desugar_registry(registry);
+        let registry = &lowered_registry;
         let mut functions: HashMap<ModuleId, HashMap<String, FnDecl>> = HashMap::new();
         let mut apps = Vec::new();
         let mut app_owner = HashMap::new();
@@ -908,6 +916,14 @@ impl Interpreter {
     }
 
     fn resolve_function_ref(&self, module_id: ModuleId, name: &str) -> Option<FunctionRef> {
+        if let Some((canonical_module_id, raw_name)) = parse_canonical_function_name(name) {
+            if self.has_function_in_module(canonical_module_id, raw_name) {
+                return Some(FunctionRef {
+                    module_id: canonical_module_id,
+                    name: raw_name.to_string(),
+                });
+            }
+        }
         if self.has_function_in_module(module_id, name) {
             return Some(FunctionRef {
                 module_id,

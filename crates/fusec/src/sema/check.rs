@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use crate::ast::{
     Block, CallArg, Capability, Expr, ExprKind, Item, Literal, Pattern, PatternKind, Program,
@@ -21,12 +22,29 @@ const TYPED_QUERY_CALL_DIAG_CODE: &str = "FUSE_TYPED_QUERY_CALL";
 const TYPED_QUERY_TYPE_ARG_DIAG_CODE: &str = "FUSE_TYPED_QUERY_TYPE_ARG";
 const TYPED_QUERY_SELECT_DIAG_CODE: &str = "FUSE_TYPED_QUERY_SELECT";
 const TYPED_QUERY_FIELD_MISMATCH_DIAG_CODE: &str = "FUSE_TYPED_QUERY_FIELD_MISMATCH";
+const FUSE_IMPL_DUPLICATE: &str = "FUSE_IMPL_DUPLICATE";
+const FUSE_IMPL_INCOMPLETE: &str = "FUSE_IMPL_INCOMPLETE";
+const FUSE_IMPL_SIGNATURE_MISMATCH: &str = "FUSE_IMPL_SIGNATURE_MISMATCH";
+const FUSE_IMPL_ORPHAN: &str = "FUSE_IMPL_ORPHAN";
+const FUSE_INTERFACE_NOT_A_TYPE: &str = "FUSE_INTERFACE_NOT_A_TYPE";
+const FUSE_INTERFACE_DYNAMIC_USE: &str = "FUSE_INTERFACE_DYNAMIC_USE";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TypedQuerySelectError {
     MissingSelect,
     EmptySelect,
     InvalidColumns,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InterfaceMethodKind {
+    Instance,
+    Associated,
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedImplMethod {
+    sig: FnSig,
 }
 
 pub struct Checker<'a> {
@@ -39,6 +57,7 @@ pub struct Checker<'a> {
     module_capabilities: &'a HashMap<ModuleId, HashSet<Capability>>,
     module_symbols: &'a HashMap<ModuleId, ModuleSymbols>,
     module_import_items: &'a HashMap<ModuleId, HashMap<String, ModuleLink>>,
+    module_paths: &'a HashMap<ModuleId, PathBuf>,
     diags: &'a mut Diagnostics,
     env: TypeEnv,
     fn_cache: HashMap<(ModuleId, String), FnSig>,
@@ -47,6 +66,7 @@ pub struct Checker<'a> {
     transaction_scope_depth: usize,
     declared_capabilities: HashSet<Capability>,
     used_capabilities: HashSet<Capability>,
+    current_self_type: Option<Ty>,
 }
 
 impl<'a> Checker<'a> {
@@ -60,6 +80,7 @@ impl<'a> Checker<'a> {
         module_symbols: &'a HashMap<ModuleId, ModuleSymbols>,
         module_import_items: &'a HashMap<ModuleId, HashMap<String, ModuleLink>>,
         module_capabilities: &'a HashMap<ModuleId, HashSet<Capability>>,
+        module_paths: &'a HashMap<ModuleId, PathBuf>,
         diags: &'a mut Diagnostics,
     ) -> Self {
         let mut env = TypeEnv::new();
@@ -158,6 +179,7 @@ impl<'a> Checker<'a> {
             module_capabilities,
             module_symbols,
             module_import_items,
+            module_paths,
             diags,
             env,
             fn_cache: HashMap::new(),
@@ -166,6 +188,7 @@ impl<'a> Checker<'a> {
             transaction_scope_depth: 0,
             declared_capabilities,
             used_capabilities: HashSet::new(),
+            current_self_type: None,
         }
     }
 
@@ -193,6 +216,8 @@ impl<'a> Checker<'a> {
                 }
                 Item::Type(decl) => self.check_type_decl(decl),
                 Item::Enum(decl) => self.check_enum_decl(decl),
+                Item::Interface(decl) => self.check_interface_decl(decl),
+                Item::Impl(decl) => self.check_impl_decl(decl),
                 Item::Import(_) => {}
             }
         }
@@ -220,6 +245,171 @@ impl<'a> Checker<'a> {
                 let _ = self.resolve_type_ref(ty);
             }
         }
+    }
+
+    fn check_interface_decl(&mut self, decl: &crate::ast::InterfaceDecl) {
+        let prev_self = self.current_self_type.clone();
+        self.current_self_type = Some(Ty::SelfType);
+        for member in &decl.members {
+            for param in &member.params {
+                let param_ty = self.resolve_type_ref(&param.ty);
+                if let Some(default) = &param.default {
+                    let value_ty = self.check_expr(default);
+                    if !self.is_assignable(&value_ty, &param_ty) {
+                        self.type_mismatch(default.span, &param_ty, &value_ty);
+                    }
+                }
+            }
+            if let Some(ret) = &member.ret {
+                let resolved = self.resolve_type_ref(ret);
+                self.validate_return_error_domains(
+                    ret.span,
+                    &resolved,
+                    "interface member return type",
+                );
+            }
+        }
+        self.current_self_type = prev_self;
+    }
+
+    fn check_impl_decl(&mut self, decl: &crate::ast::ImplDecl) {
+        let interface_info = self.interface_info_in_scope(&decl.interface.name).cloned();
+        if interface_info.is_none() {
+            self.diags.error(
+                decl.interface.span,
+                format!("unknown interface {}", decl.interface.name),
+            );
+        }
+        let Some((target_ty, target_owner)) = self.resolve_impl_target(&decl.target) else {
+            return;
+        };
+        self.check_impl_duplicate(decl);
+        self.check_impl_orphan(decl, target_owner);
+
+        let mut methods_by_name: HashMap<String, &crate::ast::FnDecl> = HashMap::new();
+        for method in &decl.methods {
+            if methods_by_name
+                .insert(method.name.name.clone(), method)
+                .is_some()
+            {
+                self.diags.error(
+                    method.name.span,
+                    format!(
+                        "duplicate method {} in impl {} for {}",
+                        method.name.name, decl.interface.name, decl.target.name
+                    ),
+                );
+            }
+            let uses_self = self
+                .impl_method_uses_self(self.module_id, &decl.interface.name, &decl.target.name, &method.name.name)
+                .unwrap_or(false);
+            self.check_impl_method(method, target_ty.clone(), uses_self);
+        }
+
+        let Some(interface_info) = interface_info else {
+            return;
+        };
+        for member in &interface_info.members {
+            let Some(method) = methods_by_name.get(&member.name) else {
+                self.diags.error_with_code(
+                    decl.span,
+                    FUSE_IMPL_INCOMPLETE,
+                    format!(
+                        "impl {} for {} is missing method {}",
+                        decl.interface.name, decl.target.name, member.name
+                    ),
+                );
+                continue;
+            };
+            let expected = self.resolve_interface_member_sig_for_target(member, &target_ty);
+            let actual = self.resolve_impl_method_sig(method, &target_ty);
+            if !self.fn_sig_matches(&expected, &actual) {
+                self.diags.error_with_code(
+                    method.span,
+                    FUSE_IMPL_SIGNATURE_MISMATCH,
+                    format!(
+                        "impl method {} does not match interface {}",
+                        method.name.name, decl.interface.name
+                    ),
+                );
+            }
+        }
+    }
+
+    fn check_impl_method(
+        &mut self,
+        decl: &crate::ast::FnDecl,
+        target_ty: Ty,
+        uses_self: bool,
+    ) {
+        let prev_self = self.current_self_type.clone();
+        self.current_self_type = Some(target_ty.clone());
+        let sig = self.resolve_fn_sig(decl);
+        if let Some(ret) = &decl.ret {
+            self.validate_return_error_domains(ret.span, sig.ret.as_ref(), "impl method return type");
+        }
+        let prev_return = self.current_return.replace(*sig.ret.clone());
+        self.env.push();
+        if uses_self {
+            self.insert_var("self", target_ty, false, decl.span);
+        }
+        for param in &sig.params {
+            self.insert_var(&param.name, param.ty.clone(), false, decl.span);
+        }
+        let _ = self.check_block(&decl.body);
+        self.env.pop();
+        self.current_return = prev_return;
+        self.current_self_type = prev_self;
+    }
+
+    fn resolve_impl_method_sig(&mut self, decl: &crate::ast::FnDecl, target_ty: &Ty) -> FnSig {
+        let prev_self = self.current_self_type.clone();
+        self.current_self_type = Some(target_ty.clone());
+        let sig = self.resolve_fn_sig(decl);
+        self.current_self_type = prev_self;
+        sig
+    }
+
+    fn resolve_interface_member_sig_for_target(
+        &mut self,
+        member: &super::symbols::InterfaceMemberInfo,
+        target_ty: &Ty,
+    ) -> FnSig {
+        let prev_self = self.current_self_type.clone();
+        self.current_self_type = Some(target_ty.clone());
+        let params = member
+            .params
+            .iter()
+            .map(|param| ParamSig {
+                name: param.name.clone(),
+                ty: self.resolve_type_ref(&param.ty),
+                has_default: param.has_default,
+            })
+            .collect();
+        let ret = member
+            .ret
+            .as_ref()
+            .map(|ty| self.resolve_type_ref(ty))
+            .unwrap_or(Ty::Unit);
+        self.current_self_type = prev_self;
+        FnSig {
+            params,
+            ret: Box::new(ret),
+        }
+    }
+
+    fn fn_sig_matches(&self, expected: &FnSig, actual: &FnSig) -> bool {
+        if expected.params.len() != actual.params.len() {
+            return false;
+        }
+        if expected.ret != actual.ret {
+            return false;
+        }
+        expected.params.iter().zip(&actual.params).all(|(left, right)| {
+            left.name == right.name
+                && left.ty == right.ty
+                && left.has_default == right.has_default
+        })
     }
 
     fn check_config_decl(&mut self, decl: &crate::ast::ConfigDecl) {
@@ -1070,19 +1260,40 @@ impl<'a> Checker<'a> {
     }
 
     fn check_member(&mut self, base: &Expr, name: &crate::ast::Ident, is_optional: bool) -> Ty {
-        let base_ty = match &base.kind {
+        let (base_ty, associated_receiver) = match &base.kind {
             ExprKind::Ident(ident) => {
                 if let Some(var) = self.env.lookup(&ident.name) {
-                    var.ty.clone()
+                    (var.ty.clone(), false)
+                } else if ident.name == "Self" {
+                    if let Some(self_ty) = &self.current_self_type {
+                        (self_ty.clone(), true)
+                    } else {
+                        (self.check_expr(base), false)
+                    }
                 } else if self.modules.contains(&ident.name) {
-                    Ty::Module(ident.name.clone())
-                } else if self.enum_in_scope(&ident.name) {
-                    Ty::Enum(ident.name.clone())
+                    (Ty::Module(ident.name.clone()), false)
+                } else if let Some((ty, _)) = self.lookup_nominal_type_in_scope_silent(self.module_id, &ident.name) {
+                    (ty, true)
                 } else {
-                    self.check_expr(base)
+                    (self.check_expr(base), false)
                 }
             }
-            _ => self.check_expr(base),
+            ExprKind::Member {
+                base: inner_base,
+                name: inner_name,
+            } => {
+                if let ExprKind::Ident(module_ident) = &inner_base.kind {
+                    let qualified = format!("{}.{}", module_ident.name, inner_name.name);
+                    if let Some((ty, _)) = self.lookup_nominal_type_in_scope_silent(self.module_id, &qualified) {
+                        (ty, true)
+                    } else {
+                        (self.check_expr(base), false)
+                    }
+                } else {
+                    (self.check_expr(base), false)
+                }
+            }
+            _ => (self.check_expr(base), false),
         };
         let mut inner = Self::unbox_transparent(base_ty.clone());
         if is_optional {
@@ -1099,9 +1310,69 @@ impl<'a> Checker<'a> {
             }
         }
         let field_ty = match inner {
-            Ty::Struct(ref name_ty) => self.lookup_field(name_ty, &name.name, name.span),
-            Ty::Config(ref name_ty) => self.lookup_config_field(name_ty, &name.name, name.span),
-            Ty::Enum(ref name_ty) => self.lookup_enum_variant(name_ty, name),
+            Ty::Struct(ref name_ty) => {
+                if associated_receiver {
+                    if let Some(resolved) =
+                        self.resolve_impl_method(name_ty, name, InterfaceMethodKind::Associated)
+                    {
+                        Ty::Fn(resolved.sig)
+                    } else {
+                        self.diags.error(
+                            name.span,
+                            format!("type {} has no member {}", name_ty, name.name),
+                        );
+                        Ty::Unknown
+                    }
+                } else if let Some(field_ty) = self.lookup_field_opt(name_ty, &name.name) {
+                    self.resolve_type_ref(&field_ty)
+                } else if let Some(resolved) =
+                    self.resolve_impl_method(name_ty, name, InterfaceMethodKind::Instance)
+                {
+                    Ty::Fn(resolved.sig)
+                } else {
+                    self.diags
+                        .error(name.span, format!("unknown field {} on {}", name.name, name_ty));
+                    Ty::Unknown
+                }
+            }
+            Ty::Config(ref name_ty) => {
+                if associated_receiver {
+                    self.diags.error(
+                        name.span,
+                        format!("config {} has no member {}", name_ty, name.name),
+                    );
+                    Ty::Unknown
+                } else {
+                    self.lookup_config_field(name_ty, &name.name, name.span)
+                }
+            }
+            Ty::Enum(ref name_ty) => {
+                if associated_receiver {
+                    if self.lookup_enum_variant_opt(name_ty, &name.name).is_some() {
+                        self.lookup_enum_variant(name_ty, name)
+                    } else if let Some(resolved) =
+                        self.resolve_impl_method(name_ty, name, InterfaceMethodKind::Associated)
+                    {
+                        Ty::Fn(resolved.sig)
+                    } else {
+                        self.diags.error(
+                            name.span,
+                            format!("enum {} has no member {}", name_ty, name.name),
+                        );
+                        Ty::Unknown
+                    }
+                } else if let Some(resolved) =
+                    self.resolve_impl_method(name_ty, name, InterfaceMethodKind::Instance)
+                {
+                    Ty::Fn(resolved.sig)
+                } else {
+                    self.diags.error(
+                        name.span,
+                        format!("type {} has no field {}", name_ty, name.name),
+                    );
+                    Ty::Unknown
+                }
+            }
             Ty::Module(ref module_name) => self.lookup_module_member(module_name, name),
             Ty::External(ref external) => self.lookup_external_member(external, name),
             Ty::Unknown => Ty::Unknown,
@@ -1958,18 +2229,325 @@ impl<'a> Checker<'a> {
     }
 
     fn lookup_config_field(&mut self, type_name: &str, field: &str, span: Span) -> Ty {
-        let field_ty = self.config_info(type_name).and_then(|info| {
-            info.fields
-                .iter()
-                .find(|f| f.name == field)
-                .map(|field_info| field_info.ty.clone())
-        });
+        let field_ty = self.lookup_config_field_opt(type_name, field);
         if let Some(field_ty) = field_ty {
             return self.resolve_type_ref(&field_ty);
         }
         self.diags
             .error(span, format!("unknown field {} on {}", field, type_name));
         Ty::Unknown
+    }
+
+    fn lookup_config_field_opt(&self, type_name: &str, field: &str) -> Option<crate::ast::TypeRef> {
+        self.config_info(type_name).and_then(|info| {
+            info.fields
+                .iter()
+                .find(|f| f.name == field)
+                .map(|field_info| field_info.ty.clone())
+        })
+    }
+
+    fn lookup_field_opt(&self, type_name: &str, field: &str) -> Option<crate::ast::TypeRef> {
+        self.type_info(type_name).and_then(|info| {
+            info.fields
+                .iter()
+                .find(|f| f.name == field)
+                .map(|field_info| field_info.ty.clone())
+        })
+    }
+
+    fn lookup_enum_variant_opt(
+        &self,
+        enum_name: &str,
+        variant: &str,
+    ) -> Option<super::symbols::EnumVariantInfo> {
+        self.enum_info(enum_name)
+            .and_then(|info| info.variants.iter().find(|item| item.name == variant).cloned())
+    }
+
+    fn interface_info_in_scope(&self, name: &str) -> Option<&super::symbols::InterfaceInfo> {
+        if let Some((module_name, item_name)) = split_qualified_type_name(name) {
+            let module_map = self.module_maps.get(&self.module_id).unwrap_or(self.modules);
+            let link = module_map.get(module_name)?;
+            let symbols = self.module_symbols.get(&link.id)?;
+            return symbols.interfaces.get(item_name);
+        }
+        if let Some(info) = self.symbols.interfaces.get(name) {
+            return Some(info);
+        }
+        let link = self.import_items.get(name)?;
+        let symbols = self.module_symbols.get(&link.id)?;
+        symbols.interfaces.get(name)
+    }
+
+    fn interface_owner_in_scope(&self, name: &str) -> Option<ModuleId> {
+        if let Some((module_name, item_name)) = split_qualified_type_name(name) {
+            let module_map = self.module_maps.get(&self.module_id).unwrap_or(self.modules);
+            let link = module_map.get(module_name)?;
+            let symbols = self.module_symbols.get(&link.id)?;
+            return symbols.interfaces.contains_key(item_name).then_some(link.id);
+        }
+        if self.symbols.interfaces.contains_key(name) {
+            return Some(self.module_id);
+        }
+        let link = self.import_items.get(name)?;
+        let symbols = self.module_symbols.get(&link.id)?;
+        symbols.interfaces.contains_key(name).then_some(link.id)
+    }
+
+    fn resolve_impl_target(&mut self, ident: &crate::ast::Ident) -> Option<(Ty, Option<ModuleId>)> {
+        self.resolve_nominal_type_in_scope(&ident.name, ident.span)
+    }
+
+    fn resolve_nominal_type_in_scope(
+        &mut self,
+        name: &str,
+        span: Span,
+    ) -> Option<(Ty, Option<ModuleId>)> {
+        if let Some((module_name, item_name)) = split_qualified_type_name(name) {
+            let module_map = self.module_maps.get(&self.module_id).unwrap_or(self.modules);
+            let Some(link) = module_map.get(module_name) else {
+                self.diags.error(span, format!("unknown module {}", module_name));
+                return None;
+            };
+            let Some(symbols) = self.module_symbols.get(&link.id) else {
+                self.diags.error(span, format!("unknown module {}", module_name));
+                return None;
+            };
+            if symbols.types.contains_key(item_name) {
+                return Some((Ty::Struct(item_name.to_string()), Some(link.id)));
+            }
+            if symbols.enums.contains_key(item_name) {
+                return Some((Ty::Enum(item_name.to_string()), Some(link.id)));
+            }
+            if symbols.interfaces.contains_key(item_name) {
+                self.diags.error_with_code(
+                    span,
+                    FUSE_INTERFACE_NOT_A_TYPE,
+                    format!("{}.{} is an interface, not a type", module_name, item_name),
+                );
+                return None;
+            }
+            self.diags
+                .error(span, format!("unknown type {}.{}", module_name, item_name));
+            return None;
+        }
+        if self.symbols.types.contains_key(name) {
+            return Some((Ty::Struct(name.to_string()), Some(self.module_id)));
+        }
+        if self.symbols.enums.contains_key(name) {
+            return Some((Ty::Enum(name.to_string()), Some(self.module_id)));
+        }
+        if self.symbols.interfaces.contains_key(name) {
+            self.diags.error_with_code(
+                span,
+                FUSE_INTERFACE_NOT_A_TYPE,
+                format!("{} is an interface, not a type", name),
+            );
+            return None;
+        }
+        if let Some(link) = self.import_items.get(name) {
+            if let Some(symbols) = self.module_symbols.get(&link.id) {
+                if symbols.types.contains_key(name) {
+                    return Some((Ty::Struct(name.to_string()), Some(link.id)));
+                }
+                if symbols.enums.contains_key(name) {
+                    return Some((Ty::Enum(name.to_string()), Some(link.id)));
+                }
+                if symbols.interfaces.contains_key(name) {
+                    self.diags.error_with_code(
+                        span,
+                        FUSE_INTERFACE_NOT_A_TYPE,
+                        format!("{} is an interface, not a type", name),
+                    );
+                    return None;
+                }
+            }
+        }
+        match name {
+            "Unit" | "Int" | "Float" | "Bool" | "String" | "Bytes" | "Html" | "Id"
+            | "Email" | "Error" => {
+                self.diags.error(span, format!("{} is not a nominal impl target", name));
+            }
+            _ => self.diags.error(span, format!("unknown type {}", name)),
+        }
+        None
+    }
+
+    fn module_package_root(&self, module_id: ModuleId) -> Option<PathBuf> {
+        let path = self.module_paths.get(&module_id)?;
+        if path.to_string_lossy().starts_with('<') {
+            return None;
+        }
+        Some(crate::manifest::find_workspace_root_for_entry(path))
+    }
+
+    fn check_impl_duplicate(&mut self, decl: &crate::ast::ImplDecl) {
+        let current_pkg = self.module_package_root(self.module_id);
+        let mut count = 0usize;
+        for (module_id, symbols) in self.module_symbols {
+            let same_pkg = match (&current_pkg, self.module_package_root(*module_id)) {
+                (Some(left), Some(right)) => *left == right,
+                _ => *module_id == self.module_id,
+            };
+            if !same_pkg {
+                continue;
+            }
+            count += symbols
+                .impls
+                .iter()
+                .filter(|item| item.interface == decl.interface.name && item.target == decl.target.name)
+                .count();
+        }
+        if count > 1 {
+            self.diags.error_with_code(
+                decl.span,
+                FUSE_IMPL_DUPLICATE,
+                format!(
+                    "duplicate impl {} for {} in the same package",
+                    decl.interface.name, decl.target.name
+                ),
+            );
+        }
+    }
+
+    fn check_impl_orphan(&mut self, decl: &crate::ast::ImplDecl, target_owner: Option<ModuleId>) {
+        let Some(current_pkg) = self.module_package_root(self.module_id) else {
+            return;
+        };
+        let interface_owner = self.interface_owner_in_scope(&decl.interface.name);
+        let interface_pkg = interface_owner.and_then(|id| self.module_package_root(id));
+        let target_pkg = target_owner.and_then(|id| self.module_package_root(id));
+        let external_interface = interface_pkg.as_ref().is_some_and(|pkg| *pkg != current_pkg);
+        let external_target = target_pkg.as_ref().is_some_and(|pkg| *pkg != current_pkg);
+        if external_interface && external_target {
+            self.diags.error_with_code(
+                decl.span,
+                FUSE_IMPL_ORPHAN,
+                format!(
+                    "impl {} for {} is orphaned in this package",
+                    decl.interface.name, decl.target.name
+                ),
+            );
+        }
+    }
+
+    fn impl_method_uses_self(
+        &self,
+        module_id: ModuleId,
+        interface: &str,
+        target: &str,
+        method: &str,
+    ) -> Option<bool> {
+        self.module_symbols
+            .get(&module_id)?
+            .impls
+            .iter()
+            .find(|item| item.interface == interface && item.target == target)
+            .and_then(|item| item.methods.iter().find(|candidate| candidate.name == method))
+            .map(|method| method.uses_self)
+    }
+
+    fn lookup_nominal_type_in_scope_silent(
+        &self,
+        module_id: ModuleId,
+        name: &str,
+    ) -> Option<(Ty, Option<ModuleId>)> {
+        if let Some((module_name, item_name)) = split_qualified_type_name(name) {
+            let module_map = self.module_maps.get(&module_id).unwrap_or(self.modules);
+            let link = module_map.get(module_name)?;
+            let symbols = self.module_symbols.get(&link.id)?;
+            if symbols.types.contains_key(item_name) {
+                return Some((Ty::Struct(item_name.to_string()), Some(link.id)));
+            }
+            if symbols.enums.contains_key(item_name) {
+                return Some((Ty::Enum(item_name.to_string()), Some(link.id)));
+            }
+            return None;
+        }
+        let symbols = self.module_symbols.get(&module_id).unwrap_or(self.symbols);
+        if symbols.types.contains_key(name) {
+            return Some((Ty::Struct(name.to_string()), Some(module_id)));
+        }
+        if symbols.enums.contains_key(name) {
+            return Some((Ty::Enum(name.to_string()), Some(module_id)));
+        }
+        let import_items = self
+            .module_import_items
+            .get(&module_id)
+            .unwrap_or(self.import_items);
+        let link = import_items.get(name)?;
+        let symbols = self.module_symbols.get(&link.id)?;
+        if symbols.types.contains_key(name) {
+            return Some((Ty::Struct(name.to_string()), Some(link.id)));
+        }
+        if symbols.enums.contains_key(name) {
+            return Some((Ty::Enum(name.to_string()), Some(link.id)));
+        }
+        None
+    }
+
+    fn resolve_impl_method(
+        &mut self,
+        target_name: &str,
+        name: &crate::ast::Ident,
+        kind: InterfaceMethodKind,
+    ) -> Option<ResolvedImplMethod> {
+        let mut candidates: Vec<(ModuleId, super::symbols::ImplMethodInfo, String)> = Vec::new();
+        for (module_id, symbols) in self.module_symbols {
+            for impl_info in &symbols.impls {
+                if impl_info.target != target_name {
+                    continue;
+                }
+                for method in &impl_info.methods {
+                    let method_kind = if method.uses_self {
+                        InterfaceMethodKind::Instance
+                    } else {
+                        InterfaceMethodKind::Associated
+                    };
+                    if method.name == name.name && method_kind == kind {
+                        candidates.push((*module_id, method.clone(), impl_info.interface.clone()));
+                    }
+                }
+            }
+        }
+        if candidates.is_empty() {
+            return None;
+        }
+        if candidates.len() > 1 {
+            self.diags.error(
+                name.span,
+                format!(
+                    "ambiguous interface method {} for {}",
+                    name.name, target_name
+                ),
+            );
+        }
+        let (module_id, method, _interface) = candidates.remove(0);
+        let target_ty = self.resolve_simple_type_name_in(module_id, target_name, method.span);
+        let prev_self = self.current_self_type.clone();
+        self.current_self_type = Some(target_ty);
+        let params = method
+            .params
+            .iter()
+            .map(|param| ParamSig {
+                name: param.name.clone(),
+                ty: self.resolve_type_ref_in(module_id, &param.ty),
+                has_default: param.has_default,
+            })
+            .collect();
+        let ret = method
+            .ret
+            .as_ref()
+            .map(|ty| self.resolve_type_ref_in(module_id, ty))
+            .unwrap_or(Ty::Unit);
+        self.current_self_type = prev_self;
+        Some(ResolvedImplMethod {
+            sig: FnSig {
+                params,
+                ret: Box::new(ret),
+            },
+        })
     }
 
     fn type_info(&self, name: &str) -> Option<&super::symbols::TypeInfo> {
@@ -1999,10 +2577,6 @@ impl<'a> Checker<'a> {
         symbols.enums.get(name)
     }
 
-    fn enum_in_scope(&self, name: &str) -> bool {
-        self.enum_info(name).is_some()
-    }
-
     fn resolve_imported_value(&mut self, ident: &crate::ast::Ident, link: &ModuleLink) -> Ty {
         let Some(symbols) = self.module_symbols.get(&link.id) else {
             return Ty::Unknown;
@@ -2017,6 +2591,14 @@ impl<'a> Checker<'a> {
         }
         if symbols.configs.contains_key(&ident.name) {
             return Ty::Config(ident.name.clone());
+        }
+        if symbols.interfaces.contains_key(&ident.name) {
+            self.diags.error_with_code(
+                ident.span,
+                FUSE_INTERFACE_DYNAMIC_USE,
+                format!("{} is an interface, not a value", ident.name),
+            );
+            return Ty::Unknown;
         }
         if symbols.types.contains_key(&ident.name) || symbols.enums.contains_key(&ident.name) {
             self.diags
@@ -2110,6 +2692,14 @@ impl<'a> Checker<'a> {
         }
         if symbols.enums.contains_key(&name.name) {
             return Ty::Enum(name.name.clone());
+        }
+        if symbols.interfaces.contains_key(&name.name) {
+            self.diags.error_with_code(
+                name.span,
+                FUSE_INTERFACE_DYNAMIC_USE,
+                format!("{}.{} is an interface, not a value", module_name, name.name),
+            );
+            return Ty::Unknown;
         }
         if symbols.types.contains_key(&name.name) {
             self.diags.error(
@@ -2280,6 +2870,14 @@ impl<'a> Checker<'a> {
         }
         if self.symbols.configs.contains_key(&ident.name) {
             return Ty::Config(ident.name.clone());
+        }
+        if self.symbols.interfaces.contains_key(&ident.name) {
+            self.diags.error_with_code(
+                ident.span,
+                FUSE_INTERFACE_DYNAMIC_USE,
+                format!("{} is an interface, not a value", ident.name),
+            );
+            return Ty::Unknown;
         }
         if self.symbols.types.contains_key(&ident.name)
             || self.symbols.enums.contains_key(&ident.name)
@@ -2528,6 +3126,14 @@ impl<'a> Checker<'a> {
     }
 
     fn resolve_simple_type_name_in(&mut self, module_id: ModuleId, name: &str, span: Span) -> Ty {
+        if name == "Self" {
+            if let Some(self_ty) = &self.current_self_type {
+                return self_ty.clone();
+            }
+            self.diags
+                .error(span, "Self is only valid inside interface and impl members");
+            return Ty::Unknown;
+        }
         if !name.starts_with("std.") {
             if let Some((module_name, item_name)) = split_qualified_type_name(name) {
                 let module_map = self.module_maps.get(&module_id).unwrap_or(self.modules);
@@ -2549,6 +3155,14 @@ impl<'a> Checker<'a> {
                 }
                 if symbols.configs.contains_key(item_name) {
                     return Ty::Config(item_name.to_string());
+                }
+                if symbols.interfaces.contains_key(item_name) {
+                    self.diags.error_with_code(
+                        span,
+                        FUSE_INTERFACE_NOT_A_TYPE,
+                        format!("{}.{} is an interface, not a type", module_name, item_name),
+                    );
+                    return Ty::Unknown;
                 }
                 if symbols.functions.contains_key(item_name)
                     || symbols.services.contains_key(item_name)
@@ -2590,6 +3204,14 @@ impl<'a> Checker<'a> {
                 if symbols.configs.contains_key(name) {
                     return Ty::Config(name.to_string());
                 }
+                if symbols.interfaces.contains_key(name) {
+                    self.diags.error_with_code(
+                        span,
+                        FUSE_INTERFACE_NOT_A_TYPE,
+                        format!("{} is an interface, not a type", name),
+                    );
+                    return Ty::Unknown;
+                }
                 let import_items = self
                     .module_import_items
                     .get(&module_id)
@@ -2604,6 +3226,14 @@ impl<'a> Checker<'a> {
                         }
                         if symbols.configs.contains_key(name) {
                             return Ty::Config(name.to_string());
+                        }
+                        if symbols.interfaces.contains_key(name) {
+                            self.diags.error_with_code(
+                                span,
+                                FUSE_INTERFACE_NOT_A_TYPE,
+                                format!("{} is an interface, not a type", name),
+                            );
+                            return Ty::Unknown;
                         }
                     }
                 }

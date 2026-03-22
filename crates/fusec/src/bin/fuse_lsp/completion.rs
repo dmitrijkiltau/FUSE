@@ -599,6 +599,7 @@ fn collect_call_context_item(item: &Item, cursor: usize, best: &mut Option<CallC
         Item::App(decl) => collect_call_context_block(&decl.body, cursor, best),
         Item::Migration(decl) => collect_call_context_block(&decl.body, cursor, best),
         Item::Test(decl) => collect_call_context_block(&decl.body, cursor, best),
+        Item::Interface(_) | Item::Impl(_) => {},
     }
 }
 
@@ -1362,7 +1363,7 @@ fn completion_callable_name_at_cursor(program: &Program, cursor: usize) -> Optio
                     }
                 }
             }
-            Item::Import(_) | Item::Type(_) | Item::Enum(_) | Item::Config(_) => {}
+            Item::Import(_) | Item::Type(_) | Item::Enum(_) | Item::Config(_) | Item::Interface(_) | Item::Impl(_) => {}
         }
     }
 
@@ -1435,7 +1436,7 @@ fn is_lexical_local_symbol(def: &SymbolDef) -> bool {
 fn completion_kind_for_symbol_kind(kind: SymbolKind) -> u32 {
     match kind {
         SymbolKind::Module => 9,
-        SymbolKind::Type | SymbolKind::Config => 22,
+        SymbolKind::Type | SymbolKind::Interface | SymbolKind::Config => 22,
         SymbolKind::Enum => 13,
         SymbolKind::EnumVariant => 20,
         SymbolKind::Function

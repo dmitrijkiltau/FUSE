@@ -29,7 +29,7 @@ Normative terms in this document:
 
 - Identifiers: `[A-Za-z_][A-Za-z0-9_]*`
 - Keywords:
-  `app, service, at, get, post, put, patch, delete, fn, type, enum, let, var, return, if, else,
+  `app, service, at, get, post, put, patch, delete, fn, type, enum, interface, impl, let, var, return, if, else,
   match, for, in, while, transaction, break, continue, requires, import, from, as, config, migration, test,
   body, and, or, without, spawn, await, box`
 - Literals:
@@ -96,6 +96,8 @@ TopDecl        := ImportDecl
                 | ConfigDecl
                 | TypeDecl
                 | EnumDecl
+                | InterfaceDecl
+                | ImplDecl
                 | MigrationDecl
                 | TestDecl
                 | FnDecl
@@ -113,6 +115,10 @@ FieldDecl      := Ident ":" TypeRef [ "=" Expr ] NEWLINE
 
 EnumDecl       := "enum" Ident ":" NEWLINE INDENT { EnumVariant } DEDENT
 EnumVariant    := Ident [ "(" TypeRef { "," TypeRef } ")" ] NEWLINE
+
+InterfaceDecl  := "interface" Ident ":" NEWLINE INDENT { InterfaceMember } DEDENT
+InterfaceMember := "fn" Ident "(" NEWLINE* [ ParamList [ "," ] ] NEWLINE* ")" [ "->" TypeRef ] NEWLINE
+ImplDecl       := "impl" Ident "for" Ident ":" NEWLINE INDENT { FnDecl } DEDENT
 
 FnDecl         := "fn" Ident "(" NEWLINE* [ ParamList [ "," ] ] NEWLINE* ")" [ "->" TypeRef ] ":" NEWLINE Block
 ParamList      := Param { "," NEWLINE* Param }
@@ -643,3 +649,36 @@ HTTP-specific route primitives (`request.header/cookie`,
 semantics owned by `runtime.md`.
 
 See also: [Runtime semantics](runtime.md), [Error model](runtime.md#error-model), [Boundary model](runtime.md#boundary-model).
+
+
+## Interface contracts (v1.1 initial slice)
+
+Static surface:
+
+- `interface Name:` declares a named set of member signatures.
+- `impl Interface for Type:` declares a concrete satisfaction relationship.
+- `interface` names are exportable/importable like `type` and `enum` names.
+- `impl` blocks are not importable by name.
+- `where` constraints are not part of the initial slice.
+
+Static semantics:
+
+- Interface names are not ordinary runtime values and are not valid type expressions in value/type
+  positions such as `let x: Interface`, route return types, or struct fields.
+- `Self` is only valid inside interface member signatures and impl member signatures/bodies.
+- Instance members use an implicit immutable `self: ConcreteTarget`; associated members do not.
+- An impl must provide every required interface member for its `(interface, target)` pair.
+- An impl member's explicit parameter list, defaults, and return type must match the interface
+  member after substituting `Self` with the concrete target type.
+- Duplicate impls for the same `(interface, target)` pair in the same package are rejected.
+- Orphan impls are rejected: a package may only define an impl when it owns the interface or the
+  target type.
+
+Diagnostic codes reserved by this slice:
+
+- `FUSE_IMPL_DUPLICATE`
+- `FUSE_IMPL_INCOMPLETE`
+- `FUSE_IMPL_SIGNATURE_MISMATCH`
+- `FUSE_IMPL_ORPHAN`
+- `FUSE_INTERFACE_NOT_A_TYPE`
+- `FUSE_INTERFACE_DYNAMIC_USE`

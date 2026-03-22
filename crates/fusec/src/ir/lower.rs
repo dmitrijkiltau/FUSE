@@ -193,6 +193,8 @@ fn lower_program_in_module(
 }
 
 pub fn lower_registry(registry: &ModuleRegistry) -> Result<IrProgram, Vec<String>> {
+    let lowered_registry = crate::frontend::interface_desugar::desugar_registry(registry);
+    let registry = &lowered_registry;
     let mut module_fn_decls = HashMap::new();
     for (id, unit) in &registry.modules {
         module_fn_decls.insert(*id, collect_function_decls(&unit.program));

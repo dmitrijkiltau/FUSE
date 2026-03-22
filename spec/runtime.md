@@ -133,6 +133,16 @@ Backend/runtime sealing guarantees:
 Function symbols are module-scoped. Resolution rules (unqualified, qualified, duplicate names)
 are defined in [Imports and modules](fls.md#imports-and-modules-current).
 
+### Interface contracts
+
+- `interface` declarations have no runtime representation.
+- `impl` declarations do not create runtime objects or dynamic interface tables.
+- Interface satisfaction, duplicate/orphan impl checks, `Self` substitution, and concrete method
+  resolution are compile-time responsibilities defined in `fls.md`.
+- Backends must treat interface-driven dispatch as a frontend-resolved operation over ordinary
+  concrete function/member semantics; runtime `is Interface`, downcasting, and dynamic dispatch are
+  outside the model.
+
 ---
 
 ## Expression operator behavior

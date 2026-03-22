@@ -49,6 +49,8 @@ pub fn analyze_program(program: &Program) -> (Analysis, Vec<Diag>) {
     let mut module_maps_by_id: std::collections::HashMap<ModuleId, crate::loader::ModuleMap> =
         std::collections::HashMap::new();
     module_maps_by_id.insert(0, empty_modules.clone());
+    let module_paths_by_id: std::collections::HashMap<ModuleId, std::path::PathBuf> =
+        std::collections::HashMap::new();
     let mut checker = check::Checker::new(
         0,
         &symbols,
@@ -59,6 +61,7 @@ pub fn analyze_program(program: &Program) -> (Analysis, Vec<Diag>) {
         &symbols_by_id,
         &import_items_by_id,
         &module_caps_by_id,
+        &module_paths_by_id,
         &mut diags,
     );
     checker.check_program(&expanded);
@@ -86,6 +89,8 @@ pub fn analyze_registry_with_options(
     > = std::collections::HashMap::new();
     let mut module_maps_by_id: std::collections::HashMap<ModuleId, crate::loader::ModuleMap> =
         std::collections::HashMap::new();
+    let mut module_paths_by_id: std::collections::HashMap<ModuleId, std::path::PathBuf> =
+        std::collections::HashMap::new();
     let mut used_caps_by_id: std::collections::HashMap<
         ModuleId,
         std::collections::HashSet<Capability>,
@@ -99,6 +104,7 @@ pub fn analyze_registry_with_options(
         );
         import_items_by_id.insert(*id, unit.import_items.clone());
         module_maps_by_id.insert(*id, unit.modules.clone());
+        module_paths_by_id.insert(*id, unit.path.clone());
     }
     for (id, unit) in &registry.modules {
         let symbols = match symbols_by_id.get(id) {
@@ -115,6 +121,7 @@ pub fn analyze_registry_with_options(
             &symbols_by_id,
             &import_items_by_id,
             &module_caps_by_id,
+            &module_paths_by_id,
             &mut diags,
         );
         checker.check_program(&unit.program);
@@ -163,6 +170,8 @@ pub fn analyze_module(registry: &ModuleRegistry, module_id: ModuleId) -> (Analys
     > = std::collections::HashMap::new();
     let mut module_maps_by_id: std::collections::HashMap<ModuleId, crate::loader::ModuleMap> =
         std::collections::HashMap::new();
+    let mut module_paths_by_id: std::collections::HashMap<ModuleId, std::path::PathBuf> =
+        std::collections::HashMap::new();
 
     for (id, unit) in &registry.modules {
         let symbols = symbols::collect(&unit.program, &mut diags);
@@ -173,6 +182,7 @@ pub fn analyze_module(registry: &ModuleRegistry, module_id: ModuleId) -> (Analys
         );
         import_items_by_id.insert(*id, unit.import_items.clone());
         module_maps_by_id.insert(*id, unit.modules.clone());
+        module_paths_by_id.insert(*id, unit.path.clone());
     }
 
     let symbols = symbols_by_id
@@ -190,6 +200,7 @@ pub fn analyze_module(registry: &ModuleRegistry, module_id: ModuleId) -> (Analys
             &symbols_by_id,
             &import_items_by_id,
             &module_caps_by_id,
+            &module_paths_by_id,
             &mut diags,
         );
         checker.check_program(&unit.program);
