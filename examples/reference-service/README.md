@@ -87,9 +87,15 @@ CSS pipeline:
 ## OpenAPI
 
 ```bash
+# Write the configured checked-in artifact
+./scripts/fuse build --manifest-path examples/reference-service
+
+# Or emit the document directly on stdout
 ./scripts/fuse openapi --manifest-path examples/reference-service > examples/reference-service/build/openapi.json
 ```
 
+This package sets `[build].openapi = "build/openapi.json"` in `fuse.toml`, so
+`fuse build --manifest-path examples/reference-service` refreshes the checked-in artifact.
 The checked-in OpenAPI artifact lives at `build/openapi.json`.
 
 ## API

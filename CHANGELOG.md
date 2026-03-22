@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## [1.0.0] - 2026-03-22
+
+### Changed
+
+- FUSE `1.0.0` freezes the additive `0.9.x` language, runtime, and tooling contract as the
+  stable `1.x` line.
+- OpenAPI generation and the built-in docs UI contract are now documented consistently across the
+  README, reference guide, runtime spec, and reference service example.
+- Release docs and versioning policy now use `1.0.0` as the release target and document the
+  `1.x` non-breaking compatibility guarantee.
+
+### Migration
+
+- No language or runtime migration is required from `0.9.x` to `1.0.0`.
+- See `guides/migrations/0.9-to-1.0.md` for the major-version rollout notes.
+
 ## [0.9.10] - 2026-03-21
 
 ### Added

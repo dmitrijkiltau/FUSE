@@ -43,10 +43,11 @@ Internal surfaces may change between releases without compatibility guarantees.
 
 ## Version scheme
 
-FUSE uses SemVer tags (`MAJOR.MINOR.PATCH`) with explicit pre-1.0 policy:
+FUSE uses SemVer tags (`MAJOR.MINOR.PATCH`) with explicit pre-1.0 history and post-1.0 stability rules:
 
-- `PATCH` (for the active `0.x` line, e.g. `0.3.x`): no breaking changes to language or tooling contracts.
+- `PATCH` (any active line, e.g. `0.3.x` or `1.0.x`): no breaking changes to language or tooling contracts.
 - `MINOR` (pre-1.0, e.g. `0.3.0`): breaking changes allowed only with migration notes.
+- `MINOR` (1.0+, e.g. `1.1.0`): additive only; no breaking changes to stable language, runtime, or tooling contracts.
 - `MAJOR` (1.0+): required for breaking changes.
 
 Recent release-line notes:
@@ -79,6 +80,9 @@ Recent release-line notes:
 - `0.9.9` is a non-breaking contract audit and tooling polish release: diagnostic code coverage,
   LSP alias-routing correctness, example/reference-service alignment, and spec/doc consistency.
   No language/runtime migration is required from `0.9.8`.
+- `1.0.0` freezes the language, runtime, and tooling contract introduced through the additive
+  `0.9.x` line. No language/runtime migration is required from `0.9.10`; future `1.x` releases
+  must remain source-compatible and non-breaking.
 
 - semantic regressions across AST/native are release blockers on all active release lines. (VM removed per RFC 0007.)
 
@@ -95,7 +99,8 @@ Recent release-line notes:
 - Programs valid on `0.7.0` must remain valid and equivalent on `0.7.x`.
 - Programs valid on `0.8.0` must remain valid and equivalent on `0.8.x`.
 - Programs valid on `0.9.0` must remain valid and equivalent on `0.9.x`.
-- If behavior must change incompatibly, release must bump at least `MINOR` and include migration guidance.
+- Programs valid on `1.0.0` must remain valid and equivalent on `1.x`.
+- If behavior must change incompatibly, release must bump at least `MINOR` pre-1.0 or `MAJOR` at `1.0+`, and include migration guidance.
 
 ### Runtime behavior compatibility
 

@@ -4,7 +4,7 @@ This guide defines the minimum steps to cut a Fuse release from this repo.
 
 ## Scope policy
 
-- Treat the active `0.x` release line as stable for currently documented behavior in:
+- Treat the active stable release line (`1.x` after the `1.0.0` cut) as stable for currently documented behavior in:
   - `README.md`
   - `spec/fls.md`
   - `governance/scope.md`
@@ -35,34 +35,36 @@ Three scripts cover the full release cycle:
 
 1. **Bump version** across all locations:
    ```sh
-   ./scripts/bump_version.sh 0.9.10
+   ./scripts/bump_version.sh 1.0.0
    ```
    Dry-run to verify what will change without writing:
    ```sh
-   ./scripts/bump_version.sh --dry-run 0.9.10
+   ./scripts/bump_version.sh --dry-run 1.0.0
    ```
 2. **Update `CHANGELOG.md`:**
-   - Move relevant items from `Unreleased` into the new version section (e.g. `## [0.9.10] - 2026-03-07`).
+   - Move relevant items from `Unreleased` into the new version section (e.g. `## [1.0.0] - 2026-03-22`).
 3. **Run preflight.** This verifies version consistency, changelog, guide freshness, authority parity, smoke, AOT SLO, and benchmark regression gates:
    ```sh
-   ./scripts/release_preflight.sh 0.9.10
+   ./scripts/release_preflight.sh 1.0.0
    ```
    Skip bench checks when perf artifacts are not available locally:
    ```sh
-   ./scripts/release_preflight.sh --skip-bench 0.9.10
+   ./scripts/release_preflight.sh --skip-bench 1.0.0
    ```
    This also forwards `--skip-bench` into the nested `scripts/release_smoke.sh` run so the
    benchmark-heavy smoke steps are skipped consistently.
    Include workspace publish-readiness checks for multi-package release branches:
    ```sh
-   ./scripts/release_preflight.sh --workspace-publish-checks 0.9.10
+   ./scripts/release_preflight.sh --workspace-publish-checks 1.0.0
    ```
    Force a cold release cache run by clearing all repo `.fuse-cache` directories first:
    ```sh
-   ./scripts/release_preflight.sh --clear-fuse-cache 0.9.10
+   ./scripts/release_preflight.sh --clear-fuse-cache 1.0.0
    ```
    - Review `ops/FLAKE_TRIAGE.md` before tagging; any temporary waiver on a release-blocking path
      must list an owner and a hard expiry date.
+   - For `1.0.0`, treat `--workspace-publish-checks` as required and use `--skip-bench` only with
+     an explicit release waiver.
 4. Verify package UX manually (optional but recommended):
    ```sh
    ./scripts/fuse build

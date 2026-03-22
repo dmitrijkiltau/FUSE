@@ -460,6 +460,20 @@ Validation errors are printed as JSON on stderr and usually exit with code 2.
 - `FUSE_AOT_REQUEST_LOG_DEFAULT` (AOT release only) enables structured request logging default
   when `FUSE_REQUEST_LOG` is unset
 
+#### Built-in OpenAPI UI
+
+- the runtime serves the built-in OpenAPI UI only when `FUSE_OPENAPI_JSON_PATH` is configured
+- `FUSE_OPENAPI_UI_PATH` names the docs route and defaults to `/docs`
+- path matching normalizes one trailing `/`, so `/docs` and `/docs/` serve the same HTML page
+- `GET <FUSE_OPENAPI_UI_PATH>` returns an HTML docs shell with `Content-Type: text/html; charset=utf-8`
+- `GET <FUSE_OPENAPI_UI_PATH>/openapi.json` returns the raw contents of
+  `FUSE_OPENAPI_JSON_PATH` with `Content-Type: application/json; charset=utf-8`
+- non-`GET` requests are not handled by the built-in docs UI
+- if the runtime cannot read `FUSE_OPENAPI_JSON_PATH`, the docs JSON route returns `500` using
+  the standard `internal_error` JSON envelope
+- `fuse dev` configures the built-in OpenAPI UI by default; `fuse run` configures it only when
+  `[serve].openapi_ui = true`
+
 #### Observability baseline
 
 Request ID propagation:
