@@ -58,14 +58,14 @@ The runtime applies those contracts at boundaries instead of requiring repeated 
 
 ## Status
 
-FUSE `v0.9.x` is the current stable line. `v0.9.0` shipped with HTML attribute syntax
-simplifications, workspace incremental-check optimizations, and full LSP large-workspace support.
-Patch releases (`0.9.1`, …) stabilize this line with non-breaking improvements.
+FUSE `v1.0.x` is the current stable line. `v1.0.0` freezes the additive `0.9.x` surface and does
+not require language or runtime source changes from `0.9.x` projects.
 
 Compatibility is defined by documented behavior in `spec/fls.md`, `spec/runtime.md`, `governance/scope.md`, and
 `governance/VERSIONING_POLICY.md`.
 Historical upgrade guidance is in:
-`guides/migrations/0.8-to-0.9.md`.
+`guides/migrations/0.9-to-1.0.md` for the current major upgrade and `guides/migrations/0.8-to-0.9.md`
+for older projects.
 
 ## Requirements
 
@@ -215,6 +215,7 @@ The outbound client supports both `http://` and validated `https://` URLs.
 | `fuse dev` | Run with file watching and live reload |
 | `fuse test` | Run in-language test blocks |
 | `fuse build` | Produce build artifacts and optional AOT output |
+| `fuse openapi` | Emit OpenAPI JSON for a file or package entry |
 | `fuse clean --cache` | Remove `.fuse-cache` directories under a selected root |
 | `fuse deps lock` | Refresh `fuse.lock` or check it for drift |
 | `fuse deps publish-check` | Check workspace manifest/lock readiness for publish |
@@ -232,6 +233,7 @@ Global CLI output option:
   `[FUSE_LOCK_FROZEN]` if dependency resolution would rewrite `fuse.lock`.
 - `fuse test --filter <pattern>` runs only test blocks whose names contain `<pattern>`
   (case-sensitive substring match).
+- `fuse openapi` emits OpenAPI 3.0 JSON for the selected file or package entry on stdout.
 - `--strict-architecture` enables strict architecture checks in semantic analysis
   (primarily used with `fuse check` and `fuse build`).
 
@@ -243,7 +245,19 @@ Build-specific options:
 - `fuse build --aot` forces AOT output in debug profile.
 - AOT-emitting builds (`--aot`, `--release`, or `[build].native_bin`) print
   `[build] aot [n/6] ...` progress stages for compile/link steps.
+- If `[build].openapi` is configured, `fuse build` also writes generated OpenAPI JSON to that
+  path after a successful build.
 - `fuse build` remains the explicit non-AOT local development path (cache artifacts only).
+
+OpenAPI-specific behavior:
+
+- `fuse openapi --manifest-path <pkg>` uses the package entry resolved from `fuse.toml`.
+- `[build].openapi` paths are resolved relative to the package directory unless they are absolute.
+- Parent directories for `[build].openapi` are created automatically when needed.
+- The built-in OpenAPI UI serves HTML at `[serve].openapi_path` (default `/docs`) and the raw
+  JSON document at `<openapi_path>/openapi.json`.
+- `fuse dev` enables the built-in OpenAPI UI by default; `fuse run` leaves it off unless
+  `[serve].openapi_ui = true`.
 
 Packages use a `fuse.toml` manifest. Minimal example:
 
@@ -257,11 +271,23 @@ backend = "native"
 ### Manifest sections
 
 - `[package]`: entry point, app name, backend selection
-- `[serve]`: `openapi_ui`, `openapi_path` for the built-in OpenAPI UI
+- `[build]`: `native_bin` for AOT output path, `openapi` for checked OpenAPI JSON output
+- `[serve]`: `static_dir`, `static_index`, `openapi_ui`, `openapi_path`
 - `[assets]`: CSS asset paths, file watching, content hashing
 - `[assets.hooks]`: `before_build` for external pre-build hooks
 - `[vite]`: `dev_url` for dev proxy fallback, `dist_dir` for production statics
 - `[dependencies]`: package dependencies
+
+Example OpenAPI manifest settings:
+
+```toml
+[build]
+openapi = "build/openapi.json"
+
+[serve]
+openapi_ui = true
+openapi_path = "/docs"
+```
 
 ### Dependency contract
 
@@ -296,7 +322,7 @@ Rules:
 - Dependency and lockfile diagnostics include machine-readable codes
   (`[FUSE_DEP_*]`, `[FUSE_LOCK_*]`) for CI/tooling parsing.
 
-→ `spec/runtime.md` § Lockfile for resolution rules, fingerprint semantics, and `--check` behavior.
+→ `spec/fls.md` § Imports and modules for dependency/lockfile rules and `--check` behavior.
 
 ### Build artifacts
 
@@ -313,6 +339,7 @@ Deployable AOT output:
 - `fuse build --release` emits `.fuse/build/program.aot` (`.exe` on Windows) by default.
 - `fuse build --aot` also emits AOT output (debug profile).
 - `[build].native_bin` overrides the AOT output path and remains supported.
+- `[build].openapi` writes generated OpenAPI JSON to the configured path on successful builds.
 
 → `ops/AOT_RELEASE_CONTRACT.md` for the full AOT binary contract: build metadata, fatal envelope format, exit codes, signal handling, and config resolution order.
 

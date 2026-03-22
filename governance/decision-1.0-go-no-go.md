@@ -39,12 +39,12 @@ runs it automatically on every tagged release. Last CI run on `v0.9.9` passed.
 
 ### 6.10: CI gate workflows on main
 
-`pre-release-gate.yml` last ran on `main` at 2026-03-08 with `success`. The `0.9.10` branch
+`pre-release-gate.yml` last ran on `main` at 2026-03-08 with `success`. The release branch
 changes have not been merged yet; CI will re-run automatically on merge.
 
-**Mitigation**: all 0.9.10 changes are verified locally. The branch contains documentation
-updates, two bug fixes (both backed by passing tests), and script cleanup. None of those
-changes plausibly introduce CI-only failures. Merge to main before tagging `1.0.0`.
+**Mitigation**: all `1.0.0` release-prep changes are verified locally. The branch contains
+contract/docs cleanup, version-policy alignment, and release-script guidance updates. None of
+those changes plausibly introduce CI-only failures. Merge to main before tagging `1.0.0`.
 
 ### 8.5: AOT rollback playbook exercise
 
@@ -60,10 +60,10 @@ individual steps are covered by existing tests (`verify_aot_artifact.sh`, `aot_p
 
 ## Conditions before tagging
 
-1. Merge branch `0.9.10` to `main`.
+1. Merge the release branch to `main`.
 2. Verify `pre-release-gate.yml` passes on the merge commit.
-3. Run `scripts/bump_version.sh 0.9.10` to update version strings.
-4. Run `scripts/release_preflight.sh 0.9.10 --skip-bench` and confirm it exits 0.
+3. Run `scripts/bump_version.sh 1.0.0` to update version strings.
+4. Run `scripts/release_preflight.sh --workspace-publish-checks 1.0.0` and confirm it exits 0.
 5. Tag `v1.0.0` and push. `release-artifacts.yml` handles signing and artifact publication.
 
 ---

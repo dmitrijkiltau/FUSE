@@ -481,6 +481,42 @@ Error JSON shape:
              "fields": [{ "path": "email", "code": "invalid_value", "message": "..." }] } }
 ```
 
+### OpenAPI
+
+Fuse can generate an OpenAPI 3.0 document for declared `service` routes.
+
+Emit the document on stdout:
+
+```bash
+fuse openapi src/main.fuse
+fuse openapi --manifest-path examples/reference-service
+```
+
+Write the document automatically during builds:
+
+```toml
+[build]
+openapi = "build/openapi.json"
+```
+
+`fuse build` resolves `[build].openapi` relative to the package directory unless the path is
+absolute, creates parent directories when needed, and writes the generated JSON after a
+successful build.
+
+Serve the built-in docs UI from the runtime:
+
+```toml
+[serve]
+openapi_ui = true
+openapi_path = "/docs"
+```
+
+Rules:
+- `openapi_ui` defaults to `true` under `fuse dev` and `false` under `fuse run`.
+- `openapi_path` defaults to `/docs` and names the HTML docs route.
+- The raw JSON document is served at `<openapi_path>/openapi.json`.
+- The runtime only serves the built-in docs UI for `GET` requests.
+
 ---
 
 ## HTTP Client
@@ -957,8 +993,8 @@ supported for asset files (no named or aliased asset imports).
 | `NO_COLOR` | `unset` | Disable ANSI color when set |
 | `FUSE_REQUEST_LOG` | `unset` | `structured` for JSON request logs on stderr |
 | `FUSE_METRICS_HOOK` | `unset` | `stderr` for per-request metrics lines |
-| `FUSE_OPENAPI_JSON_PATH` | `unset` | Serve OpenAPI JSON at this path |
-| `FUSE_OPENAPI_UI_PATH` | `unset` | Serve OpenAPI UI at this path |
+| `FUSE_OPENAPI_JSON_PATH` | `unset` | Filesystem path to the OpenAPI JSON served by the built-in UI |
+| `FUSE_OPENAPI_UI_PATH` | `unset` | HTTP route prefix for the built-in OpenAPI UI (`/docs` by default) |
 | `FUSE_ASSET_MAP` | `unset` | Logical→public URL mappings for `asset()` |
 | `FUSE_VITE_PROXY_URL` | `unset` | Forward unknown routes to Vite dev server |
 | `FUSE_SVG_DIR` | `unset` | Override SVG base directory for `svg.inline` |
