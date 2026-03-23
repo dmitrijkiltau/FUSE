@@ -1,0 +1,26 @@
+interface Codec:
+  fn encode() -> String
+  fn from_text(text: String) -> Self
+  fn duplicate() -> String
+
+type Note:
+  text: String
+
+impl Codec for Note:
+  fn encode() -> String:
+    return self.text
+
+  fn from_text(text: String) -> Self:
+    return Note(text=text)
+
+  fn duplicate() -> String:
+    return Self.from_text(self.text + self.text).encode()
+
+fn round_trip(note: Note) -> String:
+  let encoded = note.encode()
+  let rebuilt = Note.from_text(encoded)
+  return rebuilt.encode() + "|" + note.duplicate()
+
+app "InterfaceCodecDemo":
+  let note = Note.from_text("draft")
+  print(round_trip(note))

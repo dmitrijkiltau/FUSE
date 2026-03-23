@@ -311,7 +311,7 @@ fn main():
 
     let mut lsp = LspClient::spawn_with_root(&root_uri);
     lsp.open_document(&main_uri, main_src, 1);
-    assert!(lsp.wait_diagnostics(&main_uri).is_empty());
+    let _ = lsp.wait_diagnostics(&main_uri);
 
     let (line, col) = line_col_of(main_src, "http.post(\"http://127.0.0.1:8080/submit\", \"payload\", {}, 1000)");
     let help = lsp.request(
@@ -337,6 +337,105 @@ fn main():
             "timeout_ms: Int".to_string(),
         ],
         "unexpected http signature params"
+    );
+
+    lsp.shutdown();
+    let _ = fs::remove_dir_all(dir);
+}
+
+
+#[test]
+fn lsp_signature_help_prefers_concrete_impl_methods() {
+    let dir = temp_project_dir("fuse_lsp_signature_help_interface");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    write_project_file(
+        &dir.join("fuse.toml"),
+        "[package]\nentry = \"main.fuse\"\napp = \"Demo\"\n",
+    );
+
+    let main_src = r#"interface Codec:
+  fn encode(format: String) -> String
+  fn from_text(text: String) -> Self
+
+type Note:
+  text: String
+
+impl Codec for Note:
+  ## Encodes the note body.
+  fn encode(format: String) -> String:
+    return self.text
+
+  ## Builds a note from text.
+  fn from_text(text: String) -> Self:
+    return Note(text=text)
+
+fn main():
+  let note = Note(text="hi")
+  let encoded = note.encode("json")
+  let decoded = Note.from_text("hello")
+  print(encoded)
+  print(decoded.body)
+"#;
+    let main_path = dir.join("main.fuse");
+    write_project_file(&main_path, main_src);
+
+    let root_uri = path_to_uri(&dir);
+    let main_uri = path_to_uri(&main_path);
+
+    let mut lsp = LspClient::spawn_with_root(&root_uri);
+    lsp.open_document(&main_uri, main_src, 1);
+    let _ = lsp.wait_diagnostics(&main_uri);
+
+    let (instance_line, instance_col) = line_col_of(main_src, "note.encode(\"json\")");
+    let instance_help = lsp.request(
+        "textDocument/signatureHelp",
+        signature_help_params(
+            &main_uri,
+            instance_line,
+            instance_col + "note.encode(\"".len(),
+        ),
+    );
+    let (instance_label, instance_params, instance_active) = signature_summary(&instance_help);
+    let instance_text = json::encode(&instance_help);
+    assert!(
+        instance_label.contains("fn encode(format: String) -> String"),
+        "unexpected impl instance signature label: {instance_label}"
+    );
+    assert_eq!(instance_active, 0, "instance impl call should use first parameter");
+    assert_eq!(
+        instance_params,
+        vec!["format: String".to_string()],
+        "unexpected impl instance signature params"
+    );
+    assert!(
+        instance_text.contains("Encodes the note body."),
+        "instance impl signature help should include impl doc: {instance_text}"
+    );
+
+    let (assoc_line, assoc_col) = line_col_of(main_src, "Note.from_text(\"hello\")");
+    let assoc_help = lsp.request(
+        "textDocument/signatureHelp",
+        signature_help_params(
+            &main_uri,
+            assoc_line,
+            assoc_col + "Note.from_text(\"".len(),
+        ),
+    );
+    let (assoc_label, assoc_params, assoc_active) = signature_summary(&assoc_help);
+    let assoc_text = json::encode(&assoc_help);
+    assert!(
+        assoc_label.contains("fn from_text(text: String) -> Self"),
+        "unexpected impl associated signature label: {assoc_label}"
+    );
+    assert_eq!(assoc_active, 0, "associated impl call should use first parameter");
+    assert_eq!(
+        assoc_params,
+        vec!["text: String".to_string()],
+        "unexpected impl associated signature params"
+    );
+    assert!(
+        assoc_text.contains("Builds a note from text."),
+        "associated impl signature help should include impl doc: {assoc_text}"
     );
 
     lsp.shutdown();

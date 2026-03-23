@@ -1,6 +1,7 @@
 pub(super) mod completion;
 pub(super) mod core;
 pub(super) mod diagnostics;
+pub(super) mod interface_support;
 pub(super) mod navigation;
 pub(super) mod refactor;
 pub(super) mod server;

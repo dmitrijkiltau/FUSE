@@ -54,6 +54,7 @@ HTTPS_URL=https://example.com/ ./scripts/fuse run examples/http_client_https.fus
 | `refinement_demo.fuse` | Refinement constraints (`range`, `regex`, `predicate`) |
 | `json_import.fuse` | JSON asset import (`./json_import.json`) as a decoded runtime value |
 | `json_codec.fuse` | `json.encode` / `json.decode` round-trip |
+| `interface_codec.fuse` | `interface` / `impl` static dispatch with `Self` |
 | `time_crypto.fuse` | `time.*` and `crypto.*` runtime APIs |
 | `component_demo.fuse` | HTML DSL reusable components (`component`, `attrs`, `children`) |
 | `db_query_builder.fuse` | DB query-builder workflow with typed read projections (`db.from(...).one<T>()` / `.all<T>()`) |
