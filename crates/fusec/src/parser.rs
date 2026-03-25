@@ -323,13 +323,15 @@ impl<'a> Parser<'a> {
     fn parse_interface_member(&mut self) -> InterfaceMember {
         let start = self.peek_span();
         self.expect_keyword(Keyword::Fn);
-        let (name, params, ret) = self.parse_fn_signature();
+        let (name, type_params, params, ret, where_clause) = self.parse_fn_signature();
         self.expect_newline();
         let end = self.prev_span();
         InterfaceMember {
             name,
+            type_params,
             params,
             ret,
+            where_clause,
             span: start.merge(end),
         }
     }
@@ -363,22 +365,33 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_fn_decl(&mut self, doc: Option<Doc>) -> FnDecl {
-        let (name, params, ret) = self.parse_fn_signature();
+        let (name, type_params, params, ret, where_clause) = self.parse_fn_signature();
         self.expect_punct(Punct::Colon);
         let body = self.parse_block();
         let span = name.span.merge(body.span);
         FnDecl {
             name,
+            type_params,
             params,
             ret,
+            where_clause,
             body,
             doc,
             span,
         }
     }
 
-    fn parse_fn_signature(&mut self) -> (Ident, Vec<Param>, Option<TypeRef>) {
+    fn parse_fn_signature(
+        &mut self,
+    ) -> (
+        Ident,
+        Vec<TypeParam>,
+        Vec<Param>,
+        Option<TypeRef>,
+        Vec<WhereConstraint>,
+    ) {
         let name = self.expect_ident();
+        let type_params = self.parse_type_params();
         self.expect_punct(Punct::LParen);
         let mut params = Vec::new();
         self.consume_newlines();
@@ -402,16 +415,44 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        (name, params, ret)
+        let where_clause = self.parse_where_clause();
+        (name, type_params, params, ret, where_clause)
     }
 
     fn parse_component_decl(&mut self, doc: Option<Doc>) -> ComponentDecl {
         let name = self.expect_ident();
+        let type_params = self.parse_type_params();
+        let params = if self.eat_punct(Punct::LParen).is_some() {
+            let mut params = Vec::new();
+            self.consume_newlines();
+            if !self.at_punct(Punct::RParen) {
+                loop {
+                    self.consume_newlines();
+                    params.push(self.parse_param());
+                    self.consume_newlines();
+                    if self.eat_punct(Punct::Comma).is_none() {
+                        break;
+                    }
+                    self.consume_newlines();
+                    if self.at_punct(Punct::RParen) {
+                        break;
+                    }
+                }
+            }
+            self.expect_punct(Punct::RParen);
+            params
+        } else {
+            Vec::new()
+        };
+        let where_clause = self.parse_where_clause();
         self.expect_punct(Punct::Colon);
         let body = self.parse_block();
         let span = name.span.merge(body.span);
         ComponentDecl {
             name,
+            type_params,
+            params,
+            where_clause,
             body,
             doc,
             span,
@@ -582,6 +623,50 @@ impl<'a> Parser<'a> {
             doc,
             span,
         }
+    }
+
+    fn parse_type_params(&mut self) -> Vec<TypeParam> {
+        if !self.at_punct(Punct::Lt) {
+            return Vec::new();
+        }
+        self.expect_punct(Punct::Lt);
+        let mut type_params = Vec::new();
+        if !self.at_punct(Punct::Gt) {
+            loop {
+                let name = self.expect_ident();
+                type_params.push(TypeParam {
+                    span: name.span,
+                    name,
+                });
+                if self.eat_punct(Punct::Comma).is_none() {
+                    break;
+                }
+            }
+        }
+        self.expect_punct(Punct::Gt);
+        type_params
+    }
+
+    fn parse_where_clause(&mut self) -> Vec<WhereConstraint> {
+        if self.eat_contextual_ident("where").is_none() {
+            return Vec::new();
+        }
+        let mut constraints = Vec::new();
+        loop {
+            let type_param = self.expect_ident();
+            self.expect_punct(Punct::Colon);
+            let interface = self.parse_type_name();
+            let span = type_param.span.merge(interface.span);
+            constraints.push(WhereConstraint {
+                type_param,
+                interface,
+                span,
+            });
+            if self.eat_punct(Punct::Comma).is_none() {
+                break;
+            }
+        }
+        constraints
     }
 
     fn parse_param(&mut self) -> Param {
@@ -1979,6 +2064,13 @@ impl<'a> Parser<'a> {
             break;
         }
         TypeRef { kind, span }
+    }
+
+    fn eat_contextual_ident(&mut self, expected: &str) -> Option<Token> {
+        match self.peek_kind() {
+            TokenKind::Ident(name) if name == expected => Some(self.bump()),
+            _ => None,
+        }
     }
 
     fn take_doc_comments(&mut self) -> Option<String> {

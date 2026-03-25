@@ -794,7 +794,8 @@ impl Interpreter {
     }
 
     pub fn with_registry(registry: &ModuleRegistry) -> Self {
-        let lowered_registry = crate::frontend::interface_desugar::desugar_registry(registry);
+        let monomorphized = crate::frontend::monomorphize::monomorphize_registry(registry);
+        let lowered_registry = crate::frontend::interface_desugar::desugar_registry(&monomorphized);
         let registry = &lowered_registry;
         let mut functions: HashMap<ModuleId, HashMap<String, FnDecl>> = HashMap::new();
         let mut apps = Vec::new();
@@ -5417,19 +5418,30 @@ fn component_decl_to_fn(decl: &ComponentDecl) -> FnDecl {
     let attrs_param = Param {
         name: mk_ident("attrs"),
         ty: mk_generic("Map", vec![mk_simple("String"), mk_simple("String")]),
-        default: None,
+        default: Some(Expr {
+            kind: ExprKind::MapLit(Vec::new()),
+            span,
+        }),
         span,
     };
     let children_param = Param {
         name: mk_ident("children"),
         ty: mk_generic("List", vec![mk_simple("Html")]),
-        default: None,
+        default: Some(Expr {
+            kind: ExprKind::ListLit(Vec::new()),
+            span,
+        }),
         span,
     };
+    let mut params = decl.params.clone();
+    params.push(attrs_param);
+    params.push(children_param);
     FnDecl {
         name: decl.name.clone(),
-        params: vec![attrs_param, children_param],
+        type_params: decl.type_params.clone(),
+        params,
         ret: Some(mk_simple("Html")),
+        where_clause: decl.where_clause.clone(),
         body: decl.body.clone(),
         doc: decl.doc.clone(),
         span,

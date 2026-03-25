@@ -900,6 +900,7 @@ impl<'a> InterfaceRewriter<'a> {
     fn lookup_external_member(&self, external: &str, member: &str) -> Ty {
         match (external, member) {
             ("db", "exec") => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "sql".to_string(),
                     ty: Ty::String,
@@ -908,6 +909,7 @@ impl<'a> InterfaceRewriter<'a> {
                 ret: Box::new(Ty::Unit),
             }),
             ("db", "query") => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "sql".to_string(),
                     ty: Ty::String,
@@ -919,6 +921,7 @@ impl<'a> InterfaceRewriter<'a> {
                 )))),
             }),
             ("db", "one") => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "sql".to_string(),
                     ty: Ty::String,
@@ -930,6 +933,7 @@ impl<'a> InterfaceRewriter<'a> {
                 )))),
             }),
             ("db", "from") => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "table".to_string(),
                     ty: Ty::String,
@@ -949,14 +953,17 @@ impl<'a> InterfaceRewriter<'a> {
                         | "update"
                         | "delete"
                 ) => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: Vec::new(),
                 ret: Box::new(Ty::External("query".to_string())),
             }),
             ("query", "count") => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: Vec::new(),
                 ret: Box::new(Ty::Int),
             }),
             ("query", "one") => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: Vec::new(),
                 ret: Box::new(Ty::Option(Box::new(Ty::Map(
                     Box::new(Ty::String),
@@ -964,6 +971,7 @@ impl<'a> InterfaceRewriter<'a> {
                 )))),
             }),
             ("query", "all") => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: Vec::new(),
                 ret: Box::new(Ty::List(Box::new(Ty::Map(
                     Box::new(Ty::String),
@@ -971,14 +979,17 @@ impl<'a> InterfaceRewriter<'a> {
                 )))),
             }),
             ("query", "exec") => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: Vec::new(),
                 ret: Box::new(Ty::Unit),
             }),
             ("query", "sql") => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: Vec::new(),
                 ret: Box::new(Ty::String),
             }),
             ("query", "params") => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: Vec::new(),
                 ret: Box::new(Ty::List(Box::new(Ty::Unknown))),
             }),
@@ -1011,6 +1022,7 @@ impl<'a> InterfaceRewriter<'a> {
             .map(|ty| self.resolve_type_ref_in(module_id, ty))
             .unwrap_or(Ty::Unit);
         FnSig {
+            type_params: Vec::new(),
             params,
             ret: Box::new(ret),
         }
@@ -1388,6 +1400,7 @@ fn synth_method_sig(
         })
         .unwrap_or(Ty::Unit);
     FnSig {
+        type_params: Vec::new(),
         params: all_params,
         ret: Box::new(ret),
     }
@@ -1876,6 +1889,7 @@ fn enum_variant_sig(enum_name: &str, variant: &symbols::EnumVariantInfo) -> FnSi
         })
         .collect();
     FnSig {
+        type_params: Vec::new(),
         params,
         ret: Box::new(Ty::Enum(enum_name.to_string())),
     }

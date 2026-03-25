@@ -16,7 +16,7 @@ use crate::refinement::{
 use crate::span::Span;
 
 use super::symbols::ModuleSymbols;
-use super::types::{FnSig, ParamSig, Ty};
+use super::types::{FnSig, ParamSig, Ty, TypeParamSig};
 
 const TYPED_QUERY_CALL_DIAG_CODE: &str = "FUSE_TYPED_QUERY_CALL";
 const TYPED_QUERY_TYPE_ARG_DIAG_CODE: &str = "FUSE_TYPED_QUERY_TYPE_ARG";
@@ -28,6 +28,11 @@ const FUSE_IMPL_SIGNATURE_MISMATCH: &str = "FUSE_IMPL_SIGNATURE_MISMATCH";
 const FUSE_IMPL_ORPHAN: &str = "FUSE_IMPL_ORPHAN";
 const FUSE_INTERFACE_NOT_A_TYPE: &str = "FUSE_INTERFACE_NOT_A_TYPE";
 const FUSE_INTERFACE_DYNAMIC_USE: &str = "FUSE_INTERFACE_DYNAMIC_USE";
+const FUSE_GENERIC_DUPLICATE_TYPE_PARAM: &str = "FUSE_GENERIC_DUPLICATE_TYPE_PARAM";
+const FUSE_GENERIC_CALL_TYPE_ARG: &str = "FUSE_GENERIC_CALL_TYPE_ARG";
+const FUSE_GENERIC_INFERENCE: &str = "FUSE_GENERIC_INFERENCE";
+const FUSE_WHERE_UNKNOWN_INTERFACE: &str = "FUSE_WHERE_UNKNOWN_INTERFACE";
+const FUSE_WHERE_MULTI_CONSTRAINT: &str = "FUSE_WHERE_MULTI_CONSTRAINT";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TypedQuerySelectError {
@@ -67,6 +72,7 @@ pub struct Checker<'a> {
     declared_capabilities: HashSet<Capability>,
     used_capabilities: HashSet<Capability>,
     current_self_type: Option<Ty>,
+    type_param_scopes: Vec<HashMap<String, Option<String>>>,
 }
 
 impl<'a> Checker<'a> {
@@ -89,6 +95,7 @@ impl<'a> Checker<'a> {
         env.insert_builtin_with_ty(
             "env",
             Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "name".to_string(),
                     ty: Ty::String,
@@ -100,6 +107,7 @@ impl<'a> Checker<'a> {
         env.insert_builtin_with_ty(
             "env_int",
             Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "name".to_string(),
                     ty: Ty::String,
@@ -111,6 +119,7 @@ impl<'a> Checker<'a> {
         env.insert_builtin_with_ty(
             "env_float",
             Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "name".to_string(),
                     ty: Ty::String,
@@ -122,6 +131,7 @@ impl<'a> Checker<'a> {
         env.insert_builtin_with_ty(
             "env_bool",
             Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "name".to_string(),
                     ty: Ty::String,
@@ -136,6 +146,7 @@ impl<'a> Checker<'a> {
         env.insert_builtin_with_ty(
             "input",
             Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "prompt".to_string(),
                     ty: Ty::String,
@@ -148,6 +159,7 @@ impl<'a> Checker<'a> {
         env.insert_builtin_with_ty(
             "asset",
             Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "path".to_string(),
                     ty: Ty::String,
@@ -189,6 +201,7 @@ impl<'a> Checker<'a> {
             declared_capabilities,
             used_capabilities: HashSet::new(),
             current_self_type: None,
+            type_param_scopes: vec![HashMap::new()],
         }
     }
 
@@ -227,6 +240,210 @@ impl<'a> Checker<'a> {
         &self.used_capabilities
     }
 
+    fn push_type_param_scope(&mut self) {
+        self.type_param_scopes.push(HashMap::new());
+    }
+
+    fn pop_type_param_scope(&mut self) {
+        if self.type_param_scopes.len() > 1 {
+            self.type_param_scopes.pop();
+        }
+    }
+
+    fn lookup_type_param_bound(&self, name: &str) -> Option<Option<String>> {
+        for scope in self.type_param_scopes.iter().rev() {
+            if let Some(bound) = scope.get(name) {
+                return Some(bound.clone());
+            }
+        }
+        None
+    }
+
+    fn with_ast_type_params<T, F>(
+        &mut self,
+        type_params: &[crate::ast::TypeParam],
+        where_clause: &[crate::ast::WhereConstraint],
+        f: F,
+    ) -> T
+    where
+        F: FnOnce(&mut Self, Vec<TypeParamSig>) -> T,
+    {
+        self.push_type_param_scope();
+        let resolved = self.declare_ast_type_params(type_params, where_clause);
+        let out = f(self, resolved);
+        self.pop_type_param_scope();
+        out
+    }
+
+    fn with_ref_type_params<T, F>(
+        &mut self,
+        module_id: ModuleId,
+        type_params: &[super::symbols::TypeParamRef],
+        where_clause: &[super::symbols::WhereConstraintRef],
+        f: F,
+    ) -> T
+    where
+        F: FnOnce(&mut Self, Vec<TypeParamSig>) -> T,
+    {
+        self.push_type_param_scope();
+        let resolved = self.declare_ref_type_params(module_id, type_params, where_clause);
+        let out = f(self, resolved);
+        self.pop_type_param_scope();
+        out
+    }
+
+    fn declare_ast_type_params(
+        &mut self,
+        type_params: &[crate::ast::TypeParam],
+        where_clause: &[crate::ast::WhereConstraint],
+    ) -> Vec<TypeParamSig> {
+        let mut resolved = Vec::new();
+        let mut index = HashMap::new();
+        for param in type_params {
+            let name = param.name.name.clone();
+            if self
+                .type_param_scopes
+                .last()
+                .is_some_and(|scope| scope.contains_key(&name))
+            {
+                self.diags.error_with_code(
+                    param.span,
+                    FUSE_GENERIC_DUPLICATE_TYPE_PARAM,
+                    format!("duplicate type parameter {}", name),
+                );
+                continue;
+            }
+            index.insert(name.clone(), resolved.len());
+            self.type_param_scopes
+                .last_mut()
+                .expect("type param scope should exist")
+                .insert(name.clone(), None);
+            resolved.push(TypeParamSig {
+                name,
+                interface_bound: None,
+            });
+        }
+        for constraint in where_clause {
+            let name = constraint.type_param.name.clone();
+            let existing = self
+                .type_param_scopes
+                .last()
+                .and_then(|scope| scope.get(&name))
+                .cloned();
+            let Some(bound) = existing else {
+                self.diags.error(
+                    constraint.type_param.span,
+                    format!("unknown type parameter {} in where clause", name),
+                );
+                continue;
+            };
+            if bound.is_some() {
+                self.diags.error_with_code(
+                    constraint.span,
+                    FUSE_WHERE_MULTI_CONSTRAINT,
+                    format!("type parameter {} already has an interface constraint", name),
+                );
+                continue;
+            }
+            if self.interface_info_in_scope(&constraint.interface.name).is_none() {
+                self.diags.error_with_code(
+                    constraint.interface.span,
+                    FUSE_WHERE_UNKNOWN_INTERFACE,
+                    format!("unknown interface {}", constraint.interface.name),
+                );
+                continue;
+            }
+            if let Some(bound) = self
+                .type_param_scopes
+                .last_mut()
+                .and_then(|scope| scope.get_mut(&name))
+            {
+                *bound = Some(constraint.interface.name.clone());
+            }
+            if let Some(idx) = index.get(&name) {
+                resolved[*idx].interface_bound = Some(constraint.interface.name.clone());
+            }
+        }
+        resolved
+    }
+
+    fn declare_ref_type_params(
+        &mut self,
+        module_id: ModuleId,
+        type_params: &[super::symbols::TypeParamRef],
+        where_clause: &[super::symbols::WhereConstraintRef],
+    ) -> Vec<TypeParamSig> {
+        let mut resolved = Vec::new();
+        let mut index = HashMap::new();
+        for param in type_params {
+            if self
+                .type_param_scopes
+                .last()
+                .is_some_and(|scope| scope.contains_key(&param.name))
+            {
+                self.diags.error_with_code(
+                    param.span,
+                    FUSE_GENERIC_DUPLICATE_TYPE_PARAM,
+                    format!("duplicate type parameter {}", param.name),
+                );
+                continue;
+            }
+            index.insert(param.name.clone(), resolved.len());
+            self.type_param_scopes
+                .last_mut()
+                .expect("type param scope should exist")
+                .insert(param.name.clone(), None);
+            resolved.push(TypeParamSig {
+                name: param.name.clone(),
+                interface_bound: None,
+            });
+        }
+        for constraint in where_clause {
+            let existing = self
+                .type_param_scopes
+                .last()
+                .and_then(|scope| scope.get(&constraint.type_param))
+                .cloned();
+            let Some(bound) = existing else {
+                self.diags.error(
+                    constraint.span,
+                    format!("unknown type parameter {} in where clause", constraint.type_param),
+                );
+                continue;
+            };
+            if bound.is_some() {
+                self.diags.error_with_code(
+                    constraint.span,
+                    FUSE_WHERE_MULTI_CONSTRAINT,
+                    format!(
+                        "type parameter {} already has an interface constraint",
+                        constraint.type_param
+                    ),
+                );
+                continue;
+            }
+            if self.interface_info_in(module_id, &constraint.interface).is_none() {
+                self.diags.error_with_code(
+                    constraint.span,
+                    FUSE_WHERE_UNKNOWN_INTERFACE,
+                    format!("unknown interface {}", constraint.interface),
+                );
+                continue;
+            }
+            if let Some(bound) = self
+                .type_param_scopes
+                .last_mut()
+                .and_then(|scope| scope.get_mut(&constraint.type_param))
+            {
+                *bound = Some(constraint.interface.clone());
+            }
+            if let Some(idx) = index.get(&constraint.type_param) {
+                resolved[*idx].interface_bound = Some(constraint.interface.clone());
+            }
+        }
+        resolved
+    }
+
     fn check_type_decl(&mut self, decl: &crate::ast::TypeDecl) {
         for field in &decl.fields {
             let field_ty = self.resolve_type_ref(&field.ty);
@@ -251,23 +468,25 @@ impl<'a> Checker<'a> {
         let prev_self = self.current_self_type.clone();
         self.current_self_type = Some(Ty::SelfType);
         for member in &decl.members {
-            for param in &member.params {
-                let param_ty = self.resolve_type_ref(&param.ty);
-                if let Some(default) = &param.default {
-                    let value_ty = self.check_expr(default);
-                    if !self.is_assignable(&value_ty, &param_ty) {
-                        self.type_mismatch(default.span, &param_ty, &value_ty);
+            self.with_ast_type_params(&member.type_params, &member.where_clause, |this, _| {
+                for param in &member.params {
+                    let param_ty = this.resolve_type_ref(&param.ty);
+                    if let Some(default) = &param.default {
+                        let value_ty = this.check_expr(default);
+                        if !this.is_assignable(&value_ty, &param_ty) {
+                            this.type_mismatch(default.span, &param_ty, &value_ty);
+                        }
                     }
                 }
-            }
-            if let Some(ret) = &member.ret {
-                let resolved = self.resolve_type_ref(ret);
-                self.validate_return_error_domains(
-                    ret.span,
-                    &resolved,
-                    "interface member return type",
-                );
-            }
+                if let Some(ret) = &member.ret {
+                    let resolved = this.resolve_type_ref(ret);
+                    this.validate_return_error_domains(
+                        ret.span,
+                        &resolved,
+                        "interface member return type",
+                    );
+                }
+            });
         }
         self.current_self_type = prev_self;
     }
@@ -309,6 +528,9 @@ impl<'a> Checker<'a> {
         let Some(interface_info) = interface_info else {
             return;
         };
+        let interface_owner = self
+            .interface_owner_in_scope(&decl.interface.name)
+            .unwrap_or(self.module_id);
         for member in &interface_info.members {
             let Some(method) = methods_by_name.get(&member.name) else {
                 self.diags.error_with_code(
@@ -321,7 +543,8 @@ impl<'a> Checker<'a> {
                 );
                 continue;
             };
-            let expected = self.resolve_interface_member_sig_for_target(member, &target_ty);
+            let expected =
+                self.resolve_interface_member_sig_for_target(interface_owner, member, &target_ty);
             let actual = self.resolve_impl_method_sig(method, &target_ty);
             if !self.fn_sig_matches(&expected, &actual) {
                 self.diags.error_with_code(
@@ -344,61 +567,81 @@ impl<'a> Checker<'a> {
     ) {
         let prev_self = self.current_self_type.clone();
         self.current_self_type = Some(target_ty.clone());
-        let sig = self.resolve_fn_sig(decl);
-        if let Some(ret) = &decl.ret {
-            self.validate_return_error_domains(ret.span, sig.ret.as_ref(), "impl method return type");
-        }
-        let prev_return = self.current_return.replace(*sig.ret.clone());
-        self.env.push();
-        if uses_self {
-            self.insert_var("self", target_ty, false, decl.span);
-        }
-        for param in &sig.params {
-            self.insert_var(&param.name, param.ty.clone(), false, decl.span);
-        }
-        let _ = self.check_block(&decl.body);
-        self.env.pop();
-        self.current_return = prev_return;
+        self.with_ast_type_params(&decl.type_params, &decl.where_clause, |this, type_params| {
+            let sig = this.resolve_fn_sig_scoped(decl, type_params);
+            if let Some(ret) = &decl.ret {
+                this.validate_return_error_domains(ret.span, sig.ret.as_ref(), "impl method return type");
+            }
+            let prev_return = this.current_return.replace(*sig.ret.clone());
+            this.env.push();
+            if uses_self {
+                this.insert_var("self", target_ty.clone(), false, decl.span);
+            }
+            for param in &sig.params {
+                this.insert_var(&param.name, param.ty.clone(), false, decl.span);
+            }
+            let _ = this.check_block(&decl.body);
+            this.env.pop();
+            this.current_return = prev_return;
+        });
         self.current_self_type = prev_self;
     }
 
     fn resolve_impl_method_sig(&mut self, decl: &crate::ast::FnDecl, target_ty: &Ty) -> FnSig {
         let prev_self = self.current_self_type.clone();
         self.current_self_type = Some(target_ty.clone());
-        let sig = self.resolve_fn_sig(decl);
+        let sig = self.with_ast_type_params(&decl.type_params, &decl.where_clause, |this, type_params| {
+            this.resolve_fn_sig_scoped(decl, type_params)
+        });
         self.current_self_type = prev_self;
         sig
     }
 
     fn resolve_interface_member_sig_for_target(
         &mut self,
+        module_id: ModuleId,
         member: &super::symbols::InterfaceMemberInfo,
         target_ty: &Ty,
     ) -> FnSig {
         let prev_self = self.current_self_type.clone();
         self.current_self_type = Some(target_ty.clone());
-        let params = member
-            .params
-            .iter()
-            .map(|param| ParamSig {
-                name: param.name.clone(),
-                ty: self.resolve_type_ref(&param.ty),
-                has_default: param.has_default,
-            })
-            .collect();
-        let ret = member
-            .ret
-            .as_ref()
-            .map(|ty| self.resolve_type_ref(ty))
-            .unwrap_or(Ty::Unit);
+        let sig = self.with_ref_type_params(module_id, &member.type_params, &member.where_clause, |this, type_params| {
+            let params = member
+                .params
+                .iter()
+                .map(|param| ParamSig {
+                    name: param.name.clone(),
+                    ty: this.resolve_type_ref_in(module_id, &param.ty),
+                    has_default: param.has_default,
+                })
+                .collect();
+            let ret = member
+                .ret
+                .as_ref()
+                .map(|ty| this.resolve_type_ref_in(module_id, ty))
+                .unwrap_or(Ty::Unit);
+            FnSig {
+                type_params,
+                params,
+                ret: Box::new(ret),
+            }
+        });
         self.current_self_type = prev_self;
-        FnSig {
-            params,
-            ret: Box::new(ret),
-        }
+        sig
     }
 
     fn fn_sig_matches(&self, expected: &FnSig, actual: &FnSig) -> bool {
+        if expected.type_params.len() != actual.type_params.len() {
+            return false;
+        }
+        if !expected
+            .type_params
+            .iter()
+            .zip(&actual.type_params)
+            .all(|(left, right)| left.interface_bound == right.interface_bound)
+        {
+            return false;
+        }
         if expected.params.len() != actual.params.len() {
             return false;
         }
@@ -447,43 +690,61 @@ impl<'a> Checker<'a> {
     }
 
     fn check_fn_decl(&mut self, decl: &crate::ast::FnDecl) {
-        let sig = self.resolve_fn_sig(decl);
-        if let Some(ret) = &decl.ret {
-            self.validate_return_error_domains(ret.span, sig.ret.as_ref(), "function return type");
-        }
-        self.current_return = Some(*sig.ret.clone());
-        self.env.push();
-        for param in &sig.params {
-            self.insert_var(&param.name, param.ty.clone(), false, decl.span);
-        }
-        let _ = self.check_block(&decl.body);
-        self.env.pop();
-        self.current_return = None;
+        self.with_ast_type_params(&decl.type_params, &decl.where_clause, |this, type_params| {
+            let sig = this.resolve_fn_sig_scoped(decl, type_params);
+            if let Some(ret) = &decl.ret {
+                this.validate_return_error_domains(ret.span, sig.ret.as_ref(), "function return type");
+            }
+            this.current_return = Some(*sig.ret.clone());
+            this.env.push();
+            for param in &sig.params {
+                this.insert_var(&param.name, param.ty.clone(), false, decl.span);
+            }
+            let _ = this.check_block(&decl.body);
+            this.env.pop();
+            this.current_return = None;
+        });
     }
 
     fn check_component_decl(&mut self, decl: &crate::ast::ComponentDecl) {
-        let prev_return = self.current_return.take();
-        self.current_return = Some(Ty::Html);
-        self.env.push();
-        self.insert_var(
-            "attrs",
-            Ty::Map(Box::new(Ty::String), Box::new(Ty::String)),
-            false,
-            decl.span,
-        );
-        self.insert_var("children", Ty::List(Box::new(Ty::Html)), false, decl.span);
-        let body_ty = self.check_block(&decl.body);
-        if !self.is_assignable(&body_ty, &Ty::Html) && !body_ty.is_unknown() {
-            self.diags.error(
+        self.with_ast_type_params(&decl.type_params, &decl.where_clause, |this, _| {
+            let prev_return = this.current_return.take();
+            this.current_return = Some(Ty::Html);
+            this.env.push();
+            for param in &decl.params {
+                let param_ty = this.resolve_type_ref(&param.ty);
+                if let Some(default) = &param.default {
+                    let value_ty = this.check_expr(default);
+                    if !this.is_assignable(&value_ty, &param_ty) {
+                        this.type_mismatch(default.span, &param_ty, &value_ty);
+                    }
+                }
+                this.insert_var(&param.name.name, param_ty, false, param.span);
+            }
+            this.insert_var(
+                "attrs",
+                Ty::Map(Box::new(Ty::String), Box::new(Ty::String)),
+                false,
                 decl.span,
-                format!("component body must return Html, got {}", body_ty),
             );
-        }
-        self.env.pop();
-        self.current_return = prev_return;
+            this.insert_var("children", Ty::List(Box::new(Ty::Html)), false, decl.span);
+            let body_ty = this.check_block(&decl.body);
+            if !this.is_assignable(&body_ty, &Ty::Html) && !body_ty.is_unknown() {
+                this.diags.error(
+                    decl.span,
+                    format!("component body must return Html, got {}", body_ty),
+                );
+            }
+            this.env.pop();
+            this.current_return = prev_return;
+        });
     }
 
-    fn resolve_fn_sig(&mut self, decl: &crate::ast::FnDecl) -> FnSig {
+    fn resolve_fn_sig_scoped(
+        &mut self,
+        decl: &crate::ast::FnDecl,
+        type_params: Vec<TypeParamSig>,
+    ) -> FnSig {
         let params = decl
             .params
             .iter()
@@ -499,6 +760,7 @@ impl<'a> Checker<'a> {
             .map(|ty| self.resolve_type_ref(ty))
             .unwrap_or(Ty::Unit);
         FnSig {
+            type_params,
             params,
             ret: Box::new(ret),
         }
@@ -510,24 +772,27 @@ impl<'a> Checker<'a> {
         }
         let symbols = self.module_symbols.get(&module_id)?;
         let sig_ref = symbols.functions.get(name)?;
-        let params = sig_ref
-            .params
-            .iter()
-            .map(|param| ParamSig {
-                name: param.name.clone(),
-                ty: self.resolve_type_ref_in(module_id, &param.ty),
-                has_default: param.has_default,
-            })
-            .collect();
-        let ret = sig_ref
-            .ret
-            .as_ref()
-            .map(|ty| self.resolve_type_ref_in(module_id, ty))
-            .unwrap_or(Ty::Unit);
-        let sig = FnSig {
-            params,
-            ret: Box::new(ret),
-        };
+        let sig = self.with_ref_type_params(module_id, &sig_ref.type_params, &sig_ref.where_clause, |this, type_params| {
+            let params = sig_ref
+                .params
+                .iter()
+                .map(|param| ParamSig {
+                    name: param.name.clone(),
+                    ty: this.resolve_type_ref_in(module_id, &param.ty),
+                    has_default: param.has_default,
+                })
+                .collect();
+            let ret = sig_ref
+                .ret
+                .as_ref()
+                .map(|ty| this.resolve_type_ref_in(module_id, ty))
+                .unwrap_or(Ty::Unit);
+            FnSig {
+                type_params,
+                params,
+                ret: Box::new(ret),
+            }
+        });
         self.fn_cache
             .insert((module_id, name.to_string()), sig.clone());
         Some(sig)
@@ -918,7 +1183,13 @@ impl<'a> Checker<'a> {
                     }
                 }
                 self.enforce_call_capabilities(callee, expr.span);
-                if !type_args.is_empty() {
+                if !type_args.is_empty()
+                    && matches!(
+                        &callee.kind,
+                        ExprKind::Member { name, .. }
+                            if matches!(name.name.as_str(), "one" | "all")
+                    )
+                {
                     return self.check_typed_query_call(expr.span, callee, args, type_args);
                 }
                 if let ExprKind::Member { base, name } = &callee.kind {
@@ -970,7 +1241,8 @@ impl<'a> Checker<'a> {
                 }
                 let callee_ty = self.check_expr(callee);
                 match callee_ty {
-                    Ty::Fn(sig) => {
+                    Ty::Fn(raw_sig) => {
+                        let sig = self.instantiate_function_call_sig(expr.span, &raw_sig, args, type_args);
                         if uses_html_block && !matches!(sig.ret.as_ref(), Ty::Html | Ty::Unknown) {
                             self.diags.error(
                                 expr.span,
@@ -1002,9 +1274,6 @@ impl<'a> Checker<'a> {
                             return *sig.ret;
                         }
                         for (arg, param) in args.iter().zip(sig.params.iter()) {
-                            // Block-sugar children arg against List<Html>: use relaxed
-                            // HTML children checking (allows String auto-coercion and
-                            // List<Html> spreading).
                             if arg.is_block_sugar
                                 && matches!(&param.ty, Ty::List(inner) if inner.as_ref() == &Ty::Html)
                             {
@@ -1270,6 +1539,8 @@ impl<'a> Checker<'a> {
                     } else {
                         (self.check_expr(base), false)
                     }
+                } else if self.lookup_type_param_bound(&ident.name).is_some() {
+                    (Ty::TypeParam(ident.name.clone()), true)
                 } else if self.modules.contains(&ident.name) {
                     (Ty::Module(ident.name.clone()), false)
                 } else if let Some((ty, _)) = self.lookup_nominal_type_in_scope_silent(self.module_id, &ident.name) {
@@ -1373,6 +1644,19 @@ impl<'a> Checker<'a> {
                     Ty::Unknown
                 }
             }
+            Ty::TypeParam(ref type_param) => {
+                if let Some(sig) =
+                    self.resolve_interface_bound_method(type_param, name, associated_receiver)
+                {
+                    Ty::Fn(sig)
+                } else {
+                    self.diags.error(
+                        name.span,
+                        format!("type parameter {} has no member {}", type_param, name.name),
+                    );
+                    Ty::Unknown
+                }
+            }
             Ty::Module(ref module_name) => self.lookup_module_member(module_name, name),
             Ty::External(ref external) => self.lookup_external_member(external, name),
             Ty::Unknown => Ty::Unknown,
@@ -1388,6 +1672,199 @@ impl<'a> Checker<'a> {
             Ty::Option(Box::new(field_ty))
         } else {
             field_ty
+        }
+    }
+
+    fn instantiate_function_call_sig(
+        &mut self,
+        span: Span,
+        sig: &FnSig,
+        args: &[CallArg],
+        type_args: &[crate::ast::TypeRef],
+    ) -> FnSig {
+        if sig.type_params.is_empty() {
+            if !type_args.is_empty() {
+                self.diags.error_with_code(
+                    span,
+                    FUSE_GENERIC_CALL_TYPE_ARG,
+                    "type arguments are only valid on generic callables",
+                );
+            }
+            return sig.clone();
+        }
+
+        let arg_tys: Vec<Ty> = args.iter().map(|arg| self.check_expr(&arg.value)).collect();
+        let mut bindings = HashMap::new();
+        if !type_args.is_empty() {
+            if type_args.len() != sig.type_params.len() {
+                self.diags.error_with_code(
+                    span,
+                    FUSE_GENERIC_CALL_TYPE_ARG,
+                    format!(
+                        "expected {} type arguments, found {}",
+                        sig.type_params.len(),
+                        type_args.len()
+                    ),
+                );
+            }
+            for (param, ty_arg) in sig.type_params.iter().zip(type_args.iter()) {
+                bindings.insert(param.name.clone(), self.resolve_type_ref(ty_arg));
+            }
+        } else {
+            for (param, arg_ty) in sig.params.iter().zip(arg_tys.iter()) {
+                self.collect_type_param_inference(&param.ty, arg_ty, &mut bindings);
+            }
+            let mut missing = Vec::new();
+            for param in &sig.type_params {
+                if !bindings.contains_key(&param.name)
+                    || bindings
+                        .get(&param.name)
+                        .is_some_and(|ty| ty.is_unknown())
+                {
+                    missing.push(param.name.clone());
+                }
+            }
+            if !missing.is_empty() {
+                self.diags.error_with_code(
+                    span,
+                    FUSE_GENERIC_INFERENCE,
+                    format!(
+                        "could not infer type arguments for {}",
+                        missing.join(", ")
+                    ),
+                );
+                for name in missing {
+                    bindings.insert(name, Ty::Unknown);
+                }
+            }
+        }
+
+        for param in &sig.type_params {
+            if let Some(bound) = &param.interface_bound {
+                let ty = bindings.get(&param.name).cloned().unwrap_or(Ty::Unknown);
+                if !self.type_satisfies_interface(&ty, bound) {
+                    self.diags.error_with_code(
+                        span,
+                        FUSE_GENERIC_INFERENCE,
+                        format!("type {} does not satisfy {}", ty, bound),
+                    );
+                }
+            }
+        }
+
+        let params = sig
+            .params
+            .iter()
+            .map(|param| ParamSig {
+                name: param.name.clone(),
+                ty: self.substitute_ty(&param.ty, &bindings),
+                has_default: param.has_default,
+            })
+            .collect();
+        let ret = self.substitute_ty(sig.ret.as_ref(), &bindings);
+        FnSig {
+            type_params: Vec::new(),
+            params,
+            ret: Box::new(ret),
+        }
+    }
+
+    fn collect_type_param_inference(
+        &self,
+        param_ty: &Ty,
+        arg_ty: &Ty,
+        bindings: &mut HashMap<String, Ty>,
+    ) {
+        match param_ty {
+            Ty::TypeParam(name) => match bindings.get(name) {
+                Some(existing) if *existing == *arg_ty || existing.is_unknown() => {}
+                Some(_) => {
+                    bindings.insert(name.clone(), Ty::Unknown);
+                }
+                None => {
+                    bindings.insert(name.clone(), arg_ty.clone());
+                }
+            },
+            Ty::List(inner) => {
+                if let Ty::List(arg_inner) = arg_ty {
+                    self.collect_type_param_inference(inner, arg_inner, bindings);
+                }
+            }
+            Ty::Map(key, value) => {
+                if let Ty::Map(arg_key, arg_value) = arg_ty {
+                    self.collect_type_param_inference(key, arg_key, bindings);
+                    self.collect_type_param_inference(value, arg_value, bindings);
+                }
+            }
+            Ty::Option(inner) => {
+                if let Ty::Option(arg_inner) = arg_ty {
+                    self.collect_type_param_inference(inner, arg_inner, bindings);
+                }
+            }
+            Ty::Result(ok, err) => {
+                if let Ty::Result(arg_ok, arg_err) = arg_ty {
+                    self.collect_type_param_inference(ok, arg_ok, bindings);
+                    self.collect_type_param_inference(err, arg_err, bindings);
+                }
+            }
+            Ty::Task(inner) => {
+                if let Ty::Task(arg_inner) = arg_ty {
+                    self.collect_type_param_inference(inner, arg_inner, bindings);
+                }
+            }
+            Ty::Boxed(inner) => {
+                if let Ty::Boxed(arg_inner) = arg_ty {
+                    self.collect_type_param_inference(inner, arg_inner, bindings);
+                }
+            }
+            Ty::Range(inner) => {
+                if let Ty::Range(arg_inner) = arg_ty {
+                    self.collect_type_param_inference(inner, arg_inner, bindings);
+                }
+            }
+            Ty::Refined { base, .. } => self.collect_type_param_inference(base, arg_ty, bindings),
+            _ => {}
+        }
+    }
+
+    fn substitute_ty(&self, ty: &Ty, bindings: &HashMap<String, Ty>) -> Ty {
+        match ty {
+            Ty::TypeParam(name) => bindings.get(name).cloned().unwrap_or_else(|| ty.clone()),
+            Ty::List(inner) => Ty::List(Box::new(self.substitute_ty(inner, bindings))),
+            Ty::Map(key, value) => Ty::Map(
+                Box::new(self.substitute_ty(key, bindings)),
+                Box::new(self.substitute_ty(value, bindings)),
+            ),
+            Ty::Option(inner) => Ty::Option(Box::new(self.substitute_ty(inner, bindings))),
+            Ty::Result(ok, err) => Ty::Result(
+                Box::new(self.substitute_ty(ok, bindings)),
+                Box::new(self.substitute_ty(err, bindings)),
+            ),
+            Ty::Task(inner) => Ty::Task(Box::new(self.substitute_ty(inner, bindings))),
+            Ty::Boxed(inner) => Ty::Boxed(Box::new(self.substitute_ty(inner, bindings))),
+            Ty::Range(inner) => Ty::Range(Box::new(self.substitute_ty(inner, bindings))),
+            Ty::Refined { base, repr } => Ty::Refined {
+                base: Box::new(self.substitute_ty(base, bindings)),
+                repr: repr.clone(),
+            },
+            other => other.clone(),
+        }
+    }
+
+    fn type_satisfies_interface(&self, ty: &Ty, interface_name: &str) -> bool {
+        match ty {
+            Ty::Struct(name) | Ty::Enum(name) => self.module_symbols.values().any(|symbols| {
+                symbols
+                    .impls
+                    .iter()
+                    .any(|impl_info| impl_info.interface == interface_name && impl_info.target == *name)
+            }),
+            Ty::TypeParam(name) => self
+                .lookup_type_param_bound(name)
+                .flatten()
+                .is_some_and(|bound| bound == interface_name),
+            Ty::Unknown => true,
+            _ => false,
         }
     }
 
@@ -1707,6 +2184,7 @@ impl<'a> Checker<'a> {
     fn lookup_html_member(&mut self, name: &crate::ast::Ident) -> Ty {
         match name.name.as_str() {
             "text" | "raw" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "value".to_string(),
                     ty: Ty::String,
@@ -1715,6 +2193,7 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::Html),
             }),
             "node" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![
                     ParamSig {
                         name: "name".to_string(),
@@ -1735,6 +2214,7 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::Html),
             }),
             "render" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "value".to_string(),
                     ty: Ty::Html,
@@ -1753,6 +2233,7 @@ impl<'a> Checker<'a> {
     fn lookup_svg_member(&mut self, name: &crate::ast::Ident) -> Ty {
         match name.name.as_str() {
             "inline" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "name".to_string(),
                     ty: Ty::String,
@@ -1771,6 +2252,7 @@ impl<'a> Checker<'a> {
     fn lookup_request_member(&mut self, name: &crate::ast::Ident) -> Ty {
         match name.name.as_str() {
             "header" | "cookie" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "name".to_string(),
                     ty: Ty::String,
@@ -1789,6 +2271,7 @@ impl<'a> Checker<'a> {
     fn lookup_response_member(&mut self, name: &crate::ast::Ident) -> Ty {
         match name.name.as_str() {
             "header" | "cookie" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![
                     ParamSig {
                         name: "name".to_string(),
@@ -1804,6 +2287,7 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::Unit),
             }),
             "delete_cookie" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "name".to_string(),
                     ty: Ty::String,
@@ -1822,10 +2306,12 @@ impl<'a> Checker<'a> {
     fn lookup_time_member(&mut self, name: &crate::ast::Ident) -> Ty {
         match name.name.as_str() {
             "now" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![],
                 ret: Box::new(Ty::Int),
             }),
             "sleep" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "ms".to_string(),
                     ty: Ty::Int,
@@ -1834,6 +2320,7 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::Unit),
             }),
             "format" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![
                     ParamSig {
                         name: "epoch".to_string(),
@@ -1849,6 +2336,7 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::String),
             }),
             "parse" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![
                     ParamSig {
                         name: "text".to_string(),
@@ -1877,6 +2365,7 @@ impl<'a> Checker<'a> {
         let headers_ty = Ty::Map(Box::new(Ty::String), Box::new(Ty::String));
         match name.name.as_str() {
             "request" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![
                     ParamSig {
                         name: "method".to_string(),
@@ -1907,6 +2396,7 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::Result(Box::new(response_ty), Box::new(error_ty))),
             }),
             "get" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![
                     ParamSig {
                         name: "url".to_string(),
@@ -1930,6 +2420,7 @@ impl<'a> Checker<'a> {
                 )),
             }),
             "post" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![
                     ParamSig {
                         name: "url".to_string(),
@@ -1995,6 +2486,7 @@ impl<'a> Checker<'a> {
     fn lookup_crypto_member(&mut self, name: &crate::ast::Ident) -> Ty {
         match name.name.as_str() {
             "hash" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![
                     ParamSig {
                         name: "algo".to_string(),
@@ -2010,6 +2502,7 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::Bytes),
             }),
             "hmac" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![
                     ParamSig {
                         name: "algo".to_string(),
@@ -2030,6 +2523,7 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::Bytes),
             }),
             "random_bytes" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "n".to_string(),
                     ty: Ty::Int,
@@ -2038,6 +2532,7 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::Bytes),
             }),
             "constant_time_eq" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![
                     ParamSig {
                         name: "a".to_string(),
@@ -2069,18 +2564,22 @@ impl<'a> Checker<'a> {
         let row_ty = Ty::Map(Box::new(Ty::String), Box::new(Ty::Unknown));
         match name.name.as_str() {
             "exec" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![sql_arg.clone()],
                 ret: Box::new(Ty::Unit),
             }),
             "query" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![sql_arg.clone()],
                 ret: Box::new(Ty::List(Box::new(row_ty))),
             }),
             "one" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![sql_arg],
                 ret: Box::new(Ty::Option(Box::new(row_ty))),
             }),
             "from" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "table".to_string(),
                     ty: Ty::String,
@@ -2100,6 +2599,7 @@ impl<'a> Checker<'a> {
         let row_ty = Ty::Map(Box::new(Ty::String), Box::new(Ty::Unknown));
         match name.name.as_str() {
             "select" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "columns".to_string(),
                     ty: Ty::List(Box::new(Ty::String)),
@@ -2108,6 +2608,7 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::External("query".to_string())),
             }),
             "where" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![
                     ParamSig {
                         name: "column".to_string(),
@@ -2128,6 +2629,7 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::External("query".to_string())),
             }),
             "order_by" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![
                     ParamSig {
                         name: "column".to_string(),
@@ -2143,6 +2645,7 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::External("query".to_string())),
             }),
             "limit" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "n".to_string(),
                     ty: Ty::Int,
@@ -2151,6 +2654,7 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::External("query".to_string())),
             }),
             "insert" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "value".to_string(),
                     ty: Ty::Unknown,
@@ -2159,6 +2663,7 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::External("query".to_string())),
             }),
             "upsert" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![ParamSig {
                     name: "value".to_string(),
                     ty: Ty::Unknown,
@@ -2167,6 +2672,7 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::External("query".to_string())),
             }),
             "update" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![
                     ParamSig {
                         name: "column".to_string(),
@@ -2182,30 +2688,37 @@ impl<'a> Checker<'a> {
                 ret: Box::new(Ty::External("query".to_string())),
             }),
             "delete" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![],
                 ret: Box::new(Ty::External("query".to_string())),
             }),
             "count" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![],
                 ret: Box::new(Ty::Int),
             }),
             "one" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![],
                 ret: Box::new(Ty::Option(Box::new(row_ty.clone()))),
             }),
             "all" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![],
                 ret: Box::new(Ty::List(Box::new(row_ty.clone()))),
             }),
             "exec" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![],
                 ret: Box::new(Ty::Unit),
             }),
             "sql" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![],
                 ret: Box::new(Ty::String),
             }),
             "params" => Ty::Fn(FnSig {
+                type_params: Vec::new(),
                 params: vec![],
                 ret: Box::new(Ty::List(Box::new(Ty::Unknown))),
             }),
@@ -2265,34 +2778,56 @@ impl<'a> Checker<'a> {
             .and_then(|info| info.variants.iter().find(|item| item.name == variant).cloned())
     }
 
-    fn interface_info_in_scope(&self, name: &str) -> Option<&super::symbols::InterfaceInfo> {
+    fn interface_info_in(
+        &self,
+        module_id: ModuleId,
+        name: &str,
+    ) -> Option<&super::symbols::InterfaceInfo> {
         if let Some((module_name, item_name)) = split_qualified_type_name(name) {
-            let module_map = self.module_maps.get(&self.module_id).unwrap_or(self.modules);
+            let module_map = self.module_maps.get(&module_id).unwrap_or(self.modules);
             let link = module_map.get(module_name)?;
             let symbols = self.module_symbols.get(&link.id)?;
             return symbols.interfaces.get(item_name);
         }
-        if let Some(info) = self.symbols.interfaces.get(name) {
+        let symbols = self.module_symbols.get(&module_id).unwrap_or(self.symbols);
+        if let Some(info) = symbols.interfaces.get(name) {
             return Some(info);
         }
-        let link = self.import_items.get(name)?;
+        let import_items = self
+            .module_import_items
+            .get(&module_id)
+            .unwrap_or(self.import_items);
+        let link = import_items.get(name)?;
         let symbols = self.module_symbols.get(&link.id)?;
         symbols.interfaces.get(name)
     }
 
-    fn interface_owner_in_scope(&self, name: &str) -> Option<ModuleId> {
+    fn interface_info_in_scope(&self, name: &str) -> Option<&super::symbols::InterfaceInfo> {
+        self.interface_info_in(self.module_id, name)
+    }
+
+    fn interface_owner_in(&self, module_id: ModuleId, name: &str) -> Option<ModuleId> {
         if let Some((module_name, item_name)) = split_qualified_type_name(name) {
-            let module_map = self.module_maps.get(&self.module_id).unwrap_or(self.modules);
+            let module_map = self.module_maps.get(&module_id).unwrap_or(self.modules);
             let link = module_map.get(module_name)?;
             let symbols = self.module_symbols.get(&link.id)?;
             return symbols.interfaces.contains_key(item_name).then_some(link.id);
         }
-        if self.symbols.interfaces.contains_key(name) {
-            return Some(self.module_id);
+        let symbols = self.module_symbols.get(&module_id).unwrap_or(self.symbols);
+        if symbols.interfaces.contains_key(name) {
+            return Some(module_id);
         }
-        let link = self.import_items.get(name)?;
+        let import_items = self
+            .module_import_items
+            .get(&module_id)
+            .unwrap_or(self.import_items);
+        let link = import_items.get(name)?;
         let symbols = self.module_symbols.get(&link.id)?;
         symbols.interfaces.contains_key(name).then_some(link.id)
+    }
+
+    fn interface_owner_in_scope(&self, name: &str) -> Option<ModuleId> {
+        self.interface_owner_in(self.module_id, name)
     }
 
     fn resolve_impl_target(&mut self, ident: &crate::ast::Ident) -> Option<(Ty, Option<ModuleId>)> {
@@ -2526,28 +3061,78 @@ impl<'a> Checker<'a> {
         let (module_id, method, _interface) = candidates.remove(0);
         let target_ty = self.resolve_simple_type_name_in(module_id, target_name, method.span);
         let prev_self = self.current_self_type.clone();
-        self.current_self_type = Some(target_ty);
-        let params = method
-            .params
-            .iter()
-            .map(|param| ParamSig {
-                name: param.name.clone(),
-                ty: self.resolve_type_ref_in(module_id, &param.ty),
-                has_default: param.has_default,
-            })
-            .collect();
-        let ret = method
-            .ret
-            .as_ref()
-            .map(|ty| self.resolve_type_ref_in(module_id, ty))
-            .unwrap_or(Ty::Unit);
-        self.current_self_type = prev_self;
-        Some(ResolvedImplMethod {
-            sig: FnSig {
+        self.current_self_type = Some(target_ty.clone());
+        let sig = self.with_ref_type_params(module_id, &method.type_params, &method.where_clause, |this, type_params| {
+            let params = method
+                .params
+                .iter()
+                .map(|param| ParamSig {
+                    name: param.name.clone(),
+                    ty: this.resolve_type_ref_in(module_id, &param.ty),
+                    has_default: param.has_default,
+                })
+                .collect();
+            let ret = method
+                .ret
+                .as_ref()
+                .map(|ty| this.resolve_type_ref_in(module_id, ty))
+                .unwrap_or(Ty::Unit);
+            FnSig {
+                type_params,
                 params,
                 ret: Box::new(ret),
+            }
+        });
+        self.current_self_type = prev_self;
+        Some(ResolvedImplMethod { sig })
+    }
+
+    fn resolve_interface_bound_method(
+        &mut self,
+        type_param: &str,
+        name: &crate::ast::Ident,
+        _associated_receiver: bool,
+    ) -> Option<FnSig> {
+        let interface_name = self.lookup_type_param_bound(type_param)??;
+        let interface_owner = self
+            .interface_owner_in_scope(&interface_name)
+            .unwrap_or(self.module_id);
+        let member = self
+            .interface_info_in_scope(&interface_name)?
+            .members
+            .iter()
+            .find(|member| member.name == name.name)
+            .cloned()?;
+        let prev_self = self.current_self_type.clone();
+        self.current_self_type = Some(Ty::TypeParam(type_param.to_string()));
+        let sig = self.with_ref_type_params(
+            interface_owner,
+            &member.type_params,
+            &member.where_clause,
+            |this, type_params| {
+                let params = member
+                    .params
+                    .iter()
+                    .map(|param| ParamSig {
+                        name: param.name.clone(),
+                        ty: this.resolve_type_ref_in(interface_owner, &param.ty),
+                        has_default: param.has_default,
+                    })
+                    .collect();
+                let ret = member
+                    .ret
+                    .as_ref()
+                    .map(|ty| this.resolve_type_ref_in(interface_owner, ty))
+                    .unwrap_or(Ty::Unit);
+                FnSig {
+                    type_params,
+                    params,
+                    ret: Box::new(ret),
+                }
             },
-        })
+        );
+        self.current_self_type = prev_self;
+        Some(sig)
     }
 
     fn type_info(&self, name: &str) -> Option<&super::symbols::TypeInfo> {
@@ -2654,6 +3239,7 @@ impl<'a> Checker<'a> {
             })
             .collect();
         Ty::Fn(FnSig {
+            type_params: Vec::new(),
             params,
             ret: Box::new(Ty::Enum(enum_name.to_string())),
         })
@@ -3133,6 +3719,11 @@ impl<'a> Checker<'a> {
             self.diags
                 .error(span, "Self is only valid inside interface and impl members");
             return Ty::Unknown;
+        }
+        if !name.contains('.') {
+            if self.lookup_type_param_bound(name).is_some() {
+                return Ty::TypeParam(name.to_string());
+            }
         }
         if !name.starts_with("std.") {
             if let Some((module_name, item_name)) = split_qualified_type_name(name) {

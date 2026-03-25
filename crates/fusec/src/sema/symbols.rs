@@ -68,18 +68,35 @@ pub struct InterfaceInfo {
 }
 
 #[derive(Clone, Debug)]
+pub struct TypeParamRef {
+    pub name: String,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct WhereConstraintRef {
+    pub type_param: String,
+    pub interface: String,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
 pub struct InterfaceMemberInfo {
     pub name: String,
+    pub type_params: Vec<TypeParamRef>,
     pub params: Vec<ParamRef>,
     pub ret: Option<TypeRef>,
+    pub where_clause: Vec<WhereConstraintRef>,
     pub span: Span,
 }
 
 #[derive(Clone, Debug)]
 pub struct FnSigRef {
     pub name: String,
+    pub type_params: Vec<TypeParamRef>,
     pub params: Vec<ParamRef>,
     pub ret: Option<TypeRef>,
+    pub where_clause: Vec<WhereConstraintRef>,
     pub span: Span,
 }
 
@@ -102,8 +119,10 @@ pub struct ImplInfo {
 #[derive(Clone, Debug)]
 pub struct ImplMethodInfo {
     pub name: String,
+    pub type_params: Vec<TypeParamRef>,
     pub params: Vec<ParamRef>,
     pub ret: Option<TypeRef>,
+    pub where_clause: Vec<WhereConstraintRef>,
     pub span: Span,
     pub uses_self: bool,
 }
@@ -359,8 +378,10 @@ fn collect_interface(
 fn interface_member_info(member: &InterfaceMember) -> InterfaceMemberInfo {
     InterfaceMemberInfo {
         name: member.name.name.clone(),
+        type_params: type_params_ref(&member.type_params),
         params: params_ref(&member.params),
         ret: member.ret.clone(),
+        where_clause: where_constraints_ref(&member.where_clause),
         span: member.span,
     }
 }
@@ -380,10 +401,33 @@ fn collect_fn(
 fn fn_sig_ref_from_fn_decl(decl: &FnDecl) -> FnSigRef {
     FnSigRef {
         name: decl.name.name.clone(),
+        type_params: type_params_ref(&decl.type_params),
         params: params_ref(&decl.params),
         ret: decl.ret.clone(),
+        where_clause: where_constraints_ref(&decl.where_clause),
         span: decl.span,
     }
+}
+
+fn type_params_ref(type_params: &[crate::ast::TypeParam]) -> Vec<TypeParamRef> {
+    type_params
+        .iter()
+        .map(|param| TypeParamRef {
+            name: param.name.name.clone(),
+            span: param.span,
+        })
+        .collect()
+}
+
+fn where_constraints_ref(constraints: &[crate::ast::WhereConstraint]) -> Vec<WhereConstraintRef> {
+    constraints
+        .iter()
+        .map(|constraint| WhereConstraintRef {
+            type_param: constraint.type_param.name.clone(),
+            interface: constraint.interface.name.clone(),
+            span: constraint.span,
+        })
+        .collect()
 }
 
 fn params_ref(params: &[crate::ast::Param]) -> Vec<ParamRef> {
@@ -404,8 +448,10 @@ fn collect_impl(decl: &ImplDecl) -> ImplInfo {
         .iter()
         .map(|method| ImplMethodInfo {
             name: method.name.name.clone(),
+            type_params: type_params_ref(&method.type_params),
             params: params_ref(&method.params),
             ret: method.ret.clone(),
+            where_clause: where_constraints_ref(&method.where_clause),
             span: method.span,
             uses_self: fn_decl_uses_ident(method, "self"),
         })
@@ -581,26 +627,27 @@ fn collect_component(
         },
         span,
     };
-    let params = vec![
-        ParamRef {
-            name: "attrs".to_string(),
-            ty: mk_generic("Map", vec![mk_simple("String"), mk_simple("String")]),
-            has_default: false,
-            span,
-        },
-        ParamRef {
-            name: "children".to_string(),
-            ty: mk_generic("List", vec![mk_simple("Html")]),
-            has_default: false,
-            span,
-        },
-    ];
+    let mut params = params_ref(&decl.params);
+    params.push(ParamRef {
+        name: "attrs".to_string(),
+        ty: mk_generic("Map", vec![mk_simple("String"), mk_simple("String")]),
+        has_default: true,
+        span,
+    });
+    params.push(ParamRef {
+        name: "children".to_string(),
+        ty: mk_generic("List", vec![mk_simple("Html")]),
+        has_default: true,
+        span,
+    });
     functions.insert(
         decl.name.name.clone(),
         FnSigRef {
             name: decl.name.name.clone(),
+            type_params: type_params_ref(&decl.type_params),
             params,
             ret: Some(mk_simple("Html")),
+            where_clause: where_constraints_ref(&decl.where_clause),
             span,
         },
     );
