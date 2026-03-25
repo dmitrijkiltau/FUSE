@@ -60,10 +60,9 @@ component Card:                       # HTML component
 
 ## Interface Contracts
 
-The initial v1.1 slice adds top-level `interface` declarations and `impl Interface for Type`
-blocks. Interfaces are compile-time contracts, not runtime values or ordinary types.
-`where` constraints are intentionally deferred in this slice, so existing query-builder
-calls like `.where(...)` are unchanged.
+`interface` declares a named set of member signatures. `impl Interface for Type` declares that a
+concrete type satisfies that contract. Interfaces are compile-time contracts; they are not runtime
+values or ordinary types.
 
 ```fuse
 interface Encodable:
@@ -84,7 +83,7 @@ fn round_trip(user: User) -> User!ParseError:
   return User.decode(encoded)
 ```
 
-Rules for the initial slice:
+Rules:
 
 - `interface` names are exportable/importable like `type` and `enum` names.
 - `impl` blocks are declarations, but they are not importable by name.
@@ -92,6 +91,76 @@ Rules for the initial slice:
 - Instance methods use an implicit immutable `self`; associated methods do not.
 - Using an interface name as a normal type or value is a compile-time error.
 - Duplicate impls for the same `(interface, target)` pair and orphan impls are rejected.
+- An impl target must be a nominal data type (`type` or `enum`).
+
+## Generic Callables and `where`
+
+`fn`, interface members, impl methods, and `component` declarations may carry type parameters and
+a trailing `where` clause. All generic dispatch is resolved at compile time through
+frontend monomorphization; there is no runtime generic dispatch.
+
+### Generic functions
+
+```fuse
+fn round_trip<T>(x: T) -> T where T: Encodable:
+  let encoded = x.encode()
+  return T.decode(encoded)
+```
+
+Call-site type arguments may be supplied explicitly or inferred from value arguments:
+
+```fuse
+fn parse_user(text: String) -> User:
+  return round_trip<User>(User(name=text))
+```
+
+### Generic interface members and impl methods
+
+Interface members and their corresponding impl methods may themselves be generic:
+
+```fuse
+interface Mappable:
+  fn map<U>(f: fn(Self) -> U) -> U where U: Encodable
+
+impl Mappable for User:
+  fn map<U>(f: fn(Self) -> U) -> U where U: Encodable:
+    return f(self)
+```
+
+Impl methods must match the interface member's generic arity, parameter types, return type, and
+`where` constraints exactly after substituting `Self` with the concrete type.
+
+### Typed generic components
+
+`component` declarations may carry type parameters and a trailing `where`:
+
+```fuse
+interface Renderable:
+  fn render_text() -> String
+
+component Button<T>(item: T) where T: Renderable:
+  return button(attrs class="btn"):
+    item.render_text()
+```
+
+Type parameters and explicit params are both optional. A component without them — `component Layout:` — is still a valid declaration.
+
+### `where` and query-builder `.where(...)`
+
+`where` is contextual-only. It is parsed as a declaration keyword only in trailing clause position
+after a declaration head. Existing query-builder calls such as `.where("id", "=", id)` remain
+ordinary member-call syntax and are unaffected.
+
+### Rules
+
+- A type parameter name must be unique within one declaration.
+- A `where` clause may attach at most one interface constraint per type parameter.
+- An interface name in a `where` clause must be visible in scope.
+- Type inference uses explicit type arguments and value argument types only; return-type context
+  does not drive inference.
+- Generic calls where type parameters cannot be inferred require explicit type arguments.
+- `type`, `enum`, `interface` headers, `impl` blocks, `app`, `test`, and service route declarations
+  do not accept type parameters.
 
 ## Types
 
