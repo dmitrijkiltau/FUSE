@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use fuse_rt::json::JsonValue;
 use fusec::ast::{
-    Block, CallArg, Expr, ExprKind, Item, Program, Stmt, StmtKind, TypeRef, TypeRefKind,
+    Block, CallArg, Expr, ExprKind, ImplDecl, Item, Program, Stmt, StmtKind, TypeRef,
+    TypeRefKind,
 };
 use fusec::parse_source;
 use fusec::span::Span;
@@ -12,6 +13,10 @@ use super::super::{
     COMPLETION_KEYWORDS, LspState, SymbolDef, SymbolKind, WorkspaceDef, WorkspaceIndex,
     build_workspace_index_cached, extract_position, is_callable_def_kind, is_exported_def_kind,
     line_col_to_offset, line_offsets, offset_to_line_col, span_contains,
+};
+use super::interface_support::{
+    render_impl_method_param_labels, render_impl_method_signature,
+    render_interface_member_signature, render_interface_member_stub, resolve_interface_decl,
 };
 use super::tokens::{load_text_for_uri, parse_fn_parameter_labels};
 
@@ -29,6 +34,7 @@ enum SignatureTarget {
     },
     Member {
         base: Option<String>,
+        base_span: Option<Span>,
         name: String,
         span: Span,
     },
@@ -52,6 +58,12 @@ struct RankedSignature {
     info: SignatureInfo,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ImplMethodKind {
+    Instance,
+    Associated,
+}
+
 pub(crate) fn handle_signature_help(
     state: &mut LspState,
     obj: &BTreeMap<String, JsonValue>,
@@ -70,10 +82,20 @@ pub(crate) fn handle_signature_help(
     };
 
     let index = build_workspace_index_cached(state, &uri);
-    let signatures = signature_candidates_for_target(index, &uri, &offsets, &call.target);
+    let mut signatures = interface_signature_candidates_for_target(
+        index, &uri, &text, &program, cursor, &call.target,
+    );
+    let fallback = signature_candidates_for_target(index, &uri, &offsets, &call.target);
+    for signature in fallback {
+        if signatures.iter().any(|existing| existing.label == signature.label) {
+            continue;
+        }
+        signatures.push(signature);
+    }
     if signatures.is_empty() {
         return JsonValue::Null;
     }
+    signatures.truncate(4);
     signature_help_json(&signatures, call.active_arg)
 }
 
@@ -153,7 +175,12 @@ fn signature_candidates_for_target(
                 });
             }
         }
-        SignatureTarget::Member { base, name, span } => {
+        SignatureTarget::Member {
+            base,
+            base_span: _,
+            name,
+            span,
+        } => {
             if let Some(def) = signature_def_for_symbol_ref(index, uri, offsets, *span) {
                 push_workspace_signature(&mut ranked, 0, &def);
             }
@@ -542,6 +569,553 @@ fn builtin_member_signature_info(base: &str, member: &str) -> Option<SignatureIn
     }
 }
 
+fn interface_signature_candidates_for_target(
+    index: Option<&WorkspaceIndex>,
+    uri: &str,
+    text: &str,
+    program: &Program,
+    cursor: usize,
+    target: &SignatureTarget,
+) -> Vec<SignatureInfo> {
+    let SignatureTarget::Member {
+        base,
+        base_span,
+        name,
+        ..
+    } = target
+    else {
+        return Vec::new();
+    };
+    let Some((target_name, method_kind)) = resolve_impl_member_target(
+        index,
+        uri,
+        text,
+        program,
+        cursor,
+        base.as_deref(),
+        *base_span,
+    )
+    else {
+        return Vec::new();
+    };
+
+    let mut ranked: Vec<(u8, String, usize, SignatureInfo)> = Vec::new();
+    if let Some(index) = index {
+        for file in &index.files {
+            let (file_program, _parse_diags) = parse_source(&file.text);
+            collect_impl_signatures_from_program(
+                &mut ranked,
+                uri,
+                &file.uri,
+                &file.text,
+                &file_program,
+                name,
+                &target_name,
+                method_kind,
+            );
+        }
+    } else {
+        collect_impl_signatures_from_program(
+            &mut ranked,
+            uri,
+            uri,
+            text,
+            program,
+            name,
+            &target_name,
+            method_kind,
+        );
+    }
+
+    ranked.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| left.3.label.to_lowercase().cmp(&right.3.label.to_lowercase()))
+            .then_with(|| left.3.label.cmp(&right.3.label))
+    });
+
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for (_, _, _, info) in ranked {
+        if !seen.insert(info.label.clone()) {
+            continue;
+        }
+        out.push(info);
+    }
+    out.truncate(4);
+    out
+}
+
+fn resolve_impl_member_target(
+    index: Option<&WorkspaceIndex>,
+    uri: &str,
+    text: &str,
+    program: &Program,
+    cursor: usize,
+    base: Option<&str>,
+    base_span: Option<Span>,
+) -> Option<(String, ImplMethodKind)> {
+    let base = base?;
+    let current_impl_target = current_impl_target_at_cursor(program, cursor);
+    if base == "self" {
+        return current_impl_target.map(|target| (target, ImplMethodKind::Instance));
+    }
+    if base == "Self" {
+        return current_impl_target.map(|target| (target, ImplMethodKind::Associated));
+    }
+    if let (Some(index), Some(base_span)) = (index, base_span) {
+        let offsets = line_offsets(text);
+        let (line, character) = offset_to_line_col(&offsets, base_span.start);
+        if let Some(def) = index.definition_at(uri, line, character) {
+            match def.def.kind {
+                SymbolKind::Type | SymbolKind::Enum => {
+                    return Some((def.def.name, ImplMethodKind::Associated));
+                }
+                SymbolKind::Param | SymbolKind::Variable => {
+                    if let Some(ty) =
+                        infer_local_ident_type(program, cursor, base, current_impl_target.as_deref())
+                    {
+                        return Some((ty, ImplMethodKind::Instance));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    infer_local_ident_type(program, cursor, base, current_impl_target.as_deref())
+        .map(|ty| (ty, ImplMethodKind::Instance))
+}
+
+fn current_impl_target_at_cursor(program: &Program, cursor: usize) -> Option<String> {
+    for item in &program.items {
+        let Item::Impl(decl) = item else {
+            continue;
+        };
+        for method in &decl.methods {
+            if span_contains(method.body.span, cursor) {
+                return Some(decl.target.name.clone());
+            }
+        }
+    }
+    None
+}
+
+fn infer_local_ident_type(
+    program: &Program,
+    cursor: usize,
+    name: &str,
+    current_impl_target: Option<&str>,
+) -> Option<String> {
+    for item in &program.items {
+        match item {
+            Item::Fn(decl) => {
+                if !span_contains(decl.body.span, cursor) {
+                    continue;
+                }
+                let mut env = HashMap::new();
+                for param in &decl.params {
+                    if let Some(ty_name) = simple_type_name(&param.ty) {
+                        env.insert(param.name.name.clone(), ty_name);
+                    }
+                }
+                return infer_ident_type_in_block(&decl.body, cursor, name, current_impl_target, &mut env);
+            }
+            Item::Impl(decl) => {
+                for method in &decl.methods {
+                    if !span_contains(method.body.span, cursor) {
+                        continue;
+                    }
+                    let mut env = HashMap::new();
+                    for param in &method.params {
+                        if let Some(ty_name) = simple_type_name(&param.ty) {
+                            env.insert(param.name.name.clone(), ty_name);
+                        }
+                    }
+                    env.insert("self".to_string(), decl.target.name.clone());
+                    return infer_ident_type_in_block(
+                        &method.body,
+                        cursor,
+                        name,
+                        Some(decl.target.name.as_str()),
+                        &mut env,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn infer_ident_type_in_block(
+    block: &Block,
+    cursor: usize,
+    target: &str,
+    current_impl_target: Option<&str>,
+    env: &mut HashMap<String, String>,
+) -> Option<String> {
+    if !span_contains(block.span, cursor) {
+        return None;
+    }
+    for stmt in &block.stmts {
+        if stmt.span.start > cursor {
+            break;
+        }
+        if stmt.span.end <= cursor {
+            record_stmt_binding(stmt, env, current_impl_target);
+            continue;
+        }
+        match &stmt.kind {
+            StmtKind::If {
+                then_block,
+                else_if,
+                else_block,
+                ..
+            } => {
+                if span_contains(then_block.span, cursor) {
+                    return infer_ident_type_in_block(
+                        then_block,
+                        cursor,
+                        target,
+                        current_impl_target,
+                        env,
+                    )
+                    .or_else(|| env.get(target).cloned());
+                }
+                for (_, block) in else_if {
+                    if span_contains(block.span, cursor) {
+                        return infer_ident_type_in_block(
+                            block,
+                            cursor,
+                            target,
+                            current_impl_target,
+                            env,
+                        )
+                        .or_else(|| env.get(target).cloned());
+                    }
+                }
+                if let Some(block) = else_block {
+                    if span_contains(block.span, cursor) {
+                        return infer_ident_type_in_block(
+                            block,
+                            cursor,
+                            target,
+                            current_impl_target,
+                            env,
+                        )
+                        .or_else(|| env.get(target).cloned());
+                    }
+                }
+            }
+            StmtKind::Match { cases, .. } => {
+                for (_, block) in cases {
+                    if span_contains(block.span, cursor) {
+                        return infer_ident_type_in_block(
+                            block,
+                            cursor,
+                            target,
+                            current_impl_target,
+                            env,
+                        )
+                        .or_else(|| env.get(target).cloned());
+                    }
+                }
+            }
+            StmtKind::For { block, .. }
+            | StmtKind::While { block, .. }
+            | StmtKind::Transaction { block } => {
+                if span_contains(block.span, cursor) {
+                    return infer_ident_type_in_block(
+                        block,
+                        cursor,
+                        target,
+                        current_impl_target,
+                        env,
+                    )
+                    .or_else(|| env.get(target).cloned());
+                }
+            }
+            _ => {}
+        }
+        break;
+    }
+    env.get(target).cloned()
+}
+
+fn record_stmt_binding(
+    stmt: &Stmt,
+    env: &mut HashMap<String, String>,
+    current_impl_target: Option<&str>,
+) {
+    match &stmt.kind {
+        StmtKind::Let { name, ty, expr } | StmtKind::Var { name, ty, expr } => {
+            if let Some(binding_ty) = infer_binding_type(ty.as_ref(), expr, env, current_impl_target)
+            {
+                env.insert(name.name.clone(), binding_ty);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn infer_binding_type(
+    ty: Option<&TypeRef>,
+    expr: &Expr,
+    env: &HashMap<String, String>,
+    current_impl_target: Option<&str>,
+) -> Option<String> {
+    ty.and_then(simple_type_name)
+        .or_else(|| infer_expr_type(expr, env, current_impl_target))
+}
+
+fn infer_expr_type(
+    expr: &Expr,
+    env: &HashMap<String, String>,
+    current_impl_target: Option<&str>,
+) -> Option<String> {
+    match &expr.kind {
+        ExprKind::StructLit { name, .. } => Some(name.name.clone()),
+        ExprKind::Ident(ident) if ident.name == "self" => current_impl_target.map(str::to_string),
+        ExprKind::Ident(ident) => env.get(&ident.name).cloned(),
+        ExprKind::BangChain { expr, .. } | ExprKind::Await { expr } | ExprKind::Box { expr } => {
+            infer_expr_type(expr, env, current_impl_target)
+        }
+        ExprKind::Coalesce { left, right } => infer_expr_type(left, env, current_impl_target)
+            .or_else(|| infer_expr_type(right, env, current_impl_target)),
+        _ => None,
+    }
+}
+
+fn simple_type_name(ty: &TypeRef) -> Option<String> {
+    match &ty.kind {
+        TypeRefKind::Simple(name) => Some(name.name.clone()),
+        TypeRefKind::Optional(inner) => simple_type_name(inner),
+        TypeRefKind::Result { ok, .. } => simple_type_name(ok),
+        _ => None,
+    }
+}
+
+fn collect_impl_signatures_from_program(
+    out: &mut Vec<(u8, String, usize, SignatureInfo)>,
+    current_uri: &str,
+    file_uri: &str,
+    text: &str,
+    program: &Program,
+    method_name: &str,
+    target_name: &str,
+    method_kind: ImplMethodKind,
+) {
+    for item in &program.items {
+        let Item::Impl(decl) = item else {
+            continue;
+        };
+        if decl.target.name != target_name {
+            continue;
+        }
+        for method in &decl.methods {
+            if method.name.name != method_name || impl_method_kind(method) != method_kind {
+                continue;
+            }
+            out.push((
+                if file_uri == current_uri { 0 } else { 1 },
+                file_uri.to_string(),
+                method.span.start,
+                signature_info_from_impl_method(method, text),
+            ));
+        }
+    }
+}
+
+fn impl_method_kind(method: &fusec::ast::FnDecl) -> ImplMethodKind {
+    if fn_decl_uses_ident(method, "self") {
+        ImplMethodKind::Instance
+    } else {
+        ImplMethodKind::Associated
+    }
+}
+
+fn fn_decl_uses_ident(decl: &fusec::ast::FnDecl, ident: &str) -> bool {
+    decl.params
+        .iter()
+        .filter_map(|param| param.default.as_ref())
+        .any(|expr| expr_uses_ident(expr, ident))
+        || block_uses_ident(&decl.body, ident)
+}
+
+fn block_uses_ident(block: &Block, ident: &str) -> bool {
+    block.stmts.iter().any(|stmt| stmt_uses_ident(stmt, ident))
+}
+
+fn stmt_uses_ident(stmt: &Stmt, ident: &str) -> bool {
+    match &stmt.kind {
+        StmtKind::Let { expr, .. } | StmtKind::Var { expr, .. } | StmtKind::Expr(expr) => {
+            expr_uses_ident(expr, ident)
+        }
+        StmtKind::Assign { target, expr } => {
+            expr_uses_ident(target, ident) || expr_uses_ident(expr, ident)
+        }
+        StmtKind::Return { expr } => expr.as_ref().is_some_and(|expr| expr_uses_ident(expr, ident)),
+        StmtKind::If {
+            cond,
+            then_block,
+            else_if,
+            else_block,
+        } => {
+            expr_uses_ident(cond, ident)
+                || block_uses_ident(then_block, ident)
+                || else_if.iter().any(|(cond, block)| {
+                    expr_uses_ident(cond, ident) || block_uses_ident(block, ident)
+                })
+                || else_block
+                    .as_ref()
+                    .is_some_and(|block| block_uses_ident(block, ident))
+        }
+        StmtKind::Match { expr, cases } => {
+            expr_uses_ident(expr, ident)
+                || cases.iter().any(|(_, block)| block_uses_ident(block, ident))
+        }
+        StmtKind::For { iter, block, .. } => {
+            expr_uses_ident(iter, ident) || block_uses_ident(block, ident)
+        }
+        StmtKind::While { cond, block } => {
+            expr_uses_ident(cond, ident) || block_uses_ident(block, ident)
+        }
+        StmtKind::Transaction { block } => block_uses_ident(block, ident),
+        StmtKind::Break | StmtKind::Continue => false,
+    }
+}
+
+fn expr_uses_ident(expr: &Expr, ident: &str) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => name.name == ident,
+        ExprKind::Binary { left, right, .. } => {
+            expr_uses_ident(left, ident) || expr_uses_ident(right, ident)
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await { expr }
+        | ExprKind::Box { expr } => expr_uses_ident(expr, ident),
+        ExprKind::Call {
+            callee,
+            args,
+            type_args: _,
+        } => {
+            expr_uses_ident(callee, ident)
+                || args.iter().any(|arg| expr_uses_ident(&arg.value, ident))
+        }
+        ExprKind::Member { base, .. }
+        | ExprKind::OptionalMember { base, .. }
+        | ExprKind::Index { base, .. }
+        | ExprKind::OptionalIndex { base, .. } => expr_uses_ident(base, ident),
+        ExprKind::StructLit { fields, .. } => fields
+            .iter()
+            .any(|field| expr_uses_ident(&field.value, ident)),
+        ExprKind::ListLit(items) => items.iter().any(|item| expr_uses_ident(item, ident)),
+        ExprKind::MapLit(items) => items
+            .iter()
+            .any(|(key, value)| expr_uses_ident(key, ident) || expr_uses_ident(value, ident)),
+        ExprKind::InterpString(parts) => parts.iter().any(|part| match part {
+            fusec::ast::InterpPart::Expr(expr) => expr_uses_ident(expr, ident),
+            _ => false,
+        }),
+        ExprKind::Coalesce { left, right } => {
+            expr_uses_ident(left, ident) || expr_uses_ident(right, ident)
+        }
+        ExprKind::BangChain { expr, error } => {
+            expr_uses_ident(expr, ident)
+                || error
+                    .as_ref()
+                    .is_some_and(|error| expr_uses_ident(error, ident))
+        }
+        ExprKind::Spawn { block } => block_uses_ident(block, ident),
+        ExprKind::HtmlIf {
+            cond,
+            then_children,
+            else_if,
+            else_children,
+        } => {
+            expr_uses_ident(cond, ident)
+                || then_children.iter().any(|child| expr_uses_ident(child, ident))
+                || else_if.iter().any(|(cond, children)| {
+                    expr_uses_ident(cond, ident)
+                        || children.iter().any(|child| expr_uses_ident(child, ident))
+                })
+                || else_children
+                    .iter()
+                    .any(|child| expr_uses_ident(child, ident))
+        }
+        ExprKind::HtmlFor {
+            iter,
+            body_children,
+            ..
+        } => {
+            expr_uses_ident(iter, ident)
+                || body_children.iter().any(|child| expr_uses_ident(child, ident))
+        }
+        ExprKind::Literal(_) => false,
+    }
+}
+
+fn signature_info_from_impl_method(method: &fusec::ast::FnDecl, text: &str) -> SignatureInfo {
+    SignatureInfo {
+        label: render_impl_method_signature(method, text),
+        params: render_impl_method_param_labels(method, text),
+        documentation: method.doc.clone().map(|doc| doc.trim().to_string()),
+    }
+}
+
+fn interface_stub_candidates(
+    index: Option<&WorkspaceIndex>,
+    uri: &str,
+    text: &str,
+    program: &Program,
+    cursor: usize,
+) -> Vec<(String, String, String)> {
+    let Some(decl) = impl_decl_for_stub_completion(program, cursor) else {
+        return Vec::new();
+    };
+    let Some(interface) = resolve_interface_decl(index, uri, text, program, &decl.interface) else {
+        return Vec::new();
+    };
+    let implemented: HashSet<&str> = decl.methods.iter().map(|method| method.name.name.as_str()).collect();
+    interface
+        .decl
+        .members
+        .iter()
+        .filter(|member| !implemented.contains(member.name.name.as_str()))
+        .map(|member| {
+            (
+                member.name.name.clone(),
+                render_interface_member_signature(member, &interface.text),
+                render_interface_member_stub(member, &interface.text, ""),
+            )
+        })
+        .collect()
+}
+
+fn impl_decl_for_stub_completion(program: &Program, cursor: usize) -> Option<&ImplDecl> {
+    let mut best: Option<(&ImplDecl, usize)> = None;
+    for item in &program.items {
+        let Item::Impl(decl) = item else {
+            continue;
+        };
+        if !span_contains(decl.span, cursor)
+            || decl
+                .methods
+                .iter()
+                .any(|method| span_contains(method.body.span, cursor))
+        {
+            continue;
+        }
+        let size = decl.span.end.saturating_sub(decl.span.start);
+        if best.map_or(true, |(_, best_size)| size < best_size) {
+            best = Some((decl, size));
+        }
+    }
+    best.map(|(decl, _)| decl)
+}
+
 fn find_call_context(program: &Program, cursor: usize) -> Option<CallContext> {
     let mut best = None;
     for item in &program.items {
@@ -599,6 +1173,7 @@ fn collect_call_context_item(item: &Item, cursor: usize, best: &mut Option<CallC
         Item::App(decl) => collect_call_context_block(&decl.body, cursor, best),
         Item::Migration(decl) => collect_call_context_block(&decl.body, cursor, best),
         Item::Test(decl) => collect_call_context_block(&decl.body, cursor, best),
+        Item::Interface(_) | Item::Impl(_) => {},
     }
 }
 
@@ -800,12 +1375,13 @@ fn consider_call_context(
             span: ident.span,
         },
         ExprKind::Member { base, name } | ExprKind::OptionalMember { base, name } => {
-            let base = match &base.kind {
-                ExprKind::Ident(base_ident) => Some(base_ident.name.clone()),
-                _ => None,
+            let (base, base_span) = match &base.kind {
+                ExprKind::Ident(base_ident) => (Some(base_ident.name.clone()), Some(base_ident.span)),
+                _ => (None, None),
             };
             SignatureTarget::Member {
                 base,
+                base_span,
                 name: name.name.clone(),
                 span: name.span,
             }
@@ -872,6 +1448,7 @@ fn call_active_argument(args: &[CallArg], cursor: usize) -> usize {
 struct CompletionCandidate {
     kind: u32,
     detail: Option<String>,
+    insert_text: Option<String>,
     sort_group: u8,
     /// Sub-rank within sort_group 2 (external workspace symbols):
     /// 0 = symbol is in a module directly imported by the current file (locality-adjacent),
@@ -966,6 +1543,19 @@ pub(crate) fn handle_completion(
                 );
             }
         }
+        for (label, detail, insert_text) in
+            interface_stub_candidates(index, &uri, &text, &program, offset)
+        {
+            upsert_completion_candidate_with_insert(
+                &mut candidates,
+                &label,
+                3,
+                Some(detail),
+                Some(insert_text),
+                0,
+                0,
+            );
+        }
         for builtin in COMPLETION_BUILTIN_RECEIVERS {
             upsert_completion_candidate(
                 &mut candidates,
@@ -1045,6 +1635,7 @@ pub(crate) fn handle_completion(
                 &label,
                 candidate.kind,
                 candidate.detail.as_deref(),
+                candidate.insert_text.as_deref(),
                 candidate.sort_group,
                 candidate.locality,
             )
@@ -1057,6 +1648,7 @@ fn completion_item_json(
     label: &str,
     kind: u32,
     detail: Option<&str>,
+    insert_text: Option<&str>,
     sort_group: u8,
     locality: u8,
 ) -> JsonValue {
@@ -1065,6 +1657,12 @@ fn completion_item_json(
     item.insert("kind".to_string(), JsonValue::Number(kind as f64));
     if let Some(detail) = detail {
         item.insert("detail".to_string(), JsonValue::String(detail.to_string()));
+    }
+    if let Some(insert_text) = insert_text {
+        item.insert(
+            "insertText".to_string(),
+            JsonValue::String(insert_text.to_string()),
+        );
     }
     // For external workspace symbols (group 02), embed the locality sub-rank so that
     // symbols from directly-imported modules ("02_0_…") sort before symbols from
@@ -1093,12 +1691,33 @@ fn upsert_completion_candidate(
     sort_group: u8,
     locality: u8,
 ) {
+    upsert_completion_candidate_with_insert(
+        candidates,
+        label,
+        kind,
+        detail,
+        None,
+        sort_group,
+        locality,
+    );
+}
+
+fn upsert_completion_candidate_with_insert(
+    candidates: &mut HashMap<String, CompletionCandidate>,
+    label: &str,
+    kind: u32,
+    detail: Option<String>,
+    insert_text: Option<String>,
+    sort_group: u8,
+    locality: u8,
+) {
     use std::collections::hash_map::Entry;
     match candidates.entry(label.to_string()) {
         Entry::Vacant(slot) => {
             slot.insert(CompletionCandidate {
                 kind,
                 detail,
+                insert_text,
                 sort_group,
                 locality,
             });
@@ -1111,19 +1730,21 @@ fn upsert_completion_candidate(
                 slot.insert(CompletionCandidate {
                     kind,
                     detail,
+                    insert_text,
                     sort_group,
                     locality,
                 });
                 return;
             }
-            if sort_group == existing.sort_group
-                && locality == existing.locality
-                && existing.detail.is_none()
-                && detail.is_some()
-            {
+            if sort_group == existing.sort_group && locality == existing.locality {
                 let existing = slot.get_mut();
-                existing.detail = detail;
-                existing.kind = kind;
+                if existing.detail.is_none() && detail.is_some() {
+                    existing.detail = detail;
+                    existing.kind = kind;
+                }
+                if existing.insert_text.is_none() && insert_text.is_some() {
+                    existing.insert_text = insert_text;
+                }
             }
         }
     }
@@ -1362,7 +1983,7 @@ fn completion_callable_name_at_cursor(program: &Program, cursor: usize) -> Optio
                     }
                 }
             }
-            Item::Import(_) | Item::Type(_) | Item::Enum(_) | Item::Config(_) => {}
+            Item::Import(_) | Item::Type(_) | Item::Enum(_) | Item::Config(_) | Item::Interface(_) | Item::Impl(_) => {}
         }
     }
 
@@ -1435,7 +2056,7 @@ fn is_lexical_local_symbol(def: &SymbolDef) -> bool {
 fn completion_kind_for_symbol_kind(kind: SymbolKind) -> u32 {
     match kind {
         SymbolKind::Module => 9,
-        SymbolKind::Type | SymbolKind::Config => 22,
+        SymbolKind::Type | SymbolKind::Interface | SymbolKind::Config => 22,
         SymbolKind::Enum => 13,
         SymbolKind::EnumVariant => 20,
         SymbolKind::Function

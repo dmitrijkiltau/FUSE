@@ -29,7 +29,7 @@ Normative terms in this document:
 
 - Identifiers: `[A-Za-z_][A-Za-z0-9_]*`
 - Keywords:
-  `app, service, at, get, post, put, patch, delete, fn, type, enum, let, var, return, if, else,
+  `app, service, at, get, post, put, patch, delete, fn, type, enum, interface, impl, let, var, return, if, else,
   match, for, in, while, transaction, break, continue, requires, import, from, as, config, migration, test,
   body, and, or, without, spawn, await, box`
 - Literals:
@@ -96,6 +96,8 @@ TopDecl        := ImportDecl
                 | ConfigDecl
                 | TypeDecl
                 | EnumDecl
+                | InterfaceDecl
+                | ImplDecl
                 | MigrationDecl
                 | TestDecl
                 | FnDecl
@@ -114,7 +116,16 @@ FieldDecl      := Ident ":" TypeRef [ "=" Expr ] NEWLINE
 EnumDecl       := "enum" Ident ":" NEWLINE INDENT { EnumVariant } DEDENT
 EnumVariant    := Ident [ "(" TypeRef { "," TypeRef } ")" ] NEWLINE
 
-FnDecl         := "fn" Ident "(" NEWLINE* [ ParamList [ "," ] ] NEWLINE* ")" [ "->" TypeRef ] ":" NEWLINE Block
+TypeParams     := "<" Ident { "," Ident } ">"
+Constraint     := Ident ":" Ident
+WhereClause    := "where" Constraint { "," Constraint }
+
+InterfaceDecl  := "interface" Ident ":" NEWLINE INDENT { InterfaceMember } DEDENT
+InterfaceMember := "fn" Ident TypeParams? "(" NEWLINE* [ ParamList [ "," ] ] NEWLINE* ")" [ "->" TypeRef ] WhereClause? NEWLINE
+ImplDecl       := "impl" Ident "for" Ident ":" NEWLINE INDENT { ImplMethod } DEDENT
+ImplMethod     := "fn" Ident TypeParams? "(" NEWLINE* [ ParamList [ "," ] ] NEWLINE* ")" [ "->" TypeRef ] WhereClause? ":" NEWLINE Block
+
+FnDecl         := "fn" Ident TypeParams? "(" NEWLINE* [ ParamList [ "," ] ] NEWLINE* ")" [ "->" TypeRef ] WhereClause? ":" NEWLINE Block
 ParamList      := Param { "," NEWLINE* Param }
 Param          := Ident ":" TypeRef [ "=" Expr ]
 
@@ -161,7 +172,7 @@ ConfigField    := Ident ":" TypeRef "=" Expr NEWLINE
 
 MigrationDecl  := "migration" ( Ident | StringLit | Int ) ":" NEWLINE Block
 TestDecl       := "test" StringLit ":" NEWLINE Block
-ComponentDecl  := "component" Ident ":" NEWLINE Block
+ComponentDecl  := "component" Ident TypeParams? [ "(" NEWLINE* [ ParamList [ "," ] ] NEWLINE* ")" ] WhereClause? ":" NEWLINE Block
 ```
 
 Types:
@@ -318,8 +329,8 @@ Declarations:
 - `FieldDecl { name, ty, default }`
 - `EnumDecl { name, variants, doc }`
 - `EnumVariant { name, payload }`
-- `FnDecl { name, params, ret, body, doc }`
-- `ComponentDecl { name, body, doc }`; implicit params `attrs: Map<String, String>` and `children: List<Html>` are injected into the body scope, and the return type is `Html`
+- `FnDecl { name, type_params, params, ret, where_clause, body, doc }`
+- `ComponentDecl { name, type_params, params, where_clause, body, doc }`; implicit params `attrs: Map<String, String>` and `children: List<Html>` are injected into the body scope alongside any explicit params; the return type is `Html`
 - `ServiceDecl { name, base_path, routes, doc }`
 - `RouteDecl { verb, path, body_type, ret_type, body }`
 - `ConfigDecl { name, fields, doc }`
@@ -643,3 +654,75 @@ HTTP-specific route primitives (`request.header/cookie`,
 semantics owned by `runtime.md`.
 
 See also: [Runtime semantics](runtime.md), [Error model](runtime.md#error-model), [Boundary model](runtime.md#boundary-model).
+
+
+## Interface contracts and generic callables (v1.1)
+
+### Interface declarations and impl blocks
+
+Static surface:
+
+- `interface Name:` declares a named set of member signatures.
+- `impl Interface for Type:` declares a concrete satisfaction relationship.
+- `interface` names are exportable/importable like `type` and `enum` names.
+- `impl` blocks are not importable by name.
+
+Static semantics:
+
+- Interface names are not ordinary runtime values and are not valid type expressions in value/type
+  positions such as `let x: Interface`, route return types, or struct fields.
+- `Self` is only valid inside interface member signatures and impl member signatures/bodies.
+- Instance members use an implicit immutable `self: ConcreteTarget`; associated members do not.
+- An impl must provide every required interface member for its `(interface, target)` pair.
+- An impl member's explicit parameter list, defaults, and return type must match the interface
+  member after substituting `Self` with the concrete target type, including generic arity,
+  parameter types, return/error types, and `where` constraints.
+- Duplicate impls for the same `(interface, target)` pair in the same package are rejected.
+- Orphan impls are rejected: a package may only define an impl when it owns the interface or the
+  target type.
+- An impl target must be a nominal data type (`type` or `enum`, including imported equivalents).
+
+Diagnostic codes for interface contracts:
+
+- `FUSE_IMPL_DUPLICATE`
+- `FUSE_IMPL_INCOMPLETE`
+- `FUSE_IMPL_SIGNATURE_MISMATCH`
+- `FUSE_IMPL_ORPHAN`
+- `FUSE_INTERFACE_NOT_A_TYPE`
+- `FUSE_INTERFACE_DYNAMIC_USE`
+
+### Generic type parameters and `where` clauses
+
+Type parameters are allowed on `fn` declarations, `interface` member signatures, `impl` methods,
+and `component` declarations. They are not allowed on `type`, `enum`, `interface` headers, `impl`
+blocks, `app`, `test`, or service route declarations.
+
+`where` is a contextual identifier: it is only parsed as a keyword in trailing clause position
+after a declaration. It is not globally reserved, so existing uses such as `.where(...)` in
+query-builder expressions remain valid and unchanged.
+
+Semantic rules:
+
+- Each type parameter name must be unique within one declaration (`FUSE_GENERIC_DUPLICATE_TYPE_PARAM`).
+- A `where` clause may attach at most one interface constraint per type parameter in v1.1.
+  Multiple constraints on one parameter are diagnosed as `FUSE_WHERE_MULTI_CONSTRAINT`.
+- An interface name referenced in a `where` clause must be visible in scope
+  (`FUSE_WHERE_UNKNOWN_INTERFACE`).
+- Type inference at a generic call site uses explicit type arguments, value argument types, and
+  receiver type only. Return-type context does not drive inference.
+- A generic call where one or more type parameters cannot be inferred is diagnosed as
+  `FUSE_GENERIC_INFERENCE` and requires explicit type arguments.
+- Explicit call-site type arguments are written `fn<T>(args)`. Wrong arity or type args on a
+  non-generic callable are diagnosed as `FUSE_GENERIC_CALL_TYPE_ARG`.
+- Constrained member calls on a type-parameter receiver (`x.method()` where `x: T`, `T: I`) are
+  resolved through the named interface constraint at compile time.
+- All generic callable dispatch is frontend-monomorphized before interpreter and native lowering.
+  No runtime generic dispatch or trait-object behavior is introduced.
+
+Diagnostic codes for generic callables and `where`:
+
+- `FUSE_GENERIC_DUPLICATE_TYPE_PARAM`
+- `FUSE_GENERIC_CALL_TYPE_ARG`
+- `FUSE_GENERIC_INFERENCE`
+- `FUSE_WHERE_UNKNOWN_INTERFACE`
+- `FUSE_WHERE_MULTI_CONSTRAINT`

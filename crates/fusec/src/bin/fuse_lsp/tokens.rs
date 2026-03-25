@@ -421,7 +421,12 @@ fn collect_html_semantic_spans(program: &Program) -> HtmlSemanticSpans {
             Item::Test(decl) => {
                 collect_html_semantic_spans_block(&decl.body, &component_names, &mut out);
             }
-            Item::Import(_) | Item::Type(_) | Item::Enum(_) | Item::Config(_) => {}
+            Item::Import(_)
+            | Item::Type(_)
+            | Item::Enum(_)
+            | Item::Config(_)
+            | Item::Interface(_)
+            | Item::Impl(_) => {}
         }
     }
     out
@@ -856,7 +861,7 @@ pub(crate) fn handle_inlay_hints(
 fn semantic_type_for_symbol_kind(kind: SymbolKind) -> Option<usize> {
     match kind {
         SymbolKind::Module => Some(SEM_NAMESPACE),
-        SymbolKind::Type | SymbolKind::Config => Some(SEM_TYPE),
+        SymbolKind::Type | SymbolKind::Interface | SymbolKind::Config => Some(SEM_TYPE),
         SymbolKind::Enum => Some(SEM_ENUM),
         SymbolKind::EnumVariant => Some(SEM_ENUM_MEMBER),
         SymbolKind::Function

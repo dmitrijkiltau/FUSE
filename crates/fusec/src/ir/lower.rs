@@ -193,6 +193,9 @@ fn lower_program_in_module(
 }
 
 pub fn lower_registry(registry: &ModuleRegistry) -> Result<IrProgram, Vec<String>> {
+    let monomorphized = crate::frontend::monomorphize::monomorphize_registry(registry);
+    let lowered_registry = crate::frontend::interface_desugar::desugar_registry(&monomorphized);
+    let registry = &lowered_registry;
     let mut module_fn_decls = HashMap::new();
     for (id, unit) in &registry.modules {
         module_fn_decls.insert(*id, collect_function_decls(&unit.program));
@@ -400,6 +403,11 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_fn(&mut self, decl: &FnDecl) {
+        // Generic functions are specialised by the monomorphize pass.
+        // The original polymorphic template must not be lowered directly.
+        if !decl.type_params.is_empty() {
+            return;
+        }
         let fn_name = canonical_function_name(self.module_id, &decl.name.name);
         let ret = decl.ret.as_ref().map(|ty| {
             canonicalize_predicate_names_in_type_ref(
@@ -780,23 +788,31 @@ fn component_decl_to_fn(decl: &ComponentDecl) -> FnDecl {
         },
         span,
     };
+    let mut params = decl.params.clone();
+    params.push(Param {
+        name: mk_ident("attrs"),
+        ty: mk_generic("Map", vec![mk_simple("String"), mk_simple("String")]),
+        default: Some(Expr {
+            kind: ExprKind::MapLit(Vec::new()),
+            span,
+        }),
+        span,
+    });
+    params.push(Param {
+        name: mk_ident("children"),
+        ty: mk_generic("List", vec![mk_simple("Html")]),
+        default: Some(Expr {
+            kind: ExprKind::ListLit(Vec::new()),
+            span,
+        }),
+        span,
+    });
     FnDecl {
         name: decl.name.clone(),
-        params: vec![
-            Param {
-                name: mk_ident("attrs"),
-                ty: mk_generic("Map", vec![mk_simple("String"), mk_simple("String")]),
-                default: None,
-                span,
-            },
-            Param {
-                name: mk_ident("children"),
-                ty: mk_generic("List", vec![mk_simple("Html")]),
-                default: None,
-                span,
-            },
-        ],
+        type_params: decl.type_params.clone(),
+        params,
         ret: Some(mk_simple("Html")),
+        where_clause: decl.where_clause.clone(),
         body: decl.body.clone(),
         doc: decl.doc.clone(),
         span,

@@ -763,3 +763,72 @@ fn main(user: User):
 "#;
     assert_parse_err_contains(src, "cannot mix positional and named patterns");
 }
+
+
+#[test]
+fn parses_interface_and_impl_declarations() {
+    let src = r#"
+interface Encodable:
+  fn encode() -> String
+  fn decode(s: String) -> Self
+
+type User:
+  name: String
+
+impl Encodable for User:
+  fn encode() -> String:
+    return self.name
+  fn decode(s: String) -> Self:
+    return User(name=s)
+"#;
+    let program = parse_ok(src);
+    assert!(matches!(program.items.first(), Some(Item::Interface(_))));
+    assert!(program.items.iter().any(|item| matches!(item, Item::Impl(_))));
+}
+
+#[test]
+fn parses_self_in_interface_and_impl_signatures() {
+    let src = r#"
+interface Factory:
+  fn decode(s: String) -> Self
+
+type User:
+  name: String
+
+impl Factory for User:
+  fn decode(s: String) -> Self:
+    return User(name=s)
+"#;
+    let program = parse_ok(src);
+    let Some(Item::Interface(decl)) = program.items.first() else {
+        panic!("expected interface declaration");
+    };
+    let Some(ret) = &decl.members[0].ret else {
+        panic!("expected interface member return type");
+    };
+    let TypeRefKind::Simple(ret_ident) = &ret.kind else {
+        panic!("expected Self return type");
+    };
+    assert_eq!(ret_ident.name, "Self");
+
+    let Some(Item::Impl(decl)) = program.items.iter().find(|item| matches!(item, Item::Impl(_)))
+    else {
+        panic!("expected impl declaration");
+    };
+    let Some(ret) = &decl.methods[0].ret else {
+        panic!("expected impl method return type");
+    };
+    let TypeRefKind::Simple(ret_ident) = &ret.kind else {
+        panic!("expected Self return type");
+    };
+    assert_eq!(ret_ident.name, "Self");
+}
+
+#[test]
+fn parser_reserves_interface_and_impl_keywords_in_identifier_positions() {
+    let src = r#"
+fn interface(impl: Int) -> Int:
+  return impl
+"#;
+    assert_parse_err_code(src, "FUSE_RESERVED_KEYWORD");
+}

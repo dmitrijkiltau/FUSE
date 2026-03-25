@@ -133,6 +133,32 @@ Backend/runtime sealing guarantees:
 Function symbols are module-scoped. Resolution rules (unqualified, qualified, duplicate names)
 are defined in [Imports and modules](fls.md#imports-and-modules-current).
 
+### Interface contracts
+
+- `interface` declarations have no runtime representation.
+- `impl` declarations do not create runtime objects or dynamic interface tables.
+- Interface satisfaction, duplicate/orphan impl checks, `Self` substitution, and concrete method
+  resolution are compile-time responsibilities defined in `fls.md`.
+- Backends must treat interface-driven dispatch as a frontend-resolved operation over ordinary
+  concrete function/member semantics; runtime `is Interface`, downcasting, and dynamic dispatch are
+  outside the model.
+
+### Generic callables and monomorphization
+
+- Generic `fn`, interface member, impl method, and `component` declarations have no direct runtime
+  representation. The frontend emits one concrete monomorphic copy for each unique
+  `(callable, concrete-type-args)` call site observed in the program.
+- Monomorphization runs before interface desugaring and before interpreter or native lowering.
+  Backends receive only concrete, non-generic call graphs.
+- Cross-module generic calls are rewritten to canonical internal names of the form
+  `m{module_id}::fn_TypeArg` by the monomorphization pass; backends must not assume any naming
+  scheme beyond what the frontend emits.
+- `where` constraints on type parameters are statically checked at declaration and call site.
+  They impose no runtime overhead and generate no runtime type-check instructions.
+- There is no runtime generic dispatch, no trait-object value, and no way to obtain an interface
+  value at runtime. Any attempt to use an interface name as a runtime value is a compile-time
+  error (`FUSE_INTERFACE_DYNAMIC_USE`).
+
 ---
 
 ## Expression operator behavior

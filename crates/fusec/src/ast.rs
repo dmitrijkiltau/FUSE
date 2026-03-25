@@ -49,6 +49,8 @@ pub enum Item {
     Import(ImportDecl),
     Type(TypeDecl),
     Enum(EnumDecl),
+    Interface(InterfaceDecl),
+    Impl(ImplDecl),
     Fn(FnDecl),
     Component(ComponentDecl),
     Service(ServiceDecl),
@@ -136,10 +138,52 @@ pub struct EnumVariant {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct FnDecl {
+pub struct InterfaceDecl {
     pub name: Ident,
+    pub members: Vec<InterfaceMember>,
+    pub doc: Option<Doc>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TypeParam {
+    pub name: Ident,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WhereConstraint {
+    pub type_param: Ident,
+    pub interface: Ident,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InterfaceMember {
+    pub name: Ident,
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub ret: Option<TypeRef>,
+    pub where_clause: Vec<WhereConstraint>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ImplDecl {
+    pub interface: Ident,
+    pub target: Ident,
+    pub methods: Vec<FnDecl>,
+    pub doc: Option<Doc>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FnDecl {
+    pub name: Ident,
+    pub type_params: Vec<TypeParam>,
+    pub params: Vec<Param>,
+    pub ret: Option<TypeRef>,
+    pub where_clause: Vec<WhereConstraint>,
     pub body: Block,
     pub doc: Option<Doc>,
     pub span: Span,
@@ -162,6 +206,9 @@ pub struct Param {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ComponentDecl {
     pub name: Ident,
+    pub type_params: Vec<TypeParam>,
+    pub params: Vec<Param>,
+    pub where_clause: Vec<WhereConstraint>,
     pub body: Block,
     pub doc: Option<Doc>,
     pub span: Span,

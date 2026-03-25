@@ -16,6 +16,9 @@ use super::super::{
     is_renamable_symbol_kind, is_valid_ident, line_col_to_offset, line_offsets, lsp_range_to_span,
     offset_to_line_col, range_json, span_contains, span_range_json, symbol_info_json, uri_to_path,
 };
+use super::interface_support::{
+    ResolvedInterfaceDecl, collect_workspace_impl_pairs, render_impl_skeleton,
+};
 
 fn extract_new_name(obj: &BTreeMap<String, JsonValue>) -> Option<String> {
     let params = obj.get("params")?;
@@ -71,7 +74,7 @@ fn symbol_kind_nav_tier(kind: SymbolKind) -> u8 {
         | SymbolKind::App
         | SymbolKind::Migration
         | SymbolKind::Test => 0,
-        SymbolKind::Type | SymbolKind::Enum | SymbolKind::Config => 1,
+        SymbolKind::Type | SymbolKind::Interface | SymbolKind::Enum | SymbolKind::Config => 1,
         SymbolKind::EnumVariant | SymbolKind::Field | SymbolKind::Module => 2,
         SymbolKind::Param | SymbolKind::Variable => 3,
     }
@@ -596,7 +599,162 @@ pub(crate) fn handle_code_action(
         }
     }
 
+    for (title, edit) in interface_impl_skeleton_actions(index, obj, &uri, &text, &program) {
+        let key = format!("refactor:{title}");
+        if seen.insert(key) {
+            actions.push(code_action_json(&title, "refactor.rewrite", edit));
+        }
+    }
+
     JsonValue::Array(actions)
+}
+
+fn interface_impl_skeleton_actions(
+    index: &WorkspaceIndex,
+    obj: &BTreeMap<String, JsonValue>,
+    uri: &str,
+    text: &str,
+    program: &Program,
+) -> Vec<(String, JsonValue)> {
+    let mut type_names = local_impl_target_names(program);
+    if type_names.is_empty() {
+        return Vec::new();
+    }
+
+    let mut interfaces = local_resolved_interfaces(text, program);
+    if interfaces.is_empty() {
+        if let Some((line, character)) = extract_code_action_start_position(obj) {
+            if let Some(def) = index.definition_at(uri, line, character) {
+                if def.def.kind == SymbolKind::Interface {
+                    if let Some(interface) = resolve_interface_from_workspace_def(index, &def) {
+                        interfaces.push(interface);
+                    }
+                }
+            }
+        }
+    }
+    if interfaces.is_empty() {
+        return Vec::new();
+    }
+
+    if let Some((line, character)) = extract_code_action_start_position(obj) {
+        if let Some(def) = index.definition_at(uri, line, character) {
+            match def.def.kind {
+                SymbolKind::Type | SymbolKind::Enum => {
+                    type_names.retain(|name| name == &def.def.name);
+                }
+                SymbolKind::Interface => {
+                    if let Some(interface) = resolve_interface_from_workspace_def(index, &def) {
+                        interfaces.clear();
+                        interfaces.push(interface);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if type_names.is_empty() || interfaces.is_empty() {
+        return Vec::new();
+    }
+
+    let existing_pairs = collect_workspace_impl_pairs(index);
+    let mut out = Vec::new();
+    for interface in interfaces {
+        for type_name in &type_names {
+            let pair = (interface.decl.name.name.clone(), type_name.clone());
+            if existing_pairs.contains(&pair) {
+                continue;
+            }
+            let skeleton = render_impl_skeleton(
+                &interface.decl.name.name,
+                type_name,
+                &interface.decl.members,
+                &interface.text,
+            );
+            let mut new_text = String::new();
+            if !text.is_empty() && !text.ends_with('\n') {
+                new_text.push('\n');
+            }
+            if !text.trim_end().is_empty() {
+                new_text.push('\n');
+            }
+            new_text.push_str(&skeleton);
+            let edit = workspace_edit_with_single_span(uri, text, Span::new(text.len(), text.len()), &new_text);
+            let title = format!("Generate impl {} for {}", interface.decl.name.name, type_name);
+            out.push((title, edit));
+        }
+    }
+    out.truncate(8);
+    out
+}
+
+fn extract_code_action_start_position(
+    obj: &BTreeMap<String, JsonValue>,
+) -> Option<(usize, usize)> {
+    let params = obj.get("params")?;
+    let JsonValue::Object(params) = params else {
+        return None;
+    };
+    let range = params.get("range")?;
+    let JsonValue::Object(range) = range else {
+        return None;
+    };
+    let start = range.get("start")?;
+    let JsonValue::Object(start) = start else {
+        return None;
+    };
+    let line = match start.get("line") {
+        Some(JsonValue::Number(value)) if *value >= 0.0 => *value as usize,
+        _ => return None,
+    };
+    let character = match start.get("character") {
+        Some(JsonValue::Number(value)) if *value >= 0.0 => *value as usize,
+        _ => return None,
+    };
+    Some((line, character))
+}
+
+fn local_impl_target_names(program: &Program) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in &program.items {
+        match item {
+            Item::Type(decl) => out.push(decl.name.name.clone()),
+            Item::Enum(decl) => out.push(decl.name.name.clone()),
+            _ => {}
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn local_resolved_interfaces(text: &str, program: &Program) -> Vec<ResolvedInterfaceDecl> {
+    let mut out = Vec::new();
+    for item in &program.items {
+        if let Item::Interface(decl) = item {
+            out.push(ResolvedInterfaceDecl {
+                text: text.to_string(),
+                decl: decl.clone(),
+            });
+        }
+    }
+    out
+}
+
+fn resolve_interface_from_workspace_def(
+    index: &WorkspaceIndex,
+    def: &WorkspaceDef,
+) -> Option<ResolvedInterfaceDecl> {
+    if def.def.kind != SymbolKind::Interface {
+        return None;
+    }
+    let text = index.file_text(&def.uri)?.to_string();
+    let (program, _parse_diags) = parse_source(&text);
+    let decl = program.items.iter().find_map(|item| match item {
+        Item::Interface(decl) if decl.name.name == def.def.name => Some(decl.clone()),
+        _ => None,
+    })?;
+    Some(ResolvedInterfaceDecl { text, decl })
 }
 
 fn collect_imports(program: &Program) -> Vec<ImportDecl> {
@@ -890,7 +1048,7 @@ fn find_call_args_in_item<'a>(item: &'a Item, target: Span) -> Option<&'a [CallA
             }
             None
         }
-        Item::Import(_) | Item::Enum(_) => None,
+        Item::Import(_) | Item::Enum(_) | Item::Interface(_) | Item::Impl(_) => None,
     }
 }
 
@@ -1042,6 +1200,7 @@ fn map_literal_attr_pairs_in_item(item: &Item, span: Span) -> Option<Vec<(String
         Item::App(decl) => map_literal_attr_pairs_in_block(&decl.body, span),
         Item::Migration(decl) => map_literal_attr_pairs_in_block(&decl.body, span),
         Item::Test(decl) => map_literal_attr_pairs_in_block(&decl.body, span),
+        Item::Interface(_) | Item::Impl(_) => None,
     }
 }
 

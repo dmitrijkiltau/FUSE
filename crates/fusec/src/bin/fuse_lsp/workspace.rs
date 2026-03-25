@@ -1234,6 +1234,9 @@ fn module_exports_from_program(program: &Program) -> ModuleExports {
             Item::Enum(decl) => {
                 exports.enums.insert(decl.name.name.clone());
             }
+            Item::Interface(decl) => {
+                exports.interfaces.insert(decl.name.name.clone());
+            }
             Item::Fn(decl) => {
                 exports.functions.insert(decl.name.name.clone());
             }
@@ -1255,6 +1258,7 @@ fn module_exports_from_program(program: &Program) -> ModuleExports {
 fn module_exports_contains(exports: &ModuleExports, name: &str) -> bool {
     exports.types.contains(name)
         || exports.enums.contains(name)
+        || exports.interfaces.contains(name)
         || exports.functions.contains(name)
         || exports.configs.contains(name)
         || exports.services.contains(name)

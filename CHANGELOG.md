@@ -2,6 +2,46 @@
 
 All notable changes to this project are documented in this file.
 
+## [1.1.0] - 2026-03-25
+
+### Added
+
+- Interface contracts: top-level `interface` declarations and `impl Interface for Type` blocks.
+  - `interface` names are exportable/importable like `type` and `enum`.
+  - `Self` is valid inside interface member signatures and impl member signatures/bodies.
+  - Instance members receive an implicit immutable `self`; associated members do not.
+  - Compile-time diagnostics: `FUSE_IMPL_DUPLICATE`, `FUSE_IMPL_INCOMPLETE`,
+    `FUSE_IMPL_SIGNATURE_MISMATCH`, `FUSE_IMPL_ORPHAN`, `FUSE_INTERFACE_NOT_A_TYPE`,
+    `FUSE_INTERFACE_DYNAMIC_USE`.
+- Generic callables: type parameters on `fn`, interface members, impl methods, and `component`.
+  - Trailing `where` clauses constraining type parameters to a single interface (`where T: I`).
+  - Explicit call-site type arguments: `decode<User>(text)`.
+  - Type inference from value argument types and receiver type; return-type context is not used.
+  - Frontend monomorphization pass emits one concrete copy per unique `(callable, type-args)` call site before interpreter/native lowering.
+  - Constrained member resolution for instance and associated calls through type-parameter receivers.
+  - Generic interface members and generic impl methods with full signature-match enforcement.
+  - Typed `component` declarations: `component Button<T>(item: T) where T: Renderable:`.
+  - `where` is contextual-only; existing `.where(...)` query-builder calls are unaffected.
+  - Compile-time diagnostics: `FUSE_GENERIC_DUPLICATE_TYPE_PARAM`, `FUSE_GENERIC_CALL_TYPE_ARG`,
+    `FUSE_GENERIC_INFERENCE`, `FUSE_WHERE_UNKNOWN_INTERFACE`, `FUSE_WHERE_MULTI_CONSTRAINT`.
+- LSP support for interface contracts and generics:
+  - Go-to-definition from `impl Interface for Type` to the `interface` declaration.
+  - Workspace symbols listing interfaces alongside types and enums.
+  - Completion inside impl bodies for missing interface member stubs.
+  - Code action to generate an impl skeleton for a selected interface/type pair.
+  - Signature help showing type params and trailing `where`.
+  - Hover on constrained type params and constrained member calls.
+  - Completion for in-scope type params inside generic bodies.
+  - Impl stub and skeleton code actions that render generic interface members correctly.
+
+### Migration
+
+- No language/runtime migration is required from `1.0.0` to `1.1.0`.
+- `interface` and `impl` were already reserved keywords as of `1.0.0`; identifier-position misuse
+  was already diagnosed as `FUSE_RESERVED_KEYWORD`.
+- `where` is contextual-only and is not a globally reserved keyword; existing `.where(...)` call
+  sites are unaffected.
+
 ## [1.0.0] - 2026-03-22
 
 ### Changed

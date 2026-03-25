@@ -91,6 +91,7 @@ impl ModuleMap {
 pub struct ModuleExports {
     pub types: HashSet<String>,
     pub enums: HashSet<String>,
+    pub interfaces: HashSet<String>,
     pub functions: HashSet<String>,
     pub configs: HashSet<String>,
     pub services: HashSet<String>,
@@ -107,6 +108,9 @@ impl ModuleExports {
                 }
                 Item::Enum(decl) => {
                     exports.enums.insert(decl.name.name.clone());
+                }
+                Item::Interface(decl) => {
+                    exports.interfaces.insert(decl.name.name.clone());
                 }
                 Item::Fn(decl) => {
                     exports.functions.insert(decl.name.name.clone());
@@ -129,6 +133,7 @@ impl ModuleExports {
     pub(crate) fn contains(&self, name: &str) -> bool {
         self.types.contains(name)
             || self.enums.contains(name)
+            || self.interfaces.contains(name)
             || self.functions.contains(name)
             || self.configs.contains(name)
             || self.services.contains(name)

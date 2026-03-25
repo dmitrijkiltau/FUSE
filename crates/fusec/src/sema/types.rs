@@ -8,7 +8,14 @@ pub struct ParamSig {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct TypeParamSig {
+    pub name: String,
+    pub interface_bound: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct FnSig {
+    pub type_params: Vec<TypeParamSig>,
     pub params: Vec<ParamSig>,
     pub ret: Box<Ty>,
 }
@@ -26,6 +33,8 @@ pub enum Ty {
     Id,
     Email,
     Error,
+    SelfType,
+    TypeParam(String),
     Struct(String),
     Enum(String),
     Config(String),
@@ -73,6 +82,8 @@ impl fmt::Display for Ty {
             Ty::Id => write!(f, "Id"),
             Ty::Email => write!(f, "Email"),
             Ty::Error => write!(f, "Error"),
+            Ty::SelfType => write!(f, "Self"),
+            Ty::TypeParam(name) => write!(f, "{name}"),
             Ty::Struct(name) => write!(f, "{name}"),
             Ty::Enum(name) => write!(f, "{name}"),
             Ty::Config(name) => write!(f, "{name}"),
@@ -82,14 +93,38 @@ impl fmt::Display for Ty {
             Ty::Option(inner) => write!(f, "{}?", inner),
             Ty::Result(ok, err) => write!(f, "{}!{}", ok, err),
             Ty::Fn(sig) => {
-                write!(f, "fn(")?;
+                write!(f, "fn")?;
+                if !sig.type_params.is_empty() {
+                    write!(f, "<")?;
+                    for (i, param) in sig.type_params.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", param.name)?;
+                    }
+                    write!(f, ">")?;
+                }
+                write!(f, "(")?;
                 for (i, param) in sig.params.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
                     write!(f, "{}: {}", param.name, param.ty)?;
                 }
-                write!(f, ") -> {}", sig.ret)
+                write!(f, ") -> {}", sig.ret)?;
+                let mut first = true;
+                for param in &sig.type_params {
+                    if let Some(bound) = &param.interface_bound {
+                        if first {
+                            write!(f, " where ")?;
+                            first = false;
+                        } else {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}: {}", param.name, bound)?;
+                    }
+                }
+                Ok(())
             }
             Ty::Task(inner) => write!(f, "Task<{}>", inner),
             Ty::Boxed(inner) => write!(f, "box {}", inner),
