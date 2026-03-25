@@ -904,6 +904,23 @@ impl<'a> IndexBuilder<'a> {
     fn visit_fn_decl(&mut self, decl: &FnDecl) {
         self.enter_scope();
         let container = self.current_container();
+        for tp in &decl.type_params {
+            let bound = decl
+                .where_clause
+                .iter()
+                .find(|c| c.type_param.name == tp.name.name)
+                .map(|c| format!(": {}", c.interface.name))
+                .unwrap_or_default();
+            let detail = format!("type param {}{}", tp.name.name, bound);
+            let def_id = self.define_local(
+                &tp.name,
+                SymbolKind::Param,
+                detail,
+                None,
+                container.clone(),
+            );
+            self.insert_local(&tp.name.name, def_id);
+        }
         for param in &decl.params {
             let detail = format!(
                 "param {}: {}",
@@ -1306,6 +1323,11 @@ impl<'a> IndexBuilder<'a> {
         if is_builtin_type(&ident.name) {
             return;
         }
+        // Check local scopes first so type params shadow global types.
+        if let Some(def_id) = self.resolve_value(&ident.name) {
+            self.add_ref(ident.span, def_id);
+            return;
+        }
         if let Some(def_id) = self
             .type_defs
             .get(&ident.name)
@@ -1433,7 +1455,18 @@ impl<'a> IndexBuilder<'a> {
     }
 
     fn fn_signature(&self, decl: &FnDecl) -> String {
-        let mut out = format!("fn {}(", decl.name.name);
+        let mut out = format!("fn {}", decl.name.name);
+        if !decl.type_params.is_empty() {
+            out.push('<');
+            for (idx, tp) in decl.type_params.iter().enumerate() {
+                if idx > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&tp.name.name);
+            }
+            out.push('>');
+        }
+        out.push('(');
         for (idx, param) in decl.params.iter().enumerate() {
             if idx > 0 {
                 out.push_str(", ");
@@ -1446,6 +1479,17 @@ impl<'a> IndexBuilder<'a> {
         if let Some(ret) = &decl.ret {
             out.push_str(" -> ");
             out.push_str(&self.type_ref_text(ret));
+        }
+        if !decl.where_clause.is_empty() {
+            out.push_str(" where ");
+            for (idx, constraint) in decl.where_clause.iter().enumerate() {
+                if idx > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&constraint.type_param.name);
+                out.push_str(": ");
+                out.push_str(&constraint.interface.name);
+            }
         }
         out
     }

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use fusec::ast::{FnDecl, Ident, InterfaceDecl, InterfaceMember, Item, Program};
+use fusec::ast::{FnDecl, Ident, InterfaceDecl, InterfaceMember, Item, Program, TypeParam, WhereConstraint};
 use fusec::parse_source;
 
 use super::super::{SymbolKind, line_offsets, offset_to_line_col};
@@ -54,23 +54,27 @@ pub(crate) fn collect_workspace_impl_pairs(index: &WorkspaceIndex) -> HashSet<(S
 pub(crate) fn render_impl_method_signature(decl: &FnDecl, text: &str) -> String {
     render_signature(
         &decl.name.name,
+        type_param_list(&decl.type_params),
         decl.params
             .iter()
             .map(|param| (param.name.name.as_str(), slice_span(text, param.ty.span)))
             .collect(),
         decl.ret.as_ref().map(|ty| slice_span(text, ty.span)),
+        where_clause_text(&decl.where_clause),
     )
 }
 
 pub(crate) fn render_interface_member_signature(member: &InterfaceMember, text: &str) -> String {
     render_signature(
         &member.name.name,
+        type_param_list(&member.type_params),
         member
             .params
             .iter()
             .map(|param| (param.name.name.as_str(), slice_span(text, param.ty.span)))
             .collect(),
         member.ret.as_ref().map(|ty| slice_span(text, ty.span)),
+        where_clause_text(&member.where_clause),
     )
 }
 
@@ -116,8 +120,37 @@ fn find_interface_decl(program: &Program, name: &str) -> Option<InterfaceDecl> {
     })
 }
 
-fn render_signature(name: &str, params: Vec<(&str, String)>, ret: Option<String>) -> String {
-    let mut out = format!("fn {name}(");
+fn type_param_list(type_params: &[TypeParam]) -> Option<String> {
+    if type_params.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = type_params.iter().map(|tp| tp.name.name.as_str()).collect();
+    Some(format!("<{}>", names.join(", ")))
+}
+
+fn where_clause_text(where_clause: &[WhereConstraint]) -> Option<String> {
+    if where_clause.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = where_clause
+        .iter()
+        .map(|c| format!("{}: {}", c.type_param.name, c.interface.name))
+        .collect();
+    Some(format!(" where {}", parts.join(", ")))
+}
+
+fn render_signature(
+    name: &str,
+    type_params: Option<String>,
+    params: Vec<(&str, String)>,
+    ret: Option<String>,
+    where_clause: Option<String>,
+) -> String {
+    let mut out = format!("fn {name}");
+    if let Some(tps) = type_params {
+        out.push_str(&tps);
+    }
+    out.push('(');
     for (idx, (param_name, ty)) in params.iter().enumerate() {
         if idx > 0 {
             out.push_str(", ");
@@ -132,6 +165,9 @@ fn render_signature(name: &str, params: Vec<(&str, String)>, ret: Option<String>
             out.push_str(" -> ");
             out.push_str(ret.trim());
         }
+    }
+    if let Some(wc) = where_clause {
+        out.push_str(&wc);
     }
     out
 }
